@@ -1,0 +1,29 @@
+[Unit]
+Description=mpv (PiPlayer projector loop)
+After=network.target systemd-user-sessions.service
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=projector
+Group=projector
+SupplementaryGroups=video render input audio tty
+Environment=HOME=/var/lib/projector-player
+Environment=XDG_RUNTIME_DIR=/run/user/0
+ExecStart=/usr/bin/mpv --input-ipc-server=/tmp/projector-mpv.sock --idle=yes
+Restart=always
+RestartSec=3
+
+# Allow access to DRM device for --vo=drm
+DeviceAllow=/dev/dri/card0 rw
+DeviceAllow=/dev/dri/card1 rw
+DeviceAllow=/dev/dri/renderD128 rw
+DeviceAllow=/dev/tty0 rw
+DeviceAllow=/dev/tty1 rw
+DeviceAllow=/dev/tty7 rw
+DeviceAllow=/dev/fb0 rw
+DeviceAllow=/dev/snd/* rw
+
+[Install]
+WantedBy=multi-user.target

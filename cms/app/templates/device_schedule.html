@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ device.name }} schedule — {{ app_name }}{% endblock %}
+{% block content %}
+<p><a href="/devices">← Devices</a></p>
+<h1>{{ device.name }} — Schedule</h1>
+<p class="muted small">Server time now: <code>{{ now }}</code></p>
+
+<h2>Rules ({{ rules | length }})</h2>
+<p class="muted small">When multiple rules match, the one with the highest priority wins. If no rule matches, the device's default playlist (set on the Devices page) plays.</p>
+{% if not rules %}
+  <p class="muted">No rules — device plays its default playlist always.</p>
+{% else %}
+<table class="data">
+  <thead>
+    <tr><th>Priority</th><th>Name</th><th>Playlist</th><th>When</th><th>Active now?</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for r in rules %}
+    <tr {% if r.matches_now %}class="rule-active"{% endif %}>
+      <td>{{ r.priority }}</td>
+      <td>{{ r.name }}</td>
+      <td>{{ r.playlist_name or "—" }}</td>
+      <td><span class="muted small">{{ r.summary }}</span></td>
+      <td>{% if r.matches_now %}<span class="badge badge-active">YES</span>{% else %}—{% endif %}</td>
+      <td>
+        <form method="post" action="/devices/{{ device.id }}/schedule/{{ r.id }}/delete" class="inline" onsubmit="return confirm('Delete rule {{ r.name }}?')">
+          <button type="submit" class="danger small">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>Add a rule</h2>
+<div class="panel">
+  <form method="post" action="/devices/{{ device.id }}/schedule">
+    <div class="form-grid">
+      <label>Name
+        <input type="text" name="name" placeholder="e.g., Morning Classes" required>
+      </label>
+      <label>Playlist
+        <select name="playlist_id" required>
+          <option value="">— pick —</option>
+          {% for p in playlists %}
+          <option value="{{ p.id }}">{{ p.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Priority
+        <input type="number" name="priority" value="10" min="0" max="100">
+      </label>
+      <label>Start time (HH:MM)
+        <input type="time" name="start_time" placeholder="06:00">
+      </label>
+      <label>End time (HH:MM)
+        <input type="time" name="end_time" placeholder="09:00">
+      </label>
+      <label>Start date
+        <input type="date" name="start_date">
+      </label>
+      <label>End date
+        <input type="date" name="end_date">
+      </label>
+    </div>
+
+    <fieldset class="days-fieldset">
+      <legend>Days of week (leave blank for all days)</legend>
+      <label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="0">Mon</label>
+      <label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="1">Tue</label>
+      <label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="2">Wed</label>
+      <label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="3">Thu</label>
+      <label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="4">Fri</label>
+      <label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="5">Sat</label>
+      <label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="6">Sun</label>
+      <input type="hidden" name="days_of_week" id="days-hidden" value="">
+    </fieldset>
+
+    <button type="submit" class="primary">Add rule</button>
+  </form>
+</div>
+
+<script>
+(function() {
+  const form = document.querySelector('form[action$="/schedule"]');
+  if (!form) return;
+  form.addEventListener('submit', function() {
+    const checks = form.querySelectorAll('input[name="days_of_week_chk"]:checked');
+    const value = Array.from(checks).map(c => c.value).join('');
+    document.getElementById('days-hidden').value = value;
+  });
+})();
+</script>
+{% endblock %}

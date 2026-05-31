@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="cards">
+  <div class="card">
+    <div class="card-label">Media</div>
+    <div class="card-value">{{ media_count }}</div>
+    <div class="card-sub">{{ (media_bytes / 1024 / 1024) | round(1) }} MB on disk</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Playlists</div>
+    <div class="card-value">{{ playlist_count }}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Devices</div>
+    <div class="card-value">{{ devices | length }}</div>
+  </div>
+</div>
+
+<h2>Devices</h2>
+{% if not devices %}
+  <p class="muted">No devices yet. <a href="/devices">Register one</a> to get started.</p>
+{% else %}
+<div class="device-grid">
+  {% for d in devices %}
+  <div class="device-card">
+    {% if d.last_screenshot_at %}
+      <img src="/devices/{{ d.id }}/screenshot?t={{ d.last_screenshot_at }}" class="device-thumb" alt="screenshot">
+    {% else %}
+      <div class="device-thumb device-thumb-empty">no screenshot yet</div>
+    {% endif %}
+    <div class="device-card-body">
+      <div class="device-card-title">{{ d.name }}</div>
+      <div class="muted small"><code>{{ d.device_id }}</code>{% if d.group_name %} · group: {{ d.group_name }}{% endif %}</div>
+      <div class="small">
+        <strong>Playlist:</strong> {{ d.playlist_name or "—" }}<br>
+        <strong>Now playing:</strong>
+        {% if d.current_filename %}
+          #{{ (d.current_position or 0) + 1 }}: {{ d.current_filename }}
+        {% else %}—{% endif %}
+        <br>
+        <strong>Status:</strong> {{ d.player_status or "—" }} · last seen {{ d.last_seen_at or "never" }}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

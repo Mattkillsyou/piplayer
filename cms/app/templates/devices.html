@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Devices — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Devices</h1>
+
+<div class="panel">
+  <h2>Register a new device</h2>
+  <p class="muted small">
+    After creating it, copy the token and run the install script on the Pi.
+  </p>
+  <form method="post" action="/devices" class="row">
+    <input type="text" name="device_id" placeholder="lobby-projector" pattern="[a-z0-9][a-z0-9-]{0,62}" required>
+    <input type="text" name="name" placeholder="Lobby Projector" required>
+    <button type="submit" class="primary">Register device</button>
+  </form>
+</div>
+
+{% if not devices %}
+  <p class="muted">No devices yet.</p>
+{% else %}
+<table class="data">
+  <thead>
+    <tr>
+      <th>Device</th>
+      <th>Group</th>
+      <th>Default playlist</th>
+      <th>Active now</th>
+      <th>Now playing</th>
+      <th>Last seen</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for d in devices %}
+    <tr>
+      <td>
+        <strong>{{ d.name }}</strong><br>
+        <code class="small">{{ d.device_id }}</code>
+        {% if d.last_screenshot_at %}
+        <br><a href="/devices/{{ d.id }}/screenshot?t={{ d.last_screenshot_at }}" target="_blank" class="small">📷 screenshot</a>
+        {% endif %}
+      </td>
+      <td>
+        <form method="post" action="/devices/{{ d.id }}/group" class="inline">
+          <select name="group_id" onchange="this.form.submit()">
+            <option value="">— none —</option>
+            {% for g in groups %}
+            <option value="{{ g.id }}" {% if g.id == d.group_id %}selected{% endif %}>{{ g.name }}</option>
+            {% endfor %}
+          </select>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/devices/{{ d.id }}/assign" class="inline">
+          <select name="playlist_id" onchange="this.form.submit()">
+            <option value="">— none —</option>
+            {% for p in playlists %}
+            <option value="{{ p.id }}" {% if p.id == d.playlist_id %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+          </select>
+        </form>
+        <a href="/devices/{{ d.id }}/schedule" class="small">Schedule ({{ d.schedule_count }})</a>
+      </td>
+      <td>
+        {% if d.active_playlist_name %}
+          <strong>{{ d.active_playlist_name }}</strong><br>
+          <span class="muted small">{{ d.active_source }}</span>
+        {% else %}
+          <span class="muted">no playlist</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if d.current_filename %}
+          <span class="muted small">#{{ (d.current_position or 0) + 1 }}</span><br>
+          {{ d.current_filename }}<br>
+          <span class="muted small">{{ d.player_status or '' }}</span>
+        {% else %}—{% endif %}
+      </td>
+      <td>
+        {{ d.last_seen_at or "never" }}<br>
+        {% if d.last_ip %}<span class="muted small">{{ d.last_ip }}</span>{% endif %}
+        {% if d.player_version %}<br><span class="muted small">v{{ d.player_version }}</span>{% endif %}
+      </td>
+      <td>
+        <div class="action-buttons">
+          <form method="post" action="/devices/{{ d.id }}/command" class="inline">
+            <input type="hidden" name="command" value="force-sync">
+            <button type="submit" class="small" title="Tell the Pi to re-sync from the CMS now">Resync</button>
+          </form>
+          <form method="post" action="/devices/{{ d.id }}/command" class="inline">
+            <input type="hidden" name="command" value="restart-mpv">
+            <button type="submit" class="small" title="Restart the mpv playback process">Restart mpv</button>
+          </form>
+          <form method="post" action="/devices/{{ d.id }}/command" class="inline" onsubmit="return confirm('Reboot {{ d.name }}?')">
+            <input type="hidden" name="command" value="reboot">
+            <button type="submit" class="small danger">Reboot Pi</button>
+          </form>
+          <details>
+            <summary class="small">Token / install</summary>
+            <div class="token-block">
+              <code class="token">{{ d.token }}</code>
+              <pre class="install-cmd">DEVICE_ID={{ d.device_id }} \
+DEVICE_TOKEN={{ d.token }} \
+CMS_URL={% if public_base_url %}{{ public_base_url }}{% else %}http://&lt;controller-ip&gt;:8080{% endif %} \
+sudo -E bash install-player.sh</pre>
+              <div class="action-buttons">
+                <form method="post" action="/devices/{{ d.id }}/regen-token" class="inline" onsubmit="return confirm('Regenerate token? The Pi will need the new token.')">
+                  <button type="submit" class="small">New token</button>
+                </form>
+                <form method="post" action="/devices/{{ d.id }}/delete" class="inline" onsubmit="return confirm('Delete device {{ d.name }}?')">
+                  <button type="submit" class="danger small">Delete device</button>
+                </form>
+              </div>
+            </div>
+          </details>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

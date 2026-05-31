@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Audit log — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Audit log</h1>
+<p class="muted small">Last {{ entries | length }} entries.</p>
+
+{% if not entries %}
+  <p class="muted">No entries yet.</p>
+{% else %}
+<table class="data">
+  <thead>
+    <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr>
+  </thead>
+  <tbody>
+    {% for e in entries %}
+    <tr>
+      <td class="nowrap"><code>{{ e.created_at }}</code></td>
+      <td>{{ e.username or "—" }}</td>
+      <td><code>{{ e.action }}</code></td>
+      <td>{% if e.target_type %}<span class="muted small">{{ e.target_type }}</span> {{ e.target_id }}{% else %}—{% endif %}</td>
+      <td><span class="muted small mono">{{ e.details or "" }}</span></td>
+      <td><span class="muted small">{{ e.ip or "—" }}</span></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,22 @@
+[Unit]
+Description=PiPlayer sync daemon
+After=projector-mpv.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=projector
+Group=projector
+WorkingDirectory=/opt/piplayer/player
+EnvironmentFile=-/etc/projector-player/env
+ExecStart=/opt/piplayer/player/.venv/bin/python -m player.daemon
+Restart=always
+RestartSec=5
+
+ReadWritePaths=/var/lib/projector-player /tmp
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Playlists — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Playlists</h1>
+
+<div class="panel">
+  <h2>New playlist</h2>
+  <form method="post" action="/playlists" class="row">
+    <input type="text" name="name" placeholder="e.g., Lobby Loop" required>
+    <button type="submit" class="primary">Create</button>
+  </form>
+</div>
+
+{% if not playlists %}
+  <p class="muted">No playlists yet. Create one above.</p>
+{% else %}
+<table class="data">
+  <thead>
+    <tr><th>Name</th><th>Items</th><th>Assigned devices</th><th>Updated</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for p in playlists %}
+    <tr>
+      <td><a href="/playlists/{{ p.id }}">{{ p.name }}</a></td>
+      <td>{{ p.item_count }}</td>
+      <td>{{ p.device_count }}</td>
+      <td>{{ p.updated_at }}</td>
+      <td>
+        <a href="/playlists/{{ p.id }}" class="button small">Edit</a>
+        <form method="post" action="/playlists/{{ p.id }}/delete" class="inline" onsubmit="return confirm('Delete playlist {{ p.name }}?')">
+          <button type="submit" class="danger small">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

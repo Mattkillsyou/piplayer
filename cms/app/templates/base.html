@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  {% if user %}
+  <header class="topbar">
+    <div class="brand"><a href="/dashboard">{{ app_name }}</a></div>
+    <nav>
+      <a href="/dashboard" {% if request.url.path == '/dashboard' %}class="active"{% endif %}>Dashboard</a>
+      <a href="/library" {% if request.url.path.startswith('/library') %}class="active"{% endif %}>Library</a>
+      <a href="/playlists" {% if request.url.path.startswith('/playlists') %}class="active"{% endif %}>Playlists</a>
+      <a href="/devices" {% if request.url.path.startswith('/devices') %}class="active"{% endif %}>Devices</a>
+      <a href="/groups" {% if request.url.path.startswith('/groups') %}class="active"{% endif %}>Groups</a>
+      <a href="/audit" {% if request.url.path.startswith('/audit') %}class="active"{% endif %}>Audit</a>
+      {% if user.role == 'admin' %}
+      <a href="/users" {% if request.url.path.startswith('/users') %}class="active"{% endif %}>Users</a>
+      {% endif %}
+    </nav>
+    <div class="user">
+      <span>{{ user.username }} <span class="badge badge-{{ user.role }}">{{ user.role }}</span></span>
+      <form method="post" action="/logout" class="inline">
+        <button type="submit" class="link">Log out</button>
+      </form>
+    </div>
+  </header>
+  {% endif %}
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -1,0 +1,24 @@
+[Unit]
+Description=PiPlayer CMS (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=piplayer
+Group=piplayer
+WorkingDirectory=/opt/piplayer/cms
+Environment=PIPLAYER_DATA_DIR=/var/lib/projector-cms
+EnvironmentFile=-/etc/projector-cms/env
+ExecStart=/opt/piplayer/cms/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips=*
+Restart=always
+RestartSec=3
+
+ReadWritePaths=/var/lib/projector-cms
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
