@@ -67,7 +67,7 @@ On the Pi (over SSH):
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git
-git clone https://github.com/your-org/piplayer.git
+git clone https://github.com/Mattkillsyou/piplayer.git
 cd piplayer/player
 ```
 

@@ -62,7 +62,7 @@ Short version:
 **1. Install the CMS on one Pi (your "controller"):**
 
 ```bash
-git clone <this-repo> piplayer
+git clone https://github.com/Mattkillsyou/piplayer.git
 cd piplayer/cms
 sudo bash deploy/install-cms.sh
 ```
@@ -77,7 +77,7 @@ copy it.
 **3. Install the player on each Pi:**
 
 ```bash
-git clone <this-repo> piplayer
+git clone https://github.com/Mattkillsyou/piplayer.git
 cd piplayer/player
 DEVICE_ID=lobby-projector \
 DEVICE_TOKEN=<paste-from-cms> \
