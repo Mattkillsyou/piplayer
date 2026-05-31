@@ -13,6 +13,23 @@ gives you a consistent base to roll back to if something gets weird.
 - Before deploying to 3+ more Pis. For 1–2 more Pis, the SSH + install-script
   path is probably faster than reading this doc.
 
+## One image, all Pi models
+
+You do **not** need separate images for Pi 3 / Pi 4 / Pi 5. Raspberry Pi OS
+Lite 64-bit contains kernels and device-tree blobs for every supported board;
+the bootloader picks the right one at runtime. Flash the same `.img` to any
+model.
+
+Two caveats:
+
+- **Use the 64-bit image.** Pi 5 requires 64-bit. Pi 3/4 work fine on 64-bit
+  too. Do not snapshot from a 32-bit "Pi OS Legacy" install — it won't boot on
+  a Pi 5.
+- **Pi 3 is slow for video.** It's roughly half the CPU of a Pi 4 and uses
+  the older VideoCore IV decoder. 1080p H.264 plays but may stutter; 720p
+  plays smoothly; images are always fine. If you have Pi 3s, either keep
+  them on lighter content or save them for non-projector tasks.
+
 ## What you'll need
 
 - The "golden master" Pi (the one that's working)
