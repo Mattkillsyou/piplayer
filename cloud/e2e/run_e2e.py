@@ -314,7 +314,7 @@ def create_device(admin, device_id, name):
     if r.status_code != 303:
         raise Blocked("POST /devices -> %s %s" % (r.status_code, r.text[:120]))
     page = admin.get("/devices").text
-    marker = '<code class="small">%s</code>' % device_id
+    marker = '<code class="device-id">%s</code>' % device_id
     if marker not in page:
         marker = device_id
     did = id_after(page, marker, r"/devices/(\d+)/")
@@ -1036,9 +1036,10 @@ def check_screenshots(w):
     S.expect("screenshot: anonymous is redirected", w.anon().get("/devices/%d/screenshot" % dev["id"]), 303, location="/login")
     page = w.admin.get("/devices").text
     S.rec("screenshot: devices page links the screenshot with its age", "/devices/%d/screenshot" % dev["id"] in page and "s ago" in page)
-    marker = '<code class="small">%s</code>' % dev["device_id"]
-    row = page.split(marker, 1)[1].split("</tr>", 1)[0] if marker in page else ""
-    S.rec("screenshot: fresh screenshot is not marked stale", bool(row) and "badge-stale" not in row)
+    # the device's card (design: one <div class="device-detail"> per device, the screen first)
+    marker = '<code class="device-id">%s</code>' % dev["device_id"]
+    cards = [c for c in page.split('<div class="device-detail">') if marker in c]
+    S.rec("screenshot: fresh screenshot is not marked stale", bool(cards) and "badge-stale" not in cards[0])
 
 
 def check_commands(w):

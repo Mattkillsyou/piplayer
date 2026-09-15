@@ -10,8 +10,8 @@ import { csrfInput, layout } from "./layout.js";
 const round1 = (n) => (Math.round(n * 10) / 10).toFixed(1);
 
 function uploadPanel(maxBytes, ctx) {
-  return `<div class="panel">
-  <h2>Upload media</h2>
+  return `<div class="panel upload-panel">
+  <h2>Drop media</h2>
   <p class="muted">
     Max ${round1(maxBytes / 1024 / 1024 / 1024)} GB per file.
     Videos: .mp4, .mov, .m4v, .mkv, .webm (1080p H.264 recommended).
@@ -23,7 +23,7 @@ function uploadPanel(maxBytes, ctx) {
     <input type="file" name="file" id="file-input" accept="video/*,image/*" multiple required>
     <button type="submit" class="primary">Upload</button>
   </form>
-  <ul id="upload-queue" class="upload-queue" style="list-style: none; padding: 0;"></ul>
+  <ul id="upload-queue" class="upload-queue"></ul>
   <div id="upload-status" class="muted"></div>
 </div>`;
 }
@@ -41,12 +41,12 @@ function row(v, tz, editor, ctx) {
         </form>` : "";
   return `    <tr>
       <td>${badge}</td>
-      <td>${esc(v.original_name)}</td>
+      <td class="name">${esc(v.original_name)}</td>
       <td>${round1(v.size_bytes / 1024 / 1024)} MB</td>
       <td>${duration}</td>
       <td>${res}</td>
       <td>${esc(v.codec || "—")}</td>
-      <td>${esc(localTime(v.uploaded_at, tz))}</td>
+      <td class="muted">${esc(localTime(v.uploaded_at, tz))}</td>
       <td>${del}
       </td>
     </tr>`;
@@ -60,14 +60,16 @@ async function libraryPage(ctx) {
     `SELECT id, original_name, filename, media_type, size_bytes, duration_seconds, width, height, codec, uploaded_at
      FROM media ORDER BY uploaded_at DESC, id DESC`);
   const maxBytes = envInt(ctx.env, "PIPLAYER_MAX_UPLOAD_BYTES", 5 * 1024 * 1024 * 1024);
-  const table = items.length ? `<table class="data">
+  const table = items.length ? `<div class="table-scroll">
+<table class="data">
   <thead>
     <tr><th>Type</th><th>Name</th><th>Size</th><th>Duration</th><th>Resolution</th><th>Codec</th><th>Uploaded</th><th></th></tr>
   </thead>
   <tbody>
 ${items.map((v) => row(v, tz, editor, ctx)).join("\n")}
   </tbody>
-</table>` : `<p class="muted">No media yet.${editor ? " Upload above." : ""}</p>`;
+</table>
+</div>` : `<p class="muted empty">No media yet.${editor ? " Upload above." : ""}</p>`;
   const content = `<h1>Library</h1>
 
 ${editor ? uploadPanel(maxBytes, ctx) : ""}

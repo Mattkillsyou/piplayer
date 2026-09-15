@@ -3,12 +3,13 @@ import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, redirect, str, utf8Len } from "../util.js";
-import { APP_NAME, csrfInput, layout } from "./layout.js";
+import { csrfInput, layout, SCENE, wordmark } from "./layout.js";
 
 function loginPage(ctx, error, status = 200) {
-  const content = `<div class="auth-card">
-  <h1>${APP_NAME}</h1>
-  <p class="muted">Sign in to manage your projector fleet.</p>
+  const content = `${SCENE}
+<div class="auth-card">
+  ${wordmark(true)}
+  <hr>
   ${error ? `<div class="alert error">${esc(error)}</div>` : ""}
   <form method="post" action="/login">
     ${csrfInput(ctx)}
@@ -18,10 +19,11 @@ function loginPage(ctx, error, status = 200) {
     <label>Password
       <input type="password" name="password" autocomplete="current-password" required>
     </label>
-    <button type="submit" class="primary">Sign in</button>
+    <button type="submit" class="primary">Connect</button>
   </form>
+  <p class="foot">Sign in to manage your projector fleet.</p>
 </div>`;
-  return layout(ctx, { title: "Sign in", content, status });
+  return layout(ctx, { title: "Sign in", content, status, bodyClass: "login" });
 }
 
 async function loginSubmit(ctx) {

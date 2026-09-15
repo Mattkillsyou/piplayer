@@ -81,15 +81,16 @@ describe("page content", () => {
     expect(page).not.toContain(XSS);
     expect(page).toContain('data-confirm="Delete device x&#39;);alert(1);//dev?"');
     expect(page).toContain('data-confirm="Reboot x&#39;);alert(1);//dev?"');
-    expect(page).toContain("<strong>Default PL</strong>");
-    expect(page).toContain("schedule: r");             // the rule wins over the default
+    expect(page).toContain('<span class="playlist">Default PL</span>');
+    expect(page).toContain("via schedule: r");         // the rule wins over the default
+    expect(page).toContain('<span class="lamp lamp-playing">playing</span>');
     expect(page).toContain(`Schedule (1)</a>`);
     expect(page).toContain("Sync problem: download failed: &lt;b&gt;a.mp4&lt;/b&gt;");
     expect(page).toContain("1 min ago");
     expect(page).toContain("10.0.0.7");
     expect(page).toContain("v1.2.3");
-    expect(page).toContain("#3</span>");
-    expect(page).toContain("clip.mp4");
+    expect(page).toContain('<span class="now">#3 clip.mp4</span>');
+    expect(page).toContain('<span class="screen-now">#3 clip.mp4</span>');
     expect(page).toContain(`<option value="${w.gid}" selected>Lobby group</option>`);
     expect(page).toContain(`<option value="${w.pid}" selected>Default PL</option>`);
     expect(page).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);

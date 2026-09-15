@@ -2,32 +2,29 @@
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, localTime } from "../util.js";
-import { decorateDevices } from "./devices.js";
+import { decorateDevices, lampState, screenHtml } from "./devices.js";
 import { layout } from "./layout.js";
 
 function deviceCard(d, tz) {
-  const thumb = d.last_screenshot_at
-    ? `<img src="/devices/${d.id}/screenshot?t=${esc(encodeURIComponent(d.last_screenshot_at))}" class="device-thumb${d.screenshot_stale ? " device-thumb-stale" : ""}" alt="screenshot">
-      <div class="muted small screenshot-age">
-        screenshot ${esc(d.screenshot_age)} (${esc(localTime(d.last_screenshot_at, tz))})
-        ${d.screenshot_stale ? '<span class="badge badge-stale" title="No new screenshot for more than 3 capture intervals: the player may be idle, black or down">stale</span>' : ""}
-      </div>`
-    : '<div class="device-thumb device-thumb-empty">no screenshot yet</div>';
+  const state = lampState(d);
   return `<div class="device-card">
-    ${thumb}
+    ${screenHtml(d, tz, { staleTitle: "No new screenshot for more than 3 capture intervals: the player may be idle, black or down" })}
     <div class="device-card-body">
-      <div class="device-card-title">${esc(d.name)}</div>
-      <div class="muted small"><code>${esc(d.device_id)}</code>${d.group_name ? ` · group: ${esc(d.group_name)}` : ""}</div>
-      <div class="small">
-        <strong>Active:</strong>
-        ${d.active_playlist_name ? `${esc(d.active_playlist_name)} <span class="muted">(${esc(d.active_source)})</span>` : "—"}<br>
-        <strong>Now playing:</strong>
-        ${d.current_filename ? `#${(d.current_position || 0) + 1}: ${esc(d.current_filename)}` : "—"}
-        <br>
-        <strong>Status:</strong> ${esc(d.player_status || "—")} · last seen
-        ${d.last_seen_at ? `${esc(d.seen_age)} (${esc(localTime(d.last_seen_at, tz))})` : "never"}
+      <div class="device-card-head">
+        <div>
+          <div class="device-card-title">${esc(d.name)}</div>
+          <div class="muted small"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}</div>
+        </div>
+        <span class="lamp lamp-${esc(state)}">${esc(state)}</span>
+      </div>
+      <div class="active-strip${d.active_playlist_name ? "" : " empty-strip"}">
+        ${d.active_playlist_name ? `${esc(d.active_playlist_name)} <span class="source">via ${esc(d.active_source)}</span>` : "no playlist"}
       </div>
       ${d.last_error ? `<div class="alert warn small" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
+    </div>
+    <div class="device-card-foot">
+      <code>${esc(d.device_id)}</code>
+      <span${d.last_seen_at ? ` title="${esc(localTime(d.last_seen_at, tz))}"` : ""}>last seen ${d.last_seen_at ? esc(d.seen_age) : "never"}</span>
     </div>
   </div>`;
 }
@@ -67,9 +64,9 @@ async function dashboard(ctx) {
   </div>
 </div>
 
-<h2>Devices</h2>
+<h2>Monitor wall · ${devices.length} device${devices.length === 1 ? "" : "s"}</h2>
 ${!devices.length
-    ? '<p class="muted">No devices yet. <a href="/devices">Register one</a> to get started.</p>'
+    ? '<p class="muted empty">No devices yet. <a href="/devices">Register one</a> to get started.</p>'
     : `<div class="device-grid">
   ${devices.map((d) => deviceCard(d, settings.timezone)).join("\n  ")}
 </div>`}`;

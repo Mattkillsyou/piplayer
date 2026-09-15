@@ -34,11 +34,11 @@ async function schedulePage(ctx) {
   }
 
   const ruleRow = (r) => `<tr${r.matches_now ? ' class="rule-active"' : ""}>
-      <td>${r.priority}</td>
+      <td class="prio">${r.priority}</td>
       <td>${esc(r.name)}</td>
       <td>${esc(r.playlist_name || "—")}</td>
       <td><span class="muted small">${esc(r.summary)}</span></td>
-      <td>${r.matches_now ? '<span class="badge badge-active">YES</span>' : "—"}</td>
+      <td>${r.matches_now ? '<span class="badge badge-active">active now</span>' : '<span class="muted">—</span>'}</td>
       <td>
         ${canEdit ? `<form method="post" action="/devices/${device.id}/schedule/${r.id}/delete" class="inline" data-confirm="Delete rule ${esc(r.name)}?">
           ${csrfInput(ctx)}
@@ -48,20 +48,23 @@ async function schedulePage(ctx) {
     </tr>`;
   const dayBox = (name, i) => `<label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="${i}">${name}</label>`;
 
-  const content = `<p><a href="/devices">← Devices</a></p>
-<h1>${esc(device.name)} — Schedule</h1>
+  const content = `<a href="/devices" class="back">← Devices</a>
+<span class="page-eyebrow">Schedule · ${esc(device.device_id)}</span>
+<h1>${esc(device.name)}</h1>
 <p class="muted small">Site time now: <code>${esc(nowText)}</code> (zone ${esc(now.zone)}). Rules use the site's wall-clock time; if this is not your venue's time, ${user.role === "admin" ? 'change the timezone on the <a href="/settings">Settings</a> page.' : "ask an administrator to change the site timezone on the Settings page."}</p>
 
 <h2>Rules (${rules.length})</h2>
 <p class="muted small">When multiple rules match, the one with the highest priority wins. If no rule matches, the device's default playlist (set on the Devices page) plays. A window that crosses midnight (e.g. 22:00–02:00) belongs to the day it starts on, so "Fri 22:00–02:00" runs until Saturday 02:00.</p>
-${!rules.length ? '<p class="muted">No rules — device plays its default playlist always.</p>' : `<table class="data">
+${!rules.length ? '<p class="muted empty">No rules: the device plays its default playlist always.</p>' : `<div class="table-scroll">
+<table class="data">
   <thead>
     <tr><th>Priority</th><th>Name</th><th>Playlist</th><th>When</th><th>Active now?</th><th></th></tr>
   </thead>
   <tbody>
     ${rules.map(ruleRow).join("\n    ")}
   </tbody>
-</table>`}
+</table>
+</div>`}
 
 ${canEdit ? `<h2>Add a rule</h2>
 <div class="panel">

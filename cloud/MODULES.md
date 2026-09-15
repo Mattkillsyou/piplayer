@@ -180,10 +180,13 @@ import { layout, csrfInput, alertBox, APP_NAME } from "./layout.js";
 return layout(ctx, { title: "Devices", content, status: 200, message: "", messageKind: "error", scripts: ["/static/sortable.min.js"] });
 ```
 `layout()` is a plain function (not middleware): it wraps `content` (already-escaped HTML) in
-base.html's shell — `<meta name="csrf-token">`, the nav with active states (`Users` and `Settings`
-for admins only), the user badge + logout form, the message slot (`alertBox`), then `scripts`
-and `/static/app.js`. No nav when `ctx.user` is null (login/setup). Titles render as
-`"<title> — PiPlayer"`. Put `${csrfInput(ctx)}` inside **every** `<form method="post">`.
+base.html's shell: `<meta name="csrf-token">`, the Projection5000 wordmark, the nav with active
+states (`Users` and `Settings` for admins only), the user badge + logout form, the message slot
+(`alertBox`), then `scripts` and `/static/app.js`. No nav when `ctx.user` is null (login/setup;
+those pass `bodyClass: "login"` and render `SCENE` + `wordmark(true)` inside the `.auth-card`).
+Titles render as `"<title> · Projection5000"`. Put `${csrfInput(ctx)}` inside **every**
+`<form method="post">`. `public/style.css` is the Python CMS stylesheet verbatim plus a short
+cloud-only block at the end (upload queue, settings panel); edit the block, not the copy.
 
 `public/app.js` provides: the delegated `data-confirm` submit listener (no inline `onsubmit`);
 `data-autosubmit` on a `<select>` replaces `onchange="this.form.submit()"` (goes through

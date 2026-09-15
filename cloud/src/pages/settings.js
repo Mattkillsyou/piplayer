@@ -24,7 +24,8 @@ async function settingsPage(ctx) {
 ${saved ? alertBox("Settings saved.", "ok") : ""}
 <p class="muted small">Current site time: <code>${esc(localTime(nowUtc(), s.timezone))}</code>. Schedules, the audit log and every timestamp on these pages use this zone.</p>
 
-<div class="panel">
+<div class="panel settings-panel">
+  <h2>Site</h2>
   <form method="post" action="/settings">
     ${csrfInput(ctx)}
     <div class="form-grid">

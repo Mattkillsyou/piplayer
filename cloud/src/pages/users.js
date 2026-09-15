@@ -26,7 +26,7 @@ async function usersPage(ctx) {
       <td>
         <form method="post" action="/users/${u.id}/password" class="inline">
           ${csrfInput(ctx)}
-          <input type="password" name="password" placeholder="new password" minlength="6" style="width: 9rem;">
+          <input type="password" name="password" placeholder="new password" minlength="6" class="inline-field">
           <button type="submit" class="small">Set</button>
         </form>
       </td>
@@ -62,12 +62,14 @@ async function usersPage(ctx) {
   </form>
 </div>
 
+<div class="table-scroll">
 <table class="data">
   <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Change role</th><th>Reset password</th><th></th></tr></thead>
   <tbody>
     ${users.map(row).join("\n    ")}
   </tbody>
-</table>`;
+</table>
+</div>`;
   return layout(ctx, { title: "Users", content });
 }
 

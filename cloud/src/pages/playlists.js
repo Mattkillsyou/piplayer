@@ -62,14 +62,16 @@ ${canEdit ? `<div class="panel">
   </form>
 </div>` : ""}
 
-${!rows.length ? `<p class="muted">No playlists yet.${canEdit ? " Create one above." : ""}</p>` : `<table class="data">
+${!rows.length ? `<p class="muted empty">No playlists yet.${canEdit ? " Create one above." : ""}</p>` : `<div class="table-scroll">
+<table class="data">
   <thead>
     <tr><th>Name</th><th>Items</th><th>Used by</th><th>Updated</th><th></th></tr>
   </thead>
   <tbody>
     ${rows.map(rowHtml).join("\n    ")}
   </tbody>
-</table>`}`;
+</table>
+</div>`}`;
   return layout(ctx, { title: "Playlists", content });
 }
 
@@ -124,8 +126,7 @@ async function playlistsEdit(ctx) {
           ${csrfInput(ctx)}
           <input type="number" name="duration" min="0.5" max="86400" step="0.5"
                  value="${esc(it.duration_override_seconds || "")}"
-                 placeholder="${it.media_type === "image" ? esc(defaultImageDuration) : "auto"}"
-                 style="width: 5rem;">
+                 placeholder="${it.media_type === "image" ? esc(defaultImageDuration) : "auto"}">
           <button type="submit" class="small">Set</button>
         </form>` : esc(it.duration_override_seconds || "—")}
       </td>
@@ -140,11 +141,11 @@ async function playlistsEdit(ctx) {
       [${esc(m.media_type.toUpperCase())}] ${esc(m.original_name)}${m.duration_seconds ? ` (${round1(m.duration_seconds)}s)` : ""}
     </option>`;
 
-  const content = `<p><a href="/playlists">← All playlists</a></p>
+  const content = `<a href="/playlists" class="back">← All playlists</a>
 <h1>${esc(playlist.name)}</h1>
 
 ${canEdit ? `<div class="panel">
-  <form method="post" action="/playlists/${playlist.id}/rename" class="row">
+  <form method="post" action="/playlists/${playlist.id}/rename" class="row rename-form">
     ${csrfInput(ctx)}
     <input type="text" name="name" value="${esc(playlist.name)}" required>
     <button type="submit">Rename</button>
@@ -153,18 +154,20 @@ ${canEdit ? `<div class="panel">
 
 <h2>Playlist order (${items.length})</h2>
 <p class="muted small">${canEdit ? "Drag rows to reorder. " : ""}Empty duration = play natural length for videos, ${esc(defaultImageDuration)}s default for images.</p>
-${!items.length ? `<p class="muted">Empty.${canEdit ? " Add media below." : ""}</p>` : `<table class="data sortable-table" id="playlist-items">
+${!items.length ? `<p class="muted empty">Empty.${canEdit ? " Add media below." : ""}</p>` : `<div class="table-scroll">
+<table class="data sortable-table" id="playlist-items">
   <thead>
     <tr><th></th><th>#</th><th>Type</th><th>Name</th><th>Natural duration</th><th>Override (s)</th><th></th></tr>
   </thead>
   <tbody id="sortable-body" data-playlist-id="${playlist.id}"${canEdit ? "" : ' data-readonly="1"'}>
     ${items.map(itemRow).join("\n    ")}
   </tbody>
-</table>`}
+</table>
+</div>`}
 
 ${canEdit ? `<h2>Add media</h2>
 ${!available.length
-    ? '<p class="muted">All uploaded media is already in this playlist, or you haven\'t uploaded anything. <a href="/library">Go to Library</a>.</p>'
+    ? '<p class="muted empty">All uploaded media is already in this playlist, or you haven\'t uploaded anything. <a href="/library">Go to Library</a>.</p>'
     : `<form method="post" action="/playlists/${playlist.id}/items" class="row">
   ${csrfInput(ctx)}
   <select name="media_id" required>

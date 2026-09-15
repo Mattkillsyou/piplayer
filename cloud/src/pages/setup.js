@@ -4,12 +4,14 @@ import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, redirect, str } from "../util.js";
-import { APP_NAME, csrfInput, layout } from "./layout.js";
+import { csrfInput, layout, SCENE, wordmark } from "./layout.js";
 
 function setupPage(ctx, token, error, status = 200) {
-  const content = `<div class="auth-card">
-  <h1>${APP_NAME}</h1>
-  <p class="muted">Create the first administrator account.</p>
+  const content = `${SCENE}
+<div class="auth-card">
+  ${wordmark(true)}
+  <hr>
+  <p class="eyebrow">First run · create the administrator account</p>
   ${error ? `<div class="alert error">${esc(error)}</div>` : ""}
   <form method="post" action="/setup">
     ${csrfInput(ctx)}
@@ -25,8 +27,9 @@ function setupPage(ctx, token, error, status = 200) {
     </label>
     <button type="submit" class="primary">Create admin</button>
   </form>
+  <p class="foot">This page disappears once the first account exists.</p>
 </div>`;
-  return layout(ctx, { title: "Setup", content, status });
+  return layout(ctx, { title: "Setup", content, status, bodyClass: "login" });
 }
 
 async function gate(ctx, token) {
