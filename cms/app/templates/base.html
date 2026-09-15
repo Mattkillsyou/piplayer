@@ -7,10 +7,15 @@
   <title>{% block title %}{{ app_name }}{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
   {% if user %}
   <header class="topbar">
-    <div class="brand"><a href="/dashboard">{{ app_name }}</a></div>
+    <div class="brand">
+      <a href="/dashboard" class="wordmark" aria-label="Matt Brown's Projection5000">
+        <span class="wordmark-eyebrow">Matt Brown's</span>
+        <span class="wordmark-mark">PROJECTION<span class="wordmark-model">5000</span></span>
+      </a>
+    </div>
     <nav>
       <a href="/dashboard" {% if request.url.path == '/dashboard' %}class="active"{% endif %}>Dashboard</a>
       <a href="/library" {% if request.url.path.startswith('/library') %}class="active"{% endif %}>Library</a>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Users — {{ app_name }}{% endblock %}
+{% block title %}Users · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Users</h1>
 
@@ -26,6 +26,7 @@
   </form>
 </div>
 
+<div class="table-scroll">
 <table class="data">
   <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Change role</th><th>Reset password</th><th></th></tr></thead>
   <tbody>
@@ -47,7 +48,7 @@
       <td>
         <form method="post" action="/users/{{ u.id }}/password" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="password" name="password" placeholder="new password" minlength="6" maxlength="72" style="width: 9rem;">
+          <input type="password" name="password" placeholder="new password" minlength="6" maxlength="72" class="inline-field">
           <button type="submit" class="small">Set</button>
         </form>
       </td>
@@ -63,4 +64,5 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% endblock %}

@@ -79,7 +79,7 @@ def local_zone_name() -> str:
 
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR), context_processors=[_template_context])
-templates.env.globals["app_name"] = "PiPlayer"
+templates.env.globals["app_name"] = "Projection5000"
 templates.env.globals["default_image_duration"] = config.DEFAULT_IMAGE_DURATION
 templates.env.filters["local"] = local_filter
 
