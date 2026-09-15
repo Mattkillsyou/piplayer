@@ -153,7 +153,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install) {
           ${csrfInput(ctx)}
           <label>group
             <select name="group_id" data-autosubmit${dis}>
-              <option value="">none</option>
+              <option value="">— none —</option>
               ${optionList(groups, d.group_id)}
             </select>
           </label>
@@ -162,7 +162,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install) {
           ${csrfInput(ctx)}
           <label>default playlist
             <select name="playlist_id" data-autosubmit${dis}>
-              <option value="">none</option>
+              <option value="">— none —</option>
               ${optionList(playlists, d.playlist_id)}
             </select>
           </label>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ device.name }} schedule · {{ app_name }}{% endblock %}
+{% block title %}{{ device.name }} schedule — {{ app_name }}{% endblock %}
 {% block content %}
 <a href="/devices" class="back">← Devices</a>
 <div class="page-head">
@@ -58,7 +58,7 @@
       </label>
       <label>Playlist
         <select name="playlist_id" required>
-          <option value="">pick a playlist</option>
+          <option value="">— pick —</option>
           {% for p in playlists %}
           <option value="{{ p.id }}">{{ p.name }}</option>
           {% endfor %}

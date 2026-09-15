@@ -177,7 +177,7 @@ ${!available.length
   <form method="post" action="/playlists/${playlist.id}/items">
     ${csrfInput(ctx)}
     <select name="media_id" required aria-label="Media to add">
-      <option value="">pick media</option>
+      <option value="">— pick media —</option>
       ${available.map(option).join("\n      ")}
     </select>
     <button type="submit" class="primary">Add</button>

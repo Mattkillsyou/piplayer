@@ -84,7 +84,7 @@ ${canEdit ? `<div class="panel">
       </label>
       <label>Playlist
         <select name="playlist_id" required>
-          <option value="">pick a playlist</option>
+          <option value="">— pick —</option>
           ${playlists.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("\n          ")}
         </select>
       </label>

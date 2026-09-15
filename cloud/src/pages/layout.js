@@ -76,7 +76,7 @@ function navHtml(ctx) {
 // {title, content (already-escaped HTML), status, message, messageKind, scripts (extra
 // <script src> paths under /static), bodyClass} -> Response.
 export function layout(ctx, { title, content, status = 200, message = "", messageKind = "error", scripts = [], bodyClass = "" } = {}) {
-  const fullTitle = title ? `${title} · ${APP_NAME}` : APP_NAME;
+  const fullTitle = title ? `${title} — ${APP_NAME}` : APP_NAME;
   const extra = scripts.map((s) => `<script src="${esc(s)}"></script>`).join("\n  ");
   const page = `<!doctype html>
 <html lang="en">

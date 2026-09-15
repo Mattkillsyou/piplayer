@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Devices · {{ app_name }}{% endblock %}
+{% block title %}Devices — {{ app_name }}{% endblock %}
 {% block content %}
 <div class="page-head">
   <h1>Devices</h1>
@@ -57,7 +57,7 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <label>group
             <select name="group_id" data-autosubmit {% if not can_edit %}disabled{% endif %}>
-              <option value="">none</option>
+              <option value="">— none —</option>
               {% for g in groups %}
               <option value="{{ g.id }}" {% if g.id == d.group_id %}selected{% endif %}>{{ g.name }}</option>
               {% endfor %}
@@ -68,7 +68,7 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <label>default playlist
             <select name="playlist_id" data-autosubmit {% if not can_edit %}disabled{% endif %}>
-              <option value="">none</option>
+              <option value="">— none —</option>
               {% for p in playlists %}
               <option value="{{ p.id }}" {% if p.id == d.playlist_id %}selected{% endif %}>{{ p.name }}</option>
               {% endfor %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ playlist.name }} · {{ app_name }}{% endblock %}
+{% block title %}{{ playlist.name }} — {{ app_name }}{% endblock %}
 {% block content %}
 {% set can_edit = user.role != 'viewer' %}
 <a href="/playlists" class="back">← All playlists</a>
@@ -79,7 +79,7 @@
   <form method="post" action="/playlists/{{ playlist.id }}/items">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <select name="media_id" required aria-label="Media to add">
-      <option value="">pick media</option>
+      <option value="">— pick media —</option>
       {% for m in available %}
       <option value="{{ m.id }}">
         [{{ m.media_type | upper }}] {{ m.original_name }}{% if m.duration_seconds %} ({{ m.duration_seconds | round(1) }}s){% endif %}

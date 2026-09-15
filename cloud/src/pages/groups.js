@@ -24,7 +24,7 @@ async function groupsPage(ctx) {
         <form method="post" action="/groups/${g.id}/assign" class="inline">
           ${csrfInput(ctx)}
           <select name="playlist_id" data-autosubmit aria-label="Default playlist for ${esc(g.name)}"${canEdit ? "" : " disabled"}>
-            <option value="">none</option>
+            <option value="">— none —</option>
             ${playlists.map((p) => `<option value="${p.id}"${p.id === g.playlist_id ? " selected" : ""}>${esc(p.name)}</option>`).join("\n            ")}
           </select>
         </form>
