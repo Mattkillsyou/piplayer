@@ -9,6 +9,7 @@ import imagefetch
 FAKE = bytes(range(256)) * 4096  # 1 MiB
 FAKE_SHA = hashlib.sha256(FAKE).hexdigest()
 NAME = "2026-01-01-raspios-trixie-arm64-lite.img.xz"
+OTHER_PORT = 1
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -25,6 +26,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(FAKE)))
             self.end_headers()
             self.wfile.write(FAKE)
+        elif self.path == "/offsite":
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{OTHER_PORT}/raspios/{NAME}")  # another origin
+            self.end_headers()
         elif self.path == f"/raspios/{NAME}.sha256":
             body = f"{FAKE_SHA}  {NAME}\n".encode()
             self.send_response(200)
@@ -37,10 +42,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture(scope="module")
 def server():
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 8931), Handler)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)  # port 0: never collide with a stray server
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
-    yield "http://127.0.0.1:8931"
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
     srv.shutdown()
 
 
@@ -75,3 +80,17 @@ def test_cached_path_is_under_localappdata(monkeypatch, tmp_path):
     p = imagefetch.cached_path("../evil/" + NAME)
     assert p == tmp_path / "Projection5000" / "images" / NAME
     assert p.parent.is_dir()
+
+
+def test_redirect_off_origin_is_refused(server):
+    # The sha256 comes from the final URL, so a redirect to another host (or scheme) would let that
+    # host vouch for its own image. A second server plays the other origin (different port).
+    global OTHER_PORT
+    other = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=other.serve_forever, daemon=True).start()
+    OTHER_PORT = other.server_address[1]
+    try:
+        with pytest.raises(imagefetch.FetchError, match="redirected off its origin"):
+            imagefetch.resolve_latest(server + "/offsite")
+    finally:
+        other.shutdown()

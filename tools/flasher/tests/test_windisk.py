@@ -1,4 +1,6 @@
+import hashlib
 import lzma
+import os
 import threading
 
 import pytest
@@ -42,6 +44,7 @@ def test_write_image_xz_matches_and_pads(image, tmp_path):
     assert all(c[0] % 512 == 0 for c in calls)
     assert windisk.verify_head(str(xz), str(target))
     assert windisk.verify_head(str(xz), str(target), nbytes=1000)
+    assert windisk.verify_image(str(xz), str(target))
 
 
 def test_write_image_raw_img(image, tmp_path):
@@ -87,22 +90,30 @@ def test_truncated_xz_raises(image, tmp_path):
 
 def test_disk_label():
     assert windisk.disk_label({"number": 2, "name": "Generic MassStorageClass", "size": 31914983424}) == \
-        "Disk 2  Generic MassStorageClass  29.7 GB"
+        "Disk 2  Generic MassStorageClass  29.7 GiB"
     assert windisk.disk_label({"number": 3, "name": "SD Reader", "size": 0}) == "Disk 3  SD Reader  (no card)"
 
 
 def test_list_disks_runs_without_admin():
-    # No card inserted here: just check PowerShell enumeration parses (may be empty).
+    # Live smoke test (no card inserted here): PowerShell enumeration must parse (may be empty).
     disks = windisk.list_disks()
     assert isinstance(disks, list)
     for d in disks:
-        assert set(d) >= {"number", "name", "bus", "size", "label"}
+        assert set(d) >= {"number", "name", "bus", "size", "sector", "unique_id", "signature", "label"}
+        assert isinstance(d["size"], int) and d["sector"] >= 512
+
+
+def test_partitions_query_runs_on_empty_disk():
+    # Live: a reader with no card has no partitions; the query must return [] rather than exit 1.
+    disks = [d for d in windisk.list_disks() if d["size"] == 0]
+    if not disks:
+        pytest.skip("no empty reader present")
+    assert windisk._partitions(disks[0]["number"]) == []
 
 
 def test_verify_head_with_unaligned_xz_chunks(tmp_path):
     # Incompressible data makes the decompressor hand out chunks of arbitrary length, so the
     # read-back offsets must be tracked across chunks rather than sector-aligned per chunk.
-    import os
     data = os.urandom(2 * 1024 * 1024 + 300)
     xz = tmp_path / "rand.img.xz"
     xz.write_bytes(lzma.compress(data, format=lzma.FORMAT_XZ))
@@ -134,3 +145,211 @@ def test_clear_disk_skips_raw(monkeypatch):
     monkeypatch.setattr(windisk, "_ps", lambda script, timeout=120: (scripts.append(script), "MBR\n")[1])
     windisk.clear_disk(2)
     assert any(s.startswith("Clear-Disk -Number 2 -RemoveData -RemoveOEM") for s in scripts)
+    scripts.clear()
+    windisk.clear_disk(2, "USBSTOR\\DISK&VEN_X\\0'1&0:")
+    assert any(s.startswith("Clear-Disk -UniqueId 'USBSTOR\\DISK&VEN_X\\0''1&0:' -RemoveData") for s in scripts)
+
+
+GET_DISK_ROW = {"Number": 2, "FriendlyName": " Generic MassStorageClass ", "BusType": "USB", "Size": 31914983424,
+                "LogicalSectorSize": 512, "UniqueId": "USBSTOR\\DISK&VEN_GENERIC\\000000001210&0:X",
+                "SerialNumber": None, "Signature": 305419896, "Guid": None, "IsBoot": False, "IsSystem": False,
+                "MediaType": "Removable Media"}
+
+
+def test_list_disks_parses_rows_and_drops_hard_disks(monkeypatch):
+    rows = [GET_DISK_ROW,
+            dict(GET_DISK_ROW, Number=3, Size=None, LogicalSectorSize=0, MediaType=""),  # reader, no card
+            dict(GET_DISK_ROW, Number=4, FriendlyName="Samsung T7", Size=500107862016,
+                 MediaType="External hard disk media")]
+    monkeypatch.setattr(windisk, "_ps_json", lambda script, timeout=120: rows)
+    disks = windisk.list_disks()
+    assert [d["number"] for d in disks] == [2, 3]
+    assert disks[0] == {"number": 2, "name": "Generic MassStorageClass", "bus": "USB", "size": 31914983424,
+                        "sector": 512, "unique_id": "USBSTOR\\DISK&VEN_GENERIC\\000000001210&0:X", "serial": "",
+                        "signature": 305419896, "boot": False,
+                        "label": "Disk 2  Generic MassStorageClass  29.7 GiB"}
+    assert disks[1]["size"] == 0 and disks[1]["sector"] == 512 and disks[1]["label"].endswith("(no card)")
+    assert windisk.MAX_CARD_BYTES == 256 * 1024 ** 3
+
+
+def test_check_disk_detects_swapped_card(monkeypatch):
+    d = windisk._disk_row(GET_DISK_ROW)
+    monkeypatch.setattr(windisk, "_ps_json", lambda script, timeout=120: [GET_DISK_ROW])
+    windisk.check_disk(d)  # unchanged: fine
+    for change in ({"Size": 128035676160}, {"Signature": 1}, {"UniqueId": "USBSTOR\\X&1:X"}, {"BusType": "SATA"},
+                   {"IsSystem": True}):
+        monkeypatch.setattr(windisk, "_ps_json", lambda script, timeout=120, c=change: [dict(GET_DISK_ROW, **c)])
+        with pytest.raises(windisk.DiskError):
+            windisk.check_disk(d)
+    monkeypatch.setattr(windisk, "_ps_json", lambda script, timeout=120: [])
+    with pytest.raises(windisk.DiskError, match="gone"):
+        windisk.check_disk(d)
+
+
+def test_partitions_query_handles_empty_disk(monkeypatch):
+    scripts = []
+    monkeypatch.setattr(windisk, "_ps", lambda script, timeout=120: (scripts.append(script), "[]\n")[1])
+    assert windisk._partitions(2) == []
+    # The query must not let an empty Get-Partition turn into "PowerShell exit 1".
+    assert "if (-not $p) { '[]'; exit 0 }" in scripts[0] and scripts[0].endswith("exit 0")
+
+
+def test_find_boot_volume_assigns_letter_then_returns(monkeypatch):
+    calls = []
+    state = {"polls": 0}
+
+    def fake_ps(script, timeout=120):
+        calls.append(script)
+        return ""
+
+    def fake_partitions(number):
+        state["polls"] += 1
+        if state["polls"] == 1:
+            return []  # provider has not re-enumerated yet
+        if state["polls"] == 2:
+            return [{"PartitionNumber": 1, "DriveLetter": "", "Label": "bootfs", "FS": "FAT32"},
+                    {"PartitionNumber": 2, "DriveLetter": "", "Label": "rootfs", "FS": ""}]
+        return [{"PartitionNumber": 1, "DriveLetter": "E", "Label": "bootfs", "FS": "FAT32"}]
+
+    monkeypatch.setattr(windisk, "_ps", fake_ps)
+    monkeypatch.setattr(windisk, "_partitions", fake_partitions)
+    monkeypatch.setattr(windisk.time, "sleep", lambda s: None)
+    assert windisk.find_boot_volume(2) == "E"
+    assert any(s.startswith("Add-PartitionAccessPath -DiskNumber 2 -PartitionNumber 1") for s in calls)
+
+    monkeypatch.setattr(windisk, "_partitions", lambda number: [])
+    with pytest.raises(windisk.DiskError, match="within 0 s"):
+        windisk.find_boot_volume(2, timeout=0)
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(windisk.Cancelled):
+        windisk.find_boot_volume(2, cancel_event=cancel)
+
+
+def test_volume_paths(monkeypatch):
+    monkeypatch.setattr(windisk, "_partitions", lambda number: [
+        {"PartitionNumber": 1, "AccessPaths": ["E:\\", "\\\\?\\Volume{19adc575-6bdf-4c12-8ab6-8589f39a5267}\\"]},
+        {"PartitionNumber": 2, "AccessPaths": None}])
+    assert windisk.volume_paths(2) == ["\\\\?\\Volume{19adc575-6bdf-4c12-8ab6-8589f39a5267}\\"]
+
+
+def test_ps_error_is_trimmed():
+    rec = ("Clear-Disk : The requested operation cannot be performed.\nAt line:1 char:1\n+ Clear-Disk ...\n"
+           "+ ~~~~~\n    + CategoryInfo : ...\n")
+    assert windisk._ps_error(rec) == "Clear-Disk : The requested operation cannot be performed."
+    assert windisk.POWERSHELL.lower().endswith("\\system32\\windowspowershell\\v1.0\\powershell.exe")
+
+
+def test_ps_live_utf8_and_timeout():
+    # Live: non-ASCII output survives the round trip, and a hung command becomes a short DiskError.
+    assert windisk._ps("Write-Output 'caf\u00e9 \u00fc'").strip() == "caf\u00e9 \u00fc"
+    with pytest.raises(windisk.DiskError, match="did not finish"):
+        windisk._ps("Start-Sleep 30", timeout=1)
+    with pytest.raises(windisk.DiskError) as e:
+        windisk._ps("Get-Item C:\\definitely\\not\\here -ErrorAction Stop")
+    assert "At line:" not in str(e.value) and "not\\here" in str(e.value)
+
+
+class FakeDrive:
+    """PhysicalDrive-like target: sector-granular, bounded, with a read cursor (the non-path branch)."""
+
+    def __init__(self, capacity):
+        self.buf = bytearray(capacity)
+        self.pos = 0
+
+    def write(self, data):
+        assert len(data) % 512 == 0, "raw writes must be whole sectors"
+        if self.pos + len(data) > len(self.buf):
+            raise windisk.DiskError("WriteFile failed: [27] The drive cannot find the sector requested.")
+        self.buf[self.pos:self.pos + len(data)] = data
+        self.pos += len(data)
+        return len(data)
+
+    def read(self, n):
+        assert n % 512 == 0
+        out = bytes(self.buf[self.pos:self.pos + n])
+        self.pos += len(out)
+        return out
+
+    def seek(self, offset, whence=0):
+        self.pos = offset
+
+    def flush(self):
+        pass
+
+
+def test_write_and_verify_against_drive_like_target(image):
+    data, xz, _ = image
+    drive = FakeDrive(4 * 1024 * 1024)
+    written = windisk.write_image(str(xz), drive, chunk=256 * 1024)
+    assert written % 512 == 0 and bytes(drive.buf[:len(data)]) == data
+    assert windisk.verify_image(str(xz), drive)
+    assert windisk.verify_head(str(xz), drive, nbytes=1000)
+    drive.buf[len(data) - 3] ^= 0xFF  # corruption near the end, well past any "head" check
+    assert windisk.verify_head(str(xz), drive, nbytes=1024 * 1024)
+    assert not windisk.verify_image(str(xz), drive)
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(windisk.Cancelled):
+        windisk.verify_image(str(xz), drive, cancel_event=cancel)
+
+
+def test_oversized_image_is_refused_before_overflow(image, tmp_path):
+    data, xz, raw = image
+    for src in (xz, raw):
+        drive = FakeDrive(2 * 1024 * 1024)
+        with pytest.raises(windisk.DiskError, match="larger than the card"):
+            windisk.write_image(str(src), drive, limit=2 * 1024 * 1024)
+        assert drive.pos <= 2 * 1024 * 1024
+    assert windisk.image_size(str(raw)) == len(data)
+    assert windisk.image_size(str(xz)) == len(data)
+
+
+def test_multistream_xz_is_written_completely(tmp_path):
+    a = os.urandom(300000)
+    b = bytes(range(256)) * 1200
+    xz = tmp_path / "two.img.xz"
+    xz.write_bytes(lzma.compress(a, format=lzma.FORMAT_XZ) + lzma.compress(b, format=lzma.FORMAT_XZ))
+    assert lzma.open(xz).read() == a + b  # what the stdlib (and xz -d) produce
+    assert windisk.image_size(str(xz)) == len(a) + len(b)
+    out = b"".join(d for d, _ in windisk.iter_image(str(xz), chunk=65536))
+    assert out == a + b
+    # Stream padding (4-byte null groups) between streams is allowed by the xz format too.
+    padded = tmp_path / "padded.img.xz"
+    padded.write_bytes(lzma.compress(a, format=lzma.FORMAT_XZ) + b"\0" * 8 + lzma.compress(b, format=lzma.FORMAT_XZ))
+    assert windisk.image_size(str(padded)) == len(a) + len(b)
+    assert b"".join(d for d, _ in windisk.iter_image(str(padded), chunk=65536)) == a + b
+    target = tmp_path / "card.bin"
+    windisk.write_image(str(xz), str(target))
+    assert target.read_bytes()[:len(a) + len(b)] == a + b
+    assert windisk.verify_image(str(xz), str(target))
+    garbage = tmp_path / "garbage.img.xz"
+    garbage.write_bytes(lzma.compress(a, format=lzma.FORMAT_XZ) + b"not an xz stream")
+    with pytest.raises(windisk.DiskError, match="trailing data"):
+        windisk.write_image(str(garbage), str(tmp_path / "g.bin"))
+
+
+def test_write_image_checks_sha256_of_source(image, tmp_path):
+    data, xz, _ = image
+    sha = hashlib.sha256(xz.read_bytes()).hexdigest()
+    windisk.write_image(str(xz), str(tmp_path / "a.bin"), expected_sha256=sha.upper())
+    with pytest.raises(windisk.DiskError, match="sha256"):
+        windisk.write_image(str(xz), str(tmp_path / "b.bin"), expected_sha256="0" * 64)
+
+
+def test_sector_size_padding(image, tmp_path):
+    data, _, raw = image
+    target = tmp_path / "card4k.bin"
+    written = windisk.write_image(str(raw), str(target), sector=4096)
+    assert written % 4096 == 0 and written - len(data) < 4096
+
+
+def test_check_image_magic(tmp_path):
+    for name, head in (("a.zip", b"PK\x03\x04junk"), ("b.img.gz", b"\x1f\x8b\x08junk"), ("c.7z", b"7z\xbc\xafjunk")):
+        p = tmp_path / name
+        p.write_bytes(head + b"\0" * 100)
+        with pytest.raises(windisk.DiskError, match="archive"):
+            windisk.check_image_magic(str(p))
+    ok = tmp_path / "ok.img"
+    ok.write_bytes(b"\0" * 100)
+    windisk.check_image_magic(str(ok))

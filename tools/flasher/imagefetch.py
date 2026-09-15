@@ -19,8 +19,8 @@ class FetchError(Exception):
     pass
 
 
-def _request(url: str, method: str = "GET") -> urllib.request.Request:
-    return urllib.request.Request(url, method=method, headers={"User-Agent": USER_AGENT})
+def _request(url: str) -> urllib.request.Request:
+    return urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
 
 def app_dir() -> Path:
@@ -35,12 +35,17 @@ def cached_path(filename: str) -> Path:
 
 
 def resolve_latest(url: str = LATEST_URL) -> tuple:
-    """Follow redirects and return (final_url, filename)."""
+    """Follow redirects and return (final_url, filename). The redirect must stay on the same origin:
+    the .sha256 is fetched from the final URL too, so a hop to another host or to http:// would let
+    that host vouch for its own image."""
     try:
         with urllib.request.urlopen(_request(url), timeout=30) as resp:
             final = resp.geturl()
     except Exception as e:
         raise FetchError(f"cannot resolve {url}: {e}") from e
+    want, got = urllib.parse.urlsplit(url), urllib.parse.urlsplit(final)
+    if (got.scheme, got.netloc) != (want.scheme, want.netloc):
+        raise FetchError(f"{url} redirected off its origin to {final}; refusing")
     name = Path(urllib.parse.urlparse(final).path).name
     if not name:
         raise FetchError(f"no filename in {final}")

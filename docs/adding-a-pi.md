@@ -14,6 +14,10 @@ You'll need:
 - The Pi connected to the same network as the controller, or Tailscale
   installed on both
 
+> **On Windows: use the Projection5000 SD Flasher** (`tools/flasher/README.md`).
+> It replaces sections 1, 2, 4 and 5 below: fill in the form, insert a card,
+> click Flash, put the card in the Pi. The manual path that follows still works.
+
 ## 1. Flash Raspberry Pi OS Lite (64-bit)
 
 Download Raspberry Pi Imager: <https://www.raspberrypi.com/software/>.
