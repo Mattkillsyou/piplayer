@@ -1,0 +1,38 @@
+name = "piplayer-cloud"
+main = "src/index.js"
+compatibility_date = "2026-08-22"   # newest date the bundled workerd (vitest-pool-workers 0.22) accepts
+compatibility_flags = ["nodejs_compat"]
+
+routes = [
+  { pattern = "projectors.photogen5000.com", custom_domain = true }
+]
+
+[assets]
+directory = "public"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "piplayer-cloud-db"
+database_id = "TBD-set-at-deploy"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "piplayer-cloud-media"
+
+[vars]
+PIPLAYER_SCREENSHOT_INTERVAL = "60"
+PIPLAYER_MAX_UPLOAD_BYTES = "5368709120"
+PIPLAYER_MAX_SCREENSHOT_BYTES = "5242880"
+PIPLAYER_DEFAULT_IMAGE_DURATION = "10"
+PIPLAYER_AUDIT_RETENTION_DAYS = "365"
+# Optional: PIPLAYER_PUBLIC_BASE_URL = "https://cms.example.com" fixes the CMS_URL printed in the
+# Devices install snippet (default: the origin the browser is using).
+
+[triggers]
+crons = ["0 3 * * *"]
+
+# Secrets (wrangler secret put): SESSION_SECRET, SETUP_TOKEN.
+# Local dev gets throwaway values from the `dev` script via --var.

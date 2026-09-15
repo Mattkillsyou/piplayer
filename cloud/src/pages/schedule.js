@@ -1,0 +1,176 @@
+// Port of web.device_schedule_* + device_schedule.html. Rule evaluation (matches_now,
+// describe) comes from src/schedules.js (P1); validation is contract 10.
+import * as audit from "../audit.js";
+import * as auth from "../auth.js";
+import * as db from "../db.js";
+import * as schedules from "../schedules.js";
+import { esc, fail, idParam, intField, isoDateField, normalizeHhmm, redirect, str, wallClock } from "../util.js";
+import { requireRow } from "./devices.js";
+import { csrfInput, layout } from "./layout.js";
+
+const pad2 = (n) => String(n).padStart(2, "0");
+
+async function schedulePage(ctx) {
+  const user = auth.requireUser(ctx);
+  const canEdit = user.role !== "viewer";
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const device = await db.first(ctx.env, "SELECT id, device_id, name, playlist_id FROM devices WHERE id = ?", deviceId);
+  if (!device) fail(404, "Not Found");
+  const rules = await db.all(ctx.env,
+    `SELECT s.id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time,
+            s.days_of_week, s.start_date, s.end_date,
+            p.name AS playlist_name
+       FROM device_schedules s
+       LEFT JOIN playlists p ON p.id = s.playlist_id
+      WHERE s.device_id = ?
+      ORDER BY s.priority DESC, s.id`, deviceId);
+  const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name");
+  const tz = (await ctx.settings()).timezone;
+  const now = wallClock(tz);
+  const nowText = `${now.year}-${pad2(now.month)}-${pad2(now.day)} ${pad2(now.hour)}:${pad2(now.minute)}:${pad2(now.second)} ${now.zone}`;
+  for (const r of rules) {
+    r.summary = schedules.describe(r);
+    r.matches_now = schedules.schedule_matches(r, now);
+  }
+
+  const ruleRow = (r) => `<tr${r.matches_now ? ' class="rule-active"' : ""}>
+      <td>${r.priority}</td>
+      <td>${esc(r.name)}</td>
+      <td>${esc(r.playlist_name || "—")}</td>
+      <td><span class="muted small">${esc(r.summary)}</span></td>
+      <td>${r.matches_now ? '<span class="badge badge-active">YES</span>' : "—"}</td>
+      <td>
+        ${canEdit ? `<form method="post" action="/devices/${device.id}/schedule/${r.id}/delete" class="inline" data-confirm="Delete rule ${esc(r.name)}?">
+          ${csrfInput(ctx)}
+          <button type="submit" class="danger small">Delete</button>
+        </form>` : ""}
+      </td>
+    </tr>`;
+  const dayBox = (name, i) => `<label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="${i}">${name}</label>`;
+
+  const content = `<p><a href="/devices">← Devices</a></p>
+<h1>${esc(device.name)} — Schedule</h1>
+<p class="muted small">Site time now: <code>${esc(nowText)}</code> (zone ${esc(now.zone)}). Rules use the site's wall-clock time; if this is not your venue's time, ${user.role === "admin" ? 'change the timezone on the <a href="/settings">Settings</a> page.' : "ask an administrator to change the site timezone on the Settings page."}</p>
+
+<h2>Rules (${rules.length})</h2>
+<p class="muted small">When multiple rules match, the one with the highest priority wins. If no rule matches, the device's default playlist (set on the Devices page) plays. A window that crosses midnight (e.g. 22:00–02:00) belongs to the day it starts on, so "Fri 22:00–02:00" runs until Saturday 02:00.</p>
+${!rules.length ? '<p class="muted">No rules — device plays its default playlist always.</p>' : `<table class="data">
+  <thead>
+    <tr><th>Priority</th><th>Name</th><th>Playlist</th><th>When</th><th>Active now?</th><th></th></tr>
+  </thead>
+  <tbody>
+    ${rules.map(ruleRow).join("\n    ")}
+  </tbody>
+</table>`}
+
+${canEdit ? `<h2>Add a rule</h2>
+<div class="panel">
+  <form method="post" action="/devices/${device.id}/schedule" id="schedule-form">
+    ${csrfInput(ctx)}
+    <div class="form-grid">
+      <label>Name
+        <input type="text" name="name" placeholder="e.g., Morning Classes" required>
+      </label>
+      <label>Playlist
+        <select name="playlist_id" required>
+          <option value="">— pick —</option>
+          ${playlists.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("\n          ")}
+        </select>
+      </label>
+      <label>Priority
+        <input type="number" name="priority" value="10" min="0" max="1000">
+      </label>
+      <label>Start time (HH:MM)
+        <input type="time" name="start_time" placeholder="06:00">
+      </label>
+      <label>End time (HH:MM)
+        <input type="time" name="end_time" placeholder="09:00">
+      </label>
+      <label>Start date
+        <input type="date" name="start_date">
+      </label>
+      <label>End date
+        <input type="date" name="end_date">
+      </label>
+    </div>
+    <p class="muted small">Leave both times empty for all day. An end time earlier than the start time wraps past midnight and counts as the start day.</p>
+
+    <fieldset class="days-fieldset">
+      <legend>Days of week (leave blank for all days)</legend>
+      ${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(dayBox).join("\n      ")}
+      <input type="hidden" name="days_of_week" id="days-hidden" value="">
+    </fieldset>
+
+    <button type="submit" class="primary">Add rule</button>
+  </form>
+</div>
+
+<script>
+(function() {
+  // Checked days -> the hidden days_of_week field ("0123456" subset). No page data is
+  // interpolated here (contract 9).
+  var form = document.getElementById('schedule-form');
+  if (!form) return;
+  form.addEventListener('submit', function() {
+    var checks = form.querySelectorAll('input[name="days_of_week_chk"]:checked');
+    document.getElementById('days-hidden').value = Array.prototype.map.call(checks, function(c) { return c.value; }).join('');
+  });
+})();
+</script>` : ""}`;
+  return layout(ctx, { title: `${device.name} schedule`, content });
+}
+
+async function scheduleCreate(ctx) {
+  auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const form = await ctx.form();
+  const name = str(form, "name").trim() || "Rule";
+  const pid = intField(str(form, "playlist_id"), "playlist_id");
+  if (pid === null) fail(400, "playlist_id required");
+  const prio = intField(str(form, "priority", "0"), "priority") ?? 0;
+  if (prio < 0 || prio > 1000) fail(400, "priority must be between 0 and 1000");
+  let startTime = str(form, "start_time").trim() || null;
+  let endTime = str(form, "end_time").trim() || null;
+  if (startTime !== null) {
+    startTime = normalizeHhmm(startTime);
+    if (startTime === null) fail(400, "start_time must be HH:MM (00:00-23:59)");
+  }
+  if (endTime !== null) {
+    endTime = normalizeHhmm(endTime);
+    if (endTime === null) fail(400, "end_time must be HH:MM (00:00-23:59)");
+  }
+  if (startTime !== null && endTime !== null && startTime === endTime) {
+    fail(400, "start and end must differ; use no times for all-day");
+  }
+  const rawDays = str(form, "days_of_week").trim();
+  if (rawDays && !/^[0-6]+$/.test(rawDays)) fail(400, "days_of_week must only contain digits 0-6 (0 = Monday)");
+  const days = [...new Set(rawDays)].sort().join("") || null;
+  const startDate = isoDateField(str(form, "start_date"), "start_date");
+  const endDate = isoDateField(str(form, "end_date"), "end_date");
+  if (startDate && endDate && startDate > endDate) fail(400, "start_date must be on or before end_date");
+  await requireRow(ctx.env, "devices", deviceId, "Device");
+  await requireRow(ctx.env, "playlists", pid, "Playlist");
+  const id = (await db.run(ctx.env,
+    `INSERT INTO device_schedules
+        (device_id, playlist_id, name, priority, start_time, end_time, days_of_week, start_date, end_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    deviceId, pid, name, prio, startTime, endTime, days, startDate, endDate)).last_row_id;
+  await audit.log(ctx, "device_schedule_create", "device_schedule", id, { device_id: deviceId, name, playlist_id: pid });
+  return redirect(`/devices/${deviceId}/schedule`);
+}
+
+async function scheduleDelete(ctx) {
+  auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const scheduleId = idParam(ctx.params.schedule_id, "schedule_id");
+  const r = await db.run(ctx.env, "DELETE FROM device_schedules WHERE id = ? AND device_id = ?", scheduleId, deviceId);
+  if (!r.changes) fail(404, "Schedule rule not found");
+  await audit.log(ctx, "device_schedule_delete", "device_schedule", scheduleId, { device_id: deviceId });
+  return redirect(`/devices/${deviceId}/schedule`);
+}
+
+export function register(router) {
+  router.get("/devices/:device_id/schedule", schedulePage);
+  router.post("/devices/:device_id/schedule", scheduleCreate);
+  router.post("/devices/:device_id/schedule/:schedule_id/delete", scheduleDelete);
+}

@@ -1,0 +1,20 @@
+{
+  "name": "piplayer-cloud",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local --port 8787 --local-upstream 127.0.0.1:8787 --upstream-protocol http --var SESSION_SECRET:dev-only-session-secret --var SETUP_TOKEN:dev-setup-token --var PIPLAYER_INSECURE_COOKIES:1",
+    "test": "vitest run",
+    "e2e": "python e2e/run_e2e.py && python e2e/run_upload_e2e.py && python e2e/run_player_e2e.py",
+    "migrate": "wrangler d1 migrations apply piplayer-cloud-db",
+    "migrate:local": "wrangler d1 migrations apply piplayer-cloud-db --local",
+    "migrate:remote": "wrangler d1 migrations apply piplayer-cloud-db --remote",
+    "deploy": "wrangler deploy",
+    "deploy:dry": "wrangler deploy --dry-run --outdir dist"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.131.2"
+  }
+}

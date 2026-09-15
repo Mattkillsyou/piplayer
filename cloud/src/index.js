@@ -1,0 +1,138 @@
+// Worker entry: builds the router from every module, resolves the session + CSRF for web
+// requests, dispatches, and turns thrown HttpError / Response / constraint errors into the
+// contract-10 status codes. Any other exception is a JSON 500 (logged), never a stack trace.
+import * as api from "./api.js";
+import * as audit from "./audit.js";
+import * as auth from "./auth.js";
+import * as db from "./db.js";
+import * as manifest from "./manifest.js";
+import * as media from "./media.js";
+import * as schedules from "./schedules.js";
+import * as uploads from "./uploads.js";
+import * as auditPage from "./pages/audit.js";
+import * as dashboard from "./pages/dashboard.js";
+import * as devices from "./pages/devices.js";
+import * as groups from "./pages/groups.js";
+import * as library from "./pages/library.js";
+import * as login from "./pages/login.js";
+import * as playlists from "./pages/playlists.js";
+import * as schedule from "./pages/schedule.js";
+import * as settings from "./pages/settings.js";
+import * as setup from "./pages/setup.js";
+import * as users from "./pages/users.js";
+import { isApiPath, Router } from "./router.js";
+import { fail, HttpError, json, redirect } from "./util.js";
+
+const MODULES = [
+  login, setup, dashboard, library, playlists, devices, schedule, groups, auditPage, users, settings,
+  api, media, manifest, schedules, uploads, auth, audit,
+];
+
+const router = new Router();
+for (const m of MODULES) if (m.register) m.register(router);
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+function makeCtx(request, env, exec, url, params) {
+  let formPromise = null;
+  let settingsPromise = null;
+  return {
+    request, env, exec, url, params,
+    user: null, session: null, csrf: null,
+    ip: audit.clientIp({ request }),
+    cookies: [],
+    // Parsed form body (memoised; the CSRF check and the handler share one read).
+    form() {
+      if (!formPromise) {
+        formPromise = request.formData().catch(() => fail(400, "malformed form body"));
+      }
+      return formPromise;
+    },
+    // Site settings {timezone, screenshot_interval, default_image_duration} (memoised).
+    settings() {
+      if (!settingsPromise) settingsPromise = db.loadSettings(env);
+      return settingsPromise;
+    },
+  };
+}
+
+function withCookies(res, ctx) {
+  if (!ctx || !ctx.cookies.length) return res;
+  const out = new Response(res.body, res);
+  for (const c of ctx.cookies) out.headers.append("set-cookie", c);
+  return out;
+}
+
+async function handle(request, env, exec) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  if (path.startsWith("/static/")) {
+    // public/ is the assets root, so /static/style.css is served from public/style.css.
+    const assetUrl = new URL(path.slice("/static".length) + url.search, url);
+    return env.ASSETS.fetch(new Request(assetUrl, request));
+  }
+  await db.assertMigrated(env);
+
+  const m = router.match(request.method, path);
+  if (!m) fail(404, "Not Found");
+  if (m.status) fail(m.status, "Method Not Allowed");
+
+  const ctx = makeCtx(request, env, exec, url, m.params);
+  try {
+    if (isApiPath(path)) {
+      // Device API: bearer auth inside the handlers; a browser session is only consulted
+      // (never created) so /api/media can serve logged-in users too.
+      await auth.loadSession(ctx, { create: false });
+    } else {
+      // Only the two anonymous forms start a session (they need a CSRF token); everything
+      // else just reads the cookie, so a cookieless GET /dashboard redirects without a write.
+      const anonForm = path === "/login" || path === "/setup";
+      await auth.loadSession(ctx, { create: anonForm && request.method === "GET" });
+      if (!SAFE_METHODS.has(request.method)) {
+        // Session gone (expired, logged out elsewhere, user deleted): the handler would answer
+        // 303 -> /login anyway; do not leave a form on a JSON 403. A stale /login form (no
+        // session at all) is sent back the same way and gets a fresh one from the GET.
+        // Deliberately ahead of the token check, as in cms/app/auth.py require_csrf (X002):
+        // nothing is written, and the 403 is reserved for a live session with a bad token.
+        if (!ctx.user && !anonForm) throw redirect("/login?expired=1");
+        if (path === "/login" && !ctx.session) throw redirect("/login?expired=1");
+        await auth.requireCsrf(ctx);
+      }
+      if (path !== "/setup" && !(await auth.hasUsers(env))) throw new Response(null, { status: 303, headers: { location: "/setup" } });
+    }
+    return withCookies(await m.handler(ctx), ctx);
+  } catch (e) {
+    if (e instanceof Response) return withCookies(e, ctx);
+    if (e instanceof HttpError) return withCookies(json({ detail: e.detail }, e.status, e.headers), ctx);
+    if (db.isConstraintError(e)) {
+      // A constraint violation no route mapped itself: never a bare 500, never the sqlite text.
+      console.error(`integrity error on ${request.method} ${path}: ${e.message}`);
+      return withCookies(json({ detail: "conflicts with an existing record or references one that does not exist" }, 409), ctx);
+    }
+    throw e;
+  }
+}
+
+export default {
+  async fetch(request, env, exec) {
+    try {
+      return await handle(request, env, exec);
+    } catch (e) {
+      if (e instanceof HttpError) return json({ detail: e.detail }, e.status, e.headers);
+      console.error(`unhandled error on ${request.method} ${new URL(request.url).pathname}:`, e && e.stack || e);
+      return json({ detail: "internal server error" }, 500);
+    }
+  },
+
+  // Daily cron (wrangler.toml [triggers]): every module's housekeeping(env) in turn.
+  async scheduled(event, env, exec) {
+    for (const m of MODULES) {
+      if (!m.housekeeping) continue;
+      try {
+        await m.housekeeping(env);
+      } catch (e) {
+        console.error("housekeeping failed:", e && e.stack || e);
+      }
+    }
+  },
+};

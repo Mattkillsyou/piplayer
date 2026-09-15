@@ -1,0 +1,79 @@
+// Port of templates/base.html. Pages build their content string (every value through esc())
+// and call layout(ctx, {title, content}) to get the HTML Response.
+import { esc, html } from "../util.js";
+
+export const APP_NAME = "PiPlayer";
+
+const NAV = [
+  ["/dashboard", "Dashboard", (p) => p === "/dashboard"],
+  ["/library", "Library"],
+  ["/playlists", "Playlists"],
+  ["/devices", "Devices"],
+  ["/groups", "Groups"],
+  ["/audit", "Audit"],
+  ["/users", "Users", null, "admin"],
+  ["/settings", "Settings", null, "admin"],
+];
+
+// Hidden CSRF input for a <form method="post"> (contract 8).
+export function csrfInput(ctx) {
+  return `<input type="hidden" name="csrf_token" value="${esc(ctx.csrf)}">`;
+}
+
+// A `<div class="alert error">` (or class 'ok') for the message slot, '' when message is empty.
+export function alertBox(message, kind = "error") {
+  return message ? `<div class="alert ${esc(kind)}">${esc(message)}</div>` : "";
+}
+
+function navHtml(ctx) {
+  const user = ctx.user;
+  const path = ctx.url.pathname;
+  const links = NAV
+    .filter(([, , , role]) => !role || user.role === role)
+    .map(([href, label, test]) => {
+      const active = test ? test(path) : path.startsWith(href);
+      return `<a href="${href}"${active ? ' class="active"' : ""}>${label}</a>`;
+    })
+    .join("\n      ");
+  return `<header class="topbar">
+    <div class="brand"><a href="/dashboard">${APP_NAME}</a></div>
+    <nav>
+      ${links}
+    </nav>
+    <div class="user">
+      <span>${esc(user.username)} <span class="badge badge-${esc(user.role)}">${esc(user.role)}</span></span>
+      <form method="post" action="/logout" class="inline">
+        ${csrfInput(ctx)}
+        <button type="submit" class="link">Log out</button>
+      </form>
+    </div>
+  </header>`;
+}
+
+// {title, content (already-escaped HTML), status, message, messageKind, scripts (extra
+// <script src> paths under /static)} -> Response.
+export function layout(ctx, { title, content, status = 200, message = "", messageKind = "error", scripts = [] } = {}) {
+  const fullTitle = title ? `${title} — ${APP_NAME}` : APP_NAME;
+  const extra = scripts.map((s) => `<script src="${esc(s)}"></script>`).join("\n  ");
+  const page = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="${esc(ctx.csrf)}">
+  <title>${esc(fullTitle)}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  ${ctx.user ? navHtml(ctx) : ""}
+  <main class="container">
+    ${alertBox(message, messageKind)}
+    ${content}
+  </main>
+  ${extra}
+  <script src="/static/app.js"></script>
+</body>
+</html>
+`;
+  return html(page, status);
+}
