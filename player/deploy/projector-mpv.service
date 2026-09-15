@@ -1,8 +1,8 @@
 [Unit]
 Description=mpv (PiPlayer projector loop)
 After=network.target systemd-user-sessions.service
-StartLimitIntervalSec=30
-StartLimitBurst=5
+# A kiosk must keep trying: never give up restarting mpv.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -10,20 +10,29 @@ User=projector
 Group=projector
 SupplementaryGroups=video render input audio tty
 Environment=HOME=/var/lib/projector-player
-Environment=XDG_RUNTIME_DIR=/run/user/0
+# Private runtime dir owned by the projector user (pipewire/pulse probes look here)
+RuntimeDirectory=projector-mpv
+Environment=XDG_RUNTIME_DIR=/run/projector-mpv
 ExecStart=/usr/bin/mpv --input-ipc-server=/tmp/projector-mpv.sock --idle=yes
 Restart=always
-RestartSec=3
+RestartSec=5
 
-# Allow access to DRM device for --vo=drm
-DeviceAllow=/dev/dri/card0 rw
-DeviceAllow=/dev/dri/card1 rw
-DeviceAllow=/dev/dri/renderD128 rw
+# Listing any DeviceAllow= switches the unit to an allow-list, so every device
+# class mpv needs must be here. Wildcards are only valid in char-<group> form.
+DeviceAllow=char-drm rw
+DeviceAllow=char-alsa rw
+DeviceAllow=char-video4linux rw
+# /dev/media*: the v4l2-request hwaccel (drm/drm-copy on Trixie / Pi 5)
+# enumerates the media controller before opening /dev/video*.
+DeviceAllow=char-media rw
+# /dev/dma_heap/*: the same hwaccel allocates its frame buffers from a DMA
+# heap first and silently falls back to slower V4L2 MMAP buffers when the
+# open() is refused.
+DeviceAllow=char-dma_heap rw
 DeviceAllow=/dev/tty0 rw
 DeviceAllow=/dev/tty1 rw
 DeviceAllow=/dev/tty7 rw
 DeviceAllow=/dev/fb0 rw
-DeviceAllow=/dev/snd/* rw
 
 [Install]
 WantedBy=multi-user.target

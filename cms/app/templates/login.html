@@ -6,6 +6,7 @@
   <p class="muted">Sign in to manage your projector fleet.</p>
   {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
   <form method="post" action="/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Username
       <input type="text" name="username" autocomplete="username" autofocus required>
     </label>

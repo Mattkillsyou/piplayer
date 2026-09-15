@@ -4,13 +4,16 @@
 <h1>Device groups</h1>
 <p class="muted small">Devices in a group use the group's playlist as their fallback (when the device has no default and no schedule matches).</p>
 
+{% if user.role != 'viewer' %}
 <div class="panel">
   <h2>New group</h2>
   <form method="post" action="/groups" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="text" name="name" placeholder="e.g., Lobby projectors" required>
     <button type="submit" class="primary">Create</button>
   </form>
 </div>
+{% endif %}
 
 {% if not groups %}
   <p class="muted">No groups yet.</p>
@@ -26,7 +29,8 @@
       <td>{{ g.device_count }}</td>
       <td>
         <form method="post" action="/groups/{{ g.id }}/assign" class="inline">
-          <select name="playlist_id" onchange="this.form.submit()">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <select name="playlist_id" onchange="this.form.submit()" {% if user.role == 'viewer' %}disabled{% endif %}>
             <option value="">— none —</option>
             {% for p in playlists %}
             <option value="{{ p.id }}" {% if p.id == g.playlist_id %}selected{% endif %}>{{ p.name }}</option>
@@ -35,9 +39,12 @@
         </form>
       </td>
       <td>
-        <form method="post" action="/groups/{{ g.id }}/delete" class="inline" onsubmit="return confirm('Delete {{ g.name }}? Devices in the group will lose this fallback.')">
+        {% if user.role != 'viewer' %}
+        <form method="post" action="/groups/{{ g.id }}/delete" class="inline" data-confirm="Delete {{ g.name }}? Devices in the group will lose this fallback.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="danger small">Delete</button>
         </form>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}

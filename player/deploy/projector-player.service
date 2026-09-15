@@ -12,9 +12,16 @@ EnvironmentFile=-/etc/projector-player/env
 ExecStart=/opt/piplayer/player/.venv/bin/python -m player.daemon
 Restart=always
 RestartSec=5
+# SIGTERM only sets a flag the daemon polls between download chunks and loop
+# steps; the longest blocking call before it looks is a stalled socket read
+# (15 s manifest GET / per-chunk download read / screenshot POST) or the
+# command-result POST retries (3 x 10 s + 2 s). An interrupted download is
+# resumed on the next start.
+TimeoutStopSec=45
 
 ReadWritePaths=/var/lib/projector-player /tmp
-NoNewPrivileges=true
+# NoNewPrivileges must stay off: the reboot / restart-mpv remote commands run
+# through sudo (see the sudoers drop-in written by install-player.sh).
 ProtectSystem=full
 ProtectHome=true
 

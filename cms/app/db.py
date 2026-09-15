@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS devices (
     current_filename TEXT,
     player_status TEXT,
     last_screenshot_at TEXT,
+    last_error TEXT,                                     -- player's last sync_error report, NULL/empty = healthy
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -96,7 +97,8 @@ CREATE TABLE IF NOT EXISTS device_commands (
     issued_at TEXT NOT NULL DEFAULT (datetime('now')),
     delivered_at TEXT,
     completed_at TEXT,
-    result TEXT
+    result TEXT,
+    delivery_count INTEGER NOT NULL DEFAULT 0            -- times handed to the player; capped, see api._pending_commands
 );
 
 CREATE INDEX IF NOT EXISTS idx_device_commands_pending
@@ -115,15 +117,28 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_created
-    ON audit_log(created_at DESC);
+    ON audit_log(created_at DESC, id DESC);
 """
+
+# Columns added after the first release. init_schema adds any that are missing
+# (CREATE TABLE IF NOT EXISTS does nothing for existing tables), guarded by
+# PRAGMA table_info so re-running is a no-op.
+MIGRATIONS = [
+    ("device_commands", "delivery_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("devices", "last_error", "TEXT"),
+]
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(config.DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+    # 15 s busy timeout (sqlite3 default 5 s): device polls plus an admin reordering a
+    # playlist can queue behind BEGIN IMMEDIATE on an SD card without surfacing 503s.
+    conn = sqlite3.connect(config.DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    # WAL + NORMAL is durable across process crashes and halves the fsyncs per commit
+    # (every device poll commits), which matters on an SD card.
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
@@ -141,14 +156,48 @@ def cursor() -> Iterator[sqlite3.Cursor]:
         conn.close()
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(c["name"] == column for c in cols)
+
+
 def init_schema() -> None:
     config.ensure_dirs()
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        for table, column, decl in MIGRATIONS:
+            if not _column_exists(conn, table, column):
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                if (table, column) == ("device_commands", "delivery_count"):
+                    # Pre-upgrade CMS re-sent a delivered-but-unreported command forever; do not
+                    # hand those out 5 more times (a lost 'reboot' result would reboot the Pi
+                    # again). Rows never delivered stay queued for their offline device.
+                    conn.execute(
+                        """UPDATE device_commands
+                           SET completed_at = datetime('now'), result = 'closed at upgrade (no result)'
+                           WHERE completed_at IS NULL AND delivered_at IS NOT NULL"""
+                    )
+        # The original index was on created_at only; replace it so same-second rows order by id.
+        idx = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'idx_audit_log_created'").fetchone()
+        if idx and "id DESC" not in (idx["sql"] or ""):
+            conn.execute("DROP INDEX idx_audit_log_created")
+            conn.execute("CREATE INDEX idx_audit_log_created ON audit_log(created_at DESC, id DESC)")
         conn.commit()
     finally:
         conn.close()
+
+
+def prune_audit_log(retention_days: int) -> int:
+    """Delete audit rows older than retention_days (0 = keep forever). Returns rows removed."""
+    if retention_days <= 0:
+        return 0
+    with cursor() as cur:
+        cur.execute(
+            "DELETE FROM audit_log WHERE created_at < datetime('now', ?)",
+            (f"-{int(retention_days)} days",),
+        )
+        return cur.rowcount
 
 
 def new_token() -> str:

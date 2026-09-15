@@ -1,20 +1,27 @@
 import datetime as dt
 import hashlib
+import json
+import logging
 import os
 import re
 import tempfile
 from pathlib import Path
 
-import aiofiles
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile, File
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from .. import auth, config, db, schedules
 
 
+log = logging.getLogger("piplayer.api")
 router = APIRouter()
 
 SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
+NOSNIFF = {"X-Content-Type-Options": "nosniff"}
+JPEG_MAGIC = b"\xff\xd8\xff"
+MAX_COMMAND_DELIVERIES = 5
+MAX_SYNC_ERROR_LEN = 200
 
 
 def _device_from_header(authorization: str | None = Header(None)) -> dict:
@@ -29,51 +36,73 @@ def _resolve_duration(item: dict) -> float | None:
     return None
 
 
-def _resolve_active_playlist_id(device: dict, now: dt.datetime) -> tuple[int | None, str | None]:
-    """Return (playlist_id, source) where source describes how it was chosen."""
-    with db.cursor() as cur:
-        rows = cur.execute(
-            """SELECT id, playlist_id, name, priority, start_time, end_time,
-                      days_of_week, start_date, end_date
-               FROM device_schedules WHERE device_id = ?""",
-            (device["id"],),
-        ).fetchall()
-        schedule_list = [dict(r) for r in rows]
-        active = schedules.pick_active(schedule_list, now)
-        if active:
-            return active["playlist_id"], f"schedule:{active['name']}"
-        if device.get("playlist_id"):
-            return device["playlist_id"], "device-default"
-        if device.get("group_id"):
-            grow = cur.execute("SELECT playlist_id FROM device_groups WHERE id = ?", (device["group_id"],)).fetchone()
-            if grow and grow["playlist_id"]:
-                return grow["playlist_id"], "group-default"
+def resolve_active_playlist_id(device: dict, now: dt.datetime, cur=None) -> tuple[int | None, str | None]:
+    """Return (playlist_id, source) where source describes how it was chosen.
+
+    Shared by the sync manifest, the Devices page and the dashboard so they agree.
+    `device` needs id, playlist_id, group_id. Pass an open cursor to reuse a connection."""
+    if cur is None:
+        with db.cursor() as own:
+            return resolve_active_playlist_id(device, now, own)
+    rows = cur.execute(
+        """SELECT id, playlist_id, name, priority, start_time, end_time,
+                  days_of_week, start_date, end_date
+           FROM device_schedules WHERE device_id = ?""",
+        (device["id"],),
+    ).fetchall()
+    schedule_list = [dict(r) for r in rows]
+    active = schedules.pick_active(schedule_list, now)
+    if active:
+        return active["playlist_id"], f"schedule:{active['name']}"
+    if device.get("playlist_id"):
+        return device["playlist_id"], "device-default"
+    if device.get("group_id"):
+        grow = cur.execute("SELECT playlist_id FROM device_groups WHERE id = ?", (device["group_id"],)).fetchone()
+        if grow and grow["playlist_id"]:
+            return grow["playlist_id"], "group-default"
     return None, None
 
 
 def _pending_commands(device_id: int) -> list[dict]:
+    """Commands not yet completed, each handed out at most MAX_COMMAND_DELIVERIES times.
+
+    A command the player never reports on (lost result POST, crash) is closed as
+    undeliverable instead of being re-sent forever (a lost 'reboot' result must not
+    reboot the Pi on every boot)."""
     with db.cursor() as cur:
         rows = cur.execute(
-            """SELECT id, command FROM device_commands
+            """SELECT id, command, issued_at, delivery_count FROM device_commands
                WHERE device_id = ? AND completed_at IS NULL
                ORDER BY id ASC""",
             (device_id,),
         ).fetchall()
-        cmds = [dict(r) for r in rows]
-        if cmds:
-            ids = [c["id"] for c in cmds]
-            placeholders = ",".join("?" * len(ids))
+        cmds = []
+        for r in rows:
+            if r["delivery_count"] >= MAX_COMMAND_DELIVERIES:
+                cur.execute(
+                    """UPDATE device_commands
+                       SET completed_at = datetime('now'),
+                           result = ?
+                       WHERE id = ? AND completed_at IS NULL""",
+                    (f"undeliverable: no result after {MAX_COMMAND_DELIVERIES} deliveries", r["id"]),
+                )
+                log.warning("command %d (%s) for device %d closed as undeliverable", r["id"], r["command"], device_id)
+                continue
             cur.execute(
-                f"UPDATE device_commands SET delivered_at = datetime('now') "
-                f"WHERE id IN ({placeholders}) AND delivered_at IS NULL",
-                ids,
+                """UPDATE device_commands
+                   SET delivered_at = COALESCE(delivered_at, datetime('now')),
+                       delivery_count = delivery_count + 1
+                   WHERE id = ?""",
+                (r["id"],),
             )
+            # issued_at lets the player tell a re-used id (DB restored/recreated) from a repeat.
+            cmds.append({"id": r["id"], "command": r["command"], "issued_at": r["issued_at"]})
     return cmds
 
 
 def _manifest_for_device(device: dict, request: Request, now: dt.datetime | None = None) -> dict:
     now = now or dt.datetime.now()
-    active_playlist_id, source = _resolve_active_playlist_id(device, now)
+    active_playlist_id, source = resolve_active_playlist_id(device, now)
 
     playlist_block = None
     if active_playlist_id:
@@ -88,7 +117,7 @@ def _manifest_for_device(device: dict, request: Request, now: dt.datetime | None
                    FROM playlist_items pi
                    JOIN media m ON m.id = pi.media_id
                    WHERE pi.playlist_id = ?
-                   ORDER BY pi.position ASC""",
+                   ORDER BY pi.position ASC, pi.id ASC""",
                 (active_playlist_id,),
             ).fetchall()
 
@@ -131,7 +160,8 @@ def _manifest_for_device(device: dict, request: Request, now: dt.datetime | None
         "playlist": playlist_block,
         "commands": commands,
         "screenshot_interval_seconds": config.SCREENSHOT_INTERVAL_SECONDS,
-        "server_time": now.isoformat(timespec="seconds"),
+        # Local wall-clock with UTC offset, e.g. 2026-09-14T15:03:07-07:00 (schedules use this clock).
+        "server_time": now.astimezone().isoformat(timespec="seconds"),
     }
 
 
@@ -149,10 +179,13 @@ def sync(
     current_filename: str | None = Query(None),
     player_status: str | None = Query(None),
     player_version: str | None = Query(None),
+    sync_error: str | None = Query(None),
 ):
     if device["device_id"] != device_id:
         raise HTTPException(status_code=403, detail="Token does not match device id")
 
+    # Empty string = last sync fully succeeded; store NULL so the UI can test truthiness.
+    last_error = (sync_error or "").strip()[:MAX_SYNC_ERROR_LEN] or None
     with db.cursor() as cur:
         cur.execute(
             """UPDATE devices SET
@@ -161,7 +194,8 @@ def sync(
                   current_position = ?,
                   current_filename = ?,
                   player_status = ?,
-                  player_version = COALESCE(?, player_version)
+                  player_version = COALESCE(?, player_version),
+                  last_error = ?
                WHERE id = ?""",
             (
                 request.client.host if request.client else None,
@@ -169,6 +203,7 @@ def sync(
                 current_filename,
                 player_status,
                 player_version,
+                last_error,
                 device["id"],
             ),
         )
@@ -182,21 +217,30 @@ async def report_command_result(
     request: Request,
     device=Depends(_device_from_header),
 ):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        raise HTTPException(400, "body must be a JSON object")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "body must be a JSON object")
     result = str(body.get("result", ""))[:1000]
-    with db.cursor() as cur:
-        row = cur.execute(
-            "SELECT id, device_id FROM device_commands WHERE id = ?",
-            (command_id,),
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, "command not found")
-        if row["device_id"] != device["id"]:
-            raise HTTPException(403, "command belongs to another device")
-        cur.execute(
-            "UPDATE device_commands SET completed_at = datetime('now'), result = ? WHERE id = ?",
-            (result, command_id),
-        )
+
+    def _store():
+        with db.cursor() as cur:
+            row = cur.execute(
+                "SELECT id, device_id FROM device_commands WHERE id = ?",
+                (command_id,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, "command not found")
+            if row["device_id"] != device["id"]:
+                raise HTTPException(403, "command belongs to another device")
+            cur.execute(
+                "UPDATE device_commands SET completed_at = datetime('now'), result = ? WHERE id = ?",
+                (result, command_id),
+            )
+
+    await run_in_threadpool(_store)
     return {"ok": True}
 
 
@@ -204,60 +248,73 @@ async def report_command_result(
 async def upload_screenshot(
     device_id: str,
     request: Request,
-    file: UploadFile = File(...),
     device=Depends(_device_from_header),
 ):
     if device["device_id"] != device_id:
         raise HTTPException(403, "Token does not match device id")
+    from .web import _receive_upload  # web imports this module; bind at call time
 
     config.ensure_dirs()
     target = config.SCREENSHOT_DIR / f"{device['device_id']}.jpg"
     fd, tmp_str = tempfile.mkstemp(dir=str(config.SCREENSHOT_DIR), prefix=".upload_", suffix=".tmp")
     os.close(fd)
     tmp = Path(tmp_str)
-    size = 0
     try:
-        async with aiofiles.open(tmp, "wb") as out:
-            while True:
-                chunk = await file.read(256 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > config.MAX_SCREENSHOT_BYTES:
-                    raise HTTPException(413, f"screenshot too large (>{config.MAX_SCREENSHOT_BYTES} bytes)")
-                await out.write(chunk)
+        # Streamed straight to tmp with the size cap enforced as bytes arrive (no spool to /tmp).
+        recv = await _receive_upload(request, tmp, max_bytes=config.MAX_SCREENSHOT_BYTES, check_csrf=False)
+        size = recv.size
+        with open(tmp, "rb") as f:
+            magic = f.read(len(JPEG_MAGIC))
+        if size == 0 or magic != JPEG_MAGIC:
+            raise HTTPException(400, "screenshot must be a JPEG image")
         tmp.replace(target)
-        with db.cursor() as cur:
-            cur.execute(
-                "UPDATE devices SET last_screenshot_at = datetime('now') WHERE id = ?",
-                (device["id"],),
-            )
-    except HTTPException:
+
+        def _mark():
+            with db.cursor() as cur:
+                cur.execute(
+                    "UPDATE devices SET last_screenshot_at = datetime('now') WHERE id = ?",
+                    (device["id"],),
+                )
+
+        await run_in_threadpool(_mark)
+    finally:
         tmp.unlink(missing_ok=True)
-        raise
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
     return {"ok": True, "size_bytes": size}
 
 
-@router.get("/media/{filename}")
+def _device_may_fetch(device: dict, filename: str, request: Request) -> bool:
+    """A device token only unlocks the files in that device's currently served playlist."""
+    with db.cursor() as cur:
+        pid, _ = resolve_active_playlist_id(device, dt.datetime.now(), cur)
+        if not pid:
+            return False
+        row = cur.execute(
+            """SELECT 1 FROM playlist_items pi JOIN media m ON m.id = pi.media_id
+               WHERE pi.playlist_id = ? AND m.filename = ? LIMIT 1""",
+            (pid, filename),
+        ).fetchone()
+    return row is not None
+
+
+@router.api_route("/media/{filename}", methods=["GET", "HEAD"])
 def get_media(filename: str, request: Request, authorization: str | None = Header(None)):
     if not SAFE_FILENAME.match(filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     is_user = auth.current_user(request) is not None
-    is_device = False
+    device = None
     if authorization:
         try:
-            auth.authenticate_device(authorization)
-            is_device = True
+            device = auth.authenticate_device(authorization)
         except HTTPException:
-            pass
-    if not (is_user or is_device):
+            device = None
+    if not (is_user or device):
         raise HTTPException(status_code=401, detail="Authentication required")
+    if not is_user and not _device_may_fetch(device, filename, request):
+        raise HTTPException(status_code=403, detail="file is not in this device's playlist")
 
     path = config.MEDIA_DIR / filename
     if not path.is_file():
         raise HTTPException(status_code=404)
-    return FileResponse(path)
+    # FileResponse honours Range requests (206), which the player relies on to resume downloads.
+    return FileResponse(path, headers=NOSNIFF)

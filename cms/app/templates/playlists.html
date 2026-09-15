@@ -3,33 +3,43 @@
 {% block content %}
 <h1>Playlists</h1>
 
+{% if user.role != 'viewer' %}
 <div class="panel">
   <h2>New playlist</h2>
   <form method="post" action="/playlists" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="text" name="name" placeholder="e.g., Lobby Loop" required>
     <button type="submit" class="primary">Create</button>
   </form>
 </div>
+{% endif %}
 
 {% if not playlists %}
-  <p class="muted">No playlists yet. Create one above.</p>
+  <p class="muted">No playlists yet.{% if user.role != 'viewer' %} Create one above.{% endif %}</p>
 {% else %}
 <table class="data">
   <thead>
-    <tr><th>Name</th><th>Items</th><th>Assigned devices</th><th>Updated</th><th></th></tr>
+    <tr><th>Name</th><th>Items</th><th>Used by</th><th>Updated</th><th></th></tr>
   </thead>
   <tbody>
     {% for p in playlists %}
     <tr>
       <td><a href="/playlists/{{ p.id }}">{{ p.name }}</a></td>
       <td>{{ p.item_count }}</td>
-      <td>{{ p.device_count }}</td>
-      <td>{{ p.updated_at }}</td>
       <td>
-        <a href="/playlists/{{ p.id }}" class="button small">Edit</a>
-        <form method="post" action="/playlists/{{ p.id }}/delete" class="inline" onsubmit="return confirm('Delete playlist {{ p.name }}?')">
+        <span title="devices with this as their default">{{ p.device_count }} device{{ '' if p.device_count == 1 else 's' }}</span>
+        {% if p.group_count %} · {{ p.group_count }} group{{ '' if p.group_count == 1 else 's' }}{% endif %}
+        {% if p.schedule_count %} · {{ p.schedule_count }} schedule rule{{ '' if p.schedule_count == 1 else 's' }}{% endif %}
+      </td>
+      <td>{{ p.updated_at | local }}</td>
+      <td>
+        <a href="/playlists/{{ p.id }}" class="button small">{% if user.role != 'viewer' %}Edit{% else %}View{% endif %}</a>
+        {% if user.role != 'viewer' %}
+        <form method="post" action="/playlists/{{ p.id }}/delete" class="inline" data-confirm="{{ p.delete_confirm }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="danger small">Delete</button>
         </form>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}

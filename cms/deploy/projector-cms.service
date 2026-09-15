@@ -9,8 +9,11 @@ User=piplayer
 Group=piplayer
 WorkingDirectory=/opt/piplayer/cms
 Environment=PIPLAYER_DATA_DIR=/var/lib/projector-cms
+# Only a reverse proxy on this host (cloudflared, Caddy) may set X-Forwarded-For/-Proto.
+# Override in /etc/projector-cms/env if the proxy runs elsewhere; never use "*".
+Environment=PIPLAYER_FORWARDED_ALLOW_IPS=127.0.0.1
 EnvironmentFile=-/etc/projector-cms/env
-ExecStart=/opt/piplayer/cms/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips=*
+ExecStart=/opt/piplayer/cms/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips=${PIPLAYER_FORWARDED_ALLOW_IPS}
 Restart=always
 RestartSec=3
 

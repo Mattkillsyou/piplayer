@@ -3,17 +3,20 @@
 {% block content %}
 <h1>Devices</h1>
 
+{% if can_edit %}
 <div class="panel">
   <h2>Register a new device</h2>
   <p class="muted small">
-    After creating it, copy the token and run the install script on the Pi.
+    After creating it, open "Token / install" on the new row and run that command on the Pi.
   </p>
   <form method="post" action="/devices" class="row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="text" name="device_id" placeholder="lobby-projector" pattern="[a-z0-9][a-z0-9-]{0,62}" required>
     <input type="text" name="name" placeholder="Lobby Projector" required>
     <button type="submit" class="primary">Register device</button>
   </form>
 </div>
+{% endif %}
 
 {% if not devices %}
   <p class="muted">No devices yet.</p>
@@ -38,11 +41,17 @@
         <code class="small">{{ d.device_id }}</code>
         {% if d.last_screenshot_at %}
         <br><a href="/devices/{{ d.id }}/screenshot?t={{ d.last_screenshot_at }}" target="_blank" class="small">📷 screenshot</a>
+        <span class="muted small">{{ d.screenshot_age }}</span>
+        {% if d.screenshot_stale %}<span class="badge badge-stale" title="No new screenshot for more than 3 capture intervals">stale</span>{% endif %}
+        {% endif %}
+        {% if d.last_error %}
+        <div class="alert warn small" title="Reported by the player on its last sync">Sync problem: {{ d.last_error }}</div>
         {% endif %}
       </td>
       <td>
         <form method="post" action="/devices/{{ d.id }}/group" class="inline">
-          <select name="group_id" onchange="this.form.submit()">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <select name="group_id" onchange="this.form.submit()" {% if not can_edit %}disabled{% endif %}>
             <option value="">— none —</option>
             {% for g in groups %}
             <option value="{{ g.id }}" {% if g.id == d.group_id %}selected{% endif %}>{{ g.name }}</option>
@@ -52,7 +61,8 @@
       </td>
       <td>
         <form method="post" action="/devices/{{ d.id }}/assign" class="inline">
-          <select name="playlist_id" onchange="this.form.submit()">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <select name="playlist_id" onchange="this.form.submit()" {% if not can_edit %}disabled{% endif %}>
             <option value="">— none —</option>
             {% for p in playlists %}
             <option value="{{ p.id }}" {% if p.id == d.playlist_id %}selected{% endif %}>{{ p.name }}</option>
@@ -77,42 +87,77 @@
         {% else %}—{% endif %}
       </td>
       <td>
-        {{ d.last_seen_at or "never" }}<br>
+        {% if d.last_seen_at %}{{ d.seen_age }}<br><span class="muted small">{{ d.last_seen_at | local }}</span>{% else %}never{% endif %}<br>
         {% if d.last_ip %}<span class="muted small">{{ d.last_ip }}</span>{% endif %}
         {% if d.player_version %}<br><span class="muted small">v{{ d.player_version }}</span>{% endif %}
       </td>
       <td>
         <div class="action-buttons">
+          {% if can_edit %}
           <form method="post" action="/devices/{{ d.id }}/command" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="command" value="force-sync">
             <button type="submit" class="small" title="Tell the Pi to re-sync from the CMS now">Resync</button>
           </form>
           <form method="post" action="/devices/{{ d.id }}/command" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="command" value="restart-mpv">
             <button type="submit" class="small" title="Restart the mpv playback process">Restart mpv</button>
           </form>
-          <form method="post" action="/devices/{{ d.id }}/command" class="inline" onsubmit="return confirm('Reboot {{ d.name }}?')">
+          <form method="post" action="/devices/{{ d.id }}/command" class="inline" data-confirm="Reboot {{ d.name }}?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="command" value="reboot">
             <button type="submit" class="small danger">Reboot Pi</button>
           </form>
+          {% endif %}
+          {% if d.recent_commands %}
+          <details>
+            <summary class="small">Recent commands</summary>
+            <ul class="command-list small">
+              {% for c in d.recent_commands %}
+              <li>
+                <code>{{ c.command }}</code>
+                <span class="muted">{{ c.issued_at | local }}</span> —
+                {% if c.completed_at %}
+                  {% if c.result and c.result.startswith('undeliverable') %}<span class="badge badge-stale">{{ c.result }}</span>
+                  {% else %}done{% if c.result %}: {{ c.result }}{% endif %}{% endif %}
+                {% elif c.delivered_at %}
+                  delivered ×{{ c.delivery_count }}, no result yet
+                {% else %}
+                  queued
+                {% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+          </details>
+          {% endif %}
+          {% if can_edit %}
           <details>
             <summary class="small">Token / install</summary>
             <div class="token-block">
               <code class="token">{{ d.token }}</code>
-              <pre class="install-cmd">DEVICE_ID={{ d.device_id }} \
+              <p class="muted small">On the Pi, from the directory you cloned the repo into:</p>
+              <pre class="install-cmd">cd piplayer/player && \
+DEVICE_ID={{ d.device_id }} \
 DEVICE_TOKEN={{ d.token }} \
-CMS_URL={% if public_base_url %}{{ public_base_url }}{% else %}http://&lt;controller-ip&gt;:8080{% endif %} \
-sudo -E bash install-player.sh</pre>
+CMS_URL={{ install_base_url }} \
+sudo -E bash deploy/install-player.sh</pre>
+              {% if not public_base_url %}
+              <p class="muted small">CMS_URL is the address your browser is using; edit it if this Pi reaches the CMS another way (e.g. a LAN address instead of Tailscale).</p>
+              {% endif %}
               <div class="action-buttons">
-                <form method="post" action="/devices/{{ d.id }}/regen-token" class="inline" onsubmit="return confirm('Regenerate token? The Pi will need the new token.')">
+                <form method="post" action="/devices/{{ d.id }}/regen-token" class="inline" data-confirm="Regenerate token? The Pi will need the new token.">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                   <button type="submit" class="small">New token</button>
                 </form>
-                <form method="post" action="/devices/{{ d.id }}/delete" class="inline" onsubmit="return confirm('Delete device {{ d.name }}?')">
+                <form method="post" action="/devices/{{ d.id }}/delete" class="inline" data-confirm="Delete device {{ d.name }}?">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                   <button type="submit" class="danger small">Delete device</button>
                 </form>
               </div>
             </div>
           </details>
+          {% endif %}
         </div>
       </td>
     </tr>

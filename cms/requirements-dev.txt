@@ -1,0 +1,8 @@
+# Development / test dependencies for the CMS (on top of requirements.txt).
+#   .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+#   python -m pytest tests            # unit + API tests (FastAPI TestClient, no server needed)
+#   python run_smoke_tests.py         # end-to-end smoke tests against a real uvicorn process
+pytest>=8
+pytest-timeout>=2.3
+requests>=2.31
+httpx>=0.27          # needed by fastapi.testclient.TestClient

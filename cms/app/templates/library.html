@@ -3,24 +3,27 @@
 {% block content %}
 <h1>Library</h1>
 
+{% if user.role != 'viewer' %}
 <div class="panel">
   <h2>Upload media</h2>
   <p class="muted">
     Max {{ (max_bytes / 1024 / 1024 / 1024) | round(1) }} GB per file.
     Videos: .mp4, .mov, .m4v, .mkv, .webm (1080p H.264 recommended).
-    Images: .jpg, .png, .gif, .webp, .bmp.
+    Images: .jpg, .png, .gif, .webp, .bmp. An animated GIF is stored as a video (plays once at natural length; the default image duration does not apply; a duration override sets a fixed length). Files ffprobe cannot read as video/image are rejected.
   </p>
   <form id="upload-form" method="post" action="/library/upload" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="file" name="file" id="file-input" accept="video/*,image/*" required>
     <button type="submit" class="primary">Upload</button>
   </form>
   <progress id="upload-progress" value="0" max="100" style="display:none; width:100%; margin-top:1rem;"></progress>
   <div id="upload-status" class="muted"></div>
 </div>
+{% endif %}
 
 <h2>Media ({{ items | length }})</h2>
 {% if not items %}
-  <p class="muted">No media yet. Upload above.</p>
+  <p class="muted">No media yet.{% if user.role != 'viewer' %} Upload above.{% endif %}</p>
 {% else %}
 <table class="data">
   <thead>
@@ -42,11 +45,14 @@
       </td>
       <td>{% if v.width %}{{ v.width }}×{{ v.height }}{% else %}—{% endif %}</td>
       <td>{{ v.codec or "—" }}</td>
-      <td>{{ v.uploaded_at }}</td>
+      <td>{{ v.uploaded_at | local }}</td>
       <td>
-        <form method="post" action="/library/{{ v.id }}/delete" class="inline" onsubmit="return confirm('Delete {{ v.original_name }}?')">
+        {% if user.role != 'viewer' %}
+        <form method="post" action="/library/{{ v.id }}/delete" class="inline" data-confirm="Delete {{ v.original_name }}? It is removed from every playlist that uses it.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="danger small">Delete</button>
         </form>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}
@@ -60,12 +66,14 @@
   const progress = document.getElementById('upload-progress');
   const status = document.getElementById('upload-status');
   if (!form) return;
+  const csrf = document.querySelector('meta[name="csrf-token"]').content;
 
   form.addEventListener('submit', function(e) {
     e.preventDefault();
     const data = new FormData(form);
     const xhr = new XMLHttpRequest();
     xhr.open('POST', form.action);
+    xhr.setRequestHeader('X-CSRF-Token', csrf);
     progress.style.display = 'block';
     progress.value = 0;
     status.textContent = 'Uploading...';
@@ -75,6 +83,7 @@
         const pct = (ev.loaded / ev.total) * 100;
         progress.value = pct;
         status.textContent = `Uploading ${(ev.loaded/1024/1024).toFixed(1)} / ${(ev.total/1024/1024).toFixed(1)} MB (${pct.toFixed(0)}%)`;
+        if (pct >= 100) status.textContent = 'Upload received, checking the file (ffprobe)...';
       }
     };
     xhr.onload = function() {

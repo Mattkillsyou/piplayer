@@ -2,7 +2,7 @@
 {% block title %}Audit log — {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Audit log</h1>
-<p class="muted small">Last {{ entries | length }} entries.</p>
+<p class="muted small">Last {{ entries | length }} entries. Times are shown in the controller's local zone ({{ zone }}); the database stores UTC.</p>
 
 {% if not entries %}
   <p class="muted">No entries yet.</p>
@@ -14,7 +14,7 @@
   <tbody>
     {% for e in entries %}
     <tr>
-      <td class="nowrap"><code>{{ e.created_at }}</code></td>
+      <td class="nowrap"><code>{{ e.created_at | local }}</code></td>
       <td>{{ e.username or "—" }}</td>
       <td><code>{{ e.action }}</code></td>
       <td>{% if e.target_type %}<span class="muted small">{{ e.target_type }}</span> {{ e.target_id }}{% else %}—{% endif %}</td>

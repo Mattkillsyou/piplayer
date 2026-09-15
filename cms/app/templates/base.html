@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
   <title>{% block title %}{{ app_name }}{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -24,6 +25,7 @@
     <div class="user">
       <span>{{ user.username }} <span class="badge badge-{{ user.role }}">{{ user.role }}</span></span>
       <form method="post" action="/logout" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="link">Log out</button>
       </form>
     </div>
@@ -32,5 +34,14 @@
   <main class="container">
     {% block content %}{% endblock %}
   </main>
+  <script>
+  // One delegated confirm handler: names are never interpolated into inline JS.
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (form && form.dataset && form.dataset.confirm && !confirm(form.dataset.confirm)) {
+      e.preventDefault();
+    }
+  });
+  </script>
 </body>
 </html>

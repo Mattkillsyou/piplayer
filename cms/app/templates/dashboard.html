@@ -27,7 +27,11 @@
   {% for d in devices %}
   <div class="device-card">
     {% if d.last_screenshot_at %}
-      <img src="/devices/{{ d.id }}/screenshot?t={{ d.last_screenshot_at }}" class="device-thumb" alt="screenshot">
+      <img src="/devices/{{ d.id }}/screenshot?t={{ d.last_screenshot_at }}" class="device-thumb{% if d.screenshot_stale %} device-thumb-stale{% endif %}" alt="screenshot">
+      <div class="muted small screenshot-age">
+        screenshot {{ d.screenshot_age }} ({{ d.last_screenshot_at | local }})
+        {% if d.screenshot_stale %}<span class="badge badge-stale" title="No new screenshot for more than 3 capture intervals: the player may be idle, black or down">stale</span>{% endif %}
+      </div>
     {% else %}
       <div class="device-thumb device-thumb-empty">no screenshot yet</div>
     {% endif %}
@@ -35,14 +39,19 @@
       <div class="device-card-title">{{ d.name }}</div>
       <div class="muted small"><code>{{ d.device_id }}</code>{% if d.group_name %} · group: {{ d.group_name }}{% endif %}</div>
       <div class="small">
-        <strong>Playlist:</strong> {{ d.playlist_name or "—" }}<br>
+        <strong>Active:</strong>
+        {% if d.active_playlist_name %}{{ d.active_playlist_name }} <span class="muted">({{ d.active_source }})</span>{% else %}—{% endif %}<br>
         <strong>Now playing:</strong>
         {% if d.current_filename %}
           #{{ (d.current_position or 0) + 1 }}: {{ d.current_filename }}
         {% else %}—{% endif %}
         <br>
-        <strong>Status:</strong> {{ d.player_status or "—" }} · last seen {{ d.last_seen_at or "never" }}
+        <strong>Status:</strong> {{ d.player_status or "—" }} · last seen
+        {% if d.last_seen_at %}{{ d.seen_age }} ({{ d.last_seen_at | local }}){% else %}never{% endif %}
       </div>
+      {% if d.last_error %}
+      <div class="alert warn small" title="Reported by the player on its last sync">Sync problem: {{ d.last_error }}</div>
+      {% endif %}
     </div>
   </div>
   {% endfor %}

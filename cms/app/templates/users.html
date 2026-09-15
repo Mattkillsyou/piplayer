@@ -6,12 +6,13 @@
 <div class="panel">
   <h2>New user</h2>
   <form method="post" action="/users">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">
       <label>Username
         <input type="text" name="username" required>
       </label>
-      <label>Password (min 6 chars)
-        <input type="password" name="password" required minlength="6">
+      <label>Password (6-72 characters)
+        <input type="password" name="password" required minlength="6" maxlength="72">
       </label>
       <label>Role
         <select name="role">
@@ -32,9 +33,10 @@
     <tr>
       <td>{{ u.username }}{% if u.id == user.id %} <span class="muted small">(you)</span>{% endif %}</td>
       <td><span class="badge badge-{{ u.role }}">{{ u.role }}</span></td>
-      <td>{{ u.created_at }}</td>
+      <td>{{ u.created_at | local }}</td>
       <td>
         <form method="post" action="/users/{{ u.id }}/role" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <select name="role" onchange="this.form.submit()" {% if u.id == user.id %}disabled{% endif %}>
             <option value="admin" {% if u.role == 'admin' %}selected{% endif %}>admin</option>
             <option value="editor" {% if u.role == 'editor' %}selected{% endif %}>editor</option>
@@ -44,13 +46,15 @@
       </td>
       <td>
         <form method="post" action="/users/{{ u.id }}/password" class="inline">
-          <input type="password" name="password" placeholder="new password" minlength="6" style="width: 9rem;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="password" name="password" placeholder="new password" minlength="6" maxlength="72" style="width: 9rem;">
           <button type="submit" class="small">Set</button>
         </form>
       </td>
       <td>
         {% if u.id != user.id %}
-        <form method="post" action="/users/{{ u.id }}/delete" class="inline" onsubmit="return confirm('Delete {{ u.username }}?')">
+        <form method="post" action="/users/{{ u.id }}/delete" class="inline" data-confirm="Delete {{ u.username }}?">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="danger small">Delete</button>
         </form>
         {% endif %}

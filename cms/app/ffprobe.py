@@ -13,7 +13,7 @@ def have_ffprobe() -> bool:
 
 
 def probe(path: Path) -> dict:
-    """Return {duration_seconds, width, height, codec} or raise.
+    """Return {duration_seconds, width, height, codec, nb_frames} or raise.
 
     Returns best-effort values; missing fields are None. Raises FfprobeUnavailable
     if ffprobe isn't installed."""
@@ -45,9 +45,27 @@ def probe(path: Path) -> dict:
         except (TypeError, ValueError):
             duration = None
 
+    nb_frames = None
+    if video_stream and video_stream.get("nb_frames"):
+        try:
+            nb_frames = int(video_stream["nb_frames"])
+        except (TypeError, ValueError):
+            nb_frames = None
+
     return {
         "duration_seconds": duration,
         "width": (video_stream or {}).get("width"),
         "height": (video_stream or {}).get("height"),
         "codec": (video_stream or {}).get("codec_name"),
+        "nb_frames": nb_frames,
+        "format_name": fmt.get("format_name"),
     }
+
+
+def is_still_image(probe_data: dict) -> bool:
+    """True when ffprobe demuxed the file as a single picture (png_pipe, image2 for JPEG,
+    webp_pipe, bmp_pipe, a one-frame gif) rather than a video container."""
+    fmt = probe_data.get("format_name") or ""
+    if fmt.endswith("_pipe") or fmt == "image2":
+        return True
+    return fmt == "gif" and (probe_data.get("nb_frames") or 0) <= 1

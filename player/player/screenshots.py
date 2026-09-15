@@ -37,7 +37,7 @@ def capture_and_upload(cfg: PlayerConfig, mpv: MpvClient) -> bool:
                     "User-Agent": f"piplayer/{__version__}",
                 },
                 files={"file": (f"{cfg.device_id}.jpg", f, "image/jpeg")},
-                timeout=30,
+                timeout=15,
                 verify=cfg.verify_tls,
             )
         if r.status_code != 200:

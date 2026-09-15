@@ -8,7 +8,10 @@ without exposing it to the public internet. It's free for personal use (up to
 
 - Reach `http://controller-pi:8080` from any laptop, phone, or tablet you own,
   anywhere in the world.
-- No port forwarding, no DNS, no HTTPS certificates to manage.
+- No port forwarding, no DNS, no HTTPS certificates to manage. (The
+  connection is plain `http://` inside the encrypted Tailscale tunnel, so
+  leave `PIPLAYER_HTTPS_ONLY` at its default `0` — with `1` the login cookie
+  is only sent over https and this path stops working.)
 - Devices that aren't on your Tailnet can't see the CMS at all.
 
 ## Sign up
