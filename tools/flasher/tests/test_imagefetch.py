@@ -1,0 +1,77 @@
+import hashlib
+import http.server
+import threading
+
+import pytest
+
+import imagefetch
+
+FAKE = bytes(range(256)) * 4096  # 1 MiB
+FAKE_SHA = hashlib.sha256(FAKE).hexdigest()
+NAME = "2026-01-01-raspios-trixie-arm64-lite.img.xz"
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.path == "/raspios_lite_arm64_latest":
+            self.send_response(302)
+            self.send_header("Location", f"/raspios/{NAME}")
+            self.end_headers()
+        elif self.path == f"/raspios/{NAME}":
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(FAKE)))
+            self.end_headers()
+            self.wfile.write(FAKE)
+        elif self.path == f"/raspios/{NAME}.sha256":
+            body = f"{FAKE_SHA}  {NAME}\n".encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_error(404)
+
+
+@pytest.fixture(scope="module")
+def server():
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 8931), Handler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield "http://127.0.0.1:8931"
+    srv.shutdown()
+
+
+def test_resolve_download_verify(server, tmp_path):
+    final, name = imagefetch.resolve_latest(server + "/raspios_lite_arm64_latest")
+    assert final == f"{server}/raspios/{NAME}"
+    assert name == NAME
+    assert imagefetch.fetch_sha256(final) == FAKE_SHA
+    calls = []
+    dest = imagefetch.download(final, tmp_path / name, progress_cb=lambda d, t, r: calls.append((d, t)))
+    assert dest.read_bytes() == FAKE
+    assert calls[-1] == (len(FAKE), len(FAKE))
+    assert not (tmp_path / (name + ".part")).exists()
+    assert imagefetch.verify_sha256(dest, FAKE_SHA)
+    assert not imagefetch.verify_sha256(dest, "0" * 64)
+
+
+def test_download_cancel_and_404(server, tmp_path):
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(imagefetch.Cancelled):
+        imagefetch.download(f"{server}/raspios/{NAME}", tmp_path / "x.img.xz", cancel_event=cancel)
+    assert not (tmp_path / "x.img.xz.part").exists()
+    with pytest.raises(imagefetch.FetchError):
+        imagefetch.download(f"{server}/missing", tmp_path / "y.img.xz")
+    with pytest.raises(imagefetch.FetchError):
+        imagefetch.resolve_latest(f"{server}/missing")
+
+
+def test_cached_path_is_under_localappdata(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    p = imagefetch.cached_path("../evil/" + NAME)
+    assert p == tmp_path / "Projection5000" / "images" / NAME
+    assert p.parent.is_dir()

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Groups — {{ app_name }}{% endblock %}
+{% block title %}Groups · {{ app_name }}{% endblock %}
 {% block content %}
 <div class="page-head">
   <h1>Device groups</h1>
@@ -35,7 +35,7 @@
         <form method="post" action="/groups/{{ g.id }}/assign" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <select name="playlist_id" data-autosubmit aria-label="Default playlist for {{ g.name }}" {% if user.role == 'viewer' %}disabled{% endif %}>
-            <option value="">— none —</option>
+            <option value="">none</option>
             {% for p in playlists %}
             <option value="{{ p.id }}" {% if p.id == g.playlist_id %}selected{% endif %}>{{ p.name }}</option>
             {% endfor %}

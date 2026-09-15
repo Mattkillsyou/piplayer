@@ -1,0 +1,117 @@
+// Device API (port of cms/app/routes/api.py): health, sync manifest, screenshot upload,
+// command results. Auth is `Authorization: Bearer <device token>`; the device_id in the
+// path must be the token's own device.
+import * as auth from "./auth.js";
+import * as db from "./db.js";
+import * as manifest from "./manifest.js";
+import * as media from "./media.js";
+import { envInt, fail, json, jsonObject } from "./util.js";
+
+export const MAX_SYNC_ERROR_LEN = 200;
+
+async function ownDevice(ctx) {
+  const device = await auth.deviceFromHeader(ctx);
+  if (device.device_id !== ctx.params.device_id) fail(403, "Token does not match device id");
+  return device;
+}
+
+// The fixed CMS turns FastAPI's 422 for a typed path/query parameter into contract 10's
+// 400 {detail: "<loc>: <msg>"} (main.py validation_error); same words here. Pydantic's lax
+// int accepts '+5', ' 5 ', '007' and '1.0' (-> 1) but not '1.5', '' or 'abc'.
+const LAX_INT = /^[+-]?\d+(\.0+)?$/;
+
+function intParam(where, name, v) {
+  if (!LAX_INT.test(v.trim())) {
+    fail(400, `${where}.${name}: Input should be a valid integer, unable to parse string as an integer`);
+  }
+  return parseInt(v, 10);
+}
+
+// Optional integer query parameter (`int | None = Query(None)`): absent -> null. The player
+// omits it when it has none.
+function intQuery(params, name) {
+  const v = params.get(name);
+  return v === null ? null : intParam("query", name, v);
+}
+
+// Integer path parameter (`command_id: int`).
+const intPath = (params, name) => intParam("path", name, params[name]);
+
+async function sync(ctx) {
+  const device = await ownDevice(ctx);
+  const q = ctx.url.searchParams;
+
+  // Empty string = last sync fully succeeded; store NULL so the UI can test truthiness.
+  const lastError = (q.get("sync_error") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
+  await db.run(ctx.env,
+    `UPDATE devices SET
+        last_seen_at = datetime('now'),
+        last_ip = ?,
+        current_position = ?,
+        current_filename = ?,
+        player_status = ?,
+        player_version = COALESCE(?, player_version),
+        last_error = ?
+      WHERE id = ?`,
+    ctx.ip,
+    intQuery(q, "current_position"),
+    q.get("current_filename"),
+    q.get("player_status"),
+    q.get("player_version"),
+    lastError,
+    device.id);
+
+  const settings = await ctx.settings();
+  const body = await manifest.manifest_for_device(ctx.env, device, ctx.url.origin, settings);
+  return new Response(manifest.manifest_json(body), { headers: { "content-type": "application/json" } });
+}
+
+async function reportCommandResult(ctx) {
+  const device = await auth.deviceFromHeader(ctx);
+  const commandId = intPath(ctx.params, "command_id"); // after auth, as FastAPI orders it
+  const body = await jsonObject(ctx.request);
+  const result = (body.result === undefined ? "" : String(body.result)).slice(0, 1000);
+
+  const row = await db.first(ctx.env, "SELECT id, device_id FROM device_commands WHERE id = ?", commandId);
+  if (!row) fail(404, "command not found");
+  if (row.device_id !== device.id) fail(403, "command belongs to another device");
+  await db.run(ctx.env,
+    "UPDATE device_commands SET completed_at = datetime('now'), result = ? WHERE id = ?", result, commandId);
+  return json({ ok: true });
+}
+
+async function uploadScreenshot(ctx) {
+  const device = await ownDevice(ctx);
+  const maxBytes = envInt(ctx.env, "PIPLAYER_MAX_SCREENSHOT_BYTES", 5 * 1024 * 1024);
+  const tooLarge = () => fail(413, `File exceeds ${maxBytes} bytes`);
+  // Same wording as web._receive_upload, which streams the body and rejects as it goes.
+  if (!/^multipart\/form-data\s*;.*boundary=/i.test(ctx.request.headers.get("content-type") || "")) {
+    fail(400, "expected a multipart/form-data upload");
+  }
+  const declared = parseInt(ctx.request.headers.get("content-length") || "", 10);
+  if (declared > maxBytes + 64 * 1024) tooLarge();
+
+  let form;
+  try {
+    form = await ctx.form();
+  } catch {
+    fail(400, "expected a multipart/form-data upload");
+  }
+  // The CMS takes the first file part whatever its field name; the spec names it 'file'.
+  const file = [...form.values()].find((v) => v instanceof File);
+  if (!file) fail(400, "no file in upload (field 'file')");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!media.isJpeg(bytes)) fail(400, "screenshot must be a JPEG image");
+  if (bytes.length > maxBytes) tooLarge();
+
+  await media.putScreenshot(ctx.env, device.device_id, bytes);
+  await db.run(ctx.env, "UPDATE devices SET last_screenshot_at = datetime('now') WHERE id = ?", device.id);
+  return json({ ok: true, size_bytes: bytes.length });
+}
+
+export function register(router) {
+  router.get("/api/health", () => json({ ok: true }));
+  router.get("/api/sync/:device_id", sync);
+  router.post("/api/screenshots/:device_id", uploadScreenshot);
+  router.post("/api/commands/:command_id/result", reportCommandResult);
+}

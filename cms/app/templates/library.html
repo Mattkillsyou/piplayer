@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Library — {{ app_name }}{% endblock %}
+{% block title %}Library · {{ app_name }}{% endblock %}
 {% block content %}
 {% set total_bytes = items | sum(attribute='size_bytes') %}
 <div class="page-head">

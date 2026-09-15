@@ -1,4 +1,4 @@
-# Adding a Pi to PiPlayer
+# Adding a Pi to Projection5000
 
 End-to-end walkthrough for taking a fresh Raspberry Pi (4 or 5) and turning it
 into a projector loop player.
@@ -18,7 +18,7 @@ You'll need:
 
 Download Raspberry Pi Imager: <https://www.raspberrypi.com/software/>.
 
-PiPlayer supports both current Raspberry Pi OS releases:
+Projection5000 supports both current Raspberry Pi OS releases:
 
 | Release | Imager entry | mpv | Python |
 | --- | --- | --- | --- |
