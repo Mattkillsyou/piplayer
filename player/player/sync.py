@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import json
 import logging
@@ -27,6 +28,13 @@ class SyncInterrupted(SyncError):
 
 def _never_stop() -> bool:
     return False
+
+
+Progress = Callable[[dict], None]
+
+
+def _no_progress(_info: dict) -> None:
+    pass
 
 
 def _hash_file(path: Path, should_stop: Callable[[], bool] = _never_stop) -> str:
@@ -116,10 +124,15 @@ def fetch_manifest(cfg: PlayerConfig, status: dict | None = None, sync_error: st
     return r.json()
 
 
-def _download_item(cfg: PlayerConfig, item: dict, should_stop: Callable[[], bool] = _never_stop) -> Path:
+def _download_item(cfg: PlayerConfig, item: dict, should_stop: Callable[[], bool] = _never_stop,
+                   on_progress: Progress = _no_progress, progress: dict | None = None) -> Path:
     """Download item into media_dir, resuming an interrupted transfer from
-    <filename>.part with an HTTP Range request. Returns the final path."""
+    <filename>.part with an HTTP Range request. Returns the final path.
+    `progress` (index/total/filename) is passed through to on_progress with
+    the byte counts, at most once per received chunk."""
     filename = item["filename"]
+    progress = progress or {"index": 1, "total": 1, "filename": filename}
+    total_bytes = item.get("size_bytes") or None
     if not SAFE_FILENAME.match(filename):
         raise SyncError(f"refusing unsafe filename: {filename}")
 
@@ -150,6 +163,7 @@ def _download_item(cfg: PlayerConfig, item: dict, should_stop: Callable[[], bool
         else:
             log.info("downloading %s (%.1f MB)", filename, (item.get("size_bytes") or 0) / 1024 / 1024)
 
+        on_progress(dict(progress, phase="downloading", bytes_done=resume_from, bytes_total=total_bytes))
         # (connect, read) timeouts: the read timeout bounds one stalled recv, and
         # the shutdown flag is only polled between chunks, so keep it below the
         # unit's TimeoutStopSec.
@@ -175,6 +189,7 @@ def _download_item(cfg: PlayerConfig, item: dict, should_stop: Callable[[], bool
                 if resume_from:
                     log.info("server ignored Range for %s; restarting from byte 0", filename)
                 mode = "wb"
+            done = resume_from if mode == "ab" else 0
             with part.open(mode) as out:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     if should_stop():
@@ -183,6 +198,8 @@ def _download_item(cfg: PlayerConfig, item: dict, should_stop: Callable[[], bool
                     if chunk:
                         out.write(chunk)
                         hasher.update(chunk)
+                        done += len(chunk)
+                        on_progress(dict(progress, phase="downloading", bytes_done=done, bytes_total=total_bytes))
         break
 
     actual_sha = hasher.hexdigest()
@@ -195,16 +212,19 @@ def _download_item(cfg: PlayerConfig, item: dict, should_stop: Callable[[], bool
 
 
 def _ensure_item(cfg: PlayerConfig, item: dict, index: dict, verify: bool,
-                 should_stop: Callable[[], bool]) -> bool:
+                 should_stop: Callable[[], bool], on_progress: Progress = _no_progress,
+                 progress: dict | None = None) -> bool:
     """Make sure item's file is present and verified. Returns True when a
     download happened (False when the existing file was accepted)."""
     filename = item["filename"]
     if not SAFE_FILENAME.match(filename):
         raise SyncError(f"refusing unsafe filename: {filename}")
+    progress = progress or {"index": 1, "total": 1, "filename": filename}
     target = cfg.media_dir / filename
     if target.is_file():
         if not verify and _matches_index(target, item["sha256"], index):
             return False
+        on_progress(dict(progress, phase="verifying", bytes_done=None, bytes_total=item.get("size_bytes")))
         existing_sha = _hash_file(target, should_stop)
         if existing_sha == item["sha256"]:
             index[filename] = _index_entry(target, existing_sha)
@@ -212,7 +232,7 @@ def _ensure_item(cfg: PlayerConfig, item: dict, index: dict, verify: bool,
         log.warning("hash mismatch for existing %s, redownloading", filename)
         target.unlink()
         index.pop(filename, None)
-    _download_item(cfg, item, should_stop)
+    _download_item(cfg, item, should_stop, on_progress, progress)
     index[filename] = _index_entry(target, item["sha256"])
     return True
 
@@ -322,7 +342,12 @@ def wanted_hash(cfg: PlayerConfig, manifest: dict | None) -> str:
     return base
 
 
+ENOSPC_TEXT = "no space left on device"
+
+
 def _describe_error(e: BaseException) -> str:
+    if isinstance(e, OSError) and e.errno == errno.ENOSPC:
+        return ENOSPC_TEXT
     if isinstance(e, requests.HTTPError) and e.response is not None:
         return f"HTTP {e.response.status_code}"
     if isinstance(e, requests.RequestException):
@@ -333,7 +358,11 @@ def _describe_error(e: BaseException) -> str:
 def _format_sync_error(failures: list[tuple[str, str]], total: int) -> str:
     if not failures:
         return ""
-    if len(failures) == 1:
+    if any(reason == ENOSPC_TEXT for _, reason in failures):
+        # a full card fails every remaining item: the daemon keys the STORAGE
+        # FULL screen off this phrase, so it goes ahead of the names and the cut
+        text = f"{len(failures)} of {total} items missing: {ENOSPC_TEXT}"
+    elif len(failures) == 1:
         name, reason = failures[0]
         text = f"download failed: {name}: {reason}"
     else:
@@ -349,6 +378,7 @@ def sync_once(
     sync_error: str = "",
     verify_all: bool = False,
     should_stop: Callable[[], bool] = _never_stop,
+    on_progress: Progress | None = None,
 ) -> tuple[bool, dict | None, str]:
     """Fetch manifest, download deltas, prune stale.
     Returns (changed, manifest, sync_error): `changed` is True when the playlist
@@ -356,7 +386,10 @@ def sync_once(
     is present and verified, else a short description for the CMS.
     A failing item does not abort the sync: the others are kept and the miss is
     retried on the next poll. With verify_all every file is re-hashed.
+    on_progress, when given, is called with {phase, index (1-based), total,
+    filename, bytes_done, bytes_total} as each item starts and while it downloads.
     """
+    on_progress = on_progress or _no_progress
     manifest = fetch_manifest(cfg, status=status, sync_error=sync_error)
     local = load_local_manifest(cfg)
 
@@ -383,13 +416,14 @@ def sync_once(
     downloaded = 0
     failures: list[tuple[str, str]] = []
     wanted: set[str] = set()
-    for item in items:
+    for i, item in enumerate(items, 1):
         if should_stop():
             raise SyncInterrupted("stopped before downloading remaining items")
         filename = item.get("filename") or "?"
         wanted.add(filename)
+        progress = {"index": i, "total": len(items), "filename": filename}
         try:
-            if _ensure_item(cfg, item, index, verify_all, should_stop):
+            if _ensure_item(cfg, item, index, verify_all, should_stop, on_progress, progress):
                 downloaded += 1
         except SyncInterrupted:
             raise

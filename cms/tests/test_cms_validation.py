@@ -405,3 +405,74 @@ def test_integrity_error_handler_is_registered_and_returns_friendly_409(cms):
     assert "detail" in body
     for w in SQLITE_WORDS:
         assert w.lower() not in body.lower(), f"sqlite error text leaked: {body}"
+
+
+# ---------------------------------------------------------------------------
+# Manifest next_rule (standby screen on the player)
+# ---------------------------------------------------------------------------
+
+def test_manifest_next_rule_when_nothing_to_play(admin, client, tok, make_media):
+    import datetime as dt
+    from cms_helpers import add_item, create_device, create_playlist, post, sync, upload
+    dev = create_device(admin, f"nr-{tok}")
+    pid = create_playlist(admin, f"nr-{tok}")
+    add_item(admin, pid, upload(admin, make_media("png"))["id"])
+    # a rule starting in ~2 hours (wrapped to tomorrow if that passes midnight)
+    start = (dt.datetime.now() + dt.timedelta(hours=2)).replace(second=0, microsecond=0)
+    end = start + dt.timedelta(minutes=30)
+    post(admin, f"/devices/{dev['id']}/schedule",
+         {"name": f"later-{tok}", "playlist_id": str(pid), "priority": "5",
+          "start_time": start.strftime("%H:%M"), "end_time": end.strftime("%H:%M")})
+    m = sync(client, dev).json()
+    assert m["playlist"] is None
+    assert m["next_rule"]["name"] == f"later-{tok}"
+    assert m["next_rule"]["playlist"] == f"nr-{tok}"
+    assert dt.datetime.fromisoformat(m["next_rule"]["starts_at"]).strftime("%H:%M") == start.strftime("%H:%M")
+    # once a playlist is assigned there is content, so no next_rule is advertised
+    post(admin, f"/devices/{dev['id']}/assign", {"playlist_id": str(pid)})
+    m = sync(client, dev).json()
+    assert m["playlist"]["id"] == pid and m["next_rule"] is None
+
+
+def test_schedules_next_start_skips_matching_and_respects_days():
+    import datetime as dt
+    from app import schedules
+    now = dt.datetime(2026, 9, 15, 14, 0)  # a Tuesday
+    rules = [
+        {"id": 1, "name": "now", "start_time": "13:00", "end_time": "18:00"},          # already active
+        {"id": 2, "name": "weekend", "start_time": "10:00", "end_time": "16:00", "days_of_week": "56"},
+        {"id": 3, "name": "tonight", "start_time": "22:00", "end_time": "02:00"},
+        {"id": 4, "name": "expired", "start_time": "15:00", "end_time": "16:00", "end_date": "2026-09-01"},
+    ]
+    rule, when = schedules.next_start(rules, now)
+    assert rule["name"] == "tonight" and when == dt.datetime(2026, 9, 15, 22, 0)
+    rule, when = schedules.next_start([rules[1]], now)
+    assert rule["name"] == "weekend" and when == dt.datetime(2026, 9, 19, 10, 0)
+    # an active rule counts again at its next start; an expired one never
+    rule, when = schedules.next_start([rules[0], rules[3]], now)
+    assert rule["name"] == "now" and when == dt.datetime(2026, 9, 16, 13, 0)
+    assert schedules.next_start([rules[3]], now) is None
+
+
+def test_schedules_next_start_skips_rules_a_higher_priority_covers():
+    import datetime as dt
+    from app import schedules
+    now = dt.datetime(2026, 9, 15, 14, 0)
+    always = {"id": 1, "name": "all day", "priority": 10, "start_time": "08:00", "end_time": "20:00"}
+    shadowed = {"id": 2, "name": "shadowed", "priority": 1, "start_time": "15:00", "end_time": "16:00"}
+    winner = {"id": 3, "name": "evening", "priority": 20, "start_time": "17:00", "end_time": "18:00"}
+    rule, when = schedules.next_start([always, shadowed, winner], now)
+    assert rule["name"] == "evening" and when == dt.datetime(2026, 9, 15, 17, 0)
+    # a timezone-aware clock is accepted (rules are naive local wall-clock)
+    aware = now.replace(tzinfo=dt.timezone.utc)
+    assert schedules.next_start([winner], aware)[1] == dt.datetime(2026, 9, 15, 17, 0)
+
+
+def test_device_lamp_is_whitelisted(admin, client, tok):
+    from cms_helpers import create_device, sync
+    dev = create_device(admin, f"lamp-{tok}", f"Lamp Dev {tok}")
+    sync(client, dev, player_status="evil class")
+    html = admin.get("/dashboard").text
+    i = html.index(f"Lamp Dev {tok}")
+    assert "status-idle" in html[i - 200: i + 800]
+    assert "status-evil" not in html

@@ -79,11 +79,15 @@ def test_schedule_rule_name_is_escaped_in_confirm(admin, tok):
 
 def test_templates_have_no_inline_onsubmit_and_base_has_delegated_listener(cms):
     tpl_dir = Path(cms.root) / "app" / "templates"
-    offenders = [p.name for p in tpl_dir.glob("*.html") if "onsubmit" in p.read_text(encoding="utf-8")]
-    assert offenders == [], f"templates still using onsubmit=: {offenders}"
+    inline = re.compile(r"\son(submit|change|click|load|input|keyup|keydown)\s*=", re.I)
+    offenders = [p.name for p in tpl_dir.glob("*.html") if inline.search(p.read_text(encoding="utf-8"))]
+    assert offenders == [], f"templates still using inline event handlers: {offenders}"
     base = (tpl_dir / "base.html").read_text(encoding="utf-8")
-    assert "dataset.confirm" in base, "base.html lacks the delegated data-confirm submit listener"
-    assert "preventDefault" in base
+    assert "/static/app.js" in base, "base.html does not load app.js"
+    app_js = (Path(cms.root) / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "dataset.confirm" in app_js, "app.js lacks the delegated data-confirm submit listener"
+    assert "preventDefault" in app_js
+    assert "select[data-autosubmit]" in app_js, "app.js lacks the select auto-submit listener"
     # every destructive form carries data-confirm instead
     with_confirm = [p.name for p in tpl_dir.glob("*.html") if "data-confirm=" in p.read_text(encoding="utf-8")]
     for expected in ("playlists.html", "devices.html", "groups.html", "users.html", "library.html", "device_schedule.html"):

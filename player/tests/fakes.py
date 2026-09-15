@@ -64,6 +64,7 @@ class FakeMpv:
         self.fail_commands: set[str] = set()    # command names replied with an error
         self.recv_on_empty: str | None = None   # None: socket.timeout; "eof"; "events"
         self.screenshot_bytes: bytes | None = None  # written by screenshot-to-file when set
+        self.overlays: list = []             # overlay-add / overlay-remove commands, in order
         self.connections = 0
 
     # -- socket plumbing ------------------------------------------------------
@@ -205,6 +206,9 @@ class FakeMpv:
         if name == "stop":
             self.playlist = []
             self.current = None
+            return {"error": "success"}
+        if name in ("overlay-add", "overlay-remove"):
+            self.overlays.append(cmd)
             return {"error": "success"}
         if name == "screenshot-to-file":
             if self.screenshot_bytes is not None:

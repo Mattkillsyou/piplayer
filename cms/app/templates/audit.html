@@ -1,28 +1,39 @@
 {% extends "base.html" %}
 {% block title %}Audit log — {{ app_name }}{% endblock %}
 {% block content %}
-<h1>Audit log</h1>
-<p class="muted small">Last {{ entries | length }} entries. Times are shown in the controller's local zone ({{ zone }}); the database stores UTC.</p>
+<div class="page-head">
+  <h1>Audit log</h1>
+  <span class="page-meta">last {{ entries | length }} entr{{ 'y' if entries | length == 1 else 'ies' }} · times in {{ zone }} (database stores UTC)</span>
+</div>
 
-{% if not entries %}
-  <p class="muted">No entries yet.</p>
-{% else %}
-<table class="data">
-  <thead>
-    <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr>
-  </thead>
-  <tbody>
-    {% for e in entries %}
-    <tr>
-      <td class="nowrap"><code>{{ e.created_at | local }}</code></td>
-      <td>{{ e.username or "—" }}</td>
-      <td><code>{{ e.action }}</code></td>
-      <td>{% if e.target_type %}<span class="muted small">{{ e.target_type }}</span> {{ e.target_id }}{% else %}—{% endif %}</td>
-      <td><span class="muted small mono">{{ e.details or "" }}</span></td>
-      <td><span class="muted small">{{ e.ip or "—" }}</span></td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% endif %}
+<div class="terminal">
+  <div class="terminal-head">
+    <h2>tail -n {{ limit }} audit.log</h2>
+    <span class="meta">newest first · <a href="/audit?limit=1000">show 1000</a></span>
+  </div>
+  {% if not entries %}
+  <div class="terminal-foot">no entries yet <span class="cursor-blink" aria-hidden="true"></span></div>
+  {% else %}
+  <div class="table-wrap">
+  <table class="data">
+    <thead>
+      <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr>
+    </thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td class="nowrap log-t"><code>{{ e.created_at | local }}</code></td>
+        <td class="log-u">{{ e.username or "—" }}</td>
+        <td class="log-a"><code>{{ e.action }}</code></td>
+        <td class="nowrap">{% if e.target_type %}<span class="muted small">{{ e.target_type }}</span> {{ e.target_id or "" }}{% else %}—{% endif %}</td>
+        <td class="log-d"><span class="muted small mono">{{ e.details or "" }}</span></td>
+        <td class="muted nowrap">{{ e.ip or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="terminal-foot">end of tail <span class="cursor-blink" aria-hidden="true"></span></div>
+  {% endif %}
+</div>
 {% endblock %}

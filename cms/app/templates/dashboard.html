@@ -1,60 +1,122 @@
 {% extends "base.html" %}
 {% block title %}Dashboard — {{ app_name }}{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
+<div class="page-head">
+  <h1>Dashboard</h1>
+  <span class="page-meta">server {{ server_now }} · {{ zone }}</span>
+</div>
 
+{% set fault_count = devices | selectattr('lamp', 'in', ['mpv-down', 'offline']) | list | length %}
+{% set playing_count = devices | selectattr('lamp', 'equalto', 'playing') | list | length %}
 <div class="cards">
   <div class="card">
-    <div class="card-label">Media</div>
-    <div class="card-value">{{ media_count }}</div>
-    <div class="card-sub">{{ (media_bytes / 1024 / 1024) | round(1) }} MB on disk</div>
+    <span class="card-label">media on disk</span>
+    <span class="card-value">{{ media_count }}</span>
+    <span class="card-sub">{{ (media_bytes / 1024 / 1024) | round(1) }} MB on disk</span>
   </div>
   <div class="card">
-    <div class="card-label">Playlists</div>
-    <div class="card-value">{{ playlist_count }}</div>
+    <span class="card-label">playlists</span>
+    <span class="card-value">{{ playlist_count }}</span>
+    <span class="card-sub">assign on the Devices page</span>
   </div>
   <div class="card">
-    <div class="card-label">Devices</div>
-    <div class="card-value">{{ devices | length }}</div>
+    <span class="card-label">devices</span>
+    <span class="card-value">{{ devices | length }}</span>
+    <span class="card-sub">{{ playing_count }} playing · {{ fault_count }} fault{{ '' if fault_count == 1 else 's' }}</span>
   </div>
 </div>
 
-<h2>Devices</h2>
+<div class="section-head">
+  <h2>Monitor wall · {{ devices | length }} device{{ '' if devices | length == 1 else 's' }}</h2>
+  {% if devices %}
+  <div class="filters" id="wall-filters">
+    <button type="button" class="small" data-filter="all" aria-pressed="true">All</button>
+    <button type="button" class="small" data-filter="faults" aria-pressed="false">Faults ({{ fault_count }})</button>
+  </div>
+  {% endif %}
+</div>
 {% if not devices %}
-  <p class="muted">No devices yet. <a href="/devices">Register one</a> to get started.</p>
+  <div class="empty">
+    <span class="empty-title">NO SIGNAL</span>
+    <p>No devices yet. Register one to start the wall.</p>
+    <a href="/devices" class="button small">Register a device</a>
+  </div>
 {% else %}
-<div class="device-grid">
+<div class="device-grid" id="monitor-wall">
   {% for d in devices %}
-  <div class="device-card">
-    {% if d.last_screenshot_at %}
-      <img src="/devices/{{ d.id }}/screenshot?t={{ d.last_screenshot_at }}" class="device-thumb{% if d.screenshot_stale %} device-thumb-stale{% endif %}" alt="screenshot">
-      <div class="muted small screenshot-age">
-        screenshot {{ d.screenshot_age }} ({{ d.last_screenshot_at | local }})
-        {% if d.screenshot_stale %}<span class="badge badge-stale" title="No new screenshot for more than 3 capture intervals: the player may be idle, black or down">stale</span>{% endif %}
-      </div>
-    {% else %}
-      <div class="device-thumb device-thumb-empty">no screenshot yet</div>
-    {% endif %}
+  <div class="device-card{% if d.lamp in ('mpv-down', 'offline') %} is-fault{% endif %}">
+    <div class="device-screen{% if d.screenshot_stale %} is-stale{% endif %}">
+      {% if d.last_screenshot_at %}
+        <img src="/devices/{{ d.id }}/screenshot?t={{ d.last_screenshot_at }}" class="device-thumb{% if d.screenshot_stale %} device-thumb-stale{% endif %}" alt="Latest screenshot from {{ d.name }}">
+        <span class="screenshot-age">
+          <span class="screen-chip tl" title="{{ d.last_screenshot_at | local }}">{{ d.screenshot_age }}</span>
+          {% if d.screenshot_stale %}
+            <span class="screen-chip tr is-stale badge-stale" title="No new screenshot for more than 3 capture intervals: the player may be idle, black or down">stale</span>
+          {% else %}
+            <span class="screen-chip tr">live</span>
+          {% endif %}
+        </span>
+      {% else %}
+        <div class="device-thumb device-thumb-empty">
+          <span class="empty-title">NO SIGNAL</span>
+          <span class="empty-sub">no screenshot yet</span>
+        </div>
+      {% endif %}
+      {% if d.current_filename %}
+        <span class="screen-now">#{{ (d.current_position or 0) + 1 }} {{ d.current_filename }}</span>
+      {% endif %}
+    </div>
     <div class="device-card-body">
-      <div class="device-card-title">{{ d.name }}</div>
-      <div class="muted small"><code>{{ d.device_id }}</code>{% if d.group_name %} · group: {{ d.group_name }}{% endif %}</div>
-      <div class="small">
-        <strong>Active:</strong>
-        {% if d.active_playlist_name %}{{ d.active_playlist_name }} <span class="muted">({{ d.active_source }})</span>{% else %}—{% endif %}<br>
-        <strong>Now playing:</strong>
-        {% if d.current_filename %}
-          #{{ (d.current_position or 0) + 1 }}: {{ d.current_filename }}
-        {% else %}—{% endif %}
-        <br>
-        <strong>Status:</strong> {{ d.player_status or "—" }} · last seen
-        {% if d.last_seen_at %}{{ d.seen_age }} ({{ d.last_seen_at | local }}){% else %}never{% endif %}
+      <div class="device-card-head">
+        <div>
+          <div class="device-card-title">{{ d.name }}</div>
+          <div class="device-card-id"><code>{{ d.device_id }}</code>{% if d.group_name %} · {{ d.group_name }}{% endif %}</div>
+        </div>
+        <span class="status status-{{ d.lamp }}"><span class="lamp"></span>{{ d.lamp }}</span>
       </div>
+      <div class="now-block{% if not d.active_playlist_name %} none{% endif %}">
+        {% if d.active_playlist_name %}
+          <span class="now-playlist">{{ d.active_playlist_name }}</span>
+          <span class="now-via">via {{ d.active_source }}</span>
+        {% else %}
+          <span class="now-playlist">no playlist</span>
+        {% endif %}
+      </div>
+      <span class="device-meta">last seen {% if d.last_seen_at %}{{ d.seen_age }} · {{ d.last_seen_at | local }}{% else %}never{% endif %}</span>
       {% if d.last_error %}
-      <div class="alert warn small" title="Reported by the player on its last sync">Sync problem: {{ d.last_error }}</div>
+      <div class="alert error small" title="Reported by the player on its last sync">Sync problem: {{ d.last_error }}</div>
+      {% endif %}
+      {% if user.role != 'viewer' %}
+      <div class="tile-actions">
+        <form method="post" action="/devices/{{ d.id }}/command" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="command" value="force-sync">
+          <button type="submit" class="small">Resync</button>
+        </form>
+        <form method="post" action="/devices/{{ d.id }}/command" class="inline" data-confirm="Reboot {{ d.name }}?">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="command" value="reboot">
+          <button type="submit" class="small danger">Reboot</button>
+        </form>
+      </div>
       {% endif %}
     </div>
   </div>
   {% endfor %}
 </div>
 {% endif %}
+
+<div class="audit-tail">
+  <div class="audit-tail-head">
+    <h2>Audit tail · <a href="/audit">full log</a></h2>
+    <span class="cursor-blink" aria-hidden="true"></span>
+  </div>
+  <ul class="log-lines">
+    {% for e in audit_tail %}
+    <li><span class="log-t">{{ (e.created_at | local)[:16] }}</span> <span class="log-u">{{ e.username or "system" }}</span> <span class="log-a">{{ e.action }}</span>{% if e.target_type %} <span class="log-tg">{{ e.target_type }} {{ e.target_id }}</span>{% endif %} <span class="log-ip">{{ e.ip or "" }}</span></li>
+    {% else %}
+    <li class="empty-line">no activity yet</li>
+    {% endfor %}
+  </ul>
+</div>
 {% endblock %}

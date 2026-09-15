@@ -1,40 +1,47 @@
 {% extends "base.html" %}
 {% block title %}{{ playlist.name }} — {{ app_name }}{% endblock %}
 {% block content %}
-<p><a href="/playlists">← All playlists</a></p>
-<h1>{{ playlist.name }}</h1>
-
 {% set can_edit = user.role != 'viewer' %}
-{% if can_edit %}
-<div class="panel">
+<a href="/playlists" class="back">← All playlists</a>
+<div class="page-head playlist-head">
+  {% if can_edit %}
   <form method="post" action="/playlists/{{ playlist.id }}/rename" class="row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="text" name="name" value="{{ playlist.name }}" required>
+    <label>playlist name
+      <input type="text" name="name" value="{{ playlist.name }}" required>
+    </label>
     <button type="submit">Rename</button>
   </form>
+  {% else %}
+  <h1>{{ playlist.name }}</h1>
+  {% endif %}
+  <span class="page-meta">{{ items | length }} item{{ '' if items | length == 1 else 's' }}{% if can_edit %} · drag rows to reorder{% endif %}</span>
 </div>
-{% endif %}
 
 <h2>Playlist order ({{ items | length }})</h2>
-<p class="muted small">{% if can_edit %}Drag rows to reorder. {% endif %}Empty duration = play natural length for videos, {{ default_image_duration }}s default for images.</p>
+<p class="help small">Empty duration = play natural length for videos, {{ default_image_duration }}s default for images.</p>
 {% if not items %}
-  <p class="muted">Empty.{% if can_edit %} Add media below.{% endif %}</p>
+  <div class="empty">
+    <span class="empty-title">EMPTY REEL</span>
+    <p>Nothing queued.{% if can_edit %} Add media below.{% endif %}</p>
+  </div>
 {% else %}
+<div class="table-wrap">
 <table class="data sortable-table" id="playlist-items">
   <thead>
-    <tr><th></th><th>#</th><th>Type</th><th>Name</th><th>Natural duration</th><th>Override (s)</th><th></th></tr>
+    <tr><th></th><th>#</th><th>Type</th><th>Name</th><th>Natural</th><th>Override</th><th></th></tr>
   </thead>
-  <tbody id="sortable-body" {% if not can_edit %}data-readonly="1"{% endif %}>
+  <tbody id="sortable-body" data-playlist-id="{{ playlist.id }}" {% if not can_edit %}data-readonly="1"{% endif %}>
     {% for it in items %}
     <tr data-item-id="{{ it.id }}">
-      <td class="drag-handle" title="Drag to reorder">{% if can_edit %}⋮⋮{% endif %}</td>
+      <td class="drag-handle" title="Drag to reorder, or focus and press the up/down arrow keys">{% if can_edit %}<span role="button" tabindex="0" aria-label="Move {{ it.original_name }}">⣿</span>{% endif %}</td>
       <td class="position-cell">{{ loop.index }}</td>
       <td>
         {% if it.media_type == 'video' %}<span class="badge badge-video">VIDEO</span>
         {% else %}<span class="badge badge-image">IMAGE</span>{% endif %}
       </td>
-      <td>{{ it.original_name }}</td>
-      <td>{% if it.duration_seconds %}{{ it.duration_seconds | round(1) }} s{% else %}—{% endif %}</td>
+      <td class="name">{{ it.original_name }}</td>
+      <td class="muted nowrap">{% if it.duration_seconds %}{{ it.duration_seconds | round(1) }} s{% else %}—{% endif %}</td>
       <td>
         {% if can_edit %}
         <form method="post" action="/playlists/{{ playlist.id }}/items/{{ it.id }}/duration" class="inline duration-form">
@@ -42,7 +49,8 @@
           <input type="number" name="duration" min="0.5" max="86400" step="0.5"
                  value="{{ it.duration_override_seconds or '' }}"
                  placeholder="{% if it.media_type == 'image' %}{{ default_image_duration }}{% else %}auto{% endif %}"
-                 style="width: 5rem;">
+                 aria-label="Duration override in seconds">
+          <span class="unit">sec</span>
           <button type="submit" class="small">Set</button>
         </form>
         {% else %}{{ it.duration_override_seconds or '—' }}{% endif %}
@@ -59,70 +67,34 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}
 
 {% if can_edit %}
 <h2>Add media</h2>
 {% if not available %}
-  <p class="muted">All uploaded media is already in this playlist, or you haven't uploaded anything. <a href="/library">Go to Library</a>.</p>
+  <p class="help small">All uploaded media is already in this playlist, or you haven't uploaded anything. <a href="/library">Go to Library</a>.</p>
 {% else %}
-<form method="post" action="/playlists/{{ playlist.id }}/items" class="row">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <select name="media_id" required>
-    <option value="">— pick media —</option>
-    {% for m in available %}
-    <option value="{{ m.id }}">
-      [{{ m.media_type | upper }}] {{ m.original_name }}{% if m.duration_seconds %} ({{ m.duration_seconds | round(1) }}s){% endif %}
-    </option>
-    {% endfor %}
-  </select>
-  <button type="submit" class="primary">Add to playlist</button>
-</form>
+<div class="table-foot">
+  <form method="post" action="/playlists/{{ playlist.id }}/items">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <select name="media_id" required aria-label="Media to add">
+      <option value="">— pick media —</option>
+      {% for m in available %}
+      <option value="{{ m.id }}">
+        [{{ m.media_type | upper }}] {{ m.original_name }}{% if m.duration_seconds %} ({{ m.duration_seconds | round(1) }}s){% endif %}
+      </option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="primary">Add</button>
+  </form>
+</div>
+{% endif %}
+{% if items %}
+<div class="drop-hint"><span>⣿</span><span class="sans">Drag a row by its handle and drop it where it should play. The new order is saved at once; devices pick it up on their next poll.</span></div>
 {% endif %}
 {% endif %}
-
+{% endblock %}
+{% block scripts %}
 <script src="/static/sortable.min.js"></script>
-<script>
-(function() {
-  const body = document.getElementById('sortable-body');
-  if (!body || !window.Sortable || body.dataset.readonly) return;
-  const playlistId = {{ playlist.id }};
-  const csrf = document.querySelector('meta[name="csrf-token"]').content;
-
-  Sortable.create(body, {
-    handle: '.drag-handle',
-    animation: 150,
-    ghostClass: 'sortable-ghost',
-    onEnd: function() {
-      const ids = Array.from(body.querySelectorAll('tr[data-item-id]'))
-                       .map(tr => parseInt(tr.dataset.itemId, 10));
-      // Optimistic position renumber
-      body.querySelectorAll('tr[data-item-id]').forEach((tr, idx) => {
-        const cell = tr.querySelector('.position-cell');
-        if (cell) cell.textContent = idx + 1;
-      });
-      fetch(`/playlists/${playlistId}/items/reorder`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
-        body: JSON.stringify({order: ids}),
-        redirect: 'manual'
-      }).then(r => {
-        // An expired session answers with a redirect to /login; never treat that as saved.
-        if (r.type === 'opaqueredirect' || r.redirected) {
-          alert('Your session has expired; the new order was not saved. Please sign in again.');
-          window.location.reload();
-          return;
-        }
-        if (!r.ok) {
-          alert('Reorder not saved (HTTP ' + r.status + '); reloading');
-          window.location.reload();
-        }
-      }).catch(err => {
-        alert('Reorder error: ' + err);
-        window.location.reload();
-      });
-    }
-  });
-})();
-</script>
 {% endblock %}

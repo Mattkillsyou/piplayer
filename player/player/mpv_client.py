@@ -158,6 +158,7 @@ class MpvClient:
 
     def load_replace(self, path: Path, options: dict | None = None) -> bool:
         """Replace the entire playlist with this single file. Options apply per-file."""
+        self._stale = None
         self._entry_options = {}
         return self._loadfile(path, "replace", options)
 

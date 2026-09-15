@@ -120,6 +120,31 @@ def pick_active(schedules: Iterable[dict], now: dt.datetime) -> dict | None:
     return matching[0]
 
 
+def next_start(schedules: Iterable[dict], now: dt.datetime, horizon_days: int = 7) -> tuple[dict, dt.datetime] | None:
+    """The rule that will start matching soonest after `now`, with that moment
+    (minute resolution), or None when nothing starts within the horizon. Used
+    by the player's "waiting for content" screen; a rule that already matches
+    is not a future start."""
+    best: tuple[dict, dt.datetime] | None = None
+    schedules = list(schedules)
+    base = now.replace(second=0, microsecond=0, tzinfo=None)
+    for s in schedules:
+        try:
+            start_t = _parse_hhmm(s["start_time"]) if s.get("start_time") else dt.time(0, 0)
+        except (ValueError, TypeError, AttributeError):
+            continue
+        for offset in range(horizon_days + 1):
+            candidate = dt.datetime.combine(base.date() + dt.timedelta(days=offset), start_t)
+            if candidate <= base or not schedule_matches(s, candidate):
+                continue
+            if pick_active(schedules, candidate) is not s:
+                continue   # a higher-priority rule covers that moment: this one would not play
+            if best is None or candidate < best[1]:
+                best = (s, candidate)
+            break
+    return best
+
+
 def describe(schedule: dict) -> str:
     """Human-readable summary of a schedule row, for the UI."""
     parts: list[str] = []

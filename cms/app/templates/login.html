@@ -1,19 +1,34 @@
 {% extends "base.html" %}
 {% block title %}Sign in — {{ app_name }}{% endblock %}
+{% block body_class %}login-body{% endblock %}
 {% block content %}
-<div class="auth-card">
-  <h1>{{ app_name }}</h1>
-  <p class="muted">Sign in to manage your projector fleet.</p>
-  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-  <form method="post" action="/login">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>Username
-      <input type="text" name="username" autocomplete="username" autofocus required>
-    </label>
-    <label>Password
-      <input type="password" name="password" autocomplete="current-password" required>
-    </label>
-    <button type="submit" class="primary">Sign in</button>
-  </form>
+<div class="auth-stage" aria-hidden="true">
+  <div class="drift"></div>
+  <div class="floor"></div>
+  <div class="skyline"><span></span><span></span><span></span></div>
+  <div class="fog"></div>
+</div>
+<div class="auth-wrap">
+  <div class="auth-card{% if locked %} is-locked{% endif %}">
+    <div class="brand">
+      <span class="brand-eyebrow">{{ app_eyebrow }}</span>
+      <h1 class="wordmark">PROJECTION<span class="wordmark-key">5000</span><span class="wordmark-cursor" aria-hidden="true"></span></h1>
+    </div>
+    <hr class="rule">
+    {% if error %}
+      <div class="alert {% if locked %}warn{% else %}error{% endif %}" role="alert">{% if locked %}TERMINAL LOCKED: {% else %}ACCESS DENIED: {% endif %}{{ error }}{% if locked %} · <a href="/login">retry</a>{% endif %}</div>
+    {% endif %}
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Username
+        <input type="text" name="username" autocomplete="username" autofocus required{% if locked %} disabled{% endif %}>
+      </label>
+      <label>Password
+        <input type="password" name="password" autocomplete="current-password" required{% if locked %} disabled{% endif %}>
+      </label>
+      <button type="submit" class="primary"{% if locked %} disabled{% endif %}>{% if locked %}Locked{% else %}Connect{% endif %}</button>
+    </form>
+    <span class="auth-foot">p5k-console · sign in to manage your projector fleet</span>
+  </div>
 </div>
 {% endblock %}

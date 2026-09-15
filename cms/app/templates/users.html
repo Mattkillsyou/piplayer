@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Users — {{ app_name }}{% endblock %}
 {% block content %}
-<h1>Users</h1>
+<div class="page-head">
+  <h1>Users</h1>
+  <span class="page-meta">{{ users | length }} account{{ '' if users | length == 1 else 's' }}</span>
+</div>
 
 <div class="panel">
   <h2>New user</h2>
@@ -9,10 +12,10 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">
       <label>Username
-        <input type="text" name="username" required>
+        <input type="text" name="username" required autocomplete="off">
       </label>
       <label>Password (6-72 characters)
-        <input type="password" name="password" required minlength="6" maxlength="72">
+        <input type="password" name="password" required minlength="6" maxlength="72" autocomplete="new-password">
       </label>
       <label>Role
         <select name="role">
@@ -22,22 +25,25 @@
         </select>
       </label>
     </div>
-    <button type="submit" class="primary">Create user</button>
+    <div class="row">
+      <button type="submit" class="primary">Create user</button>
+    </div>
   </form>
 </div>
 
+<div class="table-wrap">
 <table class="data">
   <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Change role</th><th>Reset password</th><th></th></tr></thead>
   <tbody>
     {% for u in users %}
     <tr>
-      <td>{{ u.username }}{% if u.id == user.id %} <span class="muted small">(you)</span>{% endif %}</td>
+      <td class="name">{{ u.username }}{% if u.id == user.id %} <span class="muted small">(you)</span>{% endif %}</td>
       <td><span class="badge badge-{{ u.role }}">{{ u.role }}</span></td>
-      <td>{{ u.created_at | local }}</td>
+      <td class="muted nowrap">{{ u.created_at | local }}</td>
       <td>
         <form method="post" action="/users/{{ u.id }}/role" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <select name="role" onchange="this.form.submit()" {% if u.id == user.id %}disabled{% endif %}>
+          <select name="role" data-autosubmit aria-label="Role for {{ u.username }}" {% if u.id == user.id %}disabled{% endif %}>
             <option value="admin" {% if u.role == 'admin' %}selected{% endif %}>admin</option>
             <option value="editor" {% if u.role == 'editor' %}selected{% endif %}>editor</option>
             <option value="viewer" {% if u.role == 'viewer' %}selected{% endif %}>viewer</option>
@@ -45,9 +51,9 @@
         </form>
       </td>
       <td>
-        <form method="post" action="/users/{{ u.id }}/password" class="inline">
+        <form method="post" action="/users/{{ u.id }}/password" class="inline duration-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="password" name="password" placeholder="new password" minlength="6" maxlength="72" style="width: 9rem;">
+          <input type="password" name="password" placeholder="new password" minlength="6" maxlength="72" autocomplete="new-password" aria-label="New password for {{ u.username }}">
           <button type="submit" class="small">Set</button>
         </form>
       </td>
@@ -63,4 +69,5 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% endblock %}
