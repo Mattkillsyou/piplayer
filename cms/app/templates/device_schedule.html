@@ -1,15 +1,17 @@
 {% extends "base.html" %}
-{% block title %}{{ device.name }} schedule — {{ app_name }}{% endblock %}
+{% block title %}{{ device.name }} schedule · {{ app_name }}{% endblock %}
 {% block content %}
-<p><a href="/devices">← Devices</a></p>
-<h1>{{ device.name }} — Schedule</h1>
+<a href="/devices" class="back">← Devices</a>
+<span class="page-eyebrow">Schedule · {{ device.device_id }}</span>
+<h1>{{ device.name }}</h1>
 <p class="muted small">Controller time now: <code>{{ now }}</code> (zone {{ zone }}). Rules use the controller's local wall-clock time; if this is not your venue's time, set the controller Pi's timezone with <code>sudo timedatectl set-timezone Region/City</code>.</p>
 
 <h2>Rules ({{ rules | length }})</h2>
 <p class="muted small">When multiple rules match, the one with the highest priority wins. If no rule matches, the device's default playlist (set on the Devices page) plays. A window that crosses midnight (e.g. 22:00–02:00) belongs to the day it starts on, so "Fri 22:00–02:00" runs until Saturday 02:00.</p>
 {% if not rules %}
-  <p class="muted">No rules — device plays its default playlist always.</p>
+  <p class="muted empty">No rules: the device plays its default playlist always.</p>
 {% else %}
+<div class="table-scroll">
 <table class="data">
   <thead>
     <tr><th>Priority</th><th>Name</th><th>Playlist</th><th>When</th><th>Active now?</th><th></th></tr>
@@ -17,11 +19,11 @@
   <tbody>
     {% for r in rules %}
     <tr {% if r.matches_now %}class="rule-active"{% endif %}>
-      <td>{{ r.priority }}</td>
+      <td class="prio">{{ r.priority }}</td>
       <td>{{ r.name }}</td>
       <td>{{ r.playlist_name or "—" }}</td>
       <td><span class="muted small">{{ r.summary }}</span></td>
-      <td>{% if r.matches_now %}<span class="badge badge-active">YES</span>{% else %}—{% endif %}</td>
+      <td>{% if r.matches_now %}<span class="badge badge-active">active now</span>{% else %}<span class="muted">—</span>{% endif %}</td>
       <td>
         {% if user.role != 'viewer' %}
         <form method="post" action="/devices/{{ device.id }}/schedule/{{ r.id }}/delete" class="inline" data-confirm="Delete rule {{ r.name }}?">
@@ -34,6 +36,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}
 
 {% if user.role != 'viewer' %}

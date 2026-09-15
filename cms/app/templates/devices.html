@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Devices — {{ app_name }}{% endblock %}
+{% block title %}Devices · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Devices</h1>
 
@@ -11,158 +11,159 @@
   </p>
   <form method="post" action="/devices" class="row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="text" name="device_id" placeholder="lobby-projector" pattern="[a-z0-9][a-z0-9-]{0,62}" required>
-    <input type="text" name="name" placeholder="Lobby Projector" required>
+    <label>device_id
+      <input type="text" name="device_id" placeholder="lobby-projector" pattern="[a-z0-9][a-z0-9-]{0,62}" required>
+    </label>
+    <label>name
+      <input type="text" name="name" placeholder="Lobby Projector" required>
+    </label>
     <button type="submit" class="primary">Register device</button>
   </form>
 </div>
 {% endif %}
 
 {% if not devices %}
-  <p class="muted">No devices yet.</p>
+  <p class="muted empty">No devices yet.</p>
 {% else %}
-<table class="data">
-  <thead>
-    <tr>
-      <th>Device</th>
-      <th>Group</th>
-      <th>Default playlist</th>
-      <th>Active now</th>
-      <th>Now playing</th>
-      <th>Last seen</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for d in devices %}
-    <tr>
-      <td>
-        <strong>{{ d.name }}</strong><br>
-        <code class="small">{{ d.device_id }}</code>
+<div class="device-list">
+  {% for d in devices %}
+  {% set state = d.player_status if d.last_seen_at else 'offline' %}
+  <div class="device-detail">
+    <div>
+      <div class="screen">
         {% if d.last_screenshot_at %}
-        <br><a href="/devices/{{ d.id }}/screenshot?t={{ d.last_screenshot_at }}" target="_blank" class="small">📷 screenshot</a>
-        <span class="muted small">{{ d.screenshot_age }}</span>
-        {% if d.screenshot_stale %}<span class="badge badge-stale" title="No new screenshot for more than 3 capture intervals">stale</span>{% endif %}
+          <a href="/devices/{{ d.id }}/screenshot?t={{ d.last_screenshot_at }}" target="_blank" title="Open screenshot">
+            <img src="/devices/{{ d.id }}/screenshot?t={{ d.last_screenshot_at }}" class="device-thumb{% if d.screenshot_stale %} device-thumb-stale{% endif %}" alt="screenshot">
+          </a>
+          <span class="screen-age screenshot-age">{{ d.screenshot_age }}</span>
+          {% if d.screenshot_stale %}<span class="badge badge-stale" title="No new screenshot for more than 3 capture intervals">stale</span>{% endif %}
+        {% else %}
+          <div class="device-thumb device-thumb-empty">no screenshot yet</div>
         {% endif %}
-        {% if d.last_error %}
-        <div class="alert warn small" title="Reported by the player on its last sync">Sync problem: {{ d.last_error }}</div>
-        {% endif %}
-      </td>
-      <td>
+        {% if d.current_filename %}<span class="screen-now">#{{ (d.current_position or 0) + 1 }} {{ d.current_filename }}</span>{% endif %}
+      </div>
+      <span class="device-name">{{ d.name }}</span>
+      <code class="device-id">{{ d.device_id }}</code>
+      <span class="lamp lamp-{{ state or 'idle' }}">{{ state or 'idle' }}</span>
+    </div>
+
+    <div>
+      <div class="fields">
         <form method="post" action="/devices/{{ d.id }}/group" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <select name="group_id" onchange="this.form.submit()" {% if not can_edit %}disabled{% endif %}>
-            <option value="">— none —</option>
-            {% for g in groups %}
-            <option value="{{ g.id }}" {% if g.id == d.group_id %}selected{% endif %}>{{ g.name }}</option>
-            {% endfor %}
-          </select>
+          <label>group
+            <select name="group_id" onchange="this.form.submit()" {% if not can_edit %}disabled{% endif %}>
+              <option value="">— none —</option>
+              {% for g in groups %}
+              <option value="{{ g.id }}" {% if g.id == d.group_id %}selected{% endif %}>{{ g.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
         </form>
-      </td>
-      <td>
         <form method="post" action="/devices/{{ d.id }}/assign" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <select name="playlist_id" onchange="this.form.submit()" {% if not can_edit %}disabled{% endif %}>
-            <option value="">— none —</option>
-            {% for p in playlists %}
-            <option value="{{ p.id }}" {% if p.id == d.playlist_id %}selected{% endif %}>{{ p.name }}</option>
-            {% endfor %}
-          </select>
-        </form>
-        <a href="/devices/{{ d.id }}/schedule" class="small">Schedule ({{ d.schedule_count }})</a>
-      </td>
-      <td>
-        {% if d.active_playlist_name %}
-          <strong>{{ d.active_playlist_name }}</strong><br>
-          <span class="muted small">{{ d.active_source }}</span>
-        {% else %}
-          <span class="muted">no playlist</span>
-        {% endif %}
-      </td>
-      <td>
-        {% if d.current_filename %}
-          <span class="muted small">#{{ (d.current_position or 0) + 1 }}</span><br>
-          {{ d.current_filename }}<br>
-          <span class="muted small">{{ d.player_status or '' }}</span>
-        {% else %}—{% endif %}
-      </td>
-      <td>
-        {% if d.last_seen_at %}{{ d.seen_age }}<br><span class="muted small">{{ d.last_seen_at | local }}</span>{% else %}never{% endif %}<br>
-        {% if d.last_ip %}<span class="muted small">{{ d.last_ip }}</span>{% endif %}
-        {% if d.player_version %}<br><span class="muted small">v{{ d.player_version }}</span>{% endif %}
-      </td>
-      <td>
-        <div class="action-buttons">
-          {% if can_edit %}
-          <form method="post" action="/devices/{{ d.id }}/command" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="command" value="force-sync">
-            <button type="submit" class="small" title="Tell the Pi to re-sync from the CMS now">Resync</button>
-          </form>
-          <form method="post" action="/devices/{{ d.id }}/command" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="command" value="restart-mpv">
-            <button type="submit" class="small" title="Restart the mpv playback process">Restart mpv</button>
-          </form>
-          <form method="post" action="/devices/{{ d.id }}/command" class="inline" data-confirm="Reboot {{ d.name }}?">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="command" value="reboot">
-            <button type="submit" class="small danger">Reboot Pi</button>
-          </form>
-          {% endif %}
-          {% if d.recent_commands %}
-          <details>
-            <summary class="small">Recent commands</summary>
-            <ul class="command-list small">
-              {% for c in d.recent_commands %}
-              <li>
-                <code>{{ c.command }}</code>
-                <span class="muted">{{ c.issued_at | local }}</span> —
-                {% if c.completed_at %}
-                  {% if c.result and c.result.startswith('undeliverable') %}<span class="badge badge-stale">{{ c.result }}</span>
-                  {% else %}done{% if c.result %}: {{ c.result }}{% endif %}{% endif %}
-                {% elif c.delivered_at %}
-                  delivered ×{{ c.delivery_count }}, no result yet
-                {% else %}
-                  queued
-                {% endif %}
-              </li>
+          <label>default playlist
+            <select name="playlist_id" onchange="this.form.submit()" {% if not can_edit %}disabled{% endif %}>
+              <option value="">— none —</option>
+              {% for p in playlists %}
+              <option value="{{ p.id }}" {% if p.id == d.playlist_id %}selected{% endif %}>{{ p.name }}</option>
               {% endfor %}
-            </ul>
-          </details>
-          {% endif %}
-          {% if can_edit %}
-          <details>
-            <summary class="small">Token / install</summary>
-            <div class="token-block">
-              <code class="token">{{ d.token }}</code>
-              <p class="muted small">On the Pi, from the directory you cloned the repo into:</p>
-              <pre class="install-cmd">cd piplayer/player && \
+            </select>
+          </label>
+        </form>
+        <a href="/devices/{{ d.id }}/schedule" class="button small">Schedule ({{ d.schedule_count }})</a>
+      </div>
+      <div class="active-now">
+        <span class="via">active now{% if d.active_source %} · via {{ d.active_source }}{% endif %}</span>
+        {% if d.active_playlist_name %}
+          <span class="playlist">{{ d.active_playlist_name }}</span>
+        {% else %}
+          <span class="playlist muted">no playlist</span>
+        {% endif %}
+        <span class="now">{% if d.current_filename %}#{{ (d.current_position or 0) + 1 }} {{ d.current_filename }}{% else %}no output{% endif %}</span>
+      </div>
+      <div class="kv">
+        <div><span class="k">last seen</span><span class="v">{% if d.last_seen_at %}{{ d.seen_age }}<br><span class="muted">{{ d.last_seen_at | local }}</span>{% else %}never{% endif %}</span></div>
+        <div><span class="k">ip</span><span class="v">{{ d.last_ip or 'none' }}</span></div>
+        <div><span class="k">agent</span><span class="v">{% if d.player_version %}v{{ d.player_version }}{% else %}none{% endif %}</span></div>
+      </div>
+      {% if d.last_error %}
+      <div class="alert warn small" title="Reported by the player on its last sync">Sync problem: {{ d.last_error }}</div>
+      {% endif %}
+      {% if d.recent_commands %}
+      <details>
+        <summary class="small">Recent commands ({{ d.recent_commands | length }})</summary>
+        <ul class="command-list small">
+          {% for c in d.recent_commands %}
+          <li>
+            <span class="muted">{{ c.issued_at | local }}</span>
+            <code>{{ c.command }}</code> →
+            {% if c.completed_at %}
+              {% if c.result and c.result.startswith('undeliverable') %}<span class="badge badge-stale">{{ c.result }}</span>
+              {% else %}done{% if c.result %}: {{ c.result }}{% endif %}{% endif %}
+            {% elif c.delivered_at %}
+              delivered ×{{ c.delivery_count }}, no result yet
+            {% else %}
+              queued
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+    </div>
+
+    <div>
+      <span class="eyebrow eyebrow-quiet">Actions</span>
+      <div class="action-buttons">
+        {% if can_edit %}
+        <form method="post" action="/devices/{{ d.id }}/command" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="command" value="force-sync">
+          <button type="submit" class="primary" title="Tell the Pi to re-sync from the CMS now">Resync</button>
+        </form>
+        <form method="post" action="/devices/{{ d.id }}/command" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="command" value="restart-mpv">
+          <button type="submit" title="Restart the mpv playback process">Restart mpv</button>
+        </form>
+        <form method="post" action="/devices/{{ d.id }}/command" class="inline" data-confirm="Reboot {{ d.name }}?">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="command" value="reboot">
+          <button type="submit" class="danger">Reboot Pi</button>
+        </form>
+        <details>
+          <summary class="small">Token / install</summary>
+          <div class="token-block">
+            <code class="token">{{ d.token }}</code>
+            <p class="muted small">On the Pi, from the directory you cloned the repo into:</p>
+            <pre class="install-cmd">cd piplayer/player && \
 DEVICE_ID={{ d.device_id }} \
 DEVICE_TOKEN={{ d.token }} \
 CMS_URL={{ install_base_url }} \
 sudo -E bash deploy/install-player.sh</pre>
-              {% if not public_base_url %}
-              <p class="muted small">CMS_URL is the address your browser is using; edit it if this Pi reaches the CMS another way (e.g. a LAN address instead of Tailscale).</p>
-              {% endif %}
-              <div class="action-buttons">
-                <form method="post" action="/devices/{{ d.id }}/regen-token" class="inline" data-confirm="Regenerate token? The Pi will need the new token.">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                  <button type="submit" class="small">New token</button>
-                </form>
-                <form method="post" action="/devices/{{ d.id }}/delete" class="inline" data-confirm="Delete device {{ d.name }}?">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                  <button type="submit" class="danger small">Delete device</button>
-                </form>
-              </div>
+            {% if not public_base_url %}
+            <p class="muted small">CMS_URL is the address your browser is using; edit it if this Pi reaches the CMS another way (e.g. a LAN address instead of Tailscale).</p>
+            {% endif %}
+            <div class="action-buttons">
+              <form method="post" action="/devices/{{ d.id }}/regen-token" class="inline" data-confirm="Regenerate token? The Pi will need the new token.">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="small">New token</button>
+              </form>
+              <form method="post" action="/devices/{{ d.id }}/delete" class="inline" data-confirm="Delete device {{ d.name }}?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="danger small">Delete device</button>
+              </form>
             </div>
-          </details>
-          {% endif %}
-        </div>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+          </div>
+        </details>
+        {% else %}
+        <p class="muted small">Read-only: viewers cannot send commands.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
 {% endif %}
 {% endblock %}

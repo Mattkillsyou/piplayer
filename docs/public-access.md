@@ -113,13 +113,13 @@ two applications so the API path bypasses Access:
 
 1. Cloudflare Zero Trust → **Access → Applications → Add an application →
    Self-hosted**.
-   - Application name: `PiPlayer API`
+   - Application name: `Projection5000 API`
    - Application domain: `cms.yourdomain.com`, path `api` (this covers
      `cms.yourdomain.com/api/*`)
    - Add a policy: name `players`, **Action: Bypass**, Include: **Everyone**.
    - Save.
 2. Add a second Self-hosted application:
-   - Application name: `PiPlayer`
+   - Application name: `Projection5000`
    - Application domain: `cms.yourdomain.com` (no path)
    - Add a policy: name `admins`, **Action: Allow**, Include: **Emails**
      (your address) or your Google Workspace / Microsoft domain.
@@ -133,11 +133,11 @@ built-in login for the rest.
 
 Alternative: Cloudflare **Service Tokens** (Access → Service Auth) let a
 client authenticate with `CF-Access-Client-Id` / `CF-Access-Client-Secret`
-headers instead of a bypass. The PiPlayer daemon does not send those headers,
+headers instead of a bypass. The Projection5000 daemon does not send those headers,
 so use the Bypass application above for players.
 
 Now anyone hitting `cms.yourdomain.com` in a browser gets a Cloudflare login
-page first. Even if PiPlayer's own login were bypassed, attackers wouldn't
+page first. Even if Projection5000's own login were bypassed, attackers wouldn't
 reach it.
 
 ## Alternative: direct port forward + Caddy

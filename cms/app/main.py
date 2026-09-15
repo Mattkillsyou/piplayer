@@ -39,7 +39,7 @@ def create_app() -> FastAPI:
     if pruned:
         log.info("pruned %d audit log rows older than %d days", pruned, config.AUDIT_RETENTION_DAYS)
 
-    app = FastAPI(title="PiPlayer CMS", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="Projection5000 CMS", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(
         SessionMiddleware,
         secret_key=config.SECRET_KEY,

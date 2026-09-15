@@ -1,9 +1,19 @@
 {% extends "base.html" %}
-{% block title %}Sign in — {{ app_name }}{% endblock %}
+{% block title %}Sign in · {{ app_name }}{% endblock %}
+{% block body_class %}login{% endblock %}
 {% block content %}
+<div class="scene" aria-hidden="true">
+  <div class="scene-scan"></div>
+  <div class="scene-floor"></div>
+  <div class="scene-skyline"><i></i><i></i><i></i></div>
+  <div class="scene-vignette"></div>
+</div>
 <div class="auth-card">
-  <h1>{{ app_name }}</h1>
-  <p class="muted">Sign in to manage your projector fleet.</p>
+  <div class="wordmark wordmark-lg">
+    <span class="wordmark-eyebrow">Matt Brown's</span>
+    <h1 class="wordmark-mark">PROJECTION<span class="wordmark-model">5000</span><span class="wordmark-cursor"></span></h1>
+  </div>
+  <hr>
   {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
   <form method="post" action="/login">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -13,7 +23,8 @@
     <label>Password
       <input type="password" name="password" autocomplete="current-password" required>
     </label>
-    <button type="submit" class="primary">Sign in</button>
+    <button type="submit" class="primary">Connect</button>
   </form>
+  <p class="foot">Sign in to manage your projector fleet.</p>
 </div>
 {% endblock %}

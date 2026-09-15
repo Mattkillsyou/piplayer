@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% block title %}{{ playlist.name }} — {{ app_name }}{% endblock %}
+{% block title %}{{ playlist.name }} · {{ app_name }}{% endblock %}
 {% block content %}
-<p><a href="/playlists">← All playlists</a></p>
+<a href="/playlists" class="back">← All playlists</a>
 <h1>{{ playlist.name }}</h1>
 
 {% set can_edit = user.role != 'viewer' %}
 {% if can_edit %}
 <div class="panel">
-  <form method="post" action="/playlists/{{ playlist.id }}/rename" class="row">
+  <form method="post" action="/playlists/{{ playlist.id }}/rename" class="row rename-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="text" name="name" value="{{ playlist.name }}" required>
     <button type="submit">Rename</button>
@@ -18,8 +18,9 @@
 <h2>Playlist order ({{ items | length }})</h2>
 <p class="muted small">{% if can_edit %}Drag rows to reorder. {% endif %}Empty duration = play natural length for videos, {{ default_image_duration }}s default for images.</p>
 {% if not items %}
-  <p class="muted">Empty.{% if can_edit %} Add media below.{% endif %}</p>
+  <p class="muted empty">Empty.{% if can_edit %} Add media below.{% endif %}</p>
 {% else %}
+<div class="table-scroll">
 <table class="data sortable-table" id="playlist-items">
   <thead>
     <tr><th></th><th>#</th><th>Type</th><th>Name</th><th>Natural duration</th><th>Override (s)</th><th></th></tr>
@@ -41,8 +42,7 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="number" name="duration" min="0.5" max="86400" step="0.5"
                  value="{{ it.duration_override_seconds or '' }}"
-                 placeholder="{% if it.media_type == 'image' %}{{ default_image_duration }}{% else %}auto{% endif %}"
-                 style="width: 5rem;">
+                 placeholder="{% if it.media_type == 'image' %}{{ default_image_duration }}{% else %}auto{% endif %}">
           <button type="submit" class="small">Set</button>
         </form>
         {% else %}{{ it.duration_override_seconds or '—' }}{% endif %}
@@ -59,12 +59,13 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}
 
 {% if can_edit %}
 <h2>Add media</h2>
 {% if not available %}
-  <p class="muted">All uploaded media is already in this playlist, or you haven't uploaded anything. <a href="/library">Go to Library</a>.</p>
+  <p class="muted empty">All uploaded media is already in this playlist, or you haven't uploaded anything. <a href="/library">Go to Library</a>.</p>
 {% else %}
 <form method="post" action="/playlists/{{ playlist.id }}/items" class="row">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

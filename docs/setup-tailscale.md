@@ -1,6 +1,6 @@
 # Setting up Tailscale
 
-Tailscale is the recommended way to reach your PiPlayer CMS from anywhere
+Tailscale is the recommended way to reach your Projection5000 CMS from anywhere
 without exposing it to the public internet. It's free for personal use (up to
 100 devices) and takes ~5 minutes.
 

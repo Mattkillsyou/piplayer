@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Library — {{ app_name }}{% endblock %}
+{% block title %}Library · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Library</h1>
 
 {% if user.role != 'viewer' %}
-<div class="panel">
-  <h2>Upload media</h2>
+<div class="panel upload-panel">
+  <h2>Drop media</h2>
   <p class="muted">
     Max {{ (max_bytes / 1024 / 1024 / 1024) | round(1) }} GB per file.
     Videos: .mp4, .mov, .m4v, .mkv, .webm (1080p H.264 recommended).
@@ -23,8 +23,9 @@
 
 <h2>Media ({{ items | length }})</h2>
 {% if not items %}
-  <p class="muted">No media yet.{% if user.role != 'viewer' %} Upload above.{% endif %}</p>
+  <p class="muted empty">No media yet.{% if user.role != 'viewer' %} Upload above.{% endif %}</p>
 {% else %}
+<div class="table-scroll">
 <table class="data">
   <thead>
     <tr><th>Type</th><th>Name</th><th>Size</th><th>Duration</th><th>Resolution</th><th>Codec</th><th>Uploaded</th><th></th></tr>
@@ -36,7 +37,7 @@
         {% if v.media_type == 'video' %}<span class="badge badge-video">VIDEO</span>
         {% else %}<span class="badge badge-image">IMAGE</span>{% endif %}
       </td>
-      <td>{{ v.original_name }}</td>
+      <td class="name">{{ v.original_name }}</td>
       <td>{{ (v.size_bytes / 1024 / 1024) | round(1) }} MB</td>
       <td>
         {% if v.media_type == 'video' and v.duration_seconds %}{{ v.duration_seconds | round(1) }} s
@@ -45,7 +46,7 @@
       </td>
       <td>{% if v.width %}{{ v.width }}×{{ v.height }}{% else %}—{% endif %}</td>
       <td>{{ v.codec or "—" }}</td>
-      <td>{{ v.uploaded_at | local }}</td>
+      <td class="muted">{{ v.uploaded_at | local }}</td>
       <td>
         {% if user.role != 'viewer' %}
         <form method="post" action="/library/{{ v.id }}/delete" class="inline" data-confirm="Delete {{ v.original_name }}? It is removed from every playlist that uses it.">
@@ -58,6 +59,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}
 
 <script>

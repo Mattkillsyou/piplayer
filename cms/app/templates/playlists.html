@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Playlists — {{ app_name }}{% endblock %}
+{% block title %}Playlists · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Playlists</h1>
 
@@ -15,8 +15,9 @@
 {% endif %}
 
 {% if not playlists %}
-  <p class="muted">No playlists yet.{% if user.role != 'viewer' %} Create one above.{% endif %}</p>
+  <p class="muted empty">No playlists yet.{% if user.role != 'viewer' %} Create one above.{% endif %}</p>
 {% else %}
+<div class="table-scroll">
 <table class="data">
   <thead>
     <tr><th>Name</th><th>Items</th><th>Used by</th><th>Updated</th><th></th></tr>
@@ -45,5 +46,6 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}
 {% endblock %}

@@ -1,6 +1,6 @@
 # Building a master SD-card image
 
-Once you have one Pi running PiPlayer end-to-end, you can clone its SD card to
+Once you have one Pi running Projection5000 end-to-end, you can clone its SD card to
 a `.img` file and flash it to every other Pi. Each new Pi only needs a 30-second
 edit to give it a unique `device_id` and token.
 
@@ -81,7 +81,7 @@ sudo rm -f /etc/ssh/ssh_host_*
 sudo systemctl enable regenerate_ssh_host_keys.service
 sudo tee /etc/systemd/system/piplayer-ssh-hostkeys.service > /dev/null <<'EOF'
 [Unit]
-Description=Regenerate SSH host keys if missing (PiPlayer master image)
+Description=Regenerate SSH host keys if missing (Projection5000 master image)
 ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
 Before=ssh.service
 
@@ -220,7 +220,7 @@ On Windows: easiest to use Option A.
 
 ## Updating the master image
 
-When PiPlayer code changes, update the golden master with a fresh copy of the
+When Projection5000 code changes, update the golden master with a fresh copy of the
 repo and re-run the installer. `/opt/piplayer/player` is a plain copy of the
 `player/` subtree (no `.git`, no `deploy/`), so you cannot `git pull` there —
 always work from a clone in your home directory. The installer rewrites

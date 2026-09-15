@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Groups — {{ app_name }}{% endblock %}
+{% block title %}Groups · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Device groups</h1>
 <p class="muted small">Devices in a group use the group's playlist as their fallback (when the device has no default and no schedule matches).</p>
@@ -16,8 +16,9 @@
 {% endif %}
 
 {% if not groups %}
-  <p class="muted">No groups yet.</p>
+  <p class="muted empty">No groups yet.</p>
 {% else %}
+<div class="table-scroll">
 <table class="data">
   <thead>
     <tr><th>Name</th><th>Devices</th><th>Default playlist</th><th></th></tr>
@@ -50,5 +51,6 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}
 {% endblock %}

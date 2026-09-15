@@ -1,12 +1,15 @@
 {% extends "base.html" %}
-{% block title %}Audit log — {{ app_name }}{% endblock %}
+{% block title %}Audit log · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Audit log</h1>
 <p class="muted small">Last {{ entries | length }} entries. Times are shown in the controller's local zone ({{ zone }}); the database stores UTC.</p>
 
 {% if not entries %}
-  <p class="muted">No entries yet.</p>
+  <p class="muted empty">No entries yet.</p>
 {% else %}
+<div class="terminal">
+<div class="terminal-head"><span class="eyebrow">Audit tail · last {{ entries | length }}</span><span class="blink" aria-hidden="true"></span></div>
+<div class="table-scroll">
 <table class="data">
   <thead>
     <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr>
@@ -24,5 +27,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
+</div>
 {% endif %}
 {% endblock %}

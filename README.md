@@ -1,7 +1,8 @@
-# PiPlayer
+# Matt Brown's Projection5000
 
 Self-hosted Screenly-style digital signage for Raspberry Pi. Loop videos on
 projectors, manage everything from a single web UI, update content remotely.
+The repo, services and paths keep the `piplayer` name; the product and its web UI are "Projection5000".
 
 ## What's here
 
