@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import tempfile
 from pathlib import Path
 
@@ -11,13 +12,16 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
-from .. import auth, config, db, schedules
+from .. import audit, auth, config, db, schedules
 
 
 log = logging.getLogger("piplayer.api")
 router = APIRouter()
 
 SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
+DEVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+DEVICE_ID_RULE = "device_id must be lowercase alphanumeric + hyphens, 1-63 chars"
+MAX_DEVICE_NAME_LEN = 120
 NOSNIFF = {"X-Content-Type-Options": "nosniff"}
 JPEG_MAGIC = b"\xff\xd8\xff"
 MAX_COMMAND_DELIVERIES = 5
@@ -168,6 +172,57 @@ def _manifest_for_device(device: dict, request: Request, now: dt.datetime | None
 @router.get("/health")
 def health():
     return {"ok": True}
+
+
+@router.post("/enroll")
+async def enroll(request: Request):
+    """Zero-touch enrollment: a freshly flashed Pi trades the enrollment key for its device token.
+
+    No session, no CSRF (device API family). Wrong keys are throttled per IP like logins.
+    The token is never logged."""
+    ip = request.client.host if request.client else None
+    wait = auth.login_locked_for(ip, auth.ENROLL_SLOT, auth.ENROLL_MAX_FAILURES, auth.ENROLL_LOCK_SECONDS)
+    if wait:
+        raise HTTPException(429, f"too many failed attempts; try again in {wait} s",
+                            headers={"Retry-After": str(wait)})
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        raise HTTPException(400, "body must be a JSON object")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "body must be a JSON object")
+    key = body.get("key")
+    expected = await run_in_threadpool(db.enrollment_key)
+    if not isinstance(key, str) or not secrets.compare_digest(key.encode("utf-8"), expected.encode("utf-8")):
+        log.warning("enroll failed: invalid enrollment key ip=%s", ip)
+        auth.record_login_failure(ip, auth.ENROLL_SLOT, auth.ENROLL_LOCK_SECONDS)
+        raise HTTPException(401, "invalid enrollment key")
+    auth.clear_login_failures(ip, auth.ENROLL_SLOT)
+
+    device_id = str(body.get("device_id") or "").strip().lower()
+    if not DEVICE_ID_RE.match(device_id):
+        raise HTTPException(400, DEVICE_ID_RULE)
+    name = str(body.get("name") or "").strip()
+    if not 1 <= len(name) <= MAX_DEVICE_NAME_LEN:
+        raise HTTPException(400, f"name must be 1-{MAX_DEVICE_NAME_LEN} chars")
+
+    def _upsert() -> tuple[int, str, str]:
+        with db.cursor() as cur:
+            row = cur.execute("SELECT id, name, token FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+            if row:
+                # Re-flashing a card must keep the console's view of that device: same row, same token.
+                if row["name"] != name:
+                    cur.execute("UPDATE devices SET name = ? WHERE id = ?", (name, row["id"]))
+                return row["id"], row["token"], "device_reenrolled"
+            token = db.new_token()
+            cur.execute("INSERT INTO devices (device_id, name, token) VALUES (?, ?, ?)", (device_id, name, token))
+            return cur.lastrowid, token, "device_enrolled"
+
+    row_id, token, action = await run_in_threadpool(_upsert)
+    audit.log(request, None, action, "device", row_id, {"device_id": device_id, "name": name})
+    log.info("%s device_id=%s ip=%s", action, device_id, ip)
+    cms_url = config.PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
+    return {"device_id": device_id, "token": token, "cms_url": cms_url}
 
 
 @router.get("/sync/{device_id}")

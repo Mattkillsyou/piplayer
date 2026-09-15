@@ -169,6 +169,10 @@ async def require_csrf(request: Request) -> None:
 
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCK_SECONDS = 30
+# POST /api/enroll: per IP, 10 wrong keys in 60 s locks that IP out for 60 s.
+ENROLL_SLOT = "enroll"
+ENROLL_MAX_FAILURES = 10
+ENROLL_LOCK_SECONDS = 60
 _login_failures: dict[tuple[str, str], list[float]] = {}
 _login_lock = threading.Lock()
 
@@ -177,29 +181,33 @@ def _login_key(ip: str | None, username: str) -> tuple[str, str]:
     return (ip or "-", username)
 
 
-def login_locked_for(ip: str | None, username: str) -> int:
-    """Seconds remaining on the lock for this ip+username, 0 when not locked."""
+def login_locked_for(ip: str | None, username: str, max_failures: int = LOGIN_MAX_FAILURES,
+                     lock_seconds: int = LOGIN_LOCK_SECONDS) -> int:
+    """Seconds remaining on the lock for this ip+username, 0 when not locked.
+
+    The enroll endpoint reuses this with its own limits and the fixed slot ENROLL_SLOT
+    in place of a username (one bucket per IP)."""
     key = _login_key(ip, username)
     now = time.monotonic()
     with _login_lock:
         stamps = _login_failures.get(key)
         if not stamps:
             return 0
-        stamps = [t for t in stamps if now - t < LOGIN_LOCK_SECONDS]
+        stamps = [t for t in stamps if now - t < lock_seconds]
         if stamps:
             _login_failures[key] = stamps
         else:
             _login_failures.pop(key, None)
-        if len(stamps) >= LOGIN_MAX_FAILURES:
-            return max(1, int(LOGIN_LOCK_SECONDS - (now - stamps[-1])) + 1)
+        if len(stamps) >= max_failures:
+            return max(1, int(lock_seconds - (now - stamps[-1])) + 1)
         return 0
 
 
-def record_login_failure(ip: str | None, username: str) -> None:
+def record_login_failure(ip: str | None, username: str, lock_seconds: int = LOGIN_LOCK_SECONDS) -> None:
     key = _login_key(ip, username)
     now = time.monotonic()
     with _login_lock:
-        stamps = [t for t in _login_failures.get(key, []) if now - t < LOGIN_LOCK_SECONDS]
+        stamps = [t for t in _login_failures.get(key, []) if now - t < lock_seconds]
         stamps.append(now)
         _login_failures[key] = stamps
         # Keep the table bounded if someone sprays usernames.

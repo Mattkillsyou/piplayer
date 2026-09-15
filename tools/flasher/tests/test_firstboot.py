@@ -1,7 +1,12 @@
 import hashlib
+import io
+import json
+import os
 import shlex
-import subprocess
 import shutil
+import subprocess
+import sys
+import tarfile
 
 import pytest
 
@@ -127,7 +132,14 @@ def test_sed_cleanup_keeps_regdom(tmp_path):
     ("username", "a" * 33, "Pi username"),
     ("password", "", "Pi password is required"),
     ("password", "sec\nret", "line breaks"),
-    ("token", "", "Device token"),
+    ("name", "", "Device name"),
+    ("name", "x" * 121, "Device name"),
+    ("enrollment_key", "", "Enrollment key"),
+    ("enrollment_key", "short-key_0123456", "Enrollment key"),
+    ("enrollment_key", "k" * 129, "Enrollment key"),
+    ("enrollment_key", "not base64!! 0123456789", "Enrollment key"),
+    ("enrollment_key", "a=b" + "0123456789" * 3, "Enrollment key"),
+    ("enrollment_key", "key\n0123456789abcdefghij", "line breaks"),
     ("token", "tok'en", "Device token"),
     ("token", 'to"k\\en-0123456789', "Device token"),
     ("token", "short", "Device token"),
@@ -153,6 +165,8 @@ def test_validation_rejects(field, value, fragment):
     ("console_url", "http://192.168.1.20:8080"), ("console_url", "http://console.local"),
     ("console_url", "http://localhost:8080"), ("console_url", "http://controller:8080"),
     ("console_url", "https://projectors.photogen5000.com"), ("token", "A-z_0123456789ab"),
+    ("enrollment_key", "k" * 20), ("enrollment_key", "k" * 128), ("enrollment_key", "a" * 43 + "="),
+    ("enrollment_key", "aB0-_" * 8 + "=="),
 ])
 def test_validation_accepts(field, value):
     assert firstboot.validate_cfg(cfg(**{field: value})) == []
@@ -166,24 +180,47 @@ def test_console_url_problem():
     assert "http://" in firstboot.console_url_problem("ftp://x.example")
 
 
-def test_provision_contents():
+INSTALL_LINE = ('DEVICE_ID="$DEVICE_ID" DEVICE_TOKEN="$DEVICE_TOKEN" CMS_URL="$CMS_URL" '
+                'bash deploy/install-player.sh')
+
+
+def test_provision_contents_with_token():
+    """A token on the card bypasses enrollment: no key, no /api/enroll call."""
     s = firstboot.render_provision(cfg(token="tok-en_0123456789", console_url="http://192.168.1.20:8080/"))
     assert "curl -fsS --max-time 10 \"$CONSOLE/api/health\"" in s
     assert "CONSOLE=http://192.168.1.20:8080\n" in s
+    assert "\nDEVICE_ID=lobby-projector\nDEVICE_TOKEN=tok-en_0123456789\nCMS_URL=\"$CONSOLE\"\n" in s
+    assert "\nENROLL_KEY=" not in s and "sample-enrollment-key" not in s and "\nDEVICE_NAME=" not in s
     assert "sleep 15" in s
     # The player comes from the card, not from GitHub (the repo is private to the Pi).
     assert "git clone" not in s and "github" not in s.lower()
     assert 'tar -xzf "$SRC" -C /opt/projection5000-src' in s
     assert "SRC=/opt/projection5000-player.tar.gz" in s
-    assert "DEVICE_ID=lobby-projector DEVICE_TOKEN=tok-en_0123456789 CMS_URL=http://192.168.1.20:8080 bash deploy/install-player.sh" in s
+    assert INSTALL_LINE in s
     assert "-ge 20" in s and "sleep 60" in s
     assert "systemctl disable projection5000-provision.service" in s
     assert 'rm -f /usr/local/sbin/projection5000-provision.sh "$SRC"' in s
     assert "/var/log/projection5000-provision.log" in s
     # Stale image clock: wait for NTP, else seed from the console's Date header.
     assert "NTPSynchronized" in s and 'date -s "$D"' in s
-    s = firstboot.render_provision(cfg(console_url="https://projectors.photogen5000.com"))
-    assert "CMS_URL=https://projectors.photogen5000.com bash" in s
+
+
+def test_provision_contents_with_enrollment_key():
+    key = "aB0-_" * 8
+    name = "Lobby $(rm -rf /) 'Hall' \"2\""
+    s = firstboot.render_provision(cfg(enrollment_key=key, name=name))
+    assert "\nDEVICE_ID=lobby-projector\n" in s and f"\nENROLL_KEY={key}\n" in s
+    assert "\nDEVICE_TOKEN=\nCMS_URL=\n" in s  # filled in by enroll()
+    assert f"DEVICE_NAME={shlex.quote(name)}\n" in s
+    assert "$(rm -rf /)" not in s.replace(shlex.quote(name), "")
+    # JSON via python3 json.dumps, piped to curl (-d @-): the key never appears on a command line.
+    assert 'python3 -c \'import json, os; print(json.dumps({"key": os.environ["ENROLL_KEY"], ' \
+           '"device_id": os.environ["DEVICE_ID"], "name": os.environ["DEVICE_NAME"]}))\'' in s
+    assert '| curl -fsS --max-time 30 -X POST "$CONSOLE/api/enroll" -H "content-type: application/json" -d @- -o "$out"' in s
+    assert "json.load(sys.stdin)[\"token\"]" in s and 'json.load(sys.stdin).get("cms_url")' in s
+    assert '{ [ -n "$DEVICE_TOKEN" ] || enroll; }' in s and INSTALL_LINE in s
+    # The health wait comes before the first enrollment attempt.
+    assert s.index('"$CONSOLE/api/health" >/dev/null') < s.index("TRIES=0")
 
 
 def test_patch_cmdline():
@@ -207,11 +244,134 @@ def test_patch_cmdline():
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
 def test_scripts_parse_in_bash(tmp_path):
-    for name, text in (("firstrun.sh", firstboot.render_firstrun(cfg())),
-                       ("provision.sh", firstboot.render_provision(cfg()))):
+    hostile = cfg(name="Lobby $(rm -rf /) 'Hall' \"2\" `x`", password="pa'ss $(x)", ssid="It's \"here\"")
+    for name, text in (("firstrun.sh", firstboot.render_firstrun(hostile)),
+                       ("provision.sh", firstboot.render_provision(hostile)),
+                       ("provision-token.sh", firstboot.render_provision(cfg(token="tok-en_0123456789")))):
         p = tmp_path / name
         p.write_bytes(text.encode("utf-8"))
         subprocess.run(["bash", "-n", str(p)], check=True)
+
+
+def _msys(p) -> str:
+    """C:/x -> /c/x so bash tools (tar sees 'C:' as a remote host) accept the path."""
+    s = str(p).replace(chr(92), "/")
+    return f"/{s[0].lower()}{s[2:]}" if len(s) > 2 and s[1] == ":" else s
+
+
+def _provision_harness(tmp_path, script: str, responses: list, install_fails: bool = False) -> dict:
+    """Run a rendered provision.sh under bash with the world stubbed: curl answers /api/health and returns
+    the queued responses for /api/enroll (an int is a curl exit code, a dict a JSON body), the player
+    archive holds a stub installer that records its environment, timedatectl says the clock is synced.
+    Returns the log and what the stubs recorded."""
+    tmp = _msys(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    if install_fails:
+        (rec / "install-fails").write_text("")
+
+    def stub(name, body):
+        p = bin_dir / name
+        p.write_bytes(("#!/bin/bash\n" + body).encode())
+        p.chmod(0o755)
+
+    stub("python3", f'exec {shlex.quote(_msys(sys.executable))} "$@"\n')
+    stub("timedatectl", "echo yes\n")
+    stub("systemctl", f'echo "$@" >>{shlex.quote(_msys(rec))}/systemctl\n')
+    for i, r in enumerate(responses, 1):
+        (rec / f"resp.{i}").write_text(str(r) if isinstance(r, int) else "0\n" + json.dumps(r))
+    stub("curl", "\n".join([
+        f"REC={shlex.quote(_msys(rec))}",
+        'out=; url=',
+        'while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; http*) url=$1;; esac; shift; done',
+        'case "$url" in */api/health) echo "$url" >>"$REC/health"; exit 0;; esac',
+        'n=$(cat "$REC/count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$REC/count"',
+        'cat >"$REC/body.$n"',
+        'echo "$url" >>"$REC/enroll"',
+        'rc=$(head -n1 "$REC/resp.$n" 2>/dev/null || echo 7)',
+        '[ "$rc" = 0 ] || { echo "curl: (22) The requested URL returned error: 401" >&2; exit "$rc"; }',
+        'tail -n +2 "$REC/resp.$n" >"$out"',
+        "",
+    ]))
+    # The player archive: a stub installer that records DEVICE_ID/DEVICE_TOKEN/CMS_URL.
+    installer = (f'#!/bin/bash\nprintf "%s\\n" "$DEVICE_ID" "$DEVICE_TOKEN" "$CMS_URL" >{shlex.quote(_msys(rec))}/install\n'
+                 f'[ -f {shlex.quote(_msys(rec))}/install-fails ] && exit 9\nexit 0\n').encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        ti = tarfile.TarInfo("player/deploy/install-player.sh")
+        ti.size = len(installer)
+        tar.addfile(ti, io.BytesIO(installer))
+    archive = tmp_path / "player.tar.gz"
+    archive.write_bytes(buf.getvalue())
+    log = tmp_path / "provision.log"
+    sbin = tmp_path / "sbin-provision.sh"
+    sbin.write_text("copy on the pi")
+    s = (script.replace("exec >>/var/log/projection5000-provision.log 2>&1", f"exec >>{shlex.quote(_msys(log))} 2>&1")
+               .replace("SRC=/opt/projection5000-player.tar.gz", f"SRC={shlex.quote(_msys(archive))}")
+               .replace("/opt/projection5000-src", tmp + "/src")
+               .replace("/usr/local/sbin/projection5000-provision.sh", _msys(sbin))
+               .replace("sleep 60", "sleep 0").replace("sleep 15", "sleep 0").replace("-ge 20", "-ge 3"))
+    p = tmp_path / "provision.sh"
+    p.write_bytes(s.encode())
+    env = dict(os.environ, PATH=_msys(bin_dir) + ":" + os.environ.get("PATH", ""))
+    r = subprocess.run(["bash", str(p)], capture_output=True, text=True, timeout=120, env=env)
+    read = lambda n: (rec / n).read_text().replace("\r", "") if (rec / n).exists() else ""
+    bodies = [json.loads((rec / f"body.{i}").read_text()) for i in range(1, int(read("count") or 0) + 1)]
+    return {"rc": r.returncode, "log": log.read_text() + r.stderr, "bodies": bodies,
+            "install": read("install").split("\n")[:3], "systemctl": read("systemctl"),
+            "enroll_calls": read("enroll").count("/api/enroll"), "health_calls": read("health").count("/api/health"),
+            "sbin": sbin.exists(), "archive": archive.exists(), "rec": rec}
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_provision_enrolls_then_installs(tmp_path):
+    key = "aB0-_" * 8 + "=="
+    name = "Lobby $(rm -rf /) 'Hall' \"2\" \\ é"
+    s = firstboot.render_provision(cfg(enrollment_key=key, name=name))
+    r = _provision_harness(tmp_path, s, [{"device_id": "lobby-projector", "token": "tok-from-console-0123456789",
+                                         "cms_url": "https://console.example/"}])
+    assert r["rc"] == 0, r["log"]
+    assert r["health_calls"] >= 1 and r["enroll_calls"] == 1
+    # The JSON the console receives is exactly the shared contract, with the hostile name intact.
+    assert r["bodies"] == [{"key": key, "device_id": "lobby-projector", "name": name}]
+    # The installer got the token and the cms_url from the response.
+    assert r["install"] == ["lobby-projector", "tok-from-console-0123456789", "https://console.example/"]
+    assert "enrolled as lobby-projector at https://console.example/" in r["log"]
+    assert "install succeeded" in r["log"]
+    # Secret hygiene: the script and archive are gone, the service is disabled, no secret in the log.
+    assert not r["sbin"] and not r["archive"] and "disable projection5000-provision.service" in r["systemctl"]
+    assert key not in r["log"] and "tok-from-console" not in r["log"]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_provision_retries_enrollment_and_install(tmp_path):
+    """Network flap (curl fails), then a response without a token, then success; a failing installer retries
+    without enrolling again (the token is kept)."""
+    s = firstboot.render_provision(cfg())
+    r = _provision_harness(tmp_path, s, [22, {"detail": "odd"}, {"token": "tok-0123456789abcdef", "cms_url": ""}])
+    assert r["rc"] == 0, r["log"]
+    assert r["enroll_calls"] == 3 and r["log"].count("enrollment failed (curl rc=22)") == 1
+    assert "enrollment failed (curl rc=0)" in r["log"]  # 200 without a token is a failure too
+    assert "attempt 2 failed, retrying" in r["log"] and "install attempt 3" in r["log"]
+    assert r["install"][1:] == ["tok-0123456789abcdef", "https://projectors.photogen5000.com"]  # empty cms_url: CONSOLE
+    # Installer failure: retried up to the limit without re-enrolling, then gives up with instructions.
+    (tmp_path / "fails").mkdir()
+    r = _provision_harness(tmp_path / "fails", s, [{"token": "tok-0123456789abcdef", "cms_url": "https://c"}],
+                           install_fails=True)
+    assert r["rc"] == 1 and "GAVE UP after 3 attempts" in r["log"], r["log"]
+    assert r["enroll_calls"] == 1 and r["sbin"] and r["archive"]  # nothing deleted: the next boot retries
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_provision_with_token_never_enrolls(tmp_path):
+    s = firstboot.render_provision(cfg(token="tok-on-card-0123456789", console_url="http://console.local:8080"))
+    r = _provision_harness(tmp_path, s, [])
+    assert r["rc"] == 0, r["log"]
+    assert r["enroll_calls"] == 0 and r["bodies"] == []
+    assert r["install"] == ["lobby-projector", "tok-on-card-0123456789", "http://console.local:8080"]
+    assert not r["sbin"] and not r["archive"]
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")

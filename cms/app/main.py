@@ -35,6 +35,7 @@ def create_app() -> FastAPI:
         log.warning("PIPLAYER_SECRET_KEY is not set: using a random session key, "
                     "so all logins will be invalidated whenever this process restarts")
     web_routes.sweep_upload_tmp()
+    db.enrollment_key()  # generated at startup when missing (never logged)
     pruned = db.prune_audit_log(config.AUDIT_RETENTION_DAYS)
     if pruned:
         log.info("pruned %d audit log rows older than %d days", pruned, config.AUDIT_RETENTION_DAYS)

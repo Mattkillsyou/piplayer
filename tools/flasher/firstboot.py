@@ -16,6 +16,9 @@ DEVICE_ID_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 # What Raspberry Pi's userconf-service accepts before it calls userconf (1-32 chars, not root).
 USERNAME_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,}")
+# urlsafe-base64 as the console generates it (token_urlsafe / getRandomValues), padding tolerated.
+ENROLL_KEY_RE = re.compile(r"[A-Za-z0-9_-]+={0,2}")
+MAX_NAME_LEN = 120
 TIMEZONE_RE = re.compile(r"UTC|[A-Za-z_]+(/[A-Za-z0-9_+-]+){1,2}")
 KEYMAP_RE = re.compile(r"[a-z]{2,8}")
 HEX64_RE = re.compile(r"[0-9a-fA-F]{64}")
@@ -74,8 +77,15 @@ def console_url_problem(url: str):
     if p.scheme not in ("http", "https") or not p.hostname:
         return "Console URL must start with http:// or https://."
     if p.scheme == "http" and not _local_host(p.hostname):
-        return ("Console URL must use https:// (http:// would send the console password and the device token "
+        return ("Console URL must use https:// (http:// would send the enrollment key and the device token "
                 "in clear text; it is only allowed for LAN addresses, .local names and localhost).")
+    return None
+
+
+def enrollment_key_problem(key: str):
+    """None when key looks like a console enrollment key (urlsafe-base64, 20-128 chars), else a message."""
+    if not (ENROLL_KEY_RE.fullmatch(key or "") and 20 <= len(key) <= 128):
+        return "Enrollment key must be 20-128 letters, digits, '-' or '_' (copy it from the console's Settings page)."
     return None
 
 
@@ -121,8 +131,15 @@ def validate_cfg(cfg: dict) -> list:
     url_problem = console_url_problem(c.get("console_url") or "")
     if url_problem:
         problems.append(url_problem)
-    if not TOKEN_RE.fullmatch(c.get("token") or ""):
-        problems.append("Device token must be at least 16 letters, digits, '-' or '_' (as issued by the console).")
+    if not 1 <= len((c.get("name") or "").strip()) <= MAX_NAME_LEN:
+        problems.append(f"Device name must be 1-{MAX_NAME_LEN} characters.")
+    if c.get("token"):  # a token on the card bypasses enrollment
+        if not TOKEN_RE.fullmatch(c["token"]):
+            problems.append("Device token must be at least 16 letters, digits, '-' or '_' (as issued by the console).")
+    else:
+        key_problem = enrollment_key_problem(c.get("enrollment_key") or "")
+        if key_problem:
+            problems.append(key_problem)
     if not c["ethernet_only"]:
         problems.extend(wifi_problems(c.get("ssid") or "", c.get("wifi_password") or ""))
     country = (c.get("wifi_country") or "").strip().upper()
@@ -289,18 +306,51 @@ def _wifi_lines(c: dict) -> list:
 
 
 def render_provision(cfg: dict) -> str:
+    """The boot-time installer. With a device token on the card it installs straight away; otherwise it
+    first trades the enrollment key for a token at POST /api/enroll (the same device_id re-enrolls the
+    same device, so a re-flashed card keeps its identity on the console)."""
     c = _cfg(cfg)
     q = shlex.quote
     console = c["console_url"].rstrip("/")
-    env = f"DEVICE_ID={q(c['device_id'])} DEVICE_TOKEN={q(c['token'])} CMS_URL={q(console)}"
+    if c.get("token"):
+        secret = [f"DEVICE_TOKEN={q(c['token'])}", 'CMS_URL="$CONSOLE"']
+    else:
+        secret = [f"DEVICE_NAME={q(c['name'].strip())}", f"ENROLL_KEY={q(c['enrollment_key'])}",
+                  "DEVICE_TOKEN=", "CMS_URL="]
+    body = ('import json, os; print(json.dumps({"key": os.environ["ENROLL_KEY"], '
+            '"device_id": os.environ["DEVICE_ID"], "name": os.environ["DEVICE_NAME"]}))')
     lines = [
         "#!/bin/bash",
         "# Projection5000 provisioning. Runs on every boot until the player is installed, then disables itself.",
         "set +e",
         "exec >>/var/log/projection5000-provision.log 2>&1",
         f"CONSOLE={q(console)}",
+        f"DEVICE_ID={q(c['device_id'])}",
+        *secret,
         f"SRC=/opt/{PLAYER_ARCHIVE}",
         'echo "provision start $(date)"',
+        "",
+        "# enroll: POST /api/enroll with the enrollment key; sets DEVICE_TOKEN and CMS_URL. The JSON body is",
+        "# built by python3 (proper escaping) and piped to curl, so the key never appears on a command line.",
+        "enroll() {",
+        "  local out rc",
+        "  out=$(mktemp) || return 1",
+        f'  ENROLL_KEY="$ENROLL_KEY" DEVICE_ID="$DEVICE_ID" DEVICE_NAME="$DEVICE_NAME" python3 -c {q(body)} \\',
+        '    | curl -fsS --max-time 30 -X POST "$CONSOLE/api/enroll" -H "content-type: application/json" -d @- -o "$out"',
+        "  rc=$?",
+        '  if [ "$rc" -eq 0 ]; then',
+        "    DEVICE_TOKEN=$(python3 -c 'import json, sys; print(json.load(sys.stdin)[\"token\"])' <\"$out\")",
+        "    CMS_URL=$(python3 -c 'import json, sys; print(json.load(sys.stdin).get(\"cms_url\") or \"\")' <\"$out\")",
+        '    [ -n "$CMS_URL" ] || CMS_URL="$CONSOLE"',
+        "  fi",
+        '  rm -f "$out"',
+        '  if [ "$rc" -ne 0 ] || [ -z "$DEVICE_TOKEN" ]; then',
+        "    DEVICE_TOKEN=",
+        '    echo "enrollment failed (curl rc=$rc). HTTP 401 means the console\'s enrollment key was rotated: re-flash the card."',
+        "    return 1",
+        "  fi",
+        '  echo "enrolled as $DEVICE_ID at $CMS_URL"',
+        "}",
         "",
         "# The image's clock is stale until NTP syncs; TLS and apt both need the real time.",
         "for _ in $(seq 1 24); do",
@@ -322,9 +372,11 @@ def render_provision(cfg: dict) -> str:
         "while :; do",
         "  TRIES=$((TRIES + 1))",
         '  echo "install attempt $TRIES $(date)"',
-        "  if rm -rf /opt/projection5000-src && mkdir -p /opt/projection5000-src \\",
+        '  if { [ -n "$DEVICE_TOKEN" ] || enroll; } \\',
+        "     && rm -rf /opt/projection5000-src && mkdir -p /opt/projection5000-src \\",
         '     && tar -xzf "$SRC" -C /opt/projection5000-src \\',
-        f"     && (cd /opt/projection5000-src/player && {env} bash deploy/install-player.sh); then",
+        '     && (cd /opt/projection5000-src/player && DEVICE_ID="$DEVICE_ID" DEVICE_TOKEN="$DEVICE_TOKEN" '
+        'CMS_URL="$CMS_URL" bash deploy/install-player.sh); then',
         '    echo "install succeeded $(date)"',
         "    systemctl disable projection5000-provision.service",
         '    rm -f /usr/local/sbin/projection5000-provision.sh "$SRC"',
@@ -366,5 +418,6 @@ def sample_config() -> dict:
         "timezone": "America/Los_Angeles",
         "keymap": "us",
         "console_url": "https://projectors.photogen5000.com",
-        "token": "sample-token-0123456789",
+        "enrollment_key": "sample-enrollment-key_0123456789",
+        "token": "",
     }

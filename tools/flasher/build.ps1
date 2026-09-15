@@ -36,10 +36,25 @@ try {
 $info = Join-Path $stage 'build_info.txt'
 [IO.File]::WriteAllText($info, "built $(Get-Date -Format s) from commit $commit with $(& $python --version)")
 
+# Console defaults baked into the exe: FLASHER_CONSOLE_URL and FLASHER_ENROLL_KEY (the console's Settings
+# page) become console.json and prefill the form. FLASHER_NO_CONSOLE=1 builds without (operator types both).
+$consoleJson = Join-Path $stage 'console.json'
+Remove-Item -Force $consoleJson -ErrorAction SilentlyContinue
+$consoleData = @()
+if ($env:FLASHER_NO_CONSOLE -ne '1') {
+    if (-not $env:FLASHER_CONSOLE_URL -or -not $env:FLASHER_ENROLL_KEY) {
+        throw "set FLASHER_CONSOLE_URL and FLASHER_ENROLL_KEY (or FLASHER_NO_CONSOLE=1 for a build without console defaults)"
+    }
+    $env:CONSOLE_JSON_OUT = $consoleJson
+    & $python -c "import os, flasher; flasher.write_console_json(os.environ['CONSOLE_JSON_OUT'], os.environ['FLASHER_CONSOLE_URL'], os.environ['FLASHER_ENROLL_KEY'])"
+    if ($LASTEXITCODE -ne 0) { throw "FLASHER_CONSOLE_URL / FLASHER_ENROLL_KEY rejected" }
+    $consoleData = @('--add-data', "$consoleJson;.")
+}
+
 # asInvoker: the exe starts unelevated (so --dry-run works on any account) and relaunches itself with
 # a UAC prompt for a real flash; declining the prompt shows the "Run as administrator" message.
 & $python -m PyInstaller --noconfirm --clean --onefile --windowed `
-    --add-data "$archive;." --add-data "$info;." `
+    --add-data "$archive;." --add-data "$info;." @consoleData `
     --name Projection5000-SD-Flasher flasher.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
@@ -86,4 +101,9 @@ if (-not (Select-String -Path $out -Pattern '^tk: ok' -Quiet)) { throw "frozen e
 $bundled = (Select-String -Path $out -Pattern '^bundled image: ' | Select-Object -First 1).Line
 if ($env:FLASHER_NO_BUNDLE -ne '1' -and -not ($bundled -like '*(trailer ok)')) { throw "exe does not see its bundled image: '$bundled'" }
 Write-Host $bundled
+$consoleLine = (Select-String -Path $out -Pattern '^console: ' | Select-Object -First 1).Line
+if ($env:FLASHER_NO_CONSOLE -ne '1' -and $consoleLine -ne "console: $($env:FLASHER_CONSOLE_URL.TrimEnd('/')) (enrollment key: set)") {
+    throw "exe does not see its console.json: '$consoleLine'"
+}
+Write-Host $consoleLine
 Write-Host "OK: $exe ($([math]::Round((Get-Item $exe).Length / 1MB, 1)) MB), selfcheck output in $out"

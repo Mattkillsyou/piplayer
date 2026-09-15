@@ -16,7 +16,13 @@ You'll need:
 
 > **On Windows: use the Projection5000 SD Flasher** (`tools/flasher/README.md`).
 > It replaces sections 1, 2, 4 and 5 below: fill in the form, insert a card,
-> click Flash, put the card in the Pi. The manual path that follows still works.
+> click Flash, put the card in the Pi. No console login is needed: the exe
+> carries the console's **enrollment key** (Settings page, baked in by
+> `build.ps1`) and the Pi enrolls itself on first boot, creating the device
+> and fetching its token. Re-flashing a card with the same device id
+> re-enrolls the same device (same token, same playlist); rotate the key on the
+> Settings page if a flashed card is lost, then rebuild the exe. The manual
+> path that follows still works.
 
 ## 1. Flash Raspberry Pi OS Lite (64-bit)
 

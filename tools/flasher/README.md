@@ -3,13 +3,16 @@
 Windows desktop tool that writes Raspberry Pi OS Lite (64-bit) to an SD card and
 pre-configures the Pi so that on first boot it joins Wi-Fi, takes its hostname,
 enables SSH, installs the Projection5000 player (a copy of `player/` travels on
-the card; the Pi never needs GitHub access) and registers with the console. No monitor, keyboard or SSH session needed: fill in the form,
+the card; the Pi never needs GitHub access) and enrolls itself with the console.
+No monitor, keyboard, SSH session or console login needed: fill in the form,
 insert a card, click Flash, put the card in the Pi.
 
 ## What it does
 
-1. Registers the device on the console (logs in with your console account,
-   creates the device, reads its token) or uses a token you paste in.
+1. Puts the console URL and the console's **enrollment key** on the card (both
+   are baked into the exe at build time and prefilled; see "Enrollment"
+   below). The flasher itself never talks to the console. Under "Advanced" you
+   can paste a device token instead, which skips enrollment on the Pi.
 2. Takes the Raspberry Pi OS Lite arm64 image that is built into the exe (the
    default; see "Bundled image" below), or downloads the latest one (verified
    against the published `.sha256`, cached in
@@ -34,11 +37,39 @@ its own copies of the secrets and writes `firstrun.ok` when every step
 succeeded. The Wi-Fi passphrase is stored pre-hashed (PBKDF2, as Raspberry Pi
 Imager does), so the plaintext never reaches the card.
 The service waits for the clock to sync (or seeds it from the console), waits
-for the console's `/api/health`, unpacks the player archive to
-`/opt/projection5000-src` and runs `player/deploy/install-player.sh` with the
-device id, token and console URL, retrying every 60 s (up to 20 times). On
-success it disables itself and deletes the token. The device shows up on the
-console's Devices page within about 5 minutes of the first boot.
+for the console's `/api/health`, enrolls (`POST /api/enroll` with the key, the
+device id and the name; the console answers with the device token and its
+URL), unpacks the player archive to `/opt/projection5000-src` and runs
+`player/deploy/install-player.sh` with the device id, token and console URL,
+retrying every 60 s (up to 20 times; a token once received is kept across
+retries). On success it disables itself and deletes the script that carried
+the key. The device shows up on the console's Devices page within about
+5 minutes of the first boot.
+
+## Enrollment
+
+The console keeps one secret enrollment key (Settings page, admins only).
+`build.ps1` bakes it and the console URL into the exe (`console.json`, set
+`FLASHER_CONSOLE_URL` and `FLASHER_ENROLL_KEY` when building), so the operator
+never sees a login prompt. `--selfcheck` prints
+`console: <url> (enrollment key: set)` for a build that carries one. Both
+values are prefilled in the Console box: the URL can be changed (the change
+is remembered), the key can be overridden for one session (it is never
+written to disk by the tool; a rotated key means a rebuild or a paste).
+"Test connection" does a `GET /api/health` and nothing more.
+
+- A **re-flashed card enrolls the same device**: the console keeps the
+  existing device (and its token) for a known `device_id` and only updates the
+  name, so the Devices page, playlist assignment and history survive a
+  re-flash.
+- **Rotate the key** on the console's Settings page if a flashed card is lost
+  or the exe leaks: cards flashed with the old key that have not booted yet
+  then fail enrollment (the Pi logs a 401 in
+  `/var/log/projection5000-provision.log`) and must be flashed again with a
+  rebuilt exe. Devices that already enrolled are unaffected.
+- **Advanced: device token**: tick the box and paste a token from the
+  console's Devices page to bypass enrollment (the old manual path). The key
+  is then not written to the card.
 
 ## Requirements
 
@@ -91,13 +122,11 @@ python flasher.py
 From a normal prompt it relaunches itself elevated (UAC prompt) and exits.
 
 `python flasher.py --dry-run` opens the same window with the "Dry run" box
-ticked and needs no admin rights: Flash validates the form, registers the
-device on the console (or uses the token), resolves the image (download URL
-and sha256, cache check, no download) and then stops with "Dry run: would
-write ... Nothing was written". Use it to check console credentials and the
-form before touching a card. The box can also be ticked in an elevated run.
-Note that a dry run really registers the device on the console (the log says
-so); delete it there if it was only a test.
+ticked and needs no admin rights: Flash validates the form, renders the
+first-boot files, resolves the image (download URL and sha256, cache check,
+no download) and then stops with "Dry run: would write ... Nothing was
+written". It never contacts the console. Use it to check the form before
+touching a card. The box can also be ticked in an elevated run.
 
 `python flasher.py --selfcheck` prints the generated `firstrun.sh`,
 `projection5000-provision.sh` and `cmdline.txt` for a sample configuration and
@@ -114,13 +143,17 @@ from one.
 powershell -ExecutionPolicy Bypass -File tools\flasher\build.ps1
 ```
 
-Installs PyInstaller if missing, runs the selfcheck, bundles `player/` as
-`player.tar.gz` plus a build stamp (date, commit; shown by `--selfcheck`),
-builds `tools\flasher\dist\Projection5000-SD-Flasher.exe`
+Set `$env:FLASHER_CONSOLE_URL` and `$env:FLASHER_ENROLL_KEY` (from the
+console's Settings page) first, or `$env:FLASHER_NO_CONSOLE = '1'` for a build
+where the operator types both. The script installs PyInstaller if missing,
+runs the selfcheck, bundles `player/` as `player.tar.gz` plus a build stamp
+(date, commit; shown by `--selfcheck`) and `console.json`, builds `tools\flasher\dist\Projection5000-SD-Flasher.exe`
 (`--onefile --windowed`, asInvoker: it elevates itself), embeds the OS image
 (see "Bundled image": `FLASHER_IMAGE`, `FLASHER_NO_BUNDLE`) and smoke-tests it
-(the frozen exe must start Tk and see its bundled image; the build prints the
-`bundled image:` line and the final exe size). Set `$env:FLASHER_PYTHON` to
+(the frozen exe must start Tk, see its bundled image and report
+`console: <url> (enrollment key: set)`; the build prints both lines and the
+final exe size). The exe carries the enrollment key: share it only with the
+people who flash cards, and rotate the key on the console if a copy leaks. Set `$env:FLASHER_PYTHON` to
 choose the interpreter; the source floor is Python 3.11, so build with 3.11
 when in doubt.
 `dist/`, `build/` and the `.spec` file are git-ignored. Rebuild after every
@@ -134,34 +167,37 @@ cms\.venv\Scripts\python.exe -m pytest tools\flasher\tests -q
 
 No admin rights or card needed: the write engine is tested against temp files
 and a fake drive with a synthetic `.img.xz`, the download code against a local
-HTTP server on a free port, device registration against the real Python CMS in
-`cms/` started on a free port (or `FLASHER_TEST_PORT`) with a temporary data
-directory, the rendered `firstrun.sh` by actually running it in bash against
-stubbed tools, and the GUI flow (failure, cancel, confirmations) against a
-withdrawn Tk window. The GUI tests are skipped when there is no display.
+HTTP server on a free port, enrollment against a stub `/api/enroll` server and
+(one test, skipped until that CMS answers `/api/enroll`) against the real
+Python CMS in `cms/` started on a free port (or `FLASHER_TEST_PORT`) with a
+temporary data directory, the rendered `firstrun.sh` and
+`projection5000-provision.sh` by actually running them in bash against stubbed
+tools (curl, python3, the installer), and the GUI flow (failure, cancel,
+confirmations) against a withdrawn Tk window. The GUI tests are skipped when
+there is no display.
 
 ## Settings
 
 Last-used form values are kept in `%LOCALAPPDATA%\Projection5000\flasher.json`.
-Passwords and tokens are never saved there. The Pi password defaults to a
+Passwords, the enrollment key and tokens are never saved there. The Pi password defaults to a
 random value that is printed in the log after the flash and nowhere else:
 record it then, or type your own.
 
 ## Security note
 
 Until the first boot completes, the card's boot partition holds the Pi user's
-password, the pre-hashed Wi-Fi key and the device token in plain text
-(`firstrun.sh` and `projection5000-provision.sh`). On the first boot
+password, the pre-hashed Wi-Fi key and the console's enrollment key (or a
+device token) in plain text (`firstrun.sh` and `projection5000-provision.sh`). On the first boot
 `firstrun.sh` moves the provisioning script to `/usr/local/sbin` (root only),
 zero-fills and deletes both files on the FAT partition, and the provisioning
 script deletes itself after the player installs. A card whose Pi never
 completed the first boot still carries everything: treat an un-booted card
-like a password, do not leave it lying around, and re-flash it if it is lost.
+like a password, do not leave it lying around, and rotate the enrollment key
+on the console if it is lost (then rebuild the exe and re-flash).
 
-The console credentials used for "Register this device for me" are used for
-that one login only and never written to disk. `http://` console URLs are only
-accepted for LAN addresses, `.local` names and localhost; anything else must be
-`https://` so the password and token are not sent in clear text.
+`http://` console URLs are only accepted for LAN addresses, `.local` names and
+localhost; anything else must be `https://` so the key and token are not sent
+in clear text.
 
 ## Troubleshooting
 
@@ -176,7 +212,7 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
   changed between Refresh and Flash. Click Refresh, check the target, retry.
 - **"The image was written but the first-boot files were NOT"**: Windows did
   not mount the boot partition in time. The card holds a plain, unconfigured OS;
-  re-insert it and Flash again (the download is cached, registration is reused).
+  re-insert it and Flash again (the download is cached).
 - **Download fails or is slow**: use the bundled image (the default), or
   "Local image file" with an image you downloaded from raspberrypi.com. Cached
   downloads live in `%LOCALAPPDATA%\Projection5000\images`.
@@ -185,8 +221,10 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
   status (`rc=0` is good) and `firstrun.ok` exists when all of them passed. If
   that looks fine, the Pi booted; SSH in (or attach a keyboard) and read
   `/var/log/projection5000-provision.log`: it shows whether the Pi could reach
-  the console URL, sync its clock and run the installer. The
-  console URL must be reachable from the Pi's network (a LAN address or a public
-  HTTPS name), not `localhost`.
+  the console URL, sync its clock, enroll and run the installer. `enrollment
+  failed (curl rc=22)` with a 401 means the console's enrollment key was
+  rotated after this exe was built: rebuild and re-flash. The console URL must
+  be reachable from the Pi's network (a LAN address or a public HTTPS name),
+  not `localhost`.
 - **Wrong Wi-Fi password / SSID**: nothing to fix on the card after the fact,
   re-flash it.

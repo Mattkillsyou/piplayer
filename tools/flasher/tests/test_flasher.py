@@ -16,10 +16,11 @@ FLASHER = Path(flasher.__file__)
 DISK = {"number": 2, "name": "Generic MassStorageClass", "bus": "USB", "size": 31914983424, "sector": 512,
         "unique_id": "USBSTOR\\X&0:", "serial": "", "signature": 1, "boot": False,
         "label": "Disk 2  Generic MassStorageClass  29.7 GiB"}
+KEY = "form-enrollment-key_0123456789abcdef"
 FORM = {"device_id": "lobby", "name": "Lobby", "username": "pi", "password": "pw", "ssh": True, "ssid": "Venue",
         "wifi_password": "wp123456", "wifi_hidden": False, "ethernet_only": False, "timezone": "UTC", "keymap": "us",
-        "wifi_country": "us", "console_url": "http://console.local/", "reg_mode": "register",
-        "console_user": "admin", "console_password": "secret", "token": "", "image_mode": "local"}
+        "wifi_country": "us", "console_url": "http://console.local/", "enrollment_key": KEY, "advanced": False,
+        "token": "", "image_mode": "local"}
 
 
 def _root():
@@ -50,6 +51,42 @@ def test_selfcheck_prints_scripts():
     assert "install-player.sh" in r.stdout
     assert "player archive:" in r.stdout and "tk:" in r.stdout
     assert firstboot.CMDLINE_ARGS in r.stdout
+    assert "\nconsole: " in r.stdout  # what this build prefills (none when run from source without console.json)
+    assert '"$CONSOLE/api/enroll"' in r.stdout
+
+
+def test_console_json_resource_frozen_and_source(monkeypatch, tmp_path):
+    # Source mode: next to flasher.py (a checkout normally has none: empty defaults, no crash).
+    src = tmp_path / "src"
+    src.mkdir()
+    monkeypatch.setattr(flasher, "__file__", str(src / "flasher.py"))
+    assert flasher.resource_path("build_info.txt") == src / "build_info.txt"
+    assert flasher.console_defaults() == {"console_url": "", "enrollment_key": ""}
+    assert flasher.console_summary().startswith("console: none")
+    flasher.write_console_json(src / "console.json", "https://c.example/", " " + KEY + " ")
+    assert flasher.console_defaults() == {"console_url": "https://c.example", "enrollment_key": KEY}
+    assert flasher.console_summary() == "console: https://c.example (enrollment key: set)"
+    # Damaged or partial file: still starts.
+    (src / "console.json").write_text('{"console_url": 5, "enrollment_key": "k"}')
+    assert flasher.console_defaults() == {"console_url": "", "enrollment_key": "k"}
+    (src / "console.json").write_text("[1,")
+    assert flasher.console_defaults() == {"console_url": "", "enrollment_key": ""}
+    # Frozen mode: PyInstaller's _MEIPASS holds what --add-data staged.
+    mei = tmp_path / "mei"
+    mei.mkdir()
+    (mei / "build_info.txt").write_text("built now\n")
+    (mei / "console.json").write_text('{"console_url": "https://frozen.example", "enrollment_key": ""}')
+    monkeypatch.setattr(flasher.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(flasher.sys, "_MEIPASS", str(mei), raising=False)
+    assert flasher.build_info() == "built now"
+    assert flasher.console_summary() == "console: https://frozen.example (enrollment key: missing)"
+    (mei / "build_info.txt").unlink()
+    assert flasher.build_info() == "frozen build, no build_info.txt"
+    # build.ps1 refuses a bad key or URL before PyInstaller runs.
+    with pytest.raises(ValueError, match="Enrollment key"):
+        flasher.write_console_json(src / "console.json", "https://c.example", "short")
+    with pytest.raises(ValueError, match="https://"):
+        flasher.write_console_json(src / "console.json", "http://c.example", KEY)
 
 
 def test_player_archive_holds_the_player_tree():
@@ -87,10 +124,10 @@ def test_ensure_admin_paths(monkeypatch):
 def test_settings_never_store_secrets(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     flasher.save_settings({"name": "Lobby", "password": "pi-secret", "wifi_password": "wifi-secret",
-                           "console_password": "c-secret", "token": "tok", "ssid": "Venue"})
+                           "enrollment_key": "k-secret", "token": "tok", "ssid": "Venue", "console_url": "https://c"})
     text = (tmp_path / "Projection5000" / "flasher.json").read_text()
-    assert "Lobby" in text and "Venue" in text
-    for secret in ("pi-secret", "wifi-secret", "c-secret", "tok"):
+    assert "Lobby" in text and "Venue" in text and "https://c" in text
+    for secret in ("pi-secret", "wifi-secret", "k-secret", "tok"):
         assert secret not in text
     assert flasher.load_settings()["name"] == "Lobby"
     # A corrupt or non-object settings file must not stop the program from starting.
@@ -131,6 +168,67 @@ def test_gui_constructs(monkeypatch, tmp_path):
     app.v["password"].set(" keep me ")
     assert app.values()["device_id"] == "lobby-projector" and app.values()["password"] == " keep me "
     assert root.winfo_reqheight() <= root.winfo_screenheight() - 120
+    # No console.json (source checkout): default URL, empty key, token row collapsed.
+    assert v["console_url"] == flasher.DEFAULT_CONSOLE_URL and v["enrollment_key"] == "" and v["advanced"] is False
+    assert not app.advanced.winfo_manager()
+    app.v["advanced"].set(True)
+    app._toggle_advanced()
+    assert app.advanced.winfo_manager() == "grid"
+    root.destroy()
+
+
+def _console_frame(app):
+    return app.root.winfo_children()[0].winfo_children()[0].winfo_children()[1]
+
+
+def test_gui_prefills_from_console_json(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher, "console_defaults", lambda: {"console_url": "https://baked.example",
+                                                              "enrollment_key": KEY})
+    root = _root()
+    app = flasher.App(root)
+    v = app.values()
+    assert v["console_url"] == "https://baked.example" and v["enrollment_key"] == KEY
+    key_entry = [w for w in _console_frame(app).winfo_children()
+                 if isinstance(w, flasher.ttk.Entry) and w.cget("textvariable") == str(app.v["enrollment_key"])][0]
+    assert key_entry.cget("show") == "*"  # masked until "Show"
+    [w for w in _console_frame(app).winfo_children()
+     if isinstance(w, flasher.ttk.Checkbutton) and w.cget("text") == "Show"][0].invoke()
+    assert key_entry.cget("show") == ""
+    # A saved console_url override wins over the baked one; the key is never persisted, so the baked one stays.
+    root.destroy()
+    flasher.save_settings(dict(FORM, console_url="https://override.example", enrollment_key="typed-key"))
+    root = _root()
+    app = flasher.App(root)
+    assert app.values()["console_url"] == "https://override.example" and app.values()["enrollment_key"] == KEY
+    root.destroy()
+
+
+def test_test_connection_button(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    seen = []
+
+    def health(url):
+        seen.append(url)
+        if "bad" in url:
+            raise flasher.console.ConsoleError("cannot reach it")
+
+    monkeypatch.setattr(flasher.console, "check_health", health)
+    monkeypatch.setattr(flasher.console, "enroll", lambda *a: pytest.fail("Test connection must never enroll"))
+    root = _root()
+    app = flasher.App(root)
+    app.v["console_url"].set("https://good.example/")
+    app.test_connection()
+    assert _pump(root, app, lambda: "answers /api/health: ok" in app.log_text.get("1.0", "end"))
+    app.v["console_url"].set("https://bad.example")
+    app.test_connection()
+    assert _pump(root, app, lambda: "Console test FAILED: cannot reach it" in app.log_text.get("1.0", "end"))
+    assert seen == ["https://good.example/", "https://bad.example"]
+    app.v["console_url"].set("http://8.8.8.8")  # refused by the URL rule before any request
+    app.test_connection()
+    assert "Console test: Console URL must use https://" in app.log_text.get("1.0", "end") and len(seen) == 2
     root.destroy()
 
 
@@ -181,9 +279,9 @@ def test_failed_flash_reenables_the_form_and_shows_the_error(monkeypatch, tmp_pa
     monkeypatch.setattr(flasher.messagebox, "askokcancel", lambda *a, **k: True)
 
     def fail(*a, **k):
-        raise flasher.console.ConsoleError("Invalid username or password")
+        raise flasher.imagefetch.FetchError("image resolution boom")
 
-    monkeypatch.setattr(flasher.console, "register_device", fail)
+    monkeypatch.setattr(flasher, "obtain_image", fail)
     img = tmp_path / "x.img"
     img.write_bytes(b"\x01" * 1024)
     root = _root()
@@ -196,8 +294,8 @@ def test_failed_flash_reenables_the_form_and_shows_the_error(monkeypatch, tmp_pa
     assert str(app.flash_btn["state"]) == "disabled"
     assert _pump(root, app, lambda: str(app.flash_btn["state"]) == "normal", timeout=10)
     assert str(app.cancel_btn["state"]) == "disabled"
-    assert errors and "Invalid username or password" in errors[-1][1]
-    assert "FAILED: Invalid username or password" in app.log_text.get("1.0", "end")
+    assert errors and "image resolution boom" in errors[-1][1]
+    assert "FAILED: image resolution boom" in app.log_text.get("1.0", "end")
     root.destroy()
 
 
@@ -261,7 +359,9 @@ def _flash_stubs(monkeypatch, tmp_path, calls):
     boot = tmp_path / "boot"
     boot.mkdir(exist_ok=True)
     (boot / "cmdline.txt").write_text("console=tty1 rootwait\n")
-    monkeypatch.setattr(flasher.console, "register_device", lambda *a: ("tok-lobby-0123456789", True))
+    # The flasher never talks to the console: the Pi enrolls itself.
+    monkeypatch.setattr(flasher.console, "enroll", lambda *a: pytest.fail("flasher enrolled"))
+    monkeypatch.setattr(flasher.console, "check_health", lambda *a: pytest.fail("flasher contacted the console"))
     monkeypatch.setattr(flasher.windisk, "check_disk", lambda d: calls.append("check"))
     monkeypatch.setattr(flasher.windisk, "clear_disk", lambda n, uid="": calls.append("clear"))
     monkeypatch.setattr(flasher.windisk, "volume_paths", lambda n: [])
@@ -312,24 +412,32 @@ def test_run_flash_end_to_end_with_stubs(monkeypatch, tmp_path):
     assert calls == ["check", "clear", "lock", "refresh", "find", "eject"]
     assert card.read_bytes() == bytes(range(256)) * 8
     assert (boot / "firstrun.sh").read_bytes().startswith(b"#!/bin/bash\n")
-    assert b"DEVICE_TOKEN=tok-lobby-0123456789" in (boot / "projection5000-provision.sh").read_bytes()
+    provision = (boot / "projection5000-provision.sh").read_bytes()
+    assert b"\nENROLL_KEY=" + KEY.encode() + b"\n" in provision and b"\nDEVICE_TOKEN=\n" in provision
+    assert b"DEVICE_NAME=Lobby\n" in provision and b'"$CONSOLE/api/enroll"' in provision
     assert (boot / firstboot.PLAYER_ARCHIVE).stat().st_size > 1000
     assert firstboot.CMDLINE_ARGS in (boot / "cmdline.txt").read_text()
     text = "\n".join(lines)
-    assert "Registered, token received." in text and "SUMMARY" in text
+    assert "Console http://console.local: enrolls itself on first boot." in text and "SUMMARY" in text
     assert "password: pw" in text and "Record the password now" in text
+    assert KEY not in text  # the log never shows the key
     # Oversized image: refused before the card is touched.
     calls.clear()
     v["disk_info"] = dict(DISK, size=1024)
     with pytest.raises(flasher.windisk.DiskError, match="larger than the card"):
         flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
     assert calls == []
-    # Reused registration is reported.
+    # Advanced: a device token on the card bypasses enrollment (no key on the card at all).
     lines.clear()
-    v["disk_info"] = dict(DISK, size=1 << 20)
-    monkeypatch.setattr(flasher.console, "register_device", lambda *a: ("tok-lobby-0123456789", False))
+    v.update(disk_info=dict(DISK, size=1 << 20), advanced=True, token="tok-lobby-0123456789", enrollment_key="")
     flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
-    assert any("already exists on the console: reusing its token" in s for s in lines)
+    provision = (boot / "projection5000-provision.sh").read_bytes()
+    assert b"\nDEVICE_TOKEN=tok-lobby-0123456789\n" in provision and b"\nENROLL_KEY=" not in provision
+    assert any("device token given, no enrollment" in s for s in lines)
+    # A token typed and then collapsed (Advanced unticked) does not count.
+    v.update(advanced=False, enrollment_key=KEY)
+    flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
+    assert b"tok-lobby" not in (boot / "projection5000-provision.sh").read_bytes()
 
 
 def test_cancel_after_write_is_honoured_and_reported(monkeypatch, tmp_path):
@@ -347,13 +455,14 @@ def test_cancel_after_write_is_honoured_and_reported(monkeypatch, tmp_path):
     # Cancel before the disk is touched: a plain cancellation, the card was never touched.
     calls.clear()
     cancel = threading.Event()
-    monkeypatch.setattr(flasher.console, "register_device", lambda *a: cancel.set() or ("tok-lobby-0123456789", True))
+    real_obtain = flasher.obtain_image
+    monkeypatch.setattr(flasher, "obtain_image", lambda *a, **k: cancel.set() or real_obtain(*a, **k))
     with pytest.raises(flasher.windisk.Cancelled) as e:
         flasher.run_flash(v, lines.append, lambda pct, text: None, cancel)
     assert str(e.value) == "" and calls == []
     # Cancel during the write: the card is reported unusable.
     cancel = threading.Event()
-    monkeypatch.setattr(flasher.console, "register_device", lambda *a: ("tok-lobby-0123456789", True))
+    monkeypatch.setattr(flasher, "obtain_image", real_obtain)
     with pytest.raises(flasher.windisk.Cancelled, match="NOT usable"):
         flasher.run_flash(v, lines.append, lambda pct, text: cancel.set() if "written" in text else None, cancel)
 
@@ -377,8 +486,9 @@ def test_failure_after_write_explains_the_card_state(monkeypatch, tmp_path):
 def test_dry_run_stops_before_disk(monkeypatch, tmp_path):
     img = tmp_path / "x.img"
     img.write_bytes(b"\x01" * 1024)
-    monkeypatch.setattr(flasher.console, "register_device",
-                        lambda url, user, pw, dev, name: (f"tok-{dev}-0123456789", True))
+    # A dry run validates, renders and resolves the image; it never contacts the console.
+    monkeypatch.setattr(flasher.console.urllib.request, "urlopen",
+                        lambda *a, **k: pytest.fail("console contacted in dry run"))
     monkeypatch.setattr(flasher.windisk, "clear_disk", lambda *a: pytest.fail("clear_disk called in dry run"))
     monkeypatch.setattr(flasher.windisk, "check_disk", lambda d: pytest.fail("check_disk called in dry run"))
     monkeypatch.setattr(flasher.windisk, "open_physical_drive",
@@ -386,9 +496,8 @@ def test_dry_run_stops_before_disk(monkeypatch, tmp_path):
     v = dict(FORM, image_path=str(img), disk_info=None)
     lines = []
     flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event(), dry_run=True)
-    assert any("Registering lobby on http://console.local" in s for s in lines)
+    assert any("Console http://console.local: enrolls itself on first boot." in s for s in lines)
     assert any(s.startswith("Dry run: would write x.img to") for s in lines)
-    assert any("Dry run: device lobby now exists on http://console.local" in s for s in lines)
     assert not any("Wrote" in s or "SUMMARY" in s for s in lines)
 
     v["disk_info"] = {"number": 2, "name": "Generic MassStorageClass", "size": 1, "label": "Disk 2"}
@@ -397,12 +506,15 @@ def test_dry_run_stops_before_disk(monkeypatch, tmp_path):
     assert "Dry run: would write x.img to Disk 2 (Generic MassStorageClass). Nothing was written." in lines
 
 
-def test_run_flash_validates_before_registering(monkeypatch, tmp_path):
+def test_run_flash_validates_before_rendering(monkeypatch, tmp_path):
     img = tmp_path / "x.img"
     img.write_bytes(b"\x01" * 1024)
-    monkeypatch.setattr(flasher.console, "register_device", lambda *a: pytest.fail("registered with a bad form"))
+    monkeypatch.setattr(flasher, "player_archive", lambda: pytest.fail("rendered with a bad form"))
     v = dict(FORM, image_path=str(img), disk_info=None, ssid="a\nb")
     with pytest.raises(ValueError, match="line breaks"):
+        flasher.run_flash(v, lambda s: None, lambda pct, text: None, threading.Event(), dry_run=True)
+    v = dict(FORM, image_path=str(img), disk_info=None, enrollment_key="short")
+    with pytest.raises(ValueError, match="Enrollment key"):
         flasher.run_flash(v, lambda s: None, lambda pct, text: None, threading.Event(), dry_run=True)
 
 
@@ -430,10 +542,22 @@ def test_validate_applies_card_rules(monkeypatch, tmp_path):
         assert app.validate() is None, (key, val)
         assert fragment in errors[-1], (key, val, errors[-1])
         app.v[key].set(old)
-    app.v["reg_mode"].set("token")
+    # Enrollment key rules (unless a token bypasses enrollment).
+    for bad in ("", "short", "not base64 !!!!!!!!!!!!!!!!!", "k" * 129):
+        app.v["enrollment_key"].set(bad)
+        assert app.validate() is None and "Enrollment key" in errors[-1], bad
+    app.v["enrollment_key"].set(" " + KEY + " ")
+    assert app.validate() is not None  # stripped
+    app.v["advanced"].set(True)
+    assert app.validate() is None and "Device token is required" in errors[-1]
     app.v["token"].set("tok'en")
     assert app.validate() is None and "Device token" in errors[-1]
     app.v["token"].set("A-valid_token_0123456789")
+    app.v["enrollment_key"].set("")  # not needed with a token
+    assert app.validate() is not None
+    app.v["advanced"].set(False)  # collapsed again: the key is required once more
+    assert app.validate() is None and "Enrollment key" in errors[-1]
+    app.v["enrollment_key"].set(KEY)
     assert app.validate() is not None
     zipped = tmp_path / "os.zip"
     zipped.write_bytes(b"PK\x03\x04" + b"\0" * 100)
@@ -448,8 +572,7 @@ def test_dry_run_validate_needs_no_disk(monkeypatch, tmp_path):
     root = _root()
     app = flasher.App(root, dry_run=True)
     app.v["name"].set("Lobby")
-    app.v["reg_mode"].set("token")
-    app.v["token"].set("A-valid_token_0123456789")
+    app.v["enrollment_key"].set(KEY)
     app.v["ssid"].set("Venue")
     app.v["wifi_password"].set("wp123456")
     errors = []

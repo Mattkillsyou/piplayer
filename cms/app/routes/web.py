@@ -16,7 +16,7 @@ from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.concurrency import run_in_threadpool
 
 from .. import audit, auth, config, db, ffprobe, schedules
-from .api import resolve_active_playlist_id
+from .api import DEVICE_ID_RE, DEVICE_ID_RULE, resolve_active_playlist_id
 
 
 log = logging.getLogger("piplayer.web")
@@ -888,8 +888,8 @@ def devices_create(
 ):
     device_id = device_id.strip().lower()
     name = name.strip()
-    if not re.match(r"^[a-z0-9][a-z0-9-]{0,62}$", device_id):
-        raise HTTPException(400, "device_id must be lowercase alphanumeric + hyphens, 1-63 chars")
+    if not DEVICE_ID_RE.match(device_id):
+        raise HTTPException(400, DEVICE_ID_RULE)
     if not name:
         raise HTTPException(400, "name required")
     token = db.new_token()
@@ -1196,6 +1196,22 @@ def _hash_or_400(password: str) -> str:
         return auth.hash_password(password)
     except auth.PasswordTooLong:
         raise HTTPException(400, auth.PASSWORD_TOO_LONG_MSG)
+
+
+# ---------------------------------------------------------------------------
+# Settings (admin)
+# ---------------------------------------------------------------------------
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, user=Depends(require_admin)):
+    return _render(request, "settings.html", enrollment_key=db.enrollment_key())
+
+
+@router.post("/settings/enrollment/rotate")
+def settings_rotate_enrollment_key(request: Request, user=Depends(require_admin)):
+    db.rotate_enrollment_key()
+    audit.log(request, user, "enrollment_key_rotated", "settings", db.ENROLLMENT_KEY)
+    return RedirectResponse("/settings", status_code=303)
 
 
 @router.post("/users")

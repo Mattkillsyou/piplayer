@@ -118,6 +118,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_created
     ON audit_log(created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after the first release. init_schema adds any that are missing
@@ -202,3 +208,21 @@ def prune_audit_log(retention_days: int) -> int:
 
 def new_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+ENROLLMENT_KEY = "enrollment_key"
+
+
+def enrollment_key() -> str:
+    """The secret a freshly flashed Pi presents to POST /api/enroll; generated on first read."""
+    with cursor() as cur:
+        cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (ENROLLMENT_KEY, new_token()))
+        return cur.execute("SELECT value FROM settings WHERE key = ?", (ENROLLMENT_KEY,)).fetchone()["value"]
+
+
+def rotate_enrollment_key() -> str:
+    """Replace the enrollment key; cards flashed with the old key that have not booted yet stop working."""
+    key = new_token()
+    with cursor() as cur:
+        cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (ENROLLMENT_KEY, key))
+    return key

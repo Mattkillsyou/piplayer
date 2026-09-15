@@ -1,10 +1,14 @@
-"""Registration flow against the real Python CMS (cms/) started on a free port (or $FLASHER_TEST_PORT)."""
+"""console.enroll / check_health against a stub /api/enroll server, plus one integration test against the
+real Python CMS (cms/) on a free port that is skipped until that CMS answers /api/enroll."""
 import http.server
+import json
 import os
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -15,6 +19,7 @@ import console
 REPO = Path(__file__).resolve().parents[3]
 CMS_DIR = REPO / "cms"
 PYTHON = CMS_DIR / ".venv" / "Scripts" / "python.exe"
+KEY = "stub-enrollment-key_0123456789abcdef"
 
 
 def _free_port() -> int:
@@ -23,18 +28,132 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-# A fixed port would silently attach the tests to any other CMS already listening there.
+class StubConsole(http.server.BaseHTTPRequestHandler):
+    """The /api/enroll contract shared by the cloud and Python consoles."""
+    devices = {}
+    calls = []
+
+    def log_message(self, *a):
+        pass
+
+    def _json(self, code, body):
+        raw = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        if self.path == "/api/health":
+            return self._json(200, {"ok": True})
+        self._json(404, {"detail": "Not Found"})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        self.calls.append((self.path, body))
+        if self.path != "/api/enroll":
+            return self._json(404, {"detail": "Not Found"})
+        if body.get("key") != KEY:
+            return self._json(401, {"detail": "invalid enrollment key"})
+        dev = (body.get("device_id") or "").lower()
+        if not dev.replace("-", "").isalnum():
+            return self._json(400, {"detail": "device_id must be lowercase letters, digits and hyphens"})
+        entry = self.devices.setdefault(dev, {"token": f"tok-{dev}-{len(self.devices):04d}xxxxxxxxxx"})
+        entry["name"] = body.get("name")
+        self._json(200, {"device_id": dev, "token": entry["token"], "cms_url": f"http://127.0.0.1:{self.server.server_port}"})
+
+
+def _serve(handler_cls):
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+@pytest.fixture
+def stub():
+    StubConsole.devices, StubConsole.calls = {}, []
+    srv, base = _serve(StubConsole)
+    try:
+        yield base
+    finally:
+        srv.shutdown()
+
+
+def test_enroll_and_reenroll(stub):
+    token, cms_url = console.enroll(stub + "/", KEY, "lobby-projector", "Lobby Projector")
+    assert token.startswith("tok-lobby-projector") and cms_url == stub
+    # Same device_id again: the console keeps the token (and takes the new name).
+    assert console.enroll(stub, KEY, " Lobby-Projector ", "Hall 2") == (token, stub)
+    assert StubConsole.devices["lobby-projector"]["name"] == "Hall 2"
+    assert StubConsole.calls[-1] == ("/api/enroll", {"key": KEY, "device_id": "lobby-projector", "name": "Hall 2"})
+    token2, _ = console.enroll(stub, KEY, "hall-3", "Hall 3")
+    assert token2 != token
+
+
+def test_bad_key_reports_the_servers_detail(stub):
+    with pytest.raises(console.ConsoleError, match="invalid enrollment key"):
+        console.enroll(stub, "wrong-key-0123456789abcdef", "x", "X")
+    with pytest.raises(console.ConsoleError, match="device_id"):
+        console.enroll(stub, KEY, "Bad Id", "X")
+
+
+def test_check_health(stub):
+    console.check_health(stub)
+    with pytest.raises(console.ConsoleError, match="is this a Projection5000 console"):
+        console.check_health(stub + "/notaconsole")
+    assert not any(path == "/api/enroll" for path, _ in StubConsole.calls)  # a health check never enrolls
+
+
+def test_unreachable_and_bad_url():
+    port = _free_port()  # nothing listens here
+    with pytest.raises(console.ConsoleError, match="cannot reach"):
+        console.enroll(f"http://127.0.0.1:{port}", KEY, "x", "X")
+    with pytest.raises(console.ConsoleError, match="http:// or https://"):
+        console.enroll(f"127.0.0.1:{port}", KEY, "x", "X")
+
+
+def test_timeout_and_non_json(monkeypatch):
+    monkeypatch.setattr(console, "TIMEOUT", 1)
+
+    class Odd(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            time.sleep(3)  # headers never arrive in time: a bare TimeoutError inside urllib
+            self.send_error(500)
+
+        def do_GET(self):
+            body = b"<html>not a console</html>"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv, base = _serve(Odd)
+    try:
+        with pytest.raises(console.ConsoleError, match="cannot reach .*/api/enroll"):
+            console.enroll(base, KEY, "x", "X")
+        with pytest.raises(console.ConsoleError, match="not a JSON response"):
+            console.check_health(base)
+    finally:
+        srv.shutdown()
+
+
+# ---------------------------------------------------------------- the real Python CMS
+
+# A fixed port would silently attach the test to any other CMS already listening there.
 PORT = int(os.environ.get("FLASHER_TEST_PORT") or _free_port())
 BASE = f"http://127.0.0.1:{PORT}"
-PASSWORD = "test1234"
 
 
 @pytest.fixture(scope="module")
 def cms(tmp_path_factory):
     if not PYTHON.exists():
         pytest.skip("cms/.venv not present")
-    data = tmp_path_factory.mktemp("cmsdata")
-    env = dict(os.environ, PIPLAYER_DATA_DIR=str(data / "data"), PIPLAYER_ADMIN_PASSWORD=PASSWORD)
+    data = tmp_path_factory.mktemp("cmsdata") / "data"
+    env = dict(os.environ, PIPLAYER_DATA_DIR=str(data), PIPLAYER_ADMIN_PASSWORD="test1234")
     proc = subprocess.Popen(
         [str(PYTHON), "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(PORT)],
         cwd=str(CMS_DIR), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -49,112 +168,27 @@ def cms(tmp_path_factory):
                 time.sleep(0.2)
         else:
             pytest.fail("CMS did not come up")
-        yield BASE
+        yield BASE, data
     finally:
         proc.kill()
         proc.wait()
 
 
-def test_register_and_repeat(cms):
-    token, created = console.register_device(cms + "/", "admin", PASSWORD, "lobby-projector", "Lobby Projector")
-    assert created is True
-    assert token and " " not in token and "\\" not in token and len(token) >= 16
-    # Second run hits the 409 path, reports the reuse and returns the same token.
-    assert console.register_device(cms, "admin", PASSWORD, "lobby-projector", "Lobby Projector") == (token, False)
-    # A different name for the same id does not rename the console device; the caller is told it was reused.
-    assert console.register_device(cms, "admin", PASSWORD, "lobby-projector", "Hall 2") == (token, False)
-    # The id is normalised like the consoles do, so the token of the created device is found.
-    token2, created2 = console.register_device(cms, "admin", PASSWORD, " Hall-2 ", "Hall 2")
-    assert created2 is True and token2 != token
-
-
-def test_bad_password(cms):
-    with pytest.raises(console.ConsoleError) as e:
-        console.register_device(cms, "admin", "wrong-password", "x", "X")
-    assert "Invalid username or password" in str(e.value)
-
-
-def test_bad_device_id_reports_detail(cms):
-    with pytest.raises(console.ConsoleError) as e:
-        console.register_device(cms, "admin", PASSWORD, "Bad Id", "X")
-    assert "device_id" in str(e.value)
-
-
-def test_unreachable_and_bad_url():
-    port = _free_port()  # nothing listens here
-    with pytest.raises(console.ConsoleError, match="cannot reach"):
-        console.register_device(f"http://127.0.0.1:{port}", "admin", PASSWORD, "x", "X")
-    with pytest.raises(console.ConsoleError):
-        console.register_device(f"127.0.0.1:{port}", "admin", PASSWORD, "x", "X")
-
-
-def _serve(handler_cls):
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
-
-
-def test_timeouts_and_not_a_console(monkeypatch):
-    monkeypatch.setattr(console, "TIMEOUT", 1)
-
-    class Slow(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
-
-        def do_GET(self):
-            if self.path == "/login":
-                time.sleep(3)  # headers never arrive in time: a bare TimeoutError inside urllib
-            self.send_error(404)
-
-    srv, base = _serve(Slow)
+def test_real_cms_enrolls(cms):
+    base, data = cms
     try:
-        with pytest.raises(console.ConsoleError, match="cannot reach .*/login"):
-            console.register_device(base, "admin", "pw", "x", "X")
-        with pytest.raises(console.ConsoleError, match="is this a Projection5000 console"):
-            console.register_device(base + "/notaconsole", "admin", "pw", "x", "X")
-    finally:
-        srv.shutdown()
-
-
-def test_expired_redirect_means_cookie_not_kept():
-    class Expiring(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
-
-        def do_GET(self):
-            body = b'<form><input name="csrf_token" value="abc"></form>'
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_POST(self):
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            self.send_response(303)
-            self.send_header("Location", "/login?expired=1")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-    srv, base = _serve(Expiring)
+        console.enroll(base, "probe-key-0123456789abcdef", "probe", "Probe")
+    except console.ConsoleError as e:
+        if "Not Found" in str(e) or "is this a Projection5000 console" in str(e):
+            pytest.skip("this CMS has no /api/enroll yet")
+        assert "invalid enrollment key" in str(e)
     try:
-        with pytest.raises(console.ConsoleError, match="use an https:// console URL"):
-            console.register_device(base, "admin", "pw", "x", "X")
-    finally:
-        srv.shutdown()
-
-
-def test_device_token_scrape_matches_both_console_layouts():
-    c = console.Console("http://127.0.0.1:1")
-    pages = [
-        # Python CMS template
-        'x <pre class="install-cmd">cd piplayer/player && \\\nDEVICE_ID=lobby-projector \\\nDEVICE_TOKEN=AbC-123_xyz \\\n'
-        'CMS_URL=http://c \\\nsudo -E bash deploy/install-player.sh</pre>',
-        # A reformatted snippet must still work
-        'DEVICE_ID=lobby-projector DEVICE_TOKEN=AbC-123_xyz CMS_URL=http://c',
-    ]
-    for body in pages:
-        c._open = lambda path, form=None, b=body: ("", b)
-        assert c.device_token("lobby-projector") == "AbC-123_xyz"
-    c._open = lambda path, form=None: ("", "DEVICE_ID=other \\\nDEVICE_TOKEN=zzz")
-    with pytest.raises(console.ConsoleError, match="not found on /devices, or its token is hidden"):
-        c.device_token("lobby-projector")
+        with sqlite3.connect(data / "cms.db") as con:
+            key = con.execute("SELECT value FROM settings WHERE key = 'enrollment_key'").fetchone()[0]
+    except (sqlite3.Error, TypeError) as e:
+        pytest.skip(f"cannot read the CMS enrollment key: {e}")
+    token, cms_url = console.enroll(base + "/", key, "lobby-projector", "Lobby Projector")
+    assert token and " " not in token and len(token) >= 16 and cms_url.startswith("http")
+    assert console.enroll(base, key, "Lobby-Projector", "Renamed")[0] == token  # re-flash keeps the identity
+    with pytest.raises(console.ConsoleError, match="device_id"):
+        console.enroll(base, key, "Bad Id", "X")

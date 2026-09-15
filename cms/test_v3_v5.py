@@ -1,5 +1,5 @@
 """End-to-end smoke test for v3 (schedules), v4 (groups + remote actions + audit),
-v5 (multi-user + screenshots).
+v5 (multi-user + screenshots) and zero-touch enrollment (/api/enroll + Settings).
 
 Re-runnable: every name carries a per-run token, ids are resolved from
 responses or from cms.db, and the CSRF token is fetched from the server.
@@ -277,6 +277,58 @@ def main():
     assert r.headers.get("X-Content-Type-Options") == "nosniff"
     print("  v5.2 admin can fetch screenshot via UI: OK")
 
+    # --- zero-touch enrollment: POST /api/enroll + admin Settings page ---
+    def enrollment_key():
+        return one("SELECT value FROM settings WHERE key = 'enrollment_key'")["value"]
+
+    def enroll(key, dev_id, name):
+        return requests.post(f"{BASE}/api/enroll", json={"key": key, "device_id": dev_id, "name": name})
+
+    key = enrollment_key()
+    enroll_id = f"enroll-pi-{RUN}"
+    r = enroll(key, enroll_id.upper(), f"Enrolled Pi {RUN}")  # device_id is lowercased
+    assert r.status_code == 200, f"enroll failed: {r.status_code} {r.text[:200]}"
+    body = r.json()
+    erow = one("SELECT id, name, token FROM devices WHERE device_id = ?", (enroll_id,))
+    assert body["device_id"] == enroll_id and body["token"] == erow["token"], body
+    assert body["cms_url"].startswith("http"), body  # the console's own base URL (PIPLAYER_PUBLIC_BASE_URL or the request origin)
+    server_log = Path(os.environ["PIPLAYER_DATA_DIR"]) / "server.log"  # written by run_smoke_tests.py
+    if server_log.exists():
+        assert erow["token"] not in server_log.read_text(errors="replace"), "enroll must never log the token"
+    print("  enroll creates the device and returns its token + cms_url: OK")
+
+    r = enroll(key, enroll_id, f"Renamed Pi {RUN}")
+    assert r.status_code == 200 and r.json()["token"] == erow["token"], "re-enroll must keep the token"
+    assert one("SELECT name FROM devices WHERE id = ?", (erow["id"],))["name"] == f"Renamed Pi {RUN}"
+    print("  re-enroll keeps the token and updates the name: OK")
+
+    r = enroll("not-the-key", f"bad-{RUN}", "x")
+    assert r.status_code == 401 and r.json() == {"detail": "invalid enrollment key"}, (r.status_code, r.text[:200])
+    assert not query("SELECT id FROM devices WHERE device_id = ?", (f"bad-{RUN}",))
+    r = enroll(key, "-bad-id", "x")
+    assert r.status_code == 400, f"bad device_id should be 400, got {r.status_code}"
+    r = enroll(key, f"noname-{RUN}", "")
+    assert r.status_code == 400, f"empty name should be 400, got {r.status_code}"
+    print("  enroll rejects a wrong key (401) and bad device_id / name (400): OK")
+
+    # Sync works with the enrolled token, same as a manually registered device
+    r = sync(BASE, {"device_id": enroll_id, "token": erow["token"]})
+    assert r.status_code == 200, r.text[:300]
+    print("  enrolled device can sync: OK")
+
+    # Settings page: admin only, shows the key; rotate invalidates the old key
+    r = viewer.get("/settings")
+    assert r.status_code == 403, f"viewer should be 403 on /settings, got {r.status_code}"
+    r = admin.get("/settings")
+    assert r.status_code == 200 and key in r.text, "admin Settings page must show the enrollment key"
+    r = admin.post("/settings/enrollment/rotate")
+    assert r.status_code == 303, f"rotate failed: {r.status_code} {r.text[:200]}"
+    new_key = enrollment_key()
+    assert new_key != key and len(new_key) >= 40
+    assert enroll(key, f"stale-{RUN}", "x").status_code == 401, "old key must stop working after rotate"
+    assert enroll(new_key, enroll_id, f"Renamed Pi {RUN}").status_code == 200
+    print("  Settings page shows the key; rotate replaces it and the old key is refused: OK")
+
     # --- v4.3: audit log ---
     r = admin.get("/audit")
     assert r.status_code == 200
@@ -285,13 +337,14 @@ def main():
     actions_seen = {row["action"] for row in query("SELECT DISTINCT action FROM audit_log")}
     expected = {"login", "user_create", "upload_media", "create_playlist", "register_device",
                 "device_assign_playlist", "group_create", "group_assign_playlist", "device_set_group",
-                "device_schedule_create", "device_send_command", "playlist_add_item"}
+                "device_schedule_create", "device_send_command", "playlist_add_item",
+                "device_enrolled", "device_reenrolled", "enrollment_key_rotated"}
     missing = expected - actions_seen
     assert not missing, f"missing audit actions: {missing}"
     print(f"  v4.3 audit log has {audit_count} entries covering all expected actions: OK")
 
     # --- Pages render OK ---
-    for path in ["/dashboard", "/library", "/playlists", "/devices", "/groups", "/audit", "/users",
+    for path in ["/dashboard", "/library", "/playlists", "/devices", "/groups", "/audit", "/users", "/settings",
                  f"/playlists/{morning_pid}", f"/devices/{did}/schedule"]:
         r = admin.get(path)
         assert r.status_code == 200, f"{path} -> {r.status_code}"
@@ -301,7 +354,9 @@ def main():
     r = editor.post(f"/devices/{did}/delete")
     assert r.status_code == 303
     assert not os.path.exists(screenshot_path), "device delete should remove its screenshot"
-    print("  device deleted (screenshot removed with it): OK")
+    r = editor.post(f"/devices/{erow['id']}/delete")
+    assert r.status_code == 303
+    print("  devices deleted (screenshot removed with it): OK")
 
     print()
     print("ALL v3-v5 SMOKE TESTS PASSED")

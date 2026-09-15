@@ -3,3 +3,4 @@ build/
 *.spec
 __pycache__/
 selfcheck.txt
+console.json

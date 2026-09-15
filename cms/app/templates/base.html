@@ -25,6 +25,7 @@
       <a href="/audit" {% if request.url.path.startswith('/audit') %}class="active"{% endif %}>Audit</a>
       {% if user.role == 'admin' %}
       <a href="/users" {% if request.url.path.startswith('/users') %}class="active"{% endif %}>Users</a>
+      <a href="/settings" {% if request.url.path.startswith('/settings') %}class="active"{% endif %}>Settings</a>
       {% endif %}
     </nav>
     <div class="user">

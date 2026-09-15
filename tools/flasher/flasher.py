@@ -26,11 +26,13 @@ import imagefetch
 import windisk
 
 APP_TITLE = "Projection5000 SD Flasher"
-SETTINGS_KEYS = ("name", "device_id", "console_url", "reg_mode", "console_user", "ssid", "wifi_country",
-                 "wifi_hidden", "ethernet_only", "username", "ssh", "timezone", "keymap", "image_mode",
-                 "image_path")
+# Persisted between runs. Never the enrollment key or the token: the baked console.json is the key's only home.
+SETTINGS_KEYS = ("name", "device_id", "console_url", "ssid", "wifi_country", "wifi_hidden", "ethernet_only",
+                 "username", "ssh", "timezone", "keymap", "image_mode", "image_path")
 # Entry fields whose value is taken verbatim (everything else is stripped of surrounding whitespace).
-UNSTRIPPED = ("password", "wifi_password", "console_password")
+UNSTRIPPED = ("password", "wifi_password")
+CONSOLE_JSON = "console.json"  # {"console_url": ..., "enrollment_key": ...}, written by build.ps1
+DEFAULT_CONSOLE_URL = "https://projectors.photogen5000.com"
 COUNTRIES = ["US", "GB", "CA", "AU", "NZ", "DE", "FR", "ES", "IT", "NL", "SE", "NO", "DK", "FI", "IE", "JP", "MX", "BR"]
 TIMEZONES = ["America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York", "America/Phoenix",
              "America/Anchorage", "Pacific/Honolulu", "America/Toronto", "America/Vancouver", "America/Mexico_City",
@@ -128,20 +130,58 @@ def build_player_archive(out=None) -> bytes:
     return data
 
 
+def resource_path(name: str) -> Path:
+    """A file build.ps1 bundled with --add-data (frozen), or the same name next to this script (source)."""
+    base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    return base / name
+
+
 def player_archive() -> bytes:
     """The bundled archive in the exe (build.ps1 adds it), or a fresh one when run from source."""
     if getattr(sys, "frozen", False):
-        return (Path(sys._MEIPASS) / "player.tar.gz").read_bytes()
+        return resource_path("player.tar.gz").read_bytes()
     return build_player_archive()
 
 
 def build_info() -> str:
     if getattr(sys, "frozen", False):
         try:
-            return (Path(sys._MEIPASS) / "build_info.txt").read_text("utf-8").strip()
+            return resource_path("build_info.txt").read_text("utf-8").strip()
         except OSError:
             return "frozen build, no build_info.txt"
     return f"source {Path(__file__).resolve().parent}"
+
+
+def console_defaults() -> dict:
+    """console_url and enrollment_key baked in at build time (console.json); empty strings when absent."""
+    out = {"console_url": "", "enrollment_key": ""}
+    try:
+        d = json.loads(resource_path(CONSOLE_JSON).read_text("utf-8"))
+    except (OSError, ValueError):
+        return out
+    if isinstance(d, dict):
+        for k in out:
+            if isinstance(d.get(k), str):
+                out[k] = d[k].strip()
+    return out
+
+
+def write_console_json(path, console_url: str, enrollment_key: str) -> None:
+    """build.ps1 stages console.json with this (same rules as the form, so a bad key fails the build)."""
+    problems = [p for p in (firstboot.console_url_problem(console_url),
+                            firstboot.enrollment_key_problem(enrollment_key.strip())) if p]
+    if problems:
+        raise ValueError(" ".join(problems))
+    Path(path).write_text(json.dumps({"console_url": console_url.strip().rstrip("/"),
+                                      "enrollment_key": enrollment_key.strip()}), "utf-8")
+
+
+def console_summary() -> str:
+    """One line for --selfcheck: what this build will prefill."""
+    c = console_defaults()
+    if not c["console_url"]:
+        return "console: none (build with FLASHER_CONSOLE_URL and FLASHER_ENROLL_KEY to prefill the form)"
+    return f"console: {c['console_url']} (enrollment key: {'set' if c['enrollment_key'] else 'missing'})"
 
 
 # ---------------------------------------------------------------- GUI
@@ -195,15 +235,25 @@ class App:
         con = ttk.LabelFrame(form, text="Console", padding=6)
         con.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
         con.columnconfigure(1, weight=1)
-        self._entry(con, 0, "Console URL", "console_url", "https://projectors.photogen5000.com")
-        self._var("reg_mode", "register")
-        ttk.Radiobutton(con, text="Register this device for me", variable=self.v["reg_mode"],
-                        value="register").grid(row=1, column=0, columnspan=2, sticky="w", padx=4)
-        self._entry(con, 2, "Console username", "console_user", "admin")
-        self._entry(con, 3, "Console password", "console_password", show="*")
-        ttk.Radiobutton(con, text="I already have a device token", variable=self.v["reg_mode"],
-                        value="token").grid(row=4, column=0, columnspan=2, sticky="w", padx=4)
-        self._entry(con, 5, "Device token", "token")
+        self.baked = console_defaults()
+        self._entry(con, 0, "Console URL", "console_url", self.baked["console_url"] or DEFAULT_CONSOLE_URL)
+        key = self._entry(con, 1, "Enrollment key", "enrollment_key", self.baked["enrollment_key"], show="*")
+        self._var("show_key", False, tk.BooleanVar)
+        ttk.Checkbutton(con, text="Show", variable=self.v["show_key"],
+                        command=lambda: key.configure(show="" if self.v["show_key"].get() else "*")
+                        ).grid(row=1, column=2, padx=2)
+        ttk.Label(con, text="(baked into this build; the Pi enrolls itself on first boot)").grid(
+            row=2, column=1, sticky="w", padx=4)
+        ttk.Button(con, text="Test connection", command=self.test_connection).grid(row=3, column=1, sticky="w",
+                                                                                   padx=4, pady=2)
+        ttk.Checkbutton(con, text="Advanced: I already have a device token",
+                        variable=self._var("advanced", False, tk.BooleanVar), command=self._toggle_advanced
+                        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=4)
+        self.advanced = ttk.Frame(con)
+        self.advanced.grid(row=5, column=0, columnspan=3, sticky="we")
+        self.advanced.columnconfigure(1, weight=1)
+        self._entry(self.advanced, 0, "Device token", "token")
+        self.advanced.grid_remove()  # collapsed until the box is ticked
 
         wifi = ttk.LabelFrame(form, text="Wi-Fi", padding=6)
         wifi.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
@@ -268,7 +318,7 @@ class App:
         self.flash_btn.pack(side="left", padx=4)
         self.cancel_btn = ttk.Button(buttons, text="Cancel", command=self.on_cancel, state="disabled")
         self.cancel_btn.pack(side="left", padx=4)
-        ttk.Checkbutton(buttons, text="Dry run (register + resolve image, do not write)",
+        ttk.Checkbutton(buttons, text="Dry run (validate + resolve image, do not write)",
                         variable=self._var("dry_run", self.dry_run_default, tk.BooleanVar)).pack(side="left", padx=4)
         self.progress = ttk.Progressbar(buttons, maximum=100)
         self.progress.pack(side="left", fill="x", expand=True, padx=8)
@@ -299,6 +349,31 @@ class App:
     def _id_edited(self, *_):
         if not getattr(self, "_setting_id", False):
             self._id_manual = bool(self.v["device_id"].get())
+
+    def _toggle_advanced(self):
+        if self.v["advanced"].get():
+            self.advanced.grid()
+        else:
+            self.advanced.grid_remove()
+
+    def test_connection(self):
+        """GET /api/health on the console URL in the form (never enrolls, never sends the key)."""
+        url = self.values()["console_url"]
+        problem = firstboot.console_url_problem(url)
+        if problem:
+            self.log(f"Console test: {problem}")
+            return
+        self.log(f"Testing {url} ...")
+
+        def work():
+            try:
+                console.check_health(url)
+                msg = f"Console at {url} answers /api/health: ok."
+            except console.ConsoleError as e:
+                msg = f"Console test FAILED: {e}"
+            self.post(lambda: self.log(msg))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _apply_settings(self, s: dict):
         for k in SETTINGS_KEYS:
@@ -420,17 +495,10 @@ class App:
     def validate(self) -> dict:
         v = self.values()
         problems = []
-        if not v["name"]:
-            problems.append("Device name is required.")
-        if v["reg_mode"] == "register" and not (v["console_user"] and v["console_password"]):
-            problems.append("Console username and password are required to register the device.")
-        if v["reg_mode"] == "token" and not v["token"]:
-            problems.append("Device token is required.")
-        # The same rules the card scripts enforce (a placeholder token when the console will issue one).
-        cfg = card_cfg(v)
-        if v["reg_mode"] == "register":
-            cfg["token"] = "pending-token-from-console"
-        problems += firstboot.validate_cfg(cfg)
+        if v["advanced"] and not v["token"]:
+            problems.append("Device token is required (or untick the Advanced box to enroll with the key).")
+        # The same rules the card scripts enforce (enrollment key unless a token bypasses enrollment).
+        problems += firstboot.validate_cfg(card_cfg(v))
         if v["image_mode"] == "local":
             if not Path(v["image_path"]).is_file():
                 problems.append("Local image file not found.")
@@ -459,12 +527,6 @@ class App:
         v = self.validate()
         if not v:
             return
-        if v["dry_run"] and v.get("reg_mode") == "register":
-            if not messagebox.askyesno(APP_TITLE,
-                                       f"Dry run: this still registers device '{v['device_id']}' on "
-                                       f"{v['console_url']} (nothing is written to a card). Continue?",
-                                       default=messagebox.NO):
-                return
         if not v["dry_run"]:
             # Rescan so the confirmation names the disk as it is now (cards get swapped, numbers move).
             chosen = v["disk_info"]
@@ -485,7 +547,7 @@ class App:
             image = {"bundled": f"bundled {self.bundled.name}" if self.bundled else "bundled (missing)",
                      "latest": "latest Raspberry Pi OS Lite"}.get(v["image_mode"], v["image_path"])
             if not messagebox.askyesno(APP_TITLE, f"Flash {v['name']} ({v['device_id']}) to:\n\n{d['label']}\n\n"
-                                       f"Image: {image}\nConsole: {v['console_url']}\n\n"
+                                       f"Image: {image}\nConsole: {v['console_url']} ({console_mode(v)})\n\n"
                                        "Everything on that card will be erased. Continue?", default=messagebox.NO):
                 return
             if not messagebox.askokcancel(APP_TITLE, f"FINAL CONFIRMATION\n\nDisk {d['number']}: {d['name']}\n"
@@ -530,35 +592,29 @@ class App:
 
 def card_cfg(v: dict) -> dict:
     cfg = {k: v[k] for k in ("device_id", "name", "username", "password", "ssh", "ssid", "wifi_password",
-                              "wifi_hidden", "ethernet_only", "timezone", "keymap", "token")}
+                              "wifi_hidden", "ethernet_only", "timezone", "keymap", "enrollment_key")}
     cfg["wifi_country"] = v["wifi_country"].strip().upper()
     cfg["console_url"] = v["console_url"].strip().rstrip("/")
+    # The token field only counts while the Advanced box is ticked (a collapsed leftover must not bypass enrollment).
+    cfg["token"] = v["token"].strip() if v.get("advanced") else ""
     return cfg
 
 
+def console_mode(v: dict) -> str:
+    return "device token given, no enrollment" if card_cfg(v)["token"] else "enrolls itself on first boot"
+
+
 def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = False):
-    """The flash sequence. dry_run stops after registration and image resolution, before any disk access."""
+    """The flash sequence. Never contacts the console (the Pi enrolls itself on first boot);
+    dry_run stops after image resolution, before any disk access."""
     d = v["disk_info"]
     cfg = card_cfg(v)
-    if v["reg_mode"] == "register":
-        cfg["token"] = "pending-token-from-console"
     problems = firstboot.validate_cfg(cfg)
-    if problems:  # checked before anything is registered or written
+    if problems:  # checked before anything is written
         raise ValueError(" ".join(problems))
 
-    # 1. token
-    created = None
-    if v["reg_mode"] == "register":
-        log(f"Registering {v['device_id']} on {cfg['console_url']} ...")
-        cfg["token"], created = console.register_device(cfg["console_url"], v["console_user"], v["console_password"],
-                                                        v["device_id"], v["name"].strip())
-        if created:
-            log("Registered, token received.")
-        else:
-            log(f"Device {v['device_id']} already exists on the console: reusing its token "
-                "(its name on the console is unchanged). A Pi already running with this id shares it.")
-    else:
-        cfg["token"] = v["token"].strip()
+    # 1. first-boot files
+    log(f"Console {cfg['console_url']}: {console_mode(v)}.")
     firstrun = firstboot.render_firstrun(cfg)
     provision = firstboot.render_provision(cfg)
     archive = player_archive()
@@ -571,8 +627,6 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     if dry_run:
         target = f"Disk {d['number']} ({d['name']})" if d else "the selected card (none chosen)"
         log(f"Dry run: would write {windisk.source_name(image)} to {target}. Nothing was written.")
-        if created is not None:
-            log(f"Dry run: device {v['device_id']} now exists on {cfg['console_url']} (delete it there if unwanted).")
         return
     windisk.check_image_magic(image)
     size = windisk.image_size(image)
@@ -625,10 +679,10 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
         write_firstboot_files(boot, firstrun, provision, archive)
     except windisk.Cancelled:
         raise windisk.Cancelled("The image is on the card but the first-boot files are NOT; "
-                                "the card will not register. Flash it again.")
+                                "the card will not enroll. Flash it again.")
     except Exception as e:
         raise windisk.DiskError(f"{e}\n\nThe image was written but the first-boot files were NOT: this card "
-                                "will not register. Re-insert it and Flash again.") from e
+                                "will not enroll. Re-insert it and Flash again.") from e
     log("First-boot files written. Ejecting ...")
     try:
         windisk.eject(letter)
@@ -642,11 +696,12 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     log("  Network: Ethernet only" if v["ethernet_only"] else f"  Wi-Fi: {v['ssid']} ({cfg['wifi_country']})")
     log(f"  Pi user: {v['username']}   password: {v['password']}   SSH: {'on' if v['ssh'] else 'off'}")
     log("  Record the password now: it is not saved anywhere else.")
-    log(f"  Console: {cfg['console_url']}")
+    log(f"  Console: {cfg['console_url']} ({console_mode(v)})")
     log(f"  Image: {windisk.source_name(image)}" + (" (bundled in this exe)" if v["image_mode"] == "bundled" else ""))
-    log("  Insert the card into the Pi and power on. It appears on the console's Devices page within about")
-    log("  5 minutes on first boot (it needs internet access for apt and pip). Progress is logged on the Pi in")
-    log("  /var/log/projection5000-provision.log; firstrun.log and firstrun.ok appear on the boot partition.")
+    log("  Insert the card into the Pi and power on. It enrolls itself and appears on the console's Devices page")
+    log("  within about 5 minutes on first boot (it needs internet access for apt and pip). Progress is logged on")
+    log("  the Pi in /var/log/projection5000-provision.log; firstrun.log and firstrun.ok appear on the boot partition.")
+    log("  A card that never booted still carries the enrollment key: keep it safe or rotate the key on the console.")
 
 
 def obtain_image(v: dict, log, progress, cancel, dry_run: bool = False) -> tuple:
@@ -723,6 +778,7 @@ def selfcheck() -> int:
         f"tk: {tk_ok}",
         f"player archive: {len(archive)} bytes, {len(names)} entries",
         f"bundled image: {b.name} {b.length} bytes sha256 {b.sha256} (trailer ok)" if b else "bundled image: none",
+        console_summary(),
         "=== firstrun.sh ===", firstboot.render_firstrun(cfg),
         "=== projection5000-provision.sh ===", firstboot.render_provision(cfg),
         "=== cmdline.txt ===", firstboot.patch_cmdline("console=tty1 root=PARTUUID=x rootfstype=ext4 rootwait\n"),
