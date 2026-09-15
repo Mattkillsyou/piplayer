@@ -15,7 +15,7 @@ run_worker_first = true
 [[d1_databases]]
 binding = "DB"
 database_name = "piplayer-cloud-db"
-database_id = "TBD-set-at-deploy"
+database_id = "dde0d711-5367-4acb-bb9e-4a85c87fb808"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
