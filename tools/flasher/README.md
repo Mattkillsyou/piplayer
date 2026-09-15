@@ -10,10 +10,11 @@ insert a card, click Flash, put the card in the Pi.
 
 1. Registers the device on the console (logs in with your console account,
    creates the device, reads its token) or uses a token you paste in.
-2. Downloads the latest Raspberry Pi OS Lite arm64 image (verified against the
-   published `.sha256`, cached in `%LOCALAPPDATA%\Projection5000\images`), or
-   uses a local `.img` / `.img.xz`. The image must fit the card (checked before
-   anything is erased).
+2. Takes the Raspberry Pi OS Lite arm64 image that is built into the exe (the
+   default; see "Bundled image" below), or downloads the latest one (verified
+   against the published `.sha256`, cached in
+   `%LOCALAPPDATA%\Projection5000\images`), or uses a local `.img` / `.img.xz`.
+   The image must fit the card (checked before anything is erased).
 3. Re-reads the target disk and refuses if it is not the disk that was confirmed
    (same reader slot, size and partition signature: a swapped card or a
    renumbered drive is caught), removes every partition (`Clear-Disk`, skipped
@@ -44,7 +45,8 @@ console's Devices page within about 5 minutes of the first boot.
 - Windows 10/11, 64-bit, an SD card reader.
 - Administrator rights (raw disk writes). The exe and the source both relaunch
   themselves elevated (UAC prompt) on start.
-- Internet access for the image download and for the Pi's first boot.
+- Internet access for the Pi's first boot (and for the "latest" image mode;
+  the bundled image needs none).
 - For building or running from source: Python 3.11+ with tkinter (the
   python.org installer includes it). No third-party packages at runtime.
 
@@ -56,6 +58,26 @@ and exits. `Projection5000-SD-Flasher.exe --dry-run` works without the prompt
 (see below). The exe is not code-signed: a downloaded copy triggers SmartScreen
 ("Windows protected your PC"; More info, Run anyway); a locally built copy does
 not.
+
+## Bundled image
+
+The exe carries a Raspberry Pi OS Lite (64-bit) `.img.xz` inside it, so an
+operator needs no download and no internet for the image. `build.ps1` appends
+the image and a 256-byte trailer after PyInstaller's archive (`bundle.py`); at
+flash time the image is streamed straight out of the exe, nothing is unpacked
+to disk. `--selfcheck` prints which image is inside:
+`bundled image: <name> <bytes> bytes sha256 <hex> (trailer ok)`. The Image box
+shows it as "Bundled: <name> (<size>)" and selects it by default; the "latest"
+(download) and "Local image file" modes stay available for a newer image than
+the one built in.
+
+To rebuild with a newer image, run `build.ps1` again: it resolves the official
+"latest" redirect, downloads into the tool's own cache
+(`%LOCALAPPDATA%\Projection5000\images`, so a second build does not download
+again), verifies the `.sha256` and embeds it. `$env:FLASHER_IMAGE = 'C:\path\to\x.img.xz'`
+embeds that file instead (offline or pinned builds); `$env:FLASHER_NO_BUNDLE = '1'`
+builds the small exe without an image (the download mode is then the default).
+The exe is about 550 MB with the image inside.
 
 ## Run from source
 
@@ -95,9 +117,12 @@ powershell -ExecutionPolicy Bypass -File tools\flasher\build.ps1
 Installs PyInstaller if missing, runs the selfcheck, bundles `player/` as
 `player.tar.gz` plus a build stamp (date, commit; shown by `--selfcheck`),
 builds `tools\flasher\dist\Projection5000-SD-Flasher.exe`
-(`--onefile --windowed`, asInvoker: it elevates itself) and smoke-tests it
-(the frozen exe must start Tk). Set `$env:FLASHER_PYTHON` to choose the
-interpreter; the source floor is Python 3.11, so build with 3.11 when in doubt.
+(`--onefile --windowed`, asInvoker: it elevates itself), embeds the OS image
+(see "Bundled image": `FLASHER_IMAGE`, `FLASHER_NO_BUNDLE`) and smoke-tests it
+(the frozen exe must start Tk and see its bundled image; the build prints the
+`bundled image:` line and the final exe size). Set `$env:FLASHER_PYTHON` to
+choose the interpreter; the source floor is Python 3.11, so build with 3.11
+when in doubt.
 `dist/`, `build/` and the `.spec` file are git-ignored. Rebuild after every
 change to `tools/flasher` or `player/`: the exe carries a copy of both.
 
@@ -152,9 +177,9 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
 - **"The image was written but the first-boot files were NOT"**: Windows did
   not mount the boot partition in time. The card holds a plain, unconfigured OS;
   re-insert it and Flash again (the download is cached, registration is reused).
-- **Download fails or is slow**: use "Local image file" with an image you
-  downloaded from raspberrypi.com. Cached downloads live in
-  `%LOCALAPPDATA%\Projection5000\images`.
+- **Download fails or is slow**: use the bundled image (the default), or
+  "Local image file" with an image you downloaded from raspberrypi.com. Cached
+  downloads live in `%LOCALAPPDATA%\Projection5000\images`.
 - **Pi does not appear on the console**: put the card back in the PC and read
   `firstrun.log` on the boot partition: every step is listed with its exit
   status (`rc=0` is good) and `firstrun.ok` exists when all of them passed. If

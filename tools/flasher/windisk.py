@@ -347,28 +347,52 @@ def volume_paths(number: int) -> list:
 
 # ---------------------------------------------------------------- image streaming
 
-def _is_xz(path) -> bool:
-    with open(path, "rb") as f:
-        return f.read(len(XZ_MAGIC)) == XZ_MAGIC
+# An image source is a filesystem path or an object with .open() returning a seekable read-only
+# file-like (bundle.BundledImage: the image embedded in the exe). Everything below takes either.
+
+def _is_path(src) -> bool:
+    return isinstance(src, (str, bytes, os.PathLike))
 
 
-def check_image_magic(path) -> None:
+def open_source(src):
+    return open(src, "rb") if _is_path(src) else src.open()
+
+
+def source_name(src) -> str:
+    return os.path.basename(os.fsdecode(src)) if _is_path(src) else src.name
+
+
+def source_size(src) -> int:
+    if _is_path(src):
+        return os.path.getsize(src)
+    with src.open() as f:
+        return f.seek(0, os.SEEK_END)
+
+
+def _is_xz(f) -> bool:
+    f.seek(0)
+    head = f.read(len(XZ_MAGIC))
+    f.seek(0)
+    return head == XZ_MAGIC
+
+
+def check_image_magic(src) -> None:
     """Reject archives that are not disk images (a .zip or .img.gz written raw never boots)."""
-    with open(path, "rb") as f:
+    with open_source(src) as f:
         head = f.read(8)
     for magic, kind in NOT_IMAGE_MAGIC.items():
         if head.startswith(magic):
-            raise DiskError(f"{os.path.basename(path)} is a {kind} archive, not a .img or .img.xz disk image; "
+            raise DiskError(f"{source_name(src)} is a {kind} archive, not a .img or .img.xz disk image; "
                             "extract it first")
 
 
-def image_size(path) -> int:
+def image_size(src) -> int:
     """Decompressed size of a .img or .img.xz without reading the whole file (xz keeps it in the index)."""
-    if not _is_xz(path):
-        return os.path.getsize(path)
     total = 0
-    with open(path, "rb") as f:
+    with open_source(src) as f:
         end = f.seek(0, os.SEEK_END)
+        if not _is_xz(f):
+            return end
         while end > 0:
             # Stream padding (4-byte null groups) may separate concatenated streams.
             f.seek(max(end - 4096, 0))
@@ -411,13 +435,13 @@ def _varint(buf: bytes, pos: int):
         shift += 7
 
 
-def iter_image(src_path, chunk: int = CHUNK, hasher=None):
+def iter_image(src, chunk: int = CHUNK, hasher=None):
     """Yield (data, compressed_bytes_consumed) chunks of the decompressed image (xz or raw .img).
 
     hasher, when given, is updated with the source bytes as they are read.
     """
-    with open(src_path, "rb") as f:
-        if not _is_xz(src_path):
+    with open_source(src) as f:
+        if not _is_xz(f):
             while True:
                 data = f.read(chunk)
                 if not data:
@@ -464,16 +488,16 @@ def _open_target(target, mode: str):
     return target, False
 
 
-def write_image(src_path, target, progress_cb=None, cancel_event=None, chunk: int = CHUNK, limit: int = 0,
+def write_image(src, target, progress_cb=None, cancel_event=None, chunk: int = CHUNK, limit: int = 0,
                 sector: int = SECTOR, expected_sha256: str = "") -> int:
-    """Stream src_path (.img or .img.xz) to target (file path or PhysicalDrive).
+    """Stream src (.img or .img.xz path, or a BundledImage) to target (file path or PhysicalDrive).
 
     The final chunk is zero-padded to a sector multiple. progress_cb(written, consumed, total)
     is called per chunk. limit (bytes) refuses to write past the card's capacity; expected_sha256
     is checked against the source bytes as they are read. Returns bytes written (including padding).
     Raises Cancelled.
     """
-    total = os.path.getsize(src_path)
+    total = source_size(src)
     out, own = _open_target(target, "wb")
     hasher = hashlib.sha256() if expected_sha256 else None
     written = 0
@@ -488,7 +512,7 @@ def write_image(src_path, target, progress_cb=None, cancel_event=None, chunk: in
         written += len(data)
 
     try:
-        for data, consumed in iter_image(src_path, chunk, hasher):
+        for data, consumed in iter_image(src, chunk, hasher):
             if cancel_event is not None and cancel_event.is_set():
                 raise Cancelled()
             data = pending + data
@@ -512,17 +536,17 @@ def write_image(src_path, target, progress_cb=None, cancel_event=None, chunk: in
     return written
 
 
-def verify_image(src_path, target, progress_cb=None, cancel_event=None, nbytes: int = 0) -> bool:
+def verify_image(src, target, progress_cb=None, cancel_event=None, nbytes: int = 0) -> bool:
     """Read target back and compare it with the whole image (or its first nbytes). Raises Cancelled."""
     inp, own = _open_target(target, "rb")
     try:
         inp.seek(0)
-        total = os.path.getsize(src_path)
+        total = source_size(src)
         # Raw disk reads must be whole sectors while xz chunks have arbitrary lengths, so the card is
         # read in CHUNK pieces and the image walked against that buffer at a running offset.
         buf = b""
         checked = 0
-        for data, consumed in iter_image(src_path):
+        for data, consumed in iter_image(src):
             if cancel_event is not None and cancel_event.is_set():
                 raise Cancelled()
             if nbytes:
@@ -546,6 +570,6 @@ def verify_image(src_path, target, progress_cb=None, cancel_event=None, nbytes: 
             inp.close()
 
 
-def verify_head(src_path, target, nbytes: int = VERIFY_BYTES) -> bool:
+def verify_head(src, target, nbytes: int = VERIFY_BYTES) -> bool:
     """Compare only the first nbytes (cheap check that the write landed)."""
-    return verify_image(src_path, target, nbytes=nbytes)
+    return verify_image(src, target, nbytes=nbytes)

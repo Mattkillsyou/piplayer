@@ -19,6 +19,7 @@ import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+import bundle
 import console
 import firstboot
 import imagefetch
@@ -239,13 +240,18 @@ class App:
         img = ttk.LabelFrame(form, text="Image", padding=6)
         img.grid(row=2, column=0, sticky="nsew", padx=4, pady=4)
         img.columnconfigure(1, weight=1)
-        self._var("image_mode", "latest")
+        self.bundled = bundle.find_bundle()
+        self._var("image_mode", "bundled" if self.bundled else "latest")
+        if self.bundled:
+            ttk.Radiobutton(img, text=f"Bundled: {self.bundled.name} ({windisk.human_size(self.bundled.length)})",
+                            variable=self.v["image_mode"], value="bundled").grid(row=0, column=0, columnspan=3,
+                                                                                 sticky="w")
         ttk.Radiobutton(img, text="Raspberry Pi OS Lite (64-bit), latest (downloaded and cached)",
-                        variable=self.v["image_mode"], value="latest").grid(row=0, column=0, columnspan=3, sticky="w")
+                        variable=self.v["image_mode"], value="latest").grid(row=1, column=0, columnspan=3, sticky="w")
         ttk.Radiobutton(img, text="Local image file (.img or .img.xz)", variable=self.v["image_mode"],
-                        value="local").grid(row=1, column=0, columnspan=3, sticky="w")
-        ttk.Entry(img, textvariable=self._var("image_path")).grid(row=2, column=0, columnspan=2, sticky="we", padx=4)
-        ttk.Button(img, text="Browse...", command=self.browse_image).grid(row=2, column=2, padx=4)
+                        value="local").grid(row=2, column=0, columnspan=3, sticky="w")
+        ttk.Entry(img, textvariable=self._var("image_path")).grid(row=3, column=0, columnspan=2, sticky="we", padx=4)
+        ttk.Button(img, text="Browse...", command=self.browse_image).grid(row=3, column=2, padx=4)
 
         tgt = ttk.LabelFrame(form, text="Target SD card", padding=6)
         tgt.grid(row=2, column=1, sticky="nsew", padx=4, pady=4)
@@ -302,6 +308,8 @@ class App:
                 except tk.TclError:
                     pass
         self._id_manual = bool(s.get("device_id")) and s.get("device_id") != firstboot.derive_device_id(s.get("name", ""))
+        if self.v["image_mode"].get() == "bundled" and not self.bundled:  # saved by an exe that had one
+            self.v["image_mode"].set("latest")
 
     def values(self) -> dict:
         """Form values; text fields are stripped (pasted spaces and newlines otherwise reach the card)."""
@@ -474,7 +482,8 @@ class App:
             if not v:
                 return
             d = v["disk_info"]
-            image = "latest Raspberry Pi OS Lite" if v["image_mode"] == "latest" else v["image_path"]
+            image = {"bundled": f"bundled {self.bundled.name}" if self.bundled else "bundled (missing)",
+                     "latest": "latest Raspberry Pi OS Lite"}.get(v["image_mode"], v["image_path"])
             if not messagebox.askyesno(APP_TITLE, f"Flash {v['name']} ({v['device_id']}) to:\n\n{d['label']}\n\n"
                                        f"Image: {image}\nConsole: {v['console_url']}\n\n"
                                        "Everything on that card will be erased. Continue?", default=messagebox.NO):
@@ -561,14 +570,14 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
         raise windisk.Cancelled()
     if dry_run:
         target = f"Disk {d['number']} ({d['name']})" if d else "the selected card (none chosen)"
-        log(f"Dry run: would write {Path(image).name} to {target}. Nothing was written.")
+        log(f"Dry run: would write {windisk.source_name(image)} to {target}. Nothing was written.")
         if created is not None:
             log(f"Dry run: device {v['device_id']} now exists on {cfg['console_url']} (delete it there if unwanted).")
         return
     windisk.check_image_magic(image)
     size = windisk.image_size(image)
     if size > d["size"]:
-        raise windisk.DiskError(f"{Path(image).name} is larger than the card "
+        raise windisk.DiskError(f"{windisk.source_name(image)} is larger than the card "
                                 f"({windisk.human_size(size)} > {windisk.human_size(d['size'])}); nothing was written")
 
     # 3-5. identity check, clear, write, verify
@@ -579,7 +588,7 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     try:
         log(f"Removing partitions from disk {d['number']} ...")
         windisk.clear_disk(d["number"], d.get("unique_id", ""))
-        log(f"Writing {Path(image).name} to disk {d['number']} ...")
+        log(f"Writing {windisk.source_name(image)} to disk {d['number']} ...")
         with windisk.open_physical_drive(d["number"], expect_size=d["size"]) as drive:
             drive.lock(windisk.volume_paths(d["number"]))
             start = time.monotonic()
@@ -634,13 +643,20 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     log(f"  Pi user: {v['username']}   password: {v['password']}   SSH: {'on' if v['ssh'] else 'off'}")
     log("  Record the password now: it is not saved anywhere else.")
     log(f"  Console: {cfg['console_url']}")
+    log(f"  Image: {windisk.source_name(image)}" + (" (bundled in this exe)" if v["image_mode"] == "bundled" else ""))
     log("  Insert the card into the Pi and power on. It appears on the console's Devices page within about")
     log("  5 minutes on first boot (it needs internet access for apt and pip). Progress is logged on the Pi in")
     log("  /var/log/projection5000-provision.log; firstrun.log and firstrun.ok appear on the boot partition.")
 
 
 def obtain_image(v: dict, log, progress, cancel, dry_run: bool = False) -> tuple:
-    """Returns (path, expected_sha256 or '')."""
+    """Returns (image source, expected_sha256 or ''): a path, or the BundledImage inside this exe."""
+    if v["image_mode"] == "bundled":
+        b = bundle.find_bundle()
+        if b is None:
+            raise imagefetch.FetchError("this build carries no bundled image; choose another image source")
+        log(f"Using bundled image {b.name} ({windisk.human_size(b.length)} compressed, sha256 {b.sha256[:12]}...)")
+        return b, b.sha256
     if v["image_mode"] == "local":
         log(f"Using local image {v['image_path']}")
         return v["image_path"], ""
@@ -701,10 +717,12 @@ def selfcheck() -> int:
         tk_ok = "ok"
     except tk.TclError as e:
         tk_ok = f"FAILED: {e}"
+    b = bundle.find_bundle()
     text = "\n".join([
         f"=== {APP_TITLE}: {build_info()} ===",
         f"tk: {tk_ok}",
         f"player archive: {len(archive)} bytes, {len(names)} entries",
+        f"bundled image: {b.name} {b.length} bytes sha256 {b.sha256} (trailer ok)" if b else "bundled image: none",
         "=== firstrun.sh ===", firstboot.render_firstrun(cfg),
         "=== projection5000-provision.sh ===", firstboot.render_provision(cfg),
         "=== cmdline.txt ===", firstboot.patch_cmdline("console=tty1 root=PARTUUID=x rootfstype=ext4 rootwait\n"),

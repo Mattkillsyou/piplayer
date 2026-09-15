@@ -46,6 +46,35 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 $exe = Join-Path $PSScriptRoot 'dist\Projection5000-SD-Flasher.exe'
 if (-not (Test-Path $exe)) { throw "build produced no exe" }
 
+# Embed the OS image: appended after PyInstaller's archive with a trailer (bundle.py), streamed from the
+# exe at flash time. Not --add-data: onefile would unpack 500+ MB to %TEMP% on every launch.
+# FLASHER_IMAGE=<path to .img.xz> skips the download (CI, offline); FLASHER_NO_BUNDLE=1 skips embedding.
+if ($env:FLASHER_NO_BUNDLE -ne '1') {
+    if ($env:FLASHER_IMAGE -and -not (Test-Path $env:FLASHER_IMAGE)) { throw "FLASHER_IMAGE not found: $env:FLASHER_IMAGE" }
+    $env:FLASHER_EXE = $exe
+    $embed = @'
+import os, threading
+import bundle, flasher, windisk
+exe, image = os.environ["FLASHER_EXE"], os.environ.get("FLASHER_IMAGE")
+if not image:
+    # Same path as the tool's "latest" mode: official redirect, .sha256 check, %LOCALAPPDATA% cache.
+    seen = set()
+    def progress(pct, text):
+        if int(pct) // 10 not in seen:
+            seen.add(int(pct) // 10); print("  " + text, flush=True)
+    image, _ = flasher.obtain_image({"image_mode": "latest"}, print, progress, threading.Event())
+windisk.check_image_magic(image)
+bundle.strip_bundle(exe)
+b = bundle.append_bundle(exe, image, os.path.basename(image))
+print(f"embedded {b.name}: {b.length} bytes at offset {b.offset}, sha256 {b.sha256}")
+'@
+    $embedScript = Join-Path $stage 'embed.py'
+    [IO.File]::WriteAllText($embedScript, $embed)
+    $env:PYTHONPATH = $PSScriptRoot
+    & $python $embedScript
+    if ($LASTEXITCODE -ne 0) { throw "embedding the OS image failed" }
+}
+
 # Smoke test the exe: --selfcheck needs no rights, starts Tk once, checks the bundled player archive
 # and writes dist\selfcheck.txt because a --windowed exe has no stdout.
 Remove-Item -Force (Join-Path $PSScriptRoot 'dist\selfcheck.txt') -ErrorAction SilentlyContinue
@@ -54,4 +83,7 @@ if ($p.ExitCode -ne 0) { throw "exe --selfcheck exited $($p.ExitCode)" }
 $out = Join-Path $PSScriptRoot 'dist\selfcheck.txt'
 if (-not (Select-String -Path $out -Pattern 'install-player.sh' -Quiet)) { throw "selfcheck output looks wrong" }
 if (-not (Select-String -Path $out -Pattern '^tk: ok' -Quiet)) { throw "frozen exe cannot start Tk" }
+$bundled = (Select-String -Path $out -Pattern '^bundled image: ' | Select-Object -First 1).Line
+if ($env:FLASHER_NO_BUNDLE -ne '1' -and -not ($bundled -like '*(trailer ok)')) { throw "exe does not see its bundled image: '$bundled'" }
+Write-Host $bundled
 Write-Host "OK: $exe ($([math]::Round((Get-Item $exe).Length / 1MB, 1)) MB), selfcheck output in $out"

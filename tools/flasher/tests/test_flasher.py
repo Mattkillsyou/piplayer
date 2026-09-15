@@ -475,3 +475,91 @@ def test_generated_password_rotates_after_a_flash(monkeypatch, tmp_path):
     app._finished()
     assert app.v["password"].get() == "operator-chosen"
     root.destroy()
+
+
+def _bundled_exe(tmp_path, data=bytes(range(256)) * 8):
+    import lzma
+    import bundle
+    exe = tmp_path / "fake.exe"
+    exe.write_bytes(b"MZ" + b"\0" * 5000)
+    xz = tmp_path / "os.img.xz"
+    xz.write_bytes(lzma.compress(data, format=lzma.FORMAT_XZ))
+    return bundle.append_bundle(exe, xz, "raspios-lite-arm64-test.img.xz")
+
+
+def test_obtain_image_bundled_never_touches_the_network(monkeypatch, tmp_path):
+    b = _bundled_exe(tmp_path)
+    monkeypatch.setattr(flasher.bundle, "find_bundle", lambda path=None: b)
+    monkeypatch.setattr(flasher.imagefetch.urllib.request, "urlopen",
+                        lambda *a, **k: pytest.fail("network touched in bundled mode"))
+    lines = []
+    image, sha = flasher.obtain_image({"image_mode": "bundled"}, lines.append, lambda p, t: None, threading.Event())
+    assert image is b and sha == b.sha256
+    assert any("Using bundled image raspios-lite-arm64-test.img.xz" in s for s in lines)
+    monkeypatch.setattr(flasher.bundle, "find_bundle", lambda path=None: None)
+    with pytest.raises(flasher.imagefetch.FetchError, match="no bundled image"):
+        flasher.obtain_image({"image_mode": "bundled"}, lines.append, lambda p, t: None, threading.Event())
+
+
+def test_run_flash_bundled_end_to_end(monkeypatch, tmp_path):
+    calls, lines = [], []
+    card, boot = _flash_stubs(monkeypatch, tmp_path, calls)
+    b = _bundled_exe(tmp_path)
+    monkeypatch.setattr(flasher.bundle, "find_bundle", lambda path=None: b)
+    monkeypatch.setattr(flasher.imagefetch.urllib.request, "urlopen",
+                        lambda *a, **k: pytest.fail("network touched in bundled mode"))
+    v = dict(FORM, image_mode="bundled", image_path="", disk_info=dict(DISK, size=1 << 20))
+    flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
+    assert calls == ["check", "clear", "lock", "refresh", "find", "eject"]
+    assert card.read_bytes() == bytes(range(256)) * 8
+    text = "\n".join(lines)
+    assert "Writing raspios-lite-arm64-test.img.xz to disk 2" in text
+    assert "Image: raspios-lite-arm64-test.img.xz (bundled in this exe)" in text
+    # Dry run names it too and stays off the network.
+    lines.clear()
+    flasher.run_flash(dict(v, disk_info=None), lines.append, lambda pct, text: None, threading.Event(), dry_run=True)
+    assert any(s.startswith("Dry run: would write raspios-lite-arm64-test.img.xz to") for s in lines)
+    # Oversized: refused with the bundled name before the card is touched.
+    calls.clear()
+    with pytest.raises(flasher.windisk.DiskError, match="raspios-lite-arm64-test.img.xz is larger than the card"):
+        flasher.run_flash(dict(v, disk_info=dict(DISK, size=1024)), lines.append, lambda pct, text: None,
+                          threading.Event())
+    assert calls == []
+
+
+def test_gui_offers_the_bundled_image_first(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    b = _bundled_exe(tmp_path)
+    monkeypatch.setattr(flasher.bundle, "find_bundle", lambda path=None: b)
+    root = _root()
+    app = flasher.App(root)
+    assert app.bundled is b and app.v["image_mode"].get() == "bundled"
+    radios = [w for w in app.root.winfo_children()[0].winfo_children()[0].winfo_children()[4].winfo_children()
+              if isinstance(w, flasher.ttk.Radiobutton)]
+    assert radios[0].cget("text").startswith("Bundled: raspios-lite-arm64-test.img.xz (") and \
+        radios[0].cget("value") == "bundled"
+    assert len(radios) == 3
+    # Confirmation dialog names the bundled image.
+    monkeypatch.setattr(flasher, "is_admin", lambda: True)
+    dialogs = []
+    monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: dialogs.append(("error", a[1])))
+    monkeypatch.setattr(flasher.messagebox, "askyesno", lambda *a, **k: dialogs.append(("yesno", a[1])) or False)
+    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [DISK])
+    app._show_disks([DISK], None)
+    for k, val in FORM.items():
+        app.v[k].set(val)
+    app.v["image_mode"].set("bundled")
+    app.v["dry_run"].set(False)
+    app.on_flash()
+    assert dialogs[-1][0] == "yesno" and "Image: bundled raspios-lite-arm64-test.img.xz" in dialogs[-1][1]
+    root.destroy()
+    # The saved mode survives a restart of a bundled exe but falls back when this build has no bundle.
+    flasher.save_settings(dict(FORM, image_mode="bundled"))
+    root = _root()
+    assert flasher.App(root).v["image_mode"].get() == "bundled"
+    root.destroy()
+    monkeypatch.setattr(flasher.bundle, "find_bundle", lambda path=None: None)
+    root = _root()
+    assert flasher.App(root).v["image_mode"].get() == "latest"
+    root.destroy()
