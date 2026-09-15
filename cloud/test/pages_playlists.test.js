@@ -40,7 +40,7 @@ describe("role matrix", () => {
   it("viewer sees View and no forms; editor sees Edit, rename, add, drag handle", async () => {
     let page = await (await r.viewer.get("/playlists")).text();
     expect(page).toContain(">View<");
-    expect(page).not.toContain("New playlist");
+    expect(page).not.toContain("new playlist");
     expect(page).not.toContain("data-confirm");
     page = await (await r.viewer.get(`/playlists/${w.pid}`)).text();
     expect(page).toContain('data-readonly="1"');
@@ -48,8 +48,8 @@ describe("role matrix", () => {
     expect(page).not.toContain("Add media");
     page = await (await r.editor.get(`/playlists/${w.pid}`)).text();
     expect(page).toContain(`data-playlist-id="${w.pid}"`);
-    expect(page).toContain("Drag rows to reorder.");
-    expect(page).toContain("⋮⋮");
+    expect(page).toContain("drag rows to reorder");
+    expect(page).toContain("⣿");
     expect(page).toContain('<script src="/static/sortable.min.js"></script>');
     expect(page).toContain("three.png");           // available to add
     expect(page).toContain("12.3 s");              // natural duration

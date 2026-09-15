@@ -132,6 +132,34 @@ describe("resolve_active_playlist_id / manifest_for_device", () => {
     expect(p.hash).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
+  it("advertises next_rule only when there is nothing to play", async () => {
+    const d3 = (await query("SELECT * FROM devices WHERE id = ?", ids.devNone))[0];
+    const at = new Date(Date.UTC(2026, 8, 14, 12, 0, 7)); // Monday noon UTC
+    let m = await manifest.manifest_for_device(env, d3, "https://cms.example", settings, at);
+    expect(m.playlist).toBeNull();
+    expect(m.next_rule).toBeNull();
+    // a rule starting in two hours
+    await query("INSERT INTO device_schedules (device_id, playlist_id, name, priority, start_time, end_time) VALUES (?, ?, 'later', 5, '14:00', '14:30')", ids.devNone, ids.plA);
+    m = await manifest.manifest_for_device(env, d3, "https://cms.example", settings, at);
+    expect(m.playlist).toBeNull();
+    expect(m.next_rule).toEqual({ name: "later", playlist: "A", starts_at: "2026-09-14T14:00+00:00" });
+    // the zone offset of the site clock is carried (07:00 PDT on the same instant, rule at 14:00 PDT)
+    m = await manifest.manifest_for_device(env, d3, "https://cms.example", { ...settings, timezone: "America/Los_Angeles" }, at);
+    expect(m.next_rule.starts_at).toBe("2026-09-14T14:00-07:00");
+    // an active playlist with items: no next_rule
+    m = await manifest.manifest_for_device(env, await device(), "https://cms.example", settings, at);
+    expect(m.playlist.id).toBe(ids.plA);
+    expect(m.next_rule).toBeNull();
+    // an empty playlist counts as nothing to play
+    await query("UPDATE devices SET playlist_id = ? WHERE id = ?", ids.plB, ids.devNone);
+    m = await manifest.manifest_for_device(env, (await query("SELECT * FROM devices WHERE id = ?", ids.devNone))[0], "https://cms.example", settings, at);
+    expect(m.playlist.id).toBe(ids.plB);
+    expect(m.playlist.items).toEqual([]);
+    expect(m.next_rule.name).toBe("later");
+    await query("UPDATE devices SET playlist_id = NULL WHERE id = ?", ids.devNone);
+    await query("DELETE FROM device_schedules WHERE name = 'later'");
+  });
+
   it("uses the site default image duration and timezone from settings", async () => {
     const m = await manifest.manifest_for_device(env, await device(), "https://cms.example",
       { timezone: "America/Los_Angeles", screenshot_interval: 30, default_image_duration: 4 },

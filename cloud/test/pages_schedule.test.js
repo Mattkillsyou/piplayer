@@ -34,17 +34,19 @@ describe("page", () => {
     const always = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, days_of_week) VALUES (?, ?, ?, 5, '0123456')", w.dev.id, w.pid, XSS + "r");
     const never = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, start_date, end_date) VALUES (?, ?, 'past', 1, '2000-01-01', '2000-01-02')", w.dev.id, w.pid);
     let page = await (await r.viewer.get(base())).text();
-    expect(page).toContain("<h1>Sched &lt;dev&gt; — Schedule</h1>");
+    expect(page).toContain("<h1>Sched &lt;dev&gt;</h1>");
+    expect(page).toContain('<span class="eyebrow">Schedule · sched-1</span>');
     expect(page).toContain("(zone UTC)");
-    expect(page).toMatch(/Site time now: <code>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC<\/code>/);
+    expect(page).toMatch(/<strong>site time \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC<\/strong>/);
     expect(page).toContain("Rules (2)");
     expect(page).not.toContain(XSS);
     expect(page).toContain("x&#39;);alert(1);//r");
     expect(page).toContain("Mon,Tue,Wed,Thu,Fri,Sat,Sun");
     expect(page).toContain("2000-01-01–2000-01-02");
     expect(page).toContain('<tr class="rule-active">');
-    expect(page).toContain('<span class="badge badge-active">YES</span>');
-    expect(page).not.toContain("Add a rule");
+    expect(page).toContain('<span class="badge badge-active">active now</span>');
+    expect(page).toContain('<span class="badge badge-muted">waiting</span>');
+    expect(page).not.toContain("Add rule");
     expect(page).not.toContain("data-confirm");
     // /settings is admin-only, so only admins get the link
     expect(page).not.toContain('href="/settings"');
@@ -56,7 +58,7 @@ describe("page", () => {
     page = await (await r.editor.get(base())).text();
     expect(page).toContain('data-confirm="Delete rule x&#39;);alert(1);//r?"');
     expect(page).toContain(`action="${base()}/${always}/delete"`);
-    expect(page).toContain("Add a rule");
+    expect(page).toContain("Add rule");
     expect(page).toContain('name="days_of_week_chk" value="6"');
     expect(page).toContain(`<option value="${w.pid}">Morning</option>`);
     expect(page).not.toContain("onsubmit");

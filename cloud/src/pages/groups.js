@@ -4,7 +4,7 @@ import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, idParam, intField, redirect, str } from "../util.js";
 import { requireRow } from "./devices.js";
-import { csrfInput, layout } from "./layout.js";
+import { csrfInput, emptyState, layout } from "./layout.js";
 
 async function groupsPage(ctx) {
   const user = auth.requireUser(ctx);
@@ -18,13 +18,13 @@ async function groupsPage(ctx) {
        ORDER BY g.name`);
   const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name");
   const row = (g) => `<tr>
-      <td>${esc(g.name)}</td>
+      <td class="name">${esc(g.name)}</td>
       <td>${g.device_count}</td>
       <td>
         <form method="post" action="/groups/${g.id}/assign" class="inline">
           ${csrfInput(ctx)}
-          <select name="playlist_id" data-autosubmit${canEdit ? "" : " disabled"}>
-            <option value="">— none —</option>
+          <select name="playlist_id" data-autosubmit aria-label="Default playlist for ${esc(g.name)}"${canEdit ? "" : " disabled"}>
+            <option value="">none</option>
             ${playlists.map((p) => `<option value="${p.id}"${p.id === g.playlist_id ? " selected" : ""}>${esc(p.name)}</option>`).join("\n            ")}
           </select>
         </form>
@@ -36,26 +36,28 @@ async function groupsPage(ctx) {
         </form>` : ""}
       </td>
     </tr>`;
-  const content = `<h1>Device groups</h1>
-<p class="muted small">Devices in a group use the group's playlist as their fallback (when the device has no default and no schedule matches).</p>
-
-${canEdit ? `<div class="panel">
-  <h2>New group</h2>
-  <form method="post" action="/groups" class="row">
+  const content = `<div class="page-head">
+  <h1>Device groups</h1>
+  ${canEdit ? `<form method="post" action="/groups" class="head-actions">
     ${csrfInput(ctx)}
-    <input type="text" name="name" placeholder="e.g., Lobby projectors" required>
+    <label>new group
+      <input type="text" name="name" placeholder="e.g., Lobby projectors" required>
+    </label>
     <button type="submit" class="primary">Create</button>
-  </form>
-</div>` : ""}
+  </form>` : ""}
+</div>
+<p class="help small">Devices in a group use the group's playlist as their fallback (when the device has no default and no schedule matches).</p>
 
-${!groups.length ? '<p class="muted">No groups yet.</p>' : `<table class="data">
+${!groups.length ? emptyState("NO GROUPS", `No groups yet.${canEdit ? " Create one above." : ""}`) : `<div class="table-wrap">
+<table class="data">
   <thead>
     <tr><th>Name</th><th>Devices</th><th>Default playlist</th><th></th></tr>
   </thead>
   <tbody>
     ${groups.map(row).join("\n    ")}
   </tbody>
-</table>`}`;
+</table>
+</div>`}`;
   return layout(ctx, { title: "Groups", content });
 }
 

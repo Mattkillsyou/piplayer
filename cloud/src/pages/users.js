@@ -12,21 +12,21 @@ async function usersPage(ctx) {
   const tz = (await ctx.settings()).timezone;
   const users = await db.all(ctx.env, "SELECT id, username, role, created_at FROM users ORDER BY username");
   const row = (u) => `<tr>
-      <td>${esc(u.username)}${u.id === me.id ? ' <span class="muted small">(you)</span>' : ""}</td>
+      <td class="name">${esc(u.username)}${u.id === me.id ? ' <span class="muted small">(you)</span>' : ""}</td>
       <td><span class="badge badge-${esc(u.role)}">${esc(u.role)}</span></td>
-      <td>${esc(localTime(u.created_at, tz))}</td>
+      <td class="muted nowrap">${esc(localTime(u.created_at, tz))}</td>
       <td>
         <form method="post" action="/users/${u.id}/role" class="inline">
           ${csrfInput(ctx)}
-          <select name="role" data-autosubmit${u.id === me.id ? " disabled" : ""}>
+          <select name="role" data-autosubmit aria-label="Role for ${esc(u.username)}"${u.id === me.id ? " disabled" : ""}>
             ${["admin", "editor", "viewer"].map((r) => `<option value="${r}"${u.role === r ? " selected" : ""}>${r}</option>`).join("\n            ")}
           </select>
         </form>
       </td>
       <td>
-        <form method="post" action="/users/${u.id}/password" class="inline">
+        <form method="post" action="/users/${u.id}/password" class="inline duration-form">
           ${csrfInput(ctx)}
-          <input type="password" name="password" placeholder="new password" minlength="6" style="width: 9rem;">
+          <input type="password" name="password" placeholder="new password" minlength="6" autocomplete="new-password" aria-label="New password for ${esc(u.username)}">
           <button type="submit" class="small">Set</button>
         </form>
       </td>
@@ -37,7 +37,10 @@ async function usersPage(ctx) {
         </form>` : ""}
       </td>
     </tr>`;
-  const content = `<h1>Users</h1>
+  const content = `<div class="page-head">
+  <h1>Users</h1>
+  <span class="page-meta">${users.length} account${users.length === 1 ? "" : "s"}</span>
+</div>
 
 <div class="panel">
   <h2>New user</h2>
@@ -45,10 +48,10 @@ async function usersPage(ctx) {
     ${csrfInput(ctx)}
     <div class="form-grid">
       <label>Username
-        <input type="text" name="username" required>
+        <input type="text" name="username" required autocomplete="off">
       </label>
       <label>Password (at least 6 characters)
-        <input type="password" name="password" required minlength="6">
+        <input type="password" name="password" required minlength="6" autocomplete="new-password">
       </label>
       <label>Role
         <select name="role">
@@ -58,16 +61,20 @@ async function usersPage(ctx) {
         </select>
       </label>
     </div>
-    <button type="submit" class="primary">Create user</button>
+    <div class="row">
+      <button type="submit" class="primary">Create user</button>
+    </div>
   </form>
 </div>
 
+<div class="table-wrap">
 <table class="data">
   <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Change role</th><th>Reset password</th><th></th></tr></thead>
   <tbody>
     ${users.map(row).join("\n    ")}
   </tbody>
-</table>`;
+</table>
+</div>`;
   return layout(ctx, { title: "Users", content });
 }
 

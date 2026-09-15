@@ -4,29 +4,30 @@ import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, redirect, str } from "../util.js";
-import { APP_NAME, csrfInput, layout } from "./layout.js";
+import { csrfInput } from "./layout.js";
+import { authBrand, authPage } from "./login.js";
 
 function setupPage(ctx, token, error, status = 200) {
-  const content = `<div class="auth-card">
-  <h1>${APP_NAME}</h1>
-  <p class="muted">Create the first administrator account.</p>
-  ${error ? `<div class="alert error">${esc(error)}</div>` : ""}
-  <form method="post" action="/setup">
-    ${csrfInput(ctx)}
-    <input type="hidden" name="token" value="${esc(token)}">
-    <label>Username
-      <input type="text" name="username" autocomplete="username" autofocus required>
-    </label>
-    <label>Password
-      <input type="password" name="password" autocomplete="new-password" required minlength="6">
-    </label>
-    <label>Password (again)
-      <input type="password" name="password2" autocomplete="new-password" required minlength="6">
-    </label>
-    <button type="submit" class="primary">Create admin</button>
-  </form>
-</div>`;
-  return layout(ctx, { title: "Setup", content, status });
+  const card = `<div class="auth-card">
+    ${authBrand()}
+    ${error ? `<div class="alert error" role="alert">${esc(error)}</div>` : ""}
+    <form method="post" action="/setup">
+      ${csrfInput(ctx)}
+      <input type="hidden" name="token" value="${esc(token)}">
+      <label>Username
+        <input type="text" name="username" autocomplete="username" autofocus required>
+      </label>
+      <label>Password
+        <input type="password" name="password" autocomplete="new-password" required minlength="6">
+      </label>
+      <label>Password (again)
+        <input type="password" name="password2" autocomplete="new-password" required minlength="6">
+      </label>
+      <button type="submit" class="primary">Create admin</button>
+    </form>
+    <span class="auth-foot">p5k-console · create the first administrator account</span>
+  </div>`;
+  return authPage(ctx, { title: "Setup", card, status });
 }
 
 async function gate(ctx, token) {

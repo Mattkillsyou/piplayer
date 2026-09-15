@@ -20,11 +20,14 @@ async function settingsPage(ctx) {
   auth.requireRole(ctx, "admin");
   const s = await ctx.settings();
   const saved = ctx.url.searchParams.get("saved") === "1";
-  const content = `<h1>Settings</h1>
+  const content = `<div class="page-head">
+  <h1>Settings</h1>
+  <span class="page-meta"><strong>site time ${esc(localTime(nowUtc(), s.timezone))}</strong><br>schedules, the audit log and every timestamp on these pages use this zone</span>
+</div>
 ${saved ? alertBox("Settings saved.", "ok") : ""}
-<p class="muted small">Current site time: <code>${esc(localTime(nowUtc(), s.timezone))}</code>. Schedules, the audit log and every timestamp on these pages use this zone.</p>
 
 <div class="panel">
+  <h2>Site settings</h2>
   <form method="post" action="/settings">
     ${csrfInput(ctx)}
     <div class="form-grid">
@@ -41,8 +44,10 @@ ${saved ? alertBox("Settings saved.", "ok") : ""}
         <input type="number" name="default_image_duration" value="${esc(s.default_image_duration)}" min="0.5" max="86400" step="0.5" required>
       </label>
     </div>
-    <p class="muted small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot. The image duration applies to images without a per-item override.</p>
-    <button type="submit" class="primary">Save settings</button>
+    <p class="help small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot. The image duration applies to images without a per-item override.</p>
+    <div class="row">
+      <button type="submit" class="primary">Save settings</button>
+    </div>
   </form>
 </div>`;
   return layout(ctx, { title: "Settings", content });

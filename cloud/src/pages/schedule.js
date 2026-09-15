@@ -6,7 +6,7 @@ import * as db from "../db.js";
 import * as schedules from "../schedules.js";
 import { esc, fail, idParam, intField, isoDateField, normalizeHhmm, redirect, str, wallClock } from "../util.js";
 import { requireRow } from "./devices.js";
-import { csrfInput, layout } from "./layout.js";
+import { csrfInput, emptyState, layout } from "./layout.js";
 
 const pad2 = (n) => String(n).padStart(2, "0");
 
@@ -34,11 +34,11 @@ async function schedulePage(ctx) {
   }
 
   const ruleRow = (r) => `<tr${r.matches_now ? ' class="rule-active"' : ""}>
-      <td>${r.priority}</td>
-      <td>${esc(r.name)}</td>
+      <td class="position-cell">${r.priority}</td>
+      <td class="name">${esc(r.name)}</td>
       <td>${esc(r.playlist_name || "—")}</td>
-      <td><span class="muted small">${esc(r.summary)}</span></td>
-      <td>${r.matches_now ? '<span class="badge badge-active">YES</span>' : "—"}</td>
+      <td class="muted">${esc(r.summary)}</td>
+      <td>${r.matches_now ? '<span class="badge badge-active">active now</span>' : '<span class="badge badge-muted">waiting</span>'}</td>
       <td>
         ${canEdit ? `<form method="post" action="/devices/${device.id}/schedule/${r.id}/delete" class="inline" data-confirm="Delete rule ${esc(r.name)}?">
           ${csrfInput(ctx)}
@@ -47,25 +47,36 @@ async function schedulePage(ctx) {
       </td>
     </tr>`;
   const dayBox = (name, i) => `<label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="${i}">${name}</label>`;
+  const zoneHelp = user.role === "admin"
+    ? 'change the timezone on the <a href="/settings">Settings</a> page.'
+    : "ask an administrator to change the site timezone on the Settings page.";
 
-  const content = `<p><a href="/devices">← Devices</a></p>
-<h1>${esc(device.name)} — Schedule</h1>
-<p class="muted small">Site time now: <code>${esc(nowText)}</code> (zone ${esc(now.zone)}). Rules use the site's wall-clock time; if this is not your venue's time, ${user.role === "admin" ? 'change the timezone on the <a href="/settings">Settings</a> page.' : "ask an administrator to change the site timezone on the Settings page."}</p>
+  const content = `<a href="/devices" class="back">← Devices</a>
+<div class="page-head">
+  <div>
+    <span class="eyebrow">Schedule · ${esc(device.device_id)}</span>
+    <h1>${esc(device.name)}</h1>
+  </div>
+  <span class="page-meta"><strong>site time ${esc(nowText)}</strong><br>rules use the site's wall-clock time (zone ${esc(now.zone)})</span>
+</div>
+<p class="zone-note">If this is not your venue's time, ${zoneHelp}</p>
 
 <h2>Rules (${rules.length})</h2>
-<p class="muted small">When multiple rules match, the one with the highest priority wins. If no rule matches, the device's default playlist (set on the Devices page) plays. A window that crosses midnight (e.g. 22:00–02:00) belongs to the day it starts on, so "Fri 22:00–02:00" runs until Saturday 02:00.</p>
-${!rules.length ? '<p class="muted">No rules — device plays its default playlist always.</p>' : `<table class="data">
+<p class="help small">When multiple rules match, the one with the highest priority wins. If no rule matches, the device's default playlist (set on the Devices page) plays. A window that crosses midnight (e.g. 22:00–02:00) belongs to the day it starts on, so "Fri 22:00–02:00" runs until Saturday 02:00.</p>
+${!rules.length ? emptyState("NO RULES", "The device plays its default playlist always.") : `<div class="table-wrap">
+<table class="data">
   <thead>
-    <tr><th>Priority</th><th>Name</th><th>Playlist</th><th>When</th><th>Active now?</th><th></th></tr>
+    <tr><th>Prio</th><th>Name</th><th>Playlist</th><th>When</th><th>State</th><th></th></tr>
   </thead>
   <tbody>
     ${rules.map(ruleRow).join("\n    ")}
   </tbody>
-</table>`}
+</table>
+</div>`}
 
-${canEdit ? `<h2>Add a rule</h2>
-<div class="panel">
-  <form method="post" action="/devices/${device.id}/schedule" id="schedule-form">
+${canEdit ? `<div class="panel">
+  <h2>Add rule</h2>
+  <form method="post" action="/devices/${device.id}/schedule">
     ${csrfInput(ctx)}
     <div class="form-grid">
       <label>Name
@@ -73,50 +84,41 @@ ${canEdit ? `<h2>Add a rule</h2>
       </label>
       <label>Playlist
         <select name="playlist_id" required>
-          <option value="">— pick —</option>
+          <option value="">pick a playlist</option>
           ${playlists.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("\n          ")}
         </select>
       </label>
       <label>Priority
         <input type="number" name="priority" value="10" min="0" max="1000">
       </label>
-      <label>Start time (HH:MM)
+    </div>
+    <div class="form-grid">
+      <label>Start time
         <input type="time" name="start_time" placeholder="06:00">
       </label>
-      <label>End time (HH:MM)
+      <label>End time
         <input type="time" name="end_time" placeholder="09:00">
       </label>
       <label>Start date
         <input type="date" name="start_date">
       </label>
       <label>End date
-        <input type="date" name="end_date">
+        <input type="date" name="end_date" placeholder="never">
       </label>
     </div>
-    <p class="muted small">Leave both times empty for all day. An end time earlier than the start time wraps past midnight and counts as the start day.</p>
+    <p class="help small">Leave both times empty for all day. An end time earlier than the start time wraps past midnight and counts as the start day.</p>
 
     <fieldset class="days-fieldset">
-      <legend>Days of week (leave blank for all days)</legend>
+      <legend>Days (leave blank for all days)</legend>
       ${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(dayBox).join("\n      ")}
       <input type="hidden" name="days_of_week" id="days-hidden" value="">
     </fieldset>
 
-    <button type="submit" class="primary">Add rule</button>
+    <div class="row">
+      <button type="submit" class="primary">Add rule</button>
+    </div>
   </form>
-</div>
-
-<script>
-(function() {
-  // Checked days -> the hidden days_of_week field ("0123456" subset). No page data is
-  // interpolated here (contract 9).
-  var form = document.getElementById('schedule-form');
-  if (!form) return;
-  form.addEventListener('submit', function() {
-    var checks = form.querySelectorAll('input[name="days_of_week_chk"]:checked');
-    document.getElementById('days-hidden').value = Array.prototype.map.call(checks, function(c) { return c.value; }).join('');
-  });
-})();
-</script>` : ""}`;
+</div>` : ""}`;
   return layout(ctx, { title: `${device.name} schedule`, content });
 }
 

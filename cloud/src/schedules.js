@@ -108,6 +108,44 @@ export function pick_active(schedules, now) {
   return matching[0];
 }
 
+// A wallClock-shaped object (no zone) for a naive local minute given as a UTC-epoch ms
+// value built with Date.UTC(year, month - 1, day, hour, minute).
+function wallFromMs(ms) {
+  const d = new Date(ms);
+  return {
+    year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(),
+    hour: d.getUTCHours(), minute: d.getUTCMinutes(), second: 0, weekday: (d.getUTCDay() + 6) % 7,
+  };
+}
+
+// Port of next_start: the rule that will start matching soonest after `now` (a
+// util.wallClock() object), as [rule, wallClockOfThatMinute], or null when nothing starts
+// within the horizon. A rule that already matches is not a future start; a rule a
+// higher-priority rule covers at that minute would not play, so it is skipped too.
+export function next_start(rules, now, horizonDays = 7) {
+  const list = Array.from(rules);
+  const baseMs = Date.UTC(now.year, now.month - 1, now.day, now.hour, now.minute);
+  let best = null;
+  for (const s of list) {
+    let startMin;
+    try {
+      startMin = s.start_time ? parseHhmm(s.start_time) : 0;
+    } catch {
+      continue;
+    }
+    for (let offset = 0; offset <= horizonDays; offset++) {
+      const ms = Date.UTC(now.year, now.month - 1, now.day + offset, Math.floor(startMin / 60), startMin % 60);
+      if (ms <= baseMs) continue;
+      const candidate = wallFromMs(ms);
+      if (!schedule_matches(s, candidate)) continue;
+      if (pick_active(list, candidate) !== s) continue;
+      if (best === null || ms < best[2]) best = [s, candidate, ms];
+      break;
+    }
+  }
+  return best ? [best[0], best[1]] : null;
+}
+
 // Human-readable summary of a schedule row, for the UI.
 export function describe(schedule) {
   const parts = [];
@@ -128,6 +166,7 @@ export function describe(schedule) {
 // camelCase aliases for callers that prefer them.
 export const scheduleMatches = schedule_matches;
 export const pickActive = pick_active;
+export const nextStart = next_start;
 
 export function register(router) {
   void router; // library module: nothing to register

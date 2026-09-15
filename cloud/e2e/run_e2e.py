@@ -1036,8 +1036,9 @@ def check_screenshots(w):
     S.expect("screenshot: anonymous is redirected", w.anon().get("/devices/%d/screenshot" % dev["id"]), 303, location="/login")
     page = w.admin.get("/devices").text
     S.rec("screenshot: devices page links the screenshot with its age", "/devices/%d/screenshot" % dev["id"] in page and "s ago" in page)
-    marker = '<code class="small">%s</code>' % dev["device_id"]
-    row = page.split(marker, 1)[1].split("</tr>", 1)[0] if marker in page else ""
+    # the device's own row: from its id up to the next .device-row card
+    marker = '<span class="device-id"><code>%s</code>' % dev["device_id"]
+    row = page.split(marker, 1)[1].split('<div class="device-row', 1)[0] if marker in page else ""
     S.rec("screenshot: fresh screenshot is not marked stale", bool(row) and "badge-stale" not in row)
 
 
