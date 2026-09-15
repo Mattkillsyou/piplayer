@@ -7,7 +7,9 @@ import { audits, detail, device, post, roleMatrix, roles } from "./pages_common.
 
 let r;
 const GOOD = { timezone: "America/Los_Angeles", screenshot_interval: "120", default_image_duration: "7.5" };
-const settings = () => query("SELECT key, value FROM settings ORDER BY key");
+// The enrollment key is generated on first read, so it is always present; keep it out of the diffs.
+const settings = () => query("SELECT key, value FROM settings WHERE key != 'enrollment_key' ORDER BY key");
+const enrollmentKey = () => query("SELECT value FROM settings WHERE key = 'enrollment_key'").then((r) => r[0]?.value);
 
 beforeAll(async () => {
   r = await roles();
@@ -93,5 +95,35 @@ describe("settings", () => {
     await query("UPDATE devices SET last_screenshot_at = datetime('now', '-400 seconds') WHERE id = ?", dev.id);
     expect(await (await r.admin.get("/devices")).text()).toContain(">stale<");
     await query("DELETE FROM settings");
+  });
+
+  it("enrollment key: generated on first read, shown to admins, rotated with audit", async () => {
+    await query("DELETE FROM settings");
+    await query("DELETE FROM audit_log WHERE action = 'enrollment_key_rotated'");
+    const page = await (await r.admin.get("/settings")).text();
+    const key = await enrollmentKey();
+    expect(key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(page).toContain(`<input type="password" id="enrollment-key" value="${key}" readonly`);
+    expect(page).toContain('data-reveal="enrollment-key">Show</button>');
+    expect(page).toContain('action="/settings/enrollment/rotate"');
+    expect(page).toContain("data-confirm=");
+    // stable across reads
+    await (await r.admin.get("/dashboard")).text();
+    expect(await enrollmentKey()).toBe(key);
+
+    await roleMatrix(r, "POST", "/settings/enrollment/rotate", { minRole: "admin" });
+    const rotated = await enrollmentKey();
+    expect(rotated).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(rotated).not.toBe(key);
+    const [a] = await audits("enrollment_key_rotated");
+    expect(a.username).toBe("admin");
+    expect(a.target_id).toBe("enrollment_key");
+    expect(a.details).toBeNull();
+    const after = await (await r.admin.get("/settings?rotated=1")).text();
+    expect(after).toContain("Enrollment key rotated.");
+    expect(after).toContain(`value="${rotated}" readonly`);
+    expect(after).not.toContain(key);
+    // rotating never touches the other settings
+    expect(await settings()).toEqual([]);
   });
 });

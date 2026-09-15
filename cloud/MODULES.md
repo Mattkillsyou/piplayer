@@ -71,7 +71,7 @@ in its own try/catch. Locally: `wrangler dev --test-scheduled` then `GET /__sche
   cookies,           // Set-Cookie strings to append (auth.js fills it; you normally never touch it)
   form(),            // Promise<FormData>, memoised (the CSRF check already read it; reading again is free);
                      //   malformed body → 400. Use util.str(form, "name") for string fields.
-  settings(),        // Promise<{timezone, screenshot_interval, default_image_duration}>, memoised
+  settings(),        // Promise<{timezone, screenshot_interval, default_image_duration, enrollment_key}>, memoised
 }
 ```
 
@@ -153,7 +153,7 @@ same, so the SQL from web.py/api.py ports verbatim (`?` placeholders, `datetime(
 | `requireRole(ctx, 'editor'|'admin')` | user or 303 `/login` / 403 `{"detail":"requires editor role"}`; ranks viewer < editor < admin |
 | `csrfToken(ctx)` | `ctx.csrf` (the layout emits it; `csrfInput(ctx)` for forms) |
 | `requireCsrf(ctx)` | header `X-CSRF-Token` or form field `csrf_token`; index.js already applies it to every non-`/api/` unsafe request, JSON and raw-body endpoints included (so fetch/PUT callers must send the header) |
-| `loginLockedFor(env, ip, username)` / `recordLoginFailure` / `clearLoginFailures` | D1 `login_failures`; 5 failures in 30 s → seconds remaining |
+| `loginLockedFor(env, ip, username, max?, seconds?)` / `recordLoginFailure` / `clearLoginFailures` | D1 `login_failures`; 5 failures in 30 s → seconds remaining. `POST /api/enroll` reuses it with username `ENROLL_KEY` and `ENROLL_MAX_FAILURES` (10) / `ENROLL_LOCK_SECONDS` (60) |
 | `deviceFromHeader(ctx)` | `{id, device_id, name, playlist_id, group_id}` for `Authorization: Bearer <token>`; 401 `"Missing bearer token"` / `"Invalid device token"`. The path `device_id` must equal `row.device_id` else 403 — your check |
 | `requireSetupToken(ctx, token)` | 403 unless equal to `SETUP_TOKEN` |
 | `hasUsers(env)` | cached once true |
@@ -171,7 +171,7 @@ non-empty by `audit.pyJson()` (Python `json.dumps` text: `{"a": 1, "b": [1, 2]}`
 `device_set_group`, `device_regen_token`, `device_delete`, `device_send_command`,
 `device_schedule_create`, `device_schedule_delete`, `group_create`, `group_assign_playlist`,
 `group_delete`, `user_create`, `user_set_role`, `user_set_password`, `user_delete`
-(+ new: `settings_update`). `audit.clientIp(ctx)` is exported too.
+(+ new: `settings_update`, `enrollment_key_rotated`, `device_enrolled`, `device_reenrolled`). `audit.clientIp(ctx)` is exported too.
 
 ## pages/layout.js
 
@@ -254,6 +254,7 @@ export function register(router) {
 | `timezone` | `UTC` (IANA name, validate with `isValidTimeZone`) | every rendered timestamp, `server_time`, schedule evaluation |
 | `screenshot_interval` | `PIPLAYER_SCREENSHOT_INTERVAL` (60) | manifest `screenshot_interval_seconds`, stale badge (`> 3 ×`) |
 | `default_image_duration` | `PIPLAYER_DEFAULT_IMAGE_DURATION` (10) | effective duration of images |
+| `enrollment_key` | random 32-byte urlsafe token, generated on the first `loadSettings` (never from env) | `POST /api/enroll` (the flasher bakes it into cards); `/settings` shows it and `POST /settings/enrollment/rotate` replaces it (`db.generateEnrollmentKey`) |
 
 Other limits stay env vars: `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB), `PIPLAYER_MAX_SCREENSHOT_BYTES`
 (5 MiB), `PIPLAYER_AUDIT_RETENTION_DAYS` (365). Read them with `envInt(env, name, fallback)`.

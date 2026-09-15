@@ -195,6 +195,11 @@ Devices page. Regenerating a token on the Devices page invalidates the old one a
   one, in which case the `.gif` is stored as `video` (mpv plays it through; image display
   duration does not apply). A block straddling two 8 MiB slices, or a false match inside pixel
   data, mis-classifies that GIF — the same limitation the CMS has without ffprobe.
+- **Zero-touch enrollment**: `POST /api/enroll` `{"key", "device_id", "name"}` trades the site's
+  enrollment key (Settings page; "Rotate" invalidates cards not yet booted) for the device's
+  token: `{"device_id", "token", "cms_url"}`. A known `device_id` gets its existing token back
+  (and the new name), so a re-flashed card keeps its device. Wrong key: 401, throttled per ip
+  (10 failures / 60 s → 429 with `Retry-After`). Audit: `device_enrolled`, `device_reenrolled`, `enrollment_key_rotated`.
 - **Timezone is a setting**, not the server's clock: `/settings` stores an IANA zone (validated
   with `Intl.DateTimeFormat`), default `UTC`. Schedule rules evaluate wall-clock time in that
   zone (`formatToParts`), every displayed timestamp is rendered in it with the zone

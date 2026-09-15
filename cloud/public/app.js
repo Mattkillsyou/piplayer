@@ -20,6 +20,17 @@
     }
   });
 
+  // Masked secrets (the enrollment key): <button data-reveal="<input id>"> toggles the
+  // input between password and text and relabels itself Show / Hide.
+  document.addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('[data-reveal]') : null;
+    var input = btn && document.getElementById(btn.dataset.reveal);
+    if (!input) return;
+    var hidden = input.type === 'password';
+    input.type = hidden ? 'text' : 'password';
+    btn.textContent = hidden ? 'Hide' : 'Show';
+  });
+
   function csrf() {
     var m = document.querySelector('meta[name="csrf-token"]');
     return m ? m.content : '';

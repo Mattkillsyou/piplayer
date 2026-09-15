@@ -18,6 +18,11 @@ export const PASSWORD_TOO_SHORT_MSG = `password must be at least ${MIN_PASSWORD_
 export const CSRF_ERROR = "CSRF token missing or invalid";
 export const LOGIN_MAX_FAILURES = 5;
 export const LOGIN_LOCK_SECONDS = 30;
+// POST /api/enroll shares the login_failures table, keyed by ip + ENROLL_KEY.
+export const ENROLL_KEY = "enroll";
+export const ENROLL_MAX_FAILURES = 10;
+export const ENROLL_LOCK_SECONDS = 60;
+const MAX_LOCK_SECONDS = Math.max(LOGIN_LOCK_SECONDS, ENROLL_LOCK_SECONDS);
 export const ROLES = ["viewer", "editor", "admin"];
 
 const enc = new TextEncoder();
@@ -227,15 +232,16 @@ export async function requireCsrf(ctx) {
 
 const unix = () => Math.floor(Date.now() / 1000);
 
-// Seconds remaining on the lock for this ip+username, 0 when not locked.
-export async function loginLockedFor(env, ip, username) {
+// Seconds remaining on the lock for this ip+username, 0 when not locked. `max` failures
+// within `seconds` lock it (login: 5 / 30 s; enroll: 10 / 60 s).
+export async function loginLockedFor(env, ip, username, max = LOGIN_MAX_FAILURES, seconds = LOGIN_LOCK_SECONDS) {
   const now = unix();
   const rows = await db.all(env,
     "SELECT at FROM login_failures WHERE ip = ? AND username = ? AND at > ? ORDER BY at",
-    ip || "-", username, now - LOGIN_LOCK_SECONDS);
-  if (rows.length < LOGIN_MAX_FAILURES) return 0;
+    ip || "-", username, now - seconds);
+  if (rows.length < max) return 0;
   const last = rows[rows.length - 1].at;
-  return Math.max(1, LOGIN_LOCK_SECONDS - (now - last) + 1);
+  return Math.max(1, seconds - (now - last) + 1);
 }
 
 export async function recordLoginFailure(env, ip, username) {
@@ -243,7 +249,7 @@ export async function recordLoginFailure(env, ip, username) {
   await db.batch(env, [
     ["INSERT INTO login_failures (ip, username, at) VALUES (?, ?, ?)", ip || "-", username, now],
     // Keep the table bounded if someone sprays usernames.
-    ["DELETE FROM login_failures WHERE at <= ?", now - LOGIN_LOCK_SECONDS],
+    ["DELETE FROM login_failures WHERE at <= ?", now - MAX_LOCK_SECONDS],
   ]);
 }
 
@@ -285,6 +291,6 @@ export async function hasUsers(env) {
 export async function housekeeping(env) {
   await db.batch(env, [
     ["DELETE FROM sessions WHERE expires_at <= datetime('now')"],
-    ["DELETE FROM login_failures WHERE at <= ?", unix() - LOGIN_LOCK_SECONDS],
+    ["DELETE FROM login_failures WHERE at <= ?", unix() - MAX_LOCK_SECONDS],
   ]);
 }

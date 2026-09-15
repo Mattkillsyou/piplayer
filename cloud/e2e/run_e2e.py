@@ -1304,6 +1304,64 @@ def check_dashboard(w):
             S.expect("devices: new token syncs", sync(w.dev, w.base), 200)
 
 
+def check_enroll(w):
+    """Zero-touch enrollment: the key on /settings lets an anonymous POST /api/enroll create a
+    device (fresh token) and re-enroll it (same token, new name); bad key 401, throttled 429."""
+    a, base = w.admin, w.base
+    page = a.get("/settings").text
+    m = re.search(r'<input type="password" id="enrollment-key" value="([A-Za-z0-9_\-]+)" readonly', page)
+    if not S.rec("enroll: /settings shows the enrollment key (masked input + Show button)",
+                 m is not None and 'data-reveal="enrollment-key">Show</button>' in page):
+        return
+    key = m.group(1)
+    did = "enroll-" + w.tok
+    e = lambda payload, **kw: requests.post(base + "/api/enroll", json=payload, timeout=30, **kw)  # noqa: E731
+    r = e({"key": "nope", "device_id": did, "name": "x"})
+    if r.status_code == 429:  # a run less than 60 s ago left this ip locked (persisted state)
+        m = re.search(r"in (\d+) s", r.text)
+        time.sleep(int(m.group(1)) + 1 if m else 61)
+        r = e({"key": "nope", "device_id": did, "name": "x"})
+    S.expect("enroll: wrong key is 401", r, 401, detail_contains="invalid enrollment key")
+    S.expect("enroll: missing key is 401", e({"device_id": did, "name": "x"}), 401)
+    S.expect("enroll: bad device_id is 400", e({"key": key, "device_id": "Bad_ID!", "name": "x"}), 400, detail_contains="device_id")
+    S.expect("enroll: empty name is 400", e({"key": key, "device_id": did, "name": " "}), 400, detail_contains="name")
+    S.expect("enroll: non-JSON body is 400", requests.post(base + "/api/enroll", data="x", headers={"Content-Type": "application/json"}, timeout=30), 400)
+    r = e({"key": key, "device_id": did.upper(), "name": "Enrolled " + w.tok})
+    if not S.expect("enroll: new device is 200", r, 200):
+        return
+    body = r.json()
+    tok = body.get("token", "")
+    # cms_url is the request origin; wrangler dev rewrites the host to ROUTE_HOST (see check_device_api)
+    hosts = {base, "http://" + ROUTE_HOST, "https://" + ROUTE_HOST}
+    S.rec("enroll: response carries device_id, token, cms_url (request origin)",
+          body.get("device_id") == did and len(tok) > 20 and body.get("cms_url") in hosts, json.dumps(body)[:120])
+    S.expect("enroll: the token authenticates /api/sync", requests.get(base + "/api/sync/" + did, headers=bearer(tok), timeout=30), 200)
+    r2 = e({"key": key, "device_id": did, "name": "Renamed " + w.tok})
+    if S.expect("enroll: re-enroll is 200", r2, 200):
+        S.rec("enroll: re-enroll keeps the existing token", r2.json().get("token") == tok)
+    devices = a.get("/devices").text
+    S.rec("enroll: device shows on /devices with the new name", ("Renamed " + w.tok) in devices and ("Enrolled " + w.tok) not in devices)
+    html = a.get("/audit?limit=100").text
+    S.rec("enroll: audit shows device_enrolled and device_reenrolled", "device_enrolled" in html and "device_reenrolled" in html)
+    S.rec("enroll: audit never contains the token", tok not in html)
+    # throttle: 10 bad keys from this ip -> 429 (wrangler dev sees every client as one ip)
+    codes = [e({"key": "nope", "device_id": did, "name": "x"}).status_code for _ in range(10)]
+    S.rec("enroll: the ip locks after 10 bad keys (2 sent above)", codes[:7] == [401] * 7 and 429 in codes, str(codes))
+    r = e({"key": key, "device_id": did, "name": "x"})
+    if S.expect("enroll: eleventh attempt is 429 (even with the right key)", r, 429):
+        S.rec("enroll: the 429 carries Retry-After", r.headers.get("Retry-After", "").isdigit(), r.headers.get("Retry-After"))
+    # rotate: the old key stops working (the throttle also blocks it, so only check the page changed)
+    if w.editor:
+        S.expect("enroll: rotate is admin-only", w.editor.post("/settings/enrollment/rotate"), 403, detail_contains="requires admin role")
+    S.expect("enroll: rotate", a.post("/settings/enrollment/rotate"), 303, location="/settings?rotated=1")
+    page2 = a.get("/settings?rotated=1").text
+    S.rec("enroll: rotated key differs and the banner shows", key not in page2 and "Enrollment key rotated." in page2)
+    S.rec("enroll: enrollment_key_rotated is audited", "enrollment_key_rotated" in a.get("/audit?limit=50").text)
+    dev_id = id_after(devices, did, r"/devices/(\d+)/")
+    if dev_id:
+        a.post("/devices/%s/delete" % dev_id)
+
+
 def check_cleanup(w):
     """Delete a device and a playlist through the UI; cascades must not 500 and the audit trail
     records them. The other fixtures stay (a persisted state dir keeps them; tok makes them unique)."""
@@ -1366,6 +1424,7 @@ SUITE = [
     ("commands", check_commands),
     ("uploads protocol", check_uploads_protocol),
     ("settings/timezone", check_settings_timezone),
+    ("enroll", check_enroll),
     ("sessions/cookies/roles", check_sessions),
     ("audit", check_audit),
     ("dashboard/pages", check_dashboard),

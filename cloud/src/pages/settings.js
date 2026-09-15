@@ -1,5 +1,6 @@
 // /settings (admin only, cloud-only page): site timezone, screenshot interval and default
-// image duration, stored in the settings table (db.loadSettings / saveSetting).
+// image duration, stored in the settings table (db.loadSettings / saveSetting), plus the
+// device enrollment key (shown masked, rotatable; POST /api/enroll checks it).
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
@@ -20,8 +21,10 @@ async function settingsPage(ctx) {
   auth.requireRole(ctx, "admin");
   const s = await ctx.settings();
   const saved = ctx.url.searchParams.get("saved") === "1";
+  const rotated = ctx.url.searchParams.get("rotated") === "1";
   const content = `<h1>Settings</h1>
 ${saved ? alertBox("Settings saved.", "ok") : ""}
+${rotated ? alertBox("Enrollment key rotated. Cards flashed with the old key must be re-flashed.", "ok") : ""}
 <p class="muted small">Current site time: <code>${esc(localTime(nowUtc(), s.timezone))}</code>. Schedules, the audit log and every timestamp on these pages use this zone.</p>
 
 <div class="panel settings-panel">
@@ -44,6 +47,20 @@ ${saved ? alertBox("Settings saved.", "ok") : ""}
     </div>
     <p class="muted small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot. The image duration applies to images without a per-item override.</p>
     <button type="submit" class="primary">Save settings</button>
+  </form>
+</div>
+
+<div class="panel settings-panel">
+  <h2>Device enrollment</h2>
+  <p class="muted small">The flasher bakes this key into every card; a Pi presents it on first boot (<code>POST /api/enroll</code>) and receives its own device token. Rotate it if a card is lost: cards flashed with the old key that have not booted yet stop working.</p>
+  <div class="enrollment-key">
+    <label for="enrollment-key" class="small">Enrollment key</label>
+    <input type="password" id="enrollment-key" value="${esc(s.enrollment_key)}" readonly spellcheck="false" autocomplete="off">
+    <button type="button" class="small" data-reveal="enrollment-key">Show</button>
+  </div>
+  <form method="post" action="/settings/enrollment/rotate" class="inline" data-confirm="Rotate the enrollment key? Cards flashed with the old key that have not booted yet will fail to enroll.">
+    ${csrfInput(ctx)}
+    <button type="submit" class="danger">Rotate key</button>
   </form>
 </div>`;
   return layout(ctx, { title: "Settings", content });
@@ -68,7 +85,15 @@ async function settingsSave(ctx) {
   return redirect("/settings?saved=1");
 }
 
+async function enrollmentRotate(ctx) {
+  auth.requireRole(ctx, "admin");
+  await db.generateEnrollmentKey(ctx.env);
+  await audit.log(ctx, "enrollment_key_rotated", "settings", "enrollment_key");
+  return redirect("/settings?rotated=1");
+}
+
 export function register(router) {
   router.get("/settings", settingsPage);
   router.post("/settings", settingsSave);
+  router.post("/settings/enrollment/rotate", enrollmentRotate);
 }
