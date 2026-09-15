@@ -1,6 +1,6 @@
 // D1 query helpers. Thin wrappers over env.DB.prepare(...).bind(...) so routes read like
 // the Python cursor code: all()/first()/run()/batch(). Plus the site settings.
-import { envFloat, envInt, HttpError } from "./util.js";
+import { envFloat, envInt, HttpError, randomToken } from "./util.js";
 
 // Rows for a SELECT.
 export async function all(env, sql, ...params) {
@@ -47,25 +47,38 @@ export async function assertMigrated(env) {
 // Settings (/settings page). Stored as strings in `settings`; env vars are the defaults.
 // ---------------------------------------------------------------------------
 
-export const SETTING_KEYS = ["timezone", "screenshot_interval", "default_image_duration"];
+export const SETTING_KEYS = ["timezone", "screenshot_interval", "default_image_duration", "enrollment_key"];
 
 export function defaultSettings(env) {
   return {
     timezone: "UTC",
     screenshot_interval: envInt(env, "PIPLAYER_SCREENSHOT_INTERVAL", 60),
     default_image_duration: envFloat(env, "PIPLAYER_DEFAULT_IMAGE_DURATION", 10),
+    enrollment_key: "", // generated on first read (loadSettings), never from env
   };
 }
 
-// {timezone, screenshot_interval (int seconds), default_image_duration (float seconds)}.
+// {timezone, screenshot_interval (int seconds), default_image_duration (float seconds),
+// enrollment_key (secret shared with the flasher; POST /api/enroll)}.
 export async function loadSettings(env) {
   const s = defaultSettings(env);
   for (const row of await all(env, "SELECT key, value FROM settings")) {
     if (row.key === "timezone" && row.value) s.timezone = row.value;
     else if (row.key === "screenshot_interval" && Number.isFinite(+row.value)) s.screenshot_interval = parseInt(row.value, 10);
     else if (row.key === "default_image_duration" && Number.isFinite(+row.value)) s.default_image_duration = parseFloat(row.value);
+    else if (row.key === "enrollment_key" && row.value) s.enrollment_key = row.value;
   }
+  if (!s.enrollment_key) s.enrollment_key = await generateEnrollmentKey(env, false);
   return s;
+}
+
+// Random 32-byte urlsafe key. With replace=false a concurrent first request may win the
+// insert; both then read back the same stored value.
+export async function generateEnrollmentKey(env, replace = true) {
+  const key = randomToken(32);
+  await run(env, `INSERT INTO settings (key, value) VALUES ('enrollment_key', ?) ON CONFLICT(key) DO ${replace ? "UPDATE SET value = excluded.value" : "NOTHING"}`, key);
+  if (replace) return key;
+  return (await first(env, "SELECT value FROM settings WHERE key = 'enrollment_key'")).value;
 }
 
 export function saveSetting(env, key, value) {

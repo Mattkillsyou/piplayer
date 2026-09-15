@@ -909,6 +909,10 @@ details[open] > summary { border-bottom: 1px solid var(--p5k-rule-2); }
 details[open] > summary::before { content: "\25be\00a0"; }
 summary.small { font-size: var(--p5k-text-label-sm); }
 details > :not(summary) { margin-left: var(--p5k-space-2h); margin-right: var(--p5k-space-2h); }
+.enrollment-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--p5k-space-2); }
+.enrollment-key label { flex: 0 0 auto; }
+.enrollment-key input { flex: 1 1 20rem; font-family: var(--p5k-font-mono); }
+.enrollment-key + form { margin-top: var(--p5k-space-2); }
 details > ul, details > .token-block { margin: var(--p5k-space-2) var(--p5k-space-2h); }
 .command-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--p5k-space-1); font-size: var(--p5k-text-label); color: var(--p5k-muted); }
 .command-list code { color: var(--p5k-phosphor); background: transparent; padding: 0; }
