@@ -1,8 +1,8 @@
-// Port of templates/base.html. Pages build their content string (every value through esc())
-// and call layout(ctx, {title, content}) to get the HTML Response.
+// Port of templates/base.html (Projection5000 design). Pages build their content string
+// (every value through esc()) and call layout(ctx, {title, content}) to get the HTML Response.
 import { esc, html } from "../util.js";
 
-export const APP_NAME = "PiPlayer";
+export const APP_NAME = "Projection5000";
 
 const NAV = [
   ["/dashboard", "Dashboard", (p) => p === "/dashboard"],
@@ -25,6 +25,29 @@ export function alertBox(message, kind = "error") {
   return message ? `<div class="alert ${esc(kind)}">${esc(message)}</div>` : "";
 }
 
+// The wordmark lockup: eyebrow above, model number knocked out as a keycap. `large` is the
+// login/setup card variant (an <h1> with the blinking cursor).
+export function wordmark(large = false) {
+  if (large) {
+    return `<div class="wordmark wordmark-lg">
+    <span class="wordmark-eyebrow">Matt Brown's</span>
+    <h1 class="wordmark-mark">PROJECTION<span class="wordmark-model">5000</span><span class="wordmark-cursor"></span></h1>
+  </div>`;
+  }
+  return `<a href="/dashboard" class="wordmark" aria-label="Matt Brown's Projection5000">
+        <span class="wordmark-eyebrow">Matt Brown's</span>
+        <span class="wordmark-mark">PROJECTION<span class="wordmark-model">5000</span></span>
+      </a>`;
+}
+
+// The login scene layers (scanlines, floor, skyline, vignette) behind the auth card.
+export const SCENE = `<div class="scene" aria-hidden="true">
+  <div class="scene-scan"></div>
+  <div class="scene-floor"></div>
+  <div class="scene-skyline"><i></i><i></i><i></i></div>
+  <div class="scene-vignette"></div>
+</div>`;
+
 function navHtml(ctx) {
   const user = ctx.user;
   const path = ctx.url.pathname;
@@ -36,7 +59,9 @@ function navHtml(ctx) {
     })
     .join("\n      ");
   return `<header class="topbar">
-    <div class="brand"><a href="/dashboard">${APP_NAME}</a></div>
+    <div class="brand">
+      ${wordmark()}
+    </div>
     <nav>
       ${links}
     </nav>
@@ -50,10 +75,10 @@ function navHtml(ctx) {
   </header>`;
 }
 
-// {title, content (already-escaped HTML), status, message, messageKind, scripts (extra
-// <script src> paths under /static)} -> Response.
-export function layout(ctx, { title, content, status = 200, message = "", messageKind = "error", scripts = [] } = {}) {
-  const fullTitle = title ? `${title} — ${APP_NAME}` : APP_NAME;
+// {title, content (already-escaped HTML), status, message, messageKind, bodyClass, scripts
+// (extra <script src> paths under /static)} -> Response.
+export function layout(ctx, { title, content, status = 200, message = "", messageKind = "error", bodyClass = "", scripts = [] } = {}) {
+  const fullTitle = title ? `${title} · ${APP_NAME}` : APP_NAME;
   const extra = scripts.map((s) => `<script src="${esc(s)}"></script>`).join("\n  ");
   const page = `<!doctype html>
 <html lang="en">
@@ -64,7 +89,7 @@ export function layout(ctx, { title, content, status = 200, message = "", messag
   <title>${esc(fullTitle)}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body class="${esc(bodyClass)}">
   ${ctx.user ? navHtml(ctx) : ""}
   <main class="container">
     ${alertBox(message, messageKind)}

@@ -48,14 +48,16 @@ ${canEdit ? `<div class="panel">
   </form>
 </div>` : ""}
 
-${!groups.length ? '<p class="muted">No groups yet.</p>' : `<table class="data">
+${!groups.length ? '<p class="muted empty">No groups yet.</p>' : `<div class="table-scroll">
+<table class="data">
   <thead>
     <tr><th>Name</th><th>Devices</th><th>Default playlist</th><th></th></tr>
   </thead>
   <tbody>
     ${groups.map(row).join("\n    ")}
   </tbody>
-</table>`}`;
+</table>
+</div>`}`;
   return layout(ctx, { title: "Groups", content });
 }
 

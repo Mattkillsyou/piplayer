@@ -125,11 +125,10 @@
 
   function addRow(file) {
     var li = document.createElement('li');
-    li.style.margin = '0.5rem 0';
     var label = document.createElement('div');
     label.textContent = file.name + ' (' + mb(file.size) + ' MB)';
     var bar = document.createElement('progress');
-    bar.max = 100; bar.value = 0; bar.style.width = '100%';
+    bar.max = 100; bar.value = 0;
     var text = document.createElement('div');
     text.className = 'muted';
     li.appendChild(label); li.appendChild(bar); li.appendChild(text);

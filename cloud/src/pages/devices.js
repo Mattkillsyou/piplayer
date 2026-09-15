@@ -58,7 +58,24 @@ export async function requireRow(env, table, rowId, label) {
   if (!(await db.first(env, `SELECT id FROM ${table} WHERE id = ?`, rowId))) fail(404, `${label} not found`);
 }
 
-const screenshotHref = (d) => `/devices/${d.id}/screenshot?t=${esc(encodeURIComponent(d.last_screenshot_at))}`;
+// Player state for the lamp: the reported status while the device has checked in, else offline.
+export const lampState = (d) => (d.last_seen_at ? d.player_status || "idle" : "offline");
+
+// The 16:9 "screen": screenshot (or NO SIGNAL) under scanlines, age tag, stale badge and the
+// now-playing caption. Shared with the devices page (`link` wraps the image in a new-tab link).
+export function screenHtml(d, tz, { link = false, staleTitle } = {}) {
+  const href = `/devices/${d.id}/screenshot?t=${esc(encodeURIComponent(d.last_screenshot_at))}`;
+  const img = `<img src="${href}" class="device-thumb${d.screenshot_stale ? " device-thumb-stale" : ""}" alt="screenshot">`;
+  const shot = d.last_screenshot_at
+    ? `${link ? `<a href="${href}" target="_blank" title="Open screenshot">${img}</a>` : img}
+      <span class="screen-age screenshot-age" title="screenshot ${esc(d.screenshot_age)} (${esc(localTime(d.last_screenshot_at, tz))})">${esc(d.screenshot_age)}</span>
+      ${d.screenshot_stale ? `<span class="badge badge-stale" title="${staleTitle}">stale</span>` : ""}`
+    : '<div class="device-thumb device-thumb-empty">no screenshot yet</div>';
+  return `<div class="screen">
+      ${shot}
+      ${d.current_filename ? `<span class="screen-now">#${(d.current_position || 0) + 1} ${esc(d.current_filename)}</span>` : ""}
+    </div>`;
+}
 
 function optionList(rows, selected) {
   return rows.map((r) =>
@@ -76,9 +93,9 @@ function commandLine(c, tz) {
     state = "queued";
   }
   return `<li>
-                <code>${esc(c.command)}</code>
-                <span class="muted">${esc(localTime(c.issued_at, tz))}</span> — ${state}
-              </li>`;
+            <span class="muted">${esc(localTime(c.issued_at, tz))}</span>
+            <code>${esc(c.command)}</code> → ${state}
+          </li>`;
 }
 
 // CMS_URL for the install snippet: the optional PIPLAYER_PUBLIC_BASE_URL var wins (as in the
@@ -89,96 +106,99 @@ export function installBaseUrl(env, url) {
   return { base: configured || url.origin, configured: Boolean(configured) };
 }
 
-function deviceRow(ctx, d, playlists, groups, canEdit, tz, install) {
+// One device-detail card: screen | fields + active-now + kv | actions (devices.html).
+function deviceDetail(ctx, d, playlists, groups, canEdit, tz, install) {
   const dis = canEdit ? "" : " disabled";
-  const commandForm = (command, label, title, extra = "") => `<form method="post" action="/devices/${d.id}/command" class="inline"${extra}>
-            ${csrfInput(ctx)}
-            <input type="hidden" name="command" value="${command}">
-            <button type="submit" class="small${command === "reboot" ? " danger" : ""}"${title ? ` title="${title}"` : ""}>${label}</button>
-          </form>`;
-  return `<tr>
-      <td>
-        <strong>${esc(d.name)}</strong><br>
-        <code class="small">${esc(d.device_id)}</code>
-        ${d.last_screenshot_at ? `<br><a href="${screenshotHref(d)}" target="_blank" class="small">📷 screenshot</a>
-        <span class="muted small">${esc(d.screenshot_age)}</span>
-        ${d.screenshot_stale ? '<span class="badge badge-stale" title="No new screenshot for more than 3 capture intervals">stale</span>' : ""}` : ""}
-        ${d.last_error ? `<div class="alert warn small" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
-      </td>
-      <td>
+  const state = lampState(d);
+  const commandForm = (command, label, title, cls = "", extra = "") => `<form method="post" action="/devices/${d.id}/command" class="inline"${extra}>
+          ${csrfInput(ctx)}
+          <input type="hidden" name="command" value="${command}">
+          <button type="submit"${cls ? ` class="${cls}"` : ""}${title ? ` title="${title}"` : ""}>${label}</button>
+        </form>`;
+  const now = d.current_filename ? `#${(d.current_position || 0) + 1} ${esc(d.current_filename)}` : "no output";
+  return `<div class="device-detail">
+    <div>
+      ${screenHtml(d, tz, { link: true, staleTitle: "No new screenshot for more than 3 capture intervals" })}
+      <span class="device-name">${esc(d.name)}</span>
+      <code class="device-id">${esc(d.device_id)}</code>
+      <span class="lamp lamp-${esc(state)}">${esc(state)}</span>
+    </div>
+
+    <div>
+      <div class="fields">
         <form method="post" action="/devices/${d.id}/group" class="inline">
           ${csrfInput(ctx)}
-          <select name="group_id" data-autosubmit${dis}>
-            <option value="">— none —</option>
-            ${optionList(groups, d.group_id)}
-          </select>
+          <label>group
+            <select name="group_id" data-autosubmit${dis}>
+              <option value="">— none —</option>
+              ${optionList(groups, d.group_id)}
+            </select>
+          </label>
         </form>
-      </td>
-      <td>
         <form method="post" action="/devices/${d.id}/assign" class="inline">
           ${csrfInput(ctx)}
-          <select name="playlist_id" data-autosubmit${dis}>
-            <option value="">— none —</option>
-            ${optionList(playlists, d.playlist_id)}
-          </select>
+          <label>default playlist
+            <select name="playlist_id" data-autosubmit${dis}>
+              <option value="">— none —</option>
+              ${optionList(playlists, d.playlist_id)}
+            </select>
+          </label>
         </form>
-        <a href="/devices/${d.id}/schedule" class="small">Schedule (${d.schedule_count})</a>
-      </td>
-      <td>
+        <a href="/devices/${d.id}/schedule" class="button small">Schedule (${d.schedule_count})</a>
+      </div>
+      <div class="active-now">
+        <span class="via">active now${d.active_source ? ` · via ${esc(d.active_source)}` : ""}</span>
         ${d.active_playlist_name
-    ? `<strong>${esc(d.active_playlist_name)}</strong><br>
-          <span class="muted small">${esc(d.active_source)}</span>`
-    : '<span class="muted">no playlist</span>'}
-      </td>
-      <td>
-        ${d.current_filename
-    ? `<span class="muted small">#${(d.current_position || 0) + 1}</span><br>
-          ${esc(d.current_filename)}<br>
-          <span class="muted small">${esc(d.player_status || "")}</span>`
-    : "—"}
-      </td>
-      <td>
-        ${d.last_seen_at ? `${esc(d.seen_age)}<br><span class="muted small">${esc(localTime(d.last_seen_at, tz))}</span>` : "never"}<br>
-        ${d.last_ip ? `<span class="muted small">${esc(d.last_ip)}</span>` : ""}
-        ${d.player_version ? `<br><span class="muted small">v${esc(d.player_version)}</span>` : ""}
-      </td>
-      <td>
-        <div class="action-buttons">
-          ${canEdit ? `${commandForm("force-sync", "Resync", "Tell the Pi to re-sync from the CMS now")}
-          ${commandForm("restart-mpv", "Restart mpv", "Restart the mpv playback process")}
-          ${commandForm("reboot", "Reboot Pi", "", ` data-confirm="Reboot ${esc(d.name)}?"`)}` : ""}
-          ${d.recent_commands.length ? `<details>
-            <summary class="small">Recent commands</summary>
-            <ul class="command-list small">
-              ${d.recent_commands.map((c) => commandLine(c, tz)).join("\n              ")}
-            </ul>
-          </details>` : ""}
-          ${canEdit ? `<details>
-            <summary class="small">Token / install</summary>
-            <div class="token-block">
-              <code class="token">${esc(d.token)}</code>
-              <p class="muted small">On the Pi, from the directory you cloned the repo into:</p>
-              <pre class="install-cmd">cd piplayer/player && \\
+    ? `<span class="playlist">${esc(d.active_playlist_name)}</span>`
+    : '<span class="playlist muted">no playlist</span>'}
+        <span class="now">${now}</span>
+      </div>
+      <div class="kv">
+        <div><span class="k">last seen</span><span class="v">${d.last_seen_at ? `${esc(d.seen_age)}<br><span class="muted">${esc(localTime(d.last_seen_at, tz))}</span>` : "never"}</span></div>
+        <div><span class="k">ip</span><span class="v">${d.last_ip ? esc(d.last_ip) : "none"}</span></div>
+        <div><span class="k">agent</span><span class="v">${d.player_version ? `v${esc(d.player_version)}` : "none"}</span></div>
+      </div>
+      ${d.last_error ? `<div class="alert warn small" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
+      ${d.recent_commands.length ? `<details>
+        <summary class="small">Recent commands (${d.recent_commands.length})</summary>
+        <ul class="command-list small">
+          ${d.recent_commands.map((c) => commandLine(c, tz)).join("\n          ")}
+        </ul>
+      </details>` : ""}
+    </div>
+
+    <div>
+      <span class="eyebrow eyebrow-quiet">Actions</span>
+      <div class="action-buttons">
+        ${canEdit ? `${commandForm("force-sync", "Resync", "Tell the Pi to re-sync from the CMS now", "primary")}
+        ${commandForm("restart-mpv", "Restart mpv", "Restart the mpv playback process")}
+        ${commandForm("reboot", "Reboot Pi", "", "danger", ` data-confirm="Reboot ${esc(d.name)}?"`)}
+        <details>
+          <summary class="small">Token / install</summary>
+          <div class="token-block">
+            <code class="token">${esc(d.token)}</code>
+            <p class="muted small">On the Pi, from the directory you cloned the repo into:</p>
+            <pre class="install-cmd">cd piplayer/player && \\
 DEVICE_ID=${esc(d.device_id)} \\
 DEVICE_TOKEN=${esc(d.token)} \\
 CMS_URL=${esc(install.base)} \\
 sudo -E bash deploy/install-player.sh</pre>
-              ${install.configured ? "" : `<p class="muted small">CMS_URL is the address your browser is using; edit it if this Pi reaches the CMS another way (e.g. a LAN address instead of Tailscale).</p>`}
-              <div class="action-buttons">
-                <form method="post" action="/devices/${d.id}/regen-token" class="inline" data-confirm="Regenerate token? The Pi will need the new token.">
-                  ${csrfInput(ctx)}
-                  <button type="submit" class="small">New token</button>
-                </form>
-                <form method="post" action="/devices/${d.id}/delete" class="inline" data-confirm="Delete device ${esc(d.name)}?">
-                  ${csrfInput(ctx)}
-                  <button type="submit" class="danger small">Delete device</button>
-                </form>
-              </div>
+            ${install.configured ? "" : `<p class="muted small">CMS_URL is the address your browser is using; edit it if this Pi reaches the CMS another way (e.g. a LAN address instead of Tailscale).</p>`}
+            <div class="action-buttons">
+              <form method="post" action="/devices/${d.id}/regen-token" class="inline" data-confirm="Regenerate token? The Pi will need the new token.">
+                ${csrfInput(ctx)}
+                <button type="submit" class="small">New token</button>
+              </form>
+              <form method="post" action="/devices/${d.id}/delete" class="inline" data-confirm="Delete device ${esc(d.name)}?">
+                ${csrfInput(ctx)}
+                <button type="submit" class="danger small">Delete device</button>
+              </form>
             </div>
-          </details>` : ""}
-        </div>
-      </td>
-    </tr>`;
+          </div>
+        </details>` : '<p class="muted small">Read-only: viewers cannot send commands.</p>'}
+      </div>
+    </div>
+  </div>`;
 }
 
 async function devicesPage(ctx) {
@@ -228,28 +248,19 @@ ${canEdit ? `<div class="panel">
   </p>
   <form method="post" action="/devices" class="row">
     ${csrfInput(ctx)}
-    <input type="text" name="device_id" placeholder="lobby-projector" pattern="[a-z0-9][a-z0-9-]{0,62}" required>
-    <input type="text" name="name" placeholder="Lobby Projector" required>
+    <label>device_id
+      <input type="text" name="device_id" placeholder="lobby-projector" pattern="[a-z0-9][a-z0-9-]{0,62}" required>
+    </label>
+    <label>name
+      <input type="text" name="name" placeholder="Lobby Projector" required>
+    </label>
     <button type="submit" class="primary">Register device</button>
   </form>
 </div>` : ""}
 
-${!devices.length ? '<p class="muted">No devices yet.</p>' : `<table class="data">
-  <thead>
-    <tr>
-      <th>Device</th>
-      <th>Group</th>
-      <th>Default playlist</th>
-      <th>Active now</th>
-      <th>Now playing</th>
-      <th>Last seen</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    ${devices.map((d) => deviceRow(ctx, d, playlists, groups, canEdit, tz, install)).join("\n    ")}
-  </tbody>
-</table>`}`;
+${!devices.length ? '<p class="muted empty">No devices yet.</p>' : `<div class="device-list">
+  ${devices.map((d) => deviceDetail(ctx, d, playlists, groups, canEdit, tz, install)).join("\n  ")}
+</div>`}`;
   return layout(ctx, { title: "Devices", content });
 }
 

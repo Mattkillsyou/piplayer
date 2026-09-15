@@ -34,7 +34,8 @@ describe("page", () => {
     const always = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, days_of_week) VALUES (?, ?, ?, 5, '0123456')", w.dev.id, w.pid, XSS + "r");
     const never = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, start_date, end_date) VALUES (?, ?, 'past', 1, '2000-01-01', '2000-01-02')", w.dev.id, w.pid);
     let page = await (await r.viewer.get(base())).text();
-    expect(page).toContain("<h1>Sched &lt;dev&gt; — Schedule</h1>");
+    expect(page).toContain("<h1>Sched &lt;dev&gt;</h1>");
+    expect(page).toContain('<span class="page-eyebrow">Schedule · sched-1</span>');
     expect(page).toContain("(zone UTC)");
     expect(page).toMatch(/Site time now: <code>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC<\/code>/);
     expect(page).toContain("Rules (2)");
@@ -43,7 +44,7 @@ describe("page", () => {
     expect(page).toContain("Mon,Tue,Wed,Thu,Fri,Sat,Sun");
     expect(page).toContain("2000-01-01–2000-01-02");
     expect(page).toContain('<tr class="rule-active">');
-    expect(page).toContain('<span class="badge badge-active">YES</span>');
+    expect(page).toContain('<span class="badge badge-active">active now</span>');
     expect(page).not.toContain("Add a rule");
     expect(page).not.toContain("data-confirm");
     // /settings is admin-only, so only admins get the link

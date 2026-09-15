@@ -34,14 +34,19 @@ async function auditPage(ctx) {
   const content = `<h1>Audit log</h1>
 <p class="muted small">Last ${entries.length} entries. Times are shown in the site's zone (${esc(zoneName(tz))}); the database stores UTC.</p>
 
-${!entries.length ? '<p class="muted">No entries yet.</p>' : `<table class="data">
+${!entries.length ? '<p class="muted empty">No entries yet.</p>' : `<div class="terminal">
+<div class="terminal-head"><span class="eyebrow">Audit tail · last ${entries.length}</span><span class="blink" aria-hidden="true"></span></div>
+<div class="table-scroll">
+<table class="data">
   <thead>
     <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr>
   </thead>
   <tbody>
     ${entries.map(row).join("\n    ")}
   </tbody>
-</table>`}`;
+</table>
+</div>
+</div>`}`;
   return layout(ctx, { title: "Audit log", content });
 }
 

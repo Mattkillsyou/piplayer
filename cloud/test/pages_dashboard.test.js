@@ -42,18 +42,20 @@ describe("dashboard", () => {
     expect(page).toContain(`<img src="/devices/${a.id}/screenshot?t=2020-01-01%2000%3A00%3A00" class="device-thumb device-thumb-stale"`);
     expect(page).toContain('<span class="badge badge-stale" title="No new screenshot for more than 3 capture intervals: the player may be idle, black or down">stale</span>');
     expect(page).toContain("(2020-01-01 00:00 UTC)");
-    expect(page).toContain('Grid PL <span class="muted">(device default)</span>');
-    expect(page).toContain("#1: big.mp4");
-    expect(page).toContain("<strong>Status:</strong> playing · last seen");
-    expect(page).toContain("d ago (2020-01-01 00:00 UTC)");
+    expect(page).toContain('Grid PL <span class="source">via device default</span>');
+    expect(page).toContain('<span class="screen-now">#1 big.mp4</span>');
+    expect(page).toContain('<span class="lamp lamp-playing">playing</span>');
+    expect(page).toMatch(/<span title="2020-01-01 00:00 UTC">last seen \d+ d ago<\/span>/);
     expect(page).toContain("Sync problem: 2 of 5 items missing: &lt;x&gt;");
     // device B: group fallback, no screenshot
-    expect(page).toContain("· group: G1");
-    expect(page).toContain('Group PL <span class="muted">(group: G1)</span>');
+    expect(page).toContain("<code>b-dev</code> · G1");
+    expect(page).toContain('Group PL <span class="source">via group: G1</span>');
     expect(page).toContain('<div class="device-thumb device-thumb-empty">no screenshot yet</div>');
-    expect(page).toContain("<strong>Status:</strong> — · last seen\n        never");
+    expect(page).toContain('<span class="lamp lamp-offline">offline</span>');
+    expect(page).toContain("<span>last seen never</span>");
     // device C: schedule wins
-    expect(page).toContain('Group PL <span class="muted">(schedule: Always on)</span>');
+    expect(page).toContain('Group PL <span class="source">via schedule: Always on</span>');
+    expect(page).toContain("Monitor wall · 3 devices</h2>");
     expect((page.match(/class="device-card"/g) || []).length).toBe(3);
     void b;
   });
