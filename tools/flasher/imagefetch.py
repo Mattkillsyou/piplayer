@@ -1,0 +1,106 @@
+"""Download and cache Raspberry Pi OS images (stdlib urllib only)."""
+import hashlib
+import os
+import shutil
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+LATEST_URL = "https://downloads.raspberrypi.com/raspios_lite_arm64_latest"
+USER_AGENT = "Projection5000-SD-Flasher/1.0"
+
+
+class Cancelled(Exception):
+    pass
+
+
+class FetchError(Exception):
+    pass
+
+
+def _request(url: str, method: str = "GET") -> urllib.request.Request:
+    return urllib.request.Request(url, method=method, headers={"User-Agent": USER_AGENT})
+
+
+def app_dir() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+    return Path(base) / "Projection5000"
+
+
+def cached_path(filename: str) -> Path:
+    d = app_dir() / "images"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / Path(filename).name
+
+
+def resolve_latest(url: str = LATEST_URL) -> tuple:
+    """Follow redirects and return (final_url, filename)."""
+    try:
+        with urllib.request.urlopen(_request(url), timeout=30) as resp:
+            final = resp.geturl()
+    except Exception as e:
+        raise FetchError(f"cannot resolve {url}: {e}") from e
+    name = Path(urllib.parse.urlparse(final).path).name
+    if not name:
+        raise FetchError(f"no filename in {final}")
+    return final, name
+
+
+def fetch_sha256(url: str) -> str:
+    """Read '<hex>  <filename>' from <url>.sha256."""
+    try:
+        with urllib.request.urlopen(_request(url + ".sha256"), timeout=30) as resp:
+            text = resp.read(4096).decode("utf-8", "replace")
+    except Exception as e:
+        raise FetchError(f"cannot fetch checksum: {e}") from e
+    parts = text.split()
+    if not parts or len(parts[0]) != 64:
+        raise FetchError(f"unexpected checksum file: {text.strip()[:80]!r}")
+    return parts[0].lower()
+
+
+def download(url: str, dest, progress_cb=None, cancel_event=None) -> Path:
+    """Stream url to dest (via dest.part). progress_cb(done, total_or_None, bytes_per_sec)."""
+    dest = Path(dest)
+    part = dest.with_name(dest.name + ".part")
+    try:
+        resp = urllib.request.urlopen(_request(url), timeout=60)
+    except Exception as e:
+        raise FetchError(f"download failed: {e}") from e
+    total = resp.headers.get("Content-Length")
+    total = int(total) if total else None
+    done = 0
+    start = time.monotonic()
+    try:
+        with resp, open(part, "wb") as out:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise Cancelled()
+                buf = resp.read(1024 * 1024)
+                if not buf:
+                    break
+                out.write(buf)
+                done += len(buf)
+                if progress_cb:
+                    rate = done / max(time.monotonic() - start, 1e-6)
+                    progress_cb(done, total, rate)
+        if total is not None and done != total:
+            raise FetchError(f"download truncated: {done} of {total} bytes")
+        shutil.move(str(part), str(dest))
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    return dest
+
+
+def sha256_file(path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(4 * 1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def verify_sha256(path, expected: str) -> bool:
+    return sha256_file(path) == expected.strip().lower()

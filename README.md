@@ -112,6 +112,7 @@ very first admin is created; it does not change an existing password.
 device ID and a token. On the Devices page, expand **Token / install** under
 Actions — it shows the exact install command, with the CMS URL your browser
 is using. Copy it.
+Windows users: flash and pre-configure cards with the Projection5000 SD Flasher instead (steps 2 and 3 become a form and a click), see [tools/flasher/README.md](tools/flasher/README.md).
 
 **3. Install the player on each Pi:**
 
