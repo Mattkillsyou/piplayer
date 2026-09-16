@@ -500,7 +500,7 @@ routes and markup for LAN-only sites.
 | Mode | `projector_power_mode` | `manual` (default) or `auto` |
 | Broadlink host | `broadlink_host` | optional IP of the RM4 mini; empty means discover it on the LAN |
 | Learned codes | `projector_ir_codes` | JSON `{power_on, power_off, input_hdmi1}` of base64 Broadlink packets, filled by learning (below); shown as badges |
-| State | `projector_state` (cloud), `projector_power_state` (cms), `projector_error` | `on`, `off` or `unknown` plus the last error, reported by the player, best effort; shown as a lamp and an error line |
+| State | `projector_power_state`, `projector_error` (both consoles; the player reports them as the sync query params `projector_state` / `projector_error`) | `on`, `off` or `unknown` plus the last error, reported by the player, best effort; shown as a lamp and an error line |
 
 Beside the selects sit **On** and **Off** buttons and, for Broadlink, a
 **Learn Power On**, **Learn Power Off** and **Learn Input HDMI1** button
