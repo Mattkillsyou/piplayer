@@ -541,7 +541,7 @@ def route_table(w):
         ("POST", "/users/%d/role" % NOPE, {"role": "viewer"}, "form", AD(404)),
         ("POST", "/users/%d/password" % NOPE, {"password": "pw123456"}, "form", AD(404)),
         ("POST", "/users/%d/delete" % NOPE, {}, "form", AD(404)),
-        ("POST", "/settings", {"timezone": "Not/AZone", "screenshot_interval": "60", "default_image_duration": "10"}, "form", AD(400)),
+        ("POST", "/settings", {"timezone": "Not/AZone", "screenshot_interval": "60", "default_image_duration": "10", "camera_interval": "10"}, "form", AD(400)),
     ]
     # setup is gone for everyone once a user exists
     T.append(("GET", "/setup?token=" + SETUP_TOKEN, None, None, {"anon": 404, "viewer": 404, "editor": 404, "admin": 404}))
@@ -742,9 +742,11 @@ def check_validation(w):
         except Blocked as e:
             S.rec("validate: long original filename upload", False, "blocked: %s" % e)
     # settings
-    S.expect("validate: settings bad timezone is 400", a.post("/settings", {"timezone": "Not/AZone", "screenshot_interval": "60", "default_image_duration": "10"}), 400)
-    S.expect("validate: settings screenshot_interval=abc is 400", a.post("/settings", {"timezone": "UTC", "screenshot_interval": "abc", "default_image_duration": "10"}), 400)
-    S.expect("validate: settings default_image_duration=0 is 400", a.post("/settings", {"timezone": "UTC", "screenshot_interval": "60", "default_image_duration": "0"}), 400)
+    S.expect("validate: settings bad timezone is 400", a.post("/settings", {"timezone": "Not/AZone", "screenshot_interval": "60", "default_image_duration": "10", "camera_interval": "10"}), 400)
+    S.expect("validate: settings screenshot_interval=abc is 400", a.post("/settings", {"timezone": "UTC", "screenshot_interval": "abc", "default_image_duration": "10", "camera_interval": "10"}), 400)
+    S.expect("validate: settings default_image_duration=0 is 400", a.post("/settings", {"timezone": "UTC", "screenshot_interval": "60", "default_image_duration": "0", "camera_interval": "10"}), 400)
+    S.expect("validate: settings camera_interval=abc is 400", a.post("/settings", {"timezone": "UTC", "screenshot_interval": "60", "default_image_duration": "10", "camera_interval": "abc"}), 400)
+    S.expect("validate: settings camera_interval=4 is 400", a.post("/settings", {"timezone": "UTC", "screenshot_interval": "60", "default_image_duration": "10", "camera_interval": "4"}), 400)
 
 
 def friendly(r, name):
@@ -1083,7 +1085,7 @@ def check_settings_timezone(w):
     dev = w.require("dev")[0]
     S.expect("settings: page renders", a.get("/settings"), 200)
     def set_tz(tz):
-        return a.post("/settings", {"timezone": tz, "screenshot_interval": "60", "default_image_duration": "10"})
+        return a.post("/settings", {"timezone": tz, "screenshot_interval": "60", "default_image_duration": "10", "camera_interval": "10"})
     S.expect("settings: set timezone Asia/Tokyo", set_tz("Asia/Tokyo"), 303)
     try:
         r = sync(dev, w.base)
@@ -1115,12 +1117,12 @@ def check_settings_timezone(w):
             if sid:
                 a.post("/devices/%d/schedule/%s/delete" % (dev["id"], sid))
         # screenshot interval flows into the manifest
-        S.expect("settings: screenshot_interval 45", a.post("/settings", {"timezone": "UTC", "screenshot_interval": "45", "default_image_duration": "10"}), 303)
+        S.expect("settings: screenshot_interval 45", a.post("/settings", {"timezone": "UTC", "screenshot_interval": "45", "default_image_duration": "10", "camera_interval": "10"}), 303)
         S.rec("settings: manifest screenshot_interval_seconds follows the setting", sync(dev, w.base).json().get("screenshot_interval_seconds") == 45)
         S.rec("settings: settings_update is audited", "settings_update" in a.get("/audit?limit=50").text)
     finally:
         set_tz("UTC")
-        a.post("/settings", {"timezone": "UTC", "screenshot_interval": "60", "default_image_duration": "10"})
+        a.post("/settings", {"timezone": "UTC", "screenshot_interval": "60", "default_image_duration": "10", "camera_interval": "10"})
 
 
 def check_audit(w):
