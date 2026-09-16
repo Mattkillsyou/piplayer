@@ -328,8 +328,8 @@ Foreign keys are enforced by D1. Add columns with a new `migrations/000N_*.sql`,
 ## Secrets (`secrets.js`, table `secrets`, migration 0003)
 
 Operator credentials the players need (the Wyze account; later Twilio). `set(env, name, value)`
-(empty deletes) / `get` / `getMany(names)` / `names()` (a Set, no decryption: the "set / not set"
-badges). Values are AES-256-GCM under a key HKDF-derived from `SESSION_SECRET` (info
+(empty deletes) / `get` / `getMany(names)` / `names()` (a Set of the names whose value still decrypts: the
+"set / not set" badges). Values are AES-256-GCM under a key HKDF-derived from `SESSION_SECRET` (info
 `p5k-secrets`, `secrets.HKDF_INFO`), stored as `v1:<iv b64url>:<ciphertext b64url>` with the
 name bound as additional data; `decrypt` answers null (never throws) for a tampered value or
 one written under another `SESSION_SECRET`, so rotating that secret reads as "not set". Nothing

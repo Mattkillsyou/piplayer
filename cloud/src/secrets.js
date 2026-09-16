@@ -61,9 +61,15 @@ export async function getMany(env, names) {
   return out;
 }
 
-// Names that currently hold a value (no decryption: the Settings page's set / not set).
+// Names whose stored value still decrypts (the Settings page's set / not set): a row written
+// under another SESSION_SECRET is "not set", so a rotation shows up on the page instead of
+// silently answering source "none" to every player. Four rows, so decrypting each is cheap.
 export async function names(env) {
-  return new Set((await db.all(env, "SELECT name FROM secrets")).map((r) => r.name));
+  const out = new Set();
+  for (const r of await db.all(env, "SELECT name, value FROM secrets")) {
+    if (await decrypt(env, r.name, r.value) !== null) out.add(r.name);
+  }
+  return out;
 }
 
 // Wyze account (Settings page): the four secrets the wyze-bridge needs. "Configured" means

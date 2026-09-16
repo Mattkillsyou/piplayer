@@ -60,6 +60,18 @@ describe("secrets.js", () => {
     expect(await secrets.names(env)).toEqual(new Set());
     expect(await secrets.wyzeConfigured(env)).toBe(false);
   });
+
+  it("rotating SESSION_SECRET reads every stored secret as not set (names / wyzeConfigured decrypt)", async () => {
+    await secrets.set(env, "wyze_email", "ops@example.com");
+    await secrets.set(env, "wyze_password", "hunter2!");
+    expect(await secrets.wyzeConfigured(env)).toBe(true);
+    const rotated = { ...env, SESSION_SECRET: "rotated" };
+    expect(await secrets.names(rotated)).toEqual(new Set());
+    expect(await secrets.wyzeConfigured(rotated)).toBe(false);
+    expect(await secrets.getMany(rotated, ["wyze_email"])).toEqual({ wyze_email: null });
+    await secrets.set(env, "wyze_email", "");
+    await secrets.set(env, "wyze_password", "");
+  });
 });
 
 describe("Settings: Wyze account", () => {
