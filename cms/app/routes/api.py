@@ -229,20 +229,26 @@ async def enroll(request: Request):
     if not 1 <= len(name) <= MAX_DEVICE_NAME_LEN:
         raise HTTPException(400, f"name must be 1-{MAX_DEVICE_NAME_LEN} chars")
 
-    def _upsert() -> tuple[int, str, str]:
+    def _upsert() -> tuple[int, str, str, dict]:
         with db.cursor() as cur:
             row = cur.execute("SELECT id, name, token FROM devices WHERE device_id = ?", (device_id,)).fetchone()
             if row:
-                # Re-flashing a card must keep the console's view of that device: same row, same token.
+                # Re-flashing a card must keep the console's view of that device: same row, same
+                # token, same group/playlist (the Settings defaults apply to the first enrollment only).
                 if row["name"] != name:
                     cur.execute("UPDATE devices SET name = ? WHERE id = ?", (name, row["id"]))
-                return row["id"], row["token"], "device_reenrolled"
+                return row["id"], row["token"], "device_reenrolled", {}
             token = db.new_token()
-            cur.execute("INSERT INTO devices (device_id, name, token) VALUES (?, ?, ?)", (device_id, name, token))
-            return cur.lastrowid, token, "device_enrolled"
+            defaults = db.enroll_defaults(cur)
+            cur.execute(
+                "INSERT INTO devices (device_id, name, token, group_id, playlist_id) VALUES (?, ?, ?, ?, ?)",
+                (device_id, name, token, defaults["enroll_group_id"], defaults["enroll_playlist_id"]),
+            )
+            applied = {"group_id": defaults["enroll_group_id"], "playlist_id": defaults["enroll_playlist_id"]}
+            return cur.lastrowid, token, "device_enrolled", applied
 
-    row_id, token, action = await run_in_threadpool(_upsert)
-    audit.log(request, None, action, "device", row_id, {"device_id": device_id, "name": name})
+    row_id, token, action, applied = await run_in_threadpool(_upsert)
+    audit.log(request, None, action, "device", row_id, {"device_id": device_id, "name": name, **applied})
     log.info("%s device_id=%s ip=%s", action, device_id, ip)
     cms_url = config.PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
     return {"device_id": device_id, "token": token, "cms_url": cms_url}

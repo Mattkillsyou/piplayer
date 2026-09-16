@@ -2,6 +2,39 @@
 {% block title %}Settings · {{ app_name }}{% endblock %}
 {% block content %}
 <h1>Settings</h1>
+{% if saved %}<div class="alert ok" role="status">Settings saved.</div>{% endif %}
+
+<div class="panel">
+  <h2>New devices</h2>
+  <p class="muted small">
+    Applied when a device enrolls for the first time (<code>POST /api/enroll</code>). Re-enrolling a
+    known device keeps whatever it has. A deleted group or playlist counts as none.
+  </p>
+  <form method="post" action="/settings">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label>New devices join group
+        <select name="enroll_group_id">
+          <option value="">— none —</option>
+          {% for g in groups %}
+          <option value="{{ g.id }}" {% if g.id == enroll_group_id %}selected{% endif %}>{{ g.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>New devices get playlist
+        <select name="enroll_playlist_id">
+          <option value="">— none —</option>
+          {% for p in playlists %}
+          <option value="{{ p.id }}" {% if p.id == enroll_playlist_id %}selected{% endif %}>{{ p.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <button type="submit" class="primary">Save settings</button>
+    </div>
+  </form>
+</div>
 
 <div class="panel">
   <h2>Enrollment key</h2>

@@ -24,7 +24,9 @@ You'll need:
 > Settings page if a flashed card is lost, then rebuild the exe. If the
 > Settings page names a default group and playlist ("New devices join
 > group" / "New devices get playlist"), the device gets them on its first
-> enrollment only; see [automation.md](automation.md). The manual
+> enrollment only; see [automation.md](automation.md). Both consoles
+> enroll: the cloud console and the Python console (`cms/`) each have the
+> Settings page with the key and the two defaults. The manual
 > path that follows still works.
 
 ## 1. Flash Raspberry Pi OS Lite (64-bit)

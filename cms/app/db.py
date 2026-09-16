@@ -232,3 +232,30 @@ def rotate_enrollment_key() -> str:
     with cursor() as cur:
         cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (ENROLLMENT_KEY, key))
     return key
+
+
+ENROLL_DEFAULT_KEYS = {"enroll_group_id": "device_groups", "enroll_playlist_id": "playlists"}
+
+
+def set_setting(cur: sqlite3.Cursor, key: str, value: str | None) -> None:
+    """Upsert one settings row; None deletes it (absent = feature off)."""
+    if value is None:
+        cur.execute("DELETE FROM settings WHERE key = ?", (key,))
+    else:
+        cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+
+
+def enroll_defaults(cur: sqlite3.Cursor) -> dict[str, int | None]:
+    """{enroll_group_id, enroll_playlist_id} for a first enrollment. A value whose
+    group/playlist row was deleted since it was saved reads as None (not cleared on disk)."""
+    out: dict[str, int | None] = {}
+    for key, table in ENROLL_DEFAULT_KEYS.items():
+        row = cur.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        try:
+            wanted = int(row["value"]) if row else None
+        except ValueError:
+            wanted = None
+        if wanted is not None and not cur.execute(f"SELECT 1 FROM {table} WHERE id = ?", (wanted,)).fetchone():
+            wanted = None
+        out[key] = wanted
+    return out

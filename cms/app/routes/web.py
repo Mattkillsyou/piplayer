@@ -1284,7 +1284,29 @@ def _hash_or_400(password: str) -> str:
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, user=Depends(require_admin)):
-    return _render(request, "settings.html", enrollment_key=db.enrollment_key())
+    with db.cursor() as cur:
+        playlists = cur.execute("SELECT id, name FROM playlists ORDER BY name").fetchall()
+        groups = cur.execute("SELECT id, name FROM device_groups ORDER BY name").fetchall()
+        defaults = db.enroll_defaults(cur)
+    return _render(request, "settings.html", enrollment_key=db.enrollment_key(),
+                   playlists=[dict(r) for r in playlists], groups=[dict(r) for r in groups],
+                   saved=request.query_params.get("saved") == "1", **defaults)
+
+
+@router.post("/settings")
+def settings_save(request: Request, enroll_group_id: str = Form(""), enroll_playlist_id: str = Form(""),
+                  user=Depends(require_admin)):
+    """Auto-assign defaults for a device's FIRST enrollment (POST /api/enroll); empty = none."""
+    values = {"enroll_group_id": _form_int(enroll_group_id, "enroll_group_id"),
+              "enroll_playlist_id": _form_int(enroll_playlist_id, "enroll_playlist_id")}
+    with db.cursor() as cur:
+        for key, table in db.ENROLL_DEFAULT_KEYS.items():
+            if values[key] is not None and not cur.execute(f"SELECT 1 FROM {table} WHERE id = ?", (values[key],)).fetchone():
+                raise HTTPException(400, f"{key} does not name an existing row")
+        for key, value in values.items():
+            db.set_setting(cur, key, value)
+    audit.log(request, user, "settings_update", "settings", None, values)
+    return RedirectResponse("/settings?saved=1", status_code=303)
 
 
 @router.post("/settings/enrollment/rotate")
