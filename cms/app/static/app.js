@@ -155,6 +155,17 @@
     });
   }
 
+  // Devices: the live camera iframe only gets its src after "Show live" is clicked.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('button[data-live-target]');
+    if (!btn) return;
+    var frame = document.getElementById(btn.dataset.liveTarget);
+    if (!frame) return;
+    if (!frame.getAttribute('src')) frame.src = frame.dataset.src;
+    frame.hidden = false;
+    btn.hidden = true;
+  });
+
   // Dashboard: All / Faults filter on the monitor wall.
   var filters = document.getElementById('wall-filters');
   var wall = document.getElementById('monitor-wall');

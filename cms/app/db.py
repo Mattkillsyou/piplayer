@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS devices (
     player_status TEXT,
     last_screenshot_at TEXT,
     last_error TEXT,                                     -- player's last sync_error report, NULL/empty = healthy
+    last_camera_at TEXT,                                 -- camera snapshot (camera_<device_id>.jpg) timestamp
+    camera_error TEXT,                                   -- player's last camera capture error, NULL = healthy
+    camera_live_url TEXT,                                -- validated https URL or NULL (Devices page)
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -132,6 +135,9 @@ CREATE TABLE IF NOT EXISTS settings (
 MIGRATIONS = [
     ("device_commands", "delivery_count", "INTEGER NOT NULL DEFAULT 0"),
     ("devices", "last_error", "TEXT"),
+    ("devices", "last_camera_at", "TEXT"),
+    ("devices", "camera_error", "TEXT"),
+    ("devices", "camera_live_url", "TEXT"),
 ]
 
 

@@ -1011,6 +1011,16 @@ details > div, details > ul { padding: 8px 10px; }
 .command-list li { overflow-wrap: anywhere; }
 .command-list code { background: transparent; padding: 0; color: var(--p5k-phosphor); }
 .command-list .muted { color: var(--p5k-muted); }
+/* Room camera (Wyze / RTSP): snapshot under the projector screenshot, live iframe in a details block. */
+.camera-screen { border-top: 1px solid var(--p5k-rule-2); }
+.camera-thumb-stale { opacity: .45; filter: grayscale(1) contrast(1.1); }
+.camera-error { margin: 0; }
+.camera-block { display: flex; flex-direction: column; gap: 10px; }
+.camera-url-form { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+.camera-url-form label { margin: 0; min-width: 0; }
+.camera-url-form input[type="url"] { width: 100%; }
+.camera-block .action-buttons { display: flex; flex-direction: row; gap: 6px; }
+.camera-frame { display: block; width: 100%; aspect-ratio: 16 / 9; border: 1px solid var(--p5k-rule-3); background: #000; }
 .token-block { display: flex; flex-direction: column; gap: 7px; }
 .token-block p { margin: 0; font-family: var(--p5k-font-sans); font-size: var(--p5k-text-body-sm); }
 .token {

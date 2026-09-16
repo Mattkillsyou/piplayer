@@ -186,6 +186,7 @@ def _manifest_for_device(device: dict, request: Request, now: dt.datetime | None
         "next_rule": next_rule,
         "commands": commands,
         "screenshot_interval_seconds": config.SCREENSHOT_INTERVAL_SECONDS,
+        "camera_interval_seconds": config.CAMERA_INTERVAL_SECONDS,
         # Local wall-clock with UTC offset, e.g. 2026-09-14T15:03:07-07:00 (schedules use this clock).
         "server_time": now.astimezone().isoformat(timespec="seconds"),
     }
@@ -257,12 +258,15 @@ def sync(
     player_status: str | None = Query(None),
     player_version: str | None = Query(None),
     sync_error: str | None = Query(None),
+    camera_error: str | None = Query(None),
 ):
     if device["device_id"] != device_id:
         raise HTTPException(status_code=403, detail="Token does not match device id")
 
     # Empty string = last sync fully succeeded; store NULL so the UI can test truthiness.
     last_error = (sync_error or "").strip()[:MAX_SYNC_ERROR_LEN] or None
+    # camera_error works the same way for the player's last camera capture.
+    cam_error = (camera_error or "").strip()[:MAX_SYNC_ERROR_LEN] or None
     with db.cursor() as cur:
         cur.execute(
             """UPDATE devices SET
@@ -272,7 +276,8 @@ def sync(
                   current_filename = ?,
                   player_status = ?,
                   player_version = COALESCE(?, player_version),
-                  last_error = ?
+                  last_error = ?,
+                  camera_error = ?
                WHERE id = ?""",
             (
                 request.client.host if request.client else None,
@@ -281,6 +286,7 @@ def sync(
                 player_status,
                 player_version,
                 last_error,
+                cam_error,
                 device["id"],
             ),
         )
@@ -321,6 +327,30 @@ async def report_command_result(
     return {"ok": True}
 
 
+async def _receive_jpeg(request: Request, target: Path, max_bytes: int, what: str) -> int:
+    """Multipart JPEG upload shared by /api/screenshots and /api/camera: streamed to a temp file
+    next to `target` with the size cap enforced as bytes arrive, magic-checked, then renamed
+    into place. Returns the size in bytes."""
+    from .web import _receive_upload  # web imports this module; bind at call time
+
+    config.ensure_dirs()
+    fd, tmp_str = tempfile.mkstemp(dir=str(target.parent), prefix=".upload_", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp_str)
+    try:
+        # Streamed straight to tmp with the size cap enforced as bytes arrive (no spool to /tmp).
+        recv = await _receive_upload(request, tmp, max_bytes=max_bytes, check_csrf=False)
+        size = recv.size
+        with open(tmp, "rb") as f:
+            magic = f.read(len(JPEG_MAGIC))
+        if size == 0 or magic != JPEG_MAGIC:
+            raise HTTPException(400, f"{what} must be a JPEG image")
+        tmp.replace(target)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return size
+
+
 @router.post("/screenshots/{device_id}")
 async def upload_screenshot(
     device_id: str,
@@ -329,33 +359,41 @@ async def upload_screenshot(
 ):
     if device["device_id"] != device_id:
         raise HTTPException(403, "Token does not match device id")
-    from .web import _receive_upload  # web imports this module; bind at call time
-
-    config.ensure_dirs()
     target = config.SCREENSHOT_DIR / f"{device['device_id']}.jpg"
-    fd, tmp_str = tempfile.mkstemp(dir=str(config.SCREENSHOT_DIR), prefix=".upload_", suffix=".tmp")
-    os.close(fd)
-    tmp = Path(tmp_str)
-    try:
-        # Streamed straight to tmp with the size cap enforced as bytes arrive (no spool to /tmp).
-        recv = await _receive_upload(request, tmp, max_bytes=config.MAX_SCREENSHOT_BYTES, check_csrf=False)
-        size = recv.size
-        with open(tmp, "rb") as f:
-            magic = f.read(len(JPEG_MAGIC))
-        if size == 0 or magic != JPEG_MAGIC:
-            raise HTTPException(400, "screenshot must be a JPEG image")
-        tmp.replace(target)
+    size = await _receive_jpeg(request, target, config.MAX_SCREENSHOT_BYTES, "screenshot")
 
-        def _mark():
-            with db.cursor() as cur:
-                cur.execute(
-                    "UPDATE devices SET last_screenshot_at = datetime('now') WHERE id = ?",
-                    (device["id"],),
-                )
+    def _mark():
+        with db.cursor() as cur:
+            cur.execute(
+                "UPDATE devices SET last_screenshot_at = datetime('now') WHERE id = ?",
+                (device["id"],),
+            )
 
-        await run_in_threadpool(_mark)
-    finally:
-        tmp.unlink(missing_ok=True)
+    await run_in_threadpool(_mark)
+    return {"ok": True, "size_bytes": size}
+
+
+@router.post("/camera/{device_id}")
+async def upload_camera(
+    device_id: str,
+    request: Request,
+    device=Depends(_device_from_header),
+):
+    """Room camera snapshot (player/player/camera.py): same protocol as screenshots, stored at
+    SCREENSHOT_DIR/camera_<device_id>.jpg; stamps last_camera_at and clears camera_error."""
+    if device["device_id"] != device_id:
+        raise HTTPException(403, "Token does not match device id")
+    target = config.SCREENSHOT_DIR / f"camera_{device['device_id']}.jpg"
+    size = await _receive_jpeg(request, target, config.MAX_CAMERA_BYTES, "camera snapshot")
+
+    def _mark():
+        with db.cursor() as cur:
+            cur.execute(
+                "UPDATE devices SET last_camera_at = datetime('now'), camera_error = NULL WHERE id = ?",
+                (device["id"],),
+            )
+
+    await run_in_threadpool(_mark)
     return {"ok": True, "size_bytes": size}
 
 

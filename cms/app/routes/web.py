@@ -8,6 +8,7 @@ import re
 import sqlite3
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -37,6 +38,7 @@ require_admin = auth.require_role("admin")
 # unreachable, in which case it cannot reach us anyway).
 OFFLINE_AFTER_SECONDS = 180
 LAMP_STATES = ("playing", "paused", "idle", "mpv-down")
+MAX_CAMERA_URL_LEN = 2048
 DASHBOARD_AUDIT_TAIL = 8
 
 
@@ -180,6 +182,20 @@ def logout(request: Request):
 # Dashboard
 # ---------------------------------------------------------------------------
 
+def https_url_or_none(value) -> str | None:
+    """The value as an absolute https URL, or None when empty / not one (camera_live_url)."""
+    v = (value or "").strip()
+    if not v or len(v) > MAX_CAMERA_URL_LEN or any(c.isspace() or ord(c) < 32 for c in v):
+        return None
+    try:
+        parts = urlsplit(v)
+    except ValueError:
+        return None
+    if parts.scheme != "https" or not parts.hostname:
+        return None
+    return v
+
+
 def _decorate_device(cur, dd: dict, now: dt.datetime) -> dict:
     """Fill in the served playlist (schedule/default/group) and screenshot age for a device row."""
     pid, source = resolve_active_playlist_id(dd, now, cur)
@@ -203,6 +219,16 @@ def _decorate_device(cur, dd: dict, now: dt.datetime) -> dict:
     else:
         dd["screenshot_age"] = None
         dd["screenshot_stale"] = False
+    cam = parse_db_utc(dd.get("last_camera_at"))
+    if cam:
+        age = (dt.datetime.now(dt.timezone.utc) - cam).total_seconds()
+        dd["camera_age"] = age_text(age)
+        dd["camera_stale"] = age > 3 * config.CAMERA_INTERVAL_SECONDS
+    else:
+        dd["camera_age"] = None
+        dd["camera_stale"] = False
+    # Only a URL that still passes validation reaches the template (the iframe src).
+    dd["camera_live_url"] = https_url_or_none(dd.get("camera_live_url"))
     seen = parse_db_utc(dd.get("last_seen_at"))
     seen_seconds = (dt.datetime.now(dt.timezone.utc) - seen).total_seconds() if seen else None
     dd["seen_age"] = age_text(seen_seconds) if seen else None
@@ -227,6 +253,7 @@ def dashboard(request: Request, user=Depends(auth.require_user)):
             SELECT d.id, d.device_id, d.name, d.last_seen_at, d.last_ip, d.playlist_id, d.group_id,
                    d.current_position, d.current_filename, d.player_status,
                    d.last_screenshot_at, d.last_error,
+                   d.last_camera_at, d.camera_error, d.camera_live_url,
                    p.name AS playlist_name, g.name AS group_name
             FROM devices d
             LEFT JOIN playlists p ON p.id = d.playlist_id
@@ -865,6 +892,7 @@ def devices_page(request: Request, user=Depends(auth.require_user)):
             """SELECT d.id, d.device_id, d.name, d.last_seen_at, d.last_ip,
                       d.player_version, d.current_position, d.current_filename, d.player_status,
                       d.last_screenshot_at, d.last_error,
+                      d.last_camera_at, d.camera_error, d.camera_live_url,
                       p.id AS playlist_id, p.name AS playlist_name,
                       g.id AS group_id, g.name AS group_name
                FROM devices d
@@ -955,6 +983,22 @@ def devices_set_group(device_id: int, request: Request, group_id: str = Form("")
     return RedirectResponse("/devices", status_code=303)
 
 
+@router.post("/devices/{device_id}/camera-url")
+def devices_set_camera_url(device_id: int, request: Request, camera_live_url: str = Form(""),
+                           user=Depends(require_editor)):
+    """Where the console embeds the live camera view (e.g. a Cloudflare Tunnel hostname to the
+    wyze-bridge player). Empty clears it; anything else must be an absolute https URL."""
+    raw = camera_live_url.strip()
+    url = https_url_or_none(raw)
+    if raw and not url:
+        raise HTTPException(400, "camera_live_url must be an absolute https:// URL")
+    with db.cursor() as cur:
+        _require_row(cur, "devices", device_id, "Device")
+        cur.execute("UPDATE devices SET camera_live_url = ? WHERE id = ?", (url, device_id))
+    audit.log(request, user, "device_set_camera_url", "device", device_id, {"camera_live_url": url})
+    return RedirectResponse("/devices", status_code=303)
+
+
 @router.post("/devices/{device_id}/regen-token")
 def devices_regen_token(device_id: int, request: Request, user=Depends(require_editor)):
     token = db.new_token()
@@ -973,6 +1017,7 @@ def devices_delete(device_id: int, request: Request, user=Depends(require_editor
             raise HTTPException(404, "Device not found")
         cur.execute("DELETE FROM devices WHERE id = ?", (device_id,))
     (config.SCREENSHOT_DIR / f"{row['device_id']}.jpg").unlink(missing_ok=True)
+    (config.SCREENSHOT_DIR / f"camera_{row['device_id']}.jpg").unlink(missing_ok=True)
     audit.log(request, user, "device_delete", "device", device_id, {"device_id": row["device_id"], "name": row["name"]})
     return RedirectResponse("/devices", status_code=303)
 
@@ -1003,6 +1048,19 @@ def devices_screenshot(device_id: int, request: Request, user=Depends(auth.requi
     path = config.SCREENSHOT_DIR / f"{row['device_id']}.jpg"
     if not path.is_file():
         raise HTTPException(404, "no screenshot yet")
+    return FileResponse(path, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/devices/{device_id}/camera")
+def devices_camera(device_id: int, request: Request, user=Depends(auth.require_user)):
+    with db.cursor() as cur:
+        row = cur.execute("SELECT device_id FROM devices WHERE id = ?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(404)
+    path = config.SCREENSHOT_DIR / f"camera_{row['device_id']}.jpg"
+    if not path.is_file():
+        raise HTTPException(404, "no camera snapshot yet")
     return FileResponse(path, media_type="image/jpeg",
                         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 

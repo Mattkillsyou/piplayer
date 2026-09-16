@@ -119,11 +119,14 @@ def test_init_schema_upgrades_a_pre_fix_database_in_place(cms, client, monkeypat
     monkeypatch.setattr(cms.db.sqlite3, "connect", spy_connect)
     cms.db.init_schema()
     altered = [s for s in statements if s.lstrip().upper().startswith(("ALTER", "DROP INDEX"))]
-    assert len(altered) == 3, altered
+    # delivery_count, last_error, last_camera_at, camera_error, camera_live_url + the index swap
+    assert len(altered) == 6, altered
 
     conn = sqlite3.connect(old_db)
     assert "delivery_count" in _columns(conn, "device_commands")
     assert "last_error" in _columns(conn, "devices")
+    for col in ("last_camera_at", "camera_error", "camera_live_url"):
+        assert col in _columns(conn, "devices"), col
     idx = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'idx_audit_log_created'").fetchone()[0]
     assert "id DESC" in idx
     # existing rows got the declared default, not NULL

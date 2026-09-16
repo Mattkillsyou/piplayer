@@ -49,6 +49,9 @@ DB_PATH = DATA_DIR / "cms.db"
 
 SCREENSHOT_INTERVAL_SECONDS = _env_int("PIPLAYER_SCREENSHOT_INTERVAL", 60)
 MAX_SCREENSHOT_BYTES = _env_int("PIPLAYER_MAX_SCREENSHOT_BYTES", 5 * 1024 * 1024)
+# Room camera snapshots (player/player/camera.py): a Wyze / RTSP frame every N seconds, 5 s floor.
+CAMERA_INTERVAL_SECONDS = max(5, _env_int("PIPLAYER_CAMERA_INTERVAL", 10))
+MAX_CAMERA_BYTES = _env_int("PIPLAYER_MAX_CAMERA_BYTES", 2 * 1024 * 1024)
 
 MAX_UPLOAD_BYTES = _env_int("PIPLAYER_MAX_UPLOAD_BYTES", 5 * 1024 * 1024 * 1024)
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
