@@ -334,6 +334,15 @@ describe("remote updates", () => {
     expect(page).toContain('<div class="alert error update-status" title="Reported by the player after its last update">Update failed · 1 min ago · ');
     expect(page).toContain(" UTC: install-player.sh exited 1: &lt;pip&gt;</div>");
     expect(page).not.toContain("<code></code>");
+    // a failed update is a fault even when the player is online and playing
+    await query("UPDATE devices SET last_seen_at = datetime('now'), player_status = 'playing' WHERE id = ?", dev.id);
+    page = await (await r.viewer.get("/devices")).text();
+    const faults = (p) => (p.match(/<div class="device-row is-fault">/g) || []).length;
+    const failed = faults(page);
+    expect(page).toContain('<span class="status status-playing"><span class="lamp"></span>playing</span>');
+    await query("UPDATE devices SET last_update_ok = 1 WHERE id = ?", dev.id);
+    page = await (await r.viewer.get("/devices")).text();
+    expect(faults(page)).toBe(failed - 1);
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 

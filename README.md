@@ -313,22 +313,20 @@ cd cms && sudo bash deploy/install-cms.sh
 
 ### Upgrading a player in place
 
-The installer always rewrites `/etc/projector-player/config.toml` from
-`DEVICE_ID`, `DEVICE_TOKEN` and `CMS_URL`, so supply them again — either paste
-the command from the Devices page or read the current values back out of the
-file (other keys you added there, such as `poll_interval_seconds` or
-`verify_tls`, are carried over):
+`--upgrade` reinstalls the code and keeps `/etc/projector-player/config.toml`
+and `wyze.env`, so no `DEVICE_*` variables are needed:
 
 ```bash
 cd ~/piplayer && git pull
 cd player
-eval "$(sudo sed -n \
-    -e 's/^device_id = "\(.*\)"$/export DEVICE_ID="\1"/p' \
-    -e 's/^device_token = "\(.*\)"$/export DEVICE_TOKEN="\1"/p' \
-    -e 's/^cms_url = "\(.*\)"$/export CMS_URL="\1"/p' \
-    /etc/projector-player/config.toml)"
-sudo -E bash deploy/install-player.sh
+sudo bash deploy/install-player.sh --upgrade
+sudo systemctl restart projector-player.service
 ```
+
+It also writes `/opt/piplayer/player/RELEASE` (the checkout's sha) and installs
+the update scripts, the sudoers entries and the post-check timer, so from then
+on the Pi can be updated from the console (`update-player`, `update-os`; see
+[docs/automation.md](docs/automation.md#c-remote-updates-player-software-and-os-packages-player--cloud--cms)).
 
 Downloaded media, the manifest and the hash cache under
 `/var/lib/projector-player/` are kept, so the Pi resumes playing without

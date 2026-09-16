@@ -19,7 +19,8 @@ const DEVICE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 // backs off to at most 300 s when the CMS is unreachable, in which case it cannot reach us anyway).
 export const OFFLINE_AFTER_SECONDS = 180;
 const LAMP_STATES = ["playing", "paused", "idle", "mpv-down"];
-export const isFault = (d) => d.lamp === "mpv-down" || d.lamp === "offline";
+// A failed remote update (last_update_ok = 0, api.storeUpdateStatus) is a fault until the next report.
+export const isFault = (d) => d.lamp === "mpv-down" || d.lamp === "offline" || d.last_update_ok === 0;
 
 // Fill in the served playlist (schedule/default/group), screenshot age + stale flag and
 // last-seen age for a list of device rows (web._decorate_device), with the fleet's

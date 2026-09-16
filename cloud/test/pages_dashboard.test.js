@@ -97,6 +97,26 @@ describe("dashboard", () => {
     await query("DELETE FROM devices WHERE id = ?", live.id);
   });
 
+  it("a failed remote update makes the card a fault with the error box; ok is a muted line and no fault", async () => {
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    const dev = await device("upd-dev", "Upd dev", { last_seen_at: now, player_status: "playing" });
+    await query("UPDATE devices SET last_update_at = datetime('now', '-90 seconds'), last_update_ok = 0, last_update_message = 'install-player.sh exited 1: <pip>', last_update_ref = 'v1.4.0' WHERE id = ?", dev.id);
+    let page = await (await r.viewer.get("/dashboard")).text();
+    expect(page).toContain("1 playing · 4 faults");
+    expect(page).toContain('data-filter="faults" aria-pressed="false">Faults (4)</button>');
+    expect((page.match(/<div class="device-card is-fault">/g) || []).length).toBe(4);
+    expect(page).toContain('<div class="alert error update-status" title="Reported by the player after its last update">Update failed <code>v1.4.0</code> · 1 min ago · ');
+    expect(page).toContain(" UTC: install-player.sh exited 1: &lt;pip&gt;</div>");
+    await query("UPDATE devices SET last_update_ok = 1, last_update_message = 'already at abc123' WHERE id = ?", dev.id);
+    page = await (await r.viewer.get("/dashboard")).text();
+    expect(page).toContain("1 playing · 3 faults");
+    expect((page.match(/<div class="device-card is-fault">/g) || []).length).toBe(3);
+    expect(page).toContain('<div class="device-card">');
+    expect(page).toContain('<p class="update-status muted small" title="Reported by the player after its last update">Update ok <code>v1.4.0</code> · 1 min ago · ');
+    expect(page).not.toContain("Update failed");
+    await query("DELETE FROM devices WHERE id = ?", dev.id);
+  });
+
   it("audit tail lists the last 8 entries, newest first, with local minute timestamps", async () => {
     await query("DELETE FROM audit_log");
     let page = await (await r.viewer.get("/dashboard")).text();

@@ -2,7 +2,7 @@
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, localTime, nowUtc, zoneName } from "../util.js";
-import { cameraScreen, decorateDevices, deviceScreen, isFault, statusLamp } from "./devices.js";
+import { cameraScreen, decorateDevices, deviceScreen, isFault, statusLamp, updateStatus } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 
 const DASHBOARD_AUDIT_TAIL = 8;
@@ -27,6 +27,7 @@ function deviceCard(ctx, d, tz, canEdit) {
       </div>
       <span class="device-meta">last seen ${d.last_seen_at ? `${esc(d.seen_age)} · ${esc(localTime(d.last_seen_at, tz))}` : "never"}</span>
       ${d.last_error ? `<div class="alert error small" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
+      ${updateStatus(d, tz)}
       ${canEdit ? `<div class="tile-actions">
         <form method="post" action="/devices/${d.id}/command" class="inline">
           ${csrfInput(ctx)}
@@ -59,6 +60,7 @@ async function dashboard(ctx) {
     `SELECT d.id, d.device_id, d.name, d.last_seen_at, d.last_ip, d.playlist_id, d.group_id,
             d.current_position, d.current_filename, d.player_status,
             d.last_screenshot_at, d.last_error, d.last_camera_at, d.camera_error,
+            d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
             p.name AS playlist_name, g.name AS group_name
        FROM devices d
        LEFT JOIN playlists p ON p.id = d.playlist_id

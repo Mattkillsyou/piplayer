@@ -161,7 +161,7 @@ capped at 5 unanswered polls):
 |---|---|
 | `update-player` | `sudo -n /opt/piplayer/player/deploy/update-player.sh <ref>` |
 | `update-os` | `sudo -n /opt/piplayer/player/deploy/update-os.sh` |
-| `update-all` | `update-player` then `update-os` |
+| `update-all` | `sudo -n /opt/piplayer/player/deploy/update-player.sh <ref> --then-os` (the player update chains into `update-os.sh`) |
 
 Buttons for all three sit in each device's Recent commands area. The Devices
 page header has **Update all players** (editor and above, with a confirm),
@@ -193,9 +193,16 @@ no-op that reports `already at <sha>`.
 (`player/player/updater.py`) treats it like `reboot`: the command is written
 to the executed ledger and reported as "executing" *before* the script runs,
 because the script restarts the daemon and a report sent afterwards would be
-lost. Then `update-player.sh <ref>` (root, allowed by the sudoers drop-in
+lost. `update-player.sh <ref>` (root, allowed by the sudoers drop-in
 `/etc/sudoers.d/projector-player` that `install-player.sh` writes; a
-`/usr/bin/bash` prefix is accepted too) does, in order:
+`/usr/bin/bash` prefix is accepted too) first detaches itself into a
+transient systemd unit (`systemd-run --unit=projector-player-update`;
+`update-os.sh` uses `projector-os-update`) and returns, so the daemon's
+command result is only `update-player <ref> started` (or
+`update-player <ref> failed: rc=...`); the real outcome arrives later through
+`update_status`. The unit name doubles as a lock: a second update issued while
+one is running fails with "unit already exists". Detached, the script does,
+in order:
 
 1. `git clone --depth 1 --branch <ref>` into `/opt/piplayer/src-<timestamp>`
    (falls back to fetching the GitHub tarball with `curl` if git is missing).
@@ -212,12 +219,14 @@ lost. Then `update-player.sh <ref>` (root, allowed by the sudoers drop-in
 5. Writes `/var/lib/projector-player/update-status.json`
    (`{ref, started, finished, ok, message, previous_version}`) and appends
    the full transcript to `/var/lib/projector-player/update.log`.
-6. Restarts `projector-player.service` last.
+6. Arms the post-check timer and restarts `projector-player.service` last
+   (with `--then-os` it then runs `update-os.sh`).
 
-The new daemon reads `update-status.json` on its first start after the
-update and sends it to the console as the `update_status` query parameter of
-its next sync. The console stores it in the device row's `last_update_at`,
-`last_update_ok`, `last_update_message` and `last_update_ref` columns.
+The next daemon to start reads `update-status.json` and sends it to the
+console as the `update_status` query parameter of its next sync (once per
+status file: a marker next to it records what was reported). The console
+stores it in the device row's `last_update_at`, `last_update_ok`,
+`last_update_message` and `last_update_ref` columns.
 
 **Rollback.** The script arms a post-check (`projector-player-postcheck.timer`,
 armed by the script right before it restarts the service; it fires two minutes
@@ -230,18 +239,20 @@ nothing on its own: it only records what the Pi reports. To roll back by
 hand, set `player_release` to the previous tag or sha and issue
 `update-player` again.
 
-**`update-os`.** `update-os.sh` runs `apt-get update`, `apt-get -y -o
-Dpkg::Options::=--force-confold upgrade` (existing config files win over
-package defaults) and `apt-get -y autoremove`, logging to the same
-`update.log`. If `/var/run/reboot-required` exists afterwards the Pi reports
-the result first and then reboots. Expect a few minutes of downtime on a slow
+**`update-os`.** `update-os.sh` (detached the same way) runs `apt-get
+update`, `apt-get -y -o Dpkg::Options::=--force-confold upgrade` (existing
+config files win over package defaults) and `apt-get -y autoremove`, logging
+to the same `update.log`. It writes the same `update-status.json` with `ref`
+set to `os` and an extra `reboot_required` key; when that is true the daemon
+reports the status on its next sync and then reboots, so the console has the
+result before the Pi goes down. Expect a few minutes of downtime on a slow
 card; issue it inside the quiet window or use `auto_update`.
 
 **Auto mode.** With `auto_update = nightly` the daemon checks on every sync:
 if the Pi's local time is inside `auto_update_window`, and the last update attempt
-(from `update-status.json`) started more than 20 hours ago, it runs
-`update-player` with the manifest's `update.release`, exactly as if the
-console had queued the command. The 20 h guard is what stops it re-running
+(from `update-status.json`; an `update-os` status does not count) started
+more than 20 hours ago, it runs `update-player` with the manifest's
+`update.release`, exactly as if the console had queued the command. The 20 h guard is what stops it re-running
 every poll for the length of the window; with the ref unchanged the run is
 the "already at <sha>" no-op anyway. Auto mode never runs `update-os`;
 queue that yourself or with **Update all players**. The window is evaluated
@@ -257,9 +268,10 @@ every issue of the three commands, the fleet action, and each setting change.
 **Logs on the Pi** when something needs a closer look:
 
 ```bash
-sudo cat /var/lib/projector-player/update-status.json
+cat /var/lib/projector-player/update-status.json
 sudo tail -n 100 /var/lib/projector-player/update.log
 journalctl -u projector-player.service -n 100
+systemctl status projector-player-update projector-os-update   # a run still in progress
 cat /opt/piplayer/player/RELEASE            # sha now running
 ls -d /opt/piplayer/player.prev /opt/piplayer/src-*   # rollback copy, checkouts
 ```
@@ -274,9 +286,10 @@ ls -d /opt/piplayer/player.prev /opt/piplayer/src-*   # rollback copy, checkouts
 fetches from the public GitHub repository over HTTPS, so it only needs
 outbound internet. Sites whose Pis have no route to GitHub (LAN-only, no
 gateway) cannot use remote updates and keep the in-place upgrade in the
-README. Players installed before this feature need one manual upgrade
-(README, "Upgrading a player in place") to get the update scripts, the
-sudoers entries and the `RELEASE` file; from then on they update remotely.
+README. Players installed before this feature need one manual
+`install-player.sh --upgrade` (README, "Upgrading a player in place") to get
+the update scripts, the sudoers entries, the post-check timer and the
+`RELEASE` file; from then on they update remotely.
 
 **Not covered by the automated tests.** The player tests cover the command's
 invocation shape, parsing and reporting of `update-status.json`, the auto
@@ -284,9 +297,11 @@ window with a frozen clock and the no-double-run guard; the cloud tests cover
 the commands, settings validation, the manifest key, sync storage and page
 rendering; the shell scripts are checked with `bash -n`. A real update,
 including the rollback path, the systemd timer and the `apt-get` run, needs
-a Pi: verify it on one device with `update-player` at the current ref (expect
-"already at <sha>"), then at a tag one commit ahead, before using **Update
-all players**.
+a Pi. Verify on one device, after the manual `install-player.sh --upgrade`
+has written `RELEASE`: `update-player` at the current ref (expect
+`already at <sha>`), then at a ref one commit ahead (expect
+`updated <old> -> <new>` and the post-check "ok" line in `update.log` two
+minutes later), then `update-os`, before using **Update all players**.
 
 ## D. Camera zero-config (cloud + player)
 
