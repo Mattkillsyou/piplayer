@@ -632,11 +632,13 @@ power-cycle of last resort from the Wyze app; the console does not drive
 it. Leave it on: a projector whose mains are cut cannot be reached by IR or
 CEC.
 
-**Python console.** `cms/` has the same Projector block, the same three
-commands, the same manifest key and the same two settings (env in
-`/etc/projector-cms/env`: `PIPLAYER_PROJECTOR_LEAD_MINUTES`,
-`PIPLAYER_PROJECTOR_IDLE_MINUTES`, integers 0-1440); the `db.py` ALTER
-guards add the six device columns on start.
+**Python console (cms).** Same Projector block on the Devices page and the
+same commands/manifest key; the global lead time and idle-off delay come from
+`/etc/projector-cms/env`: `PIPLAYER_PROJECTOR_LEAD_MINUTES` (default 3) and
+`PIPLAYER_PROJECTOR_IDLE_MINUTES` (default 10), integers 0-1440; restart the
+CMS to apply. The manifest `projector` key is null until a device has a
+control other than none. The `db.py` ALTER guards add the six device columns
+on start.
 
 **Operator steps** (once per projector):
 
