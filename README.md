@@ -85,6 +85,13 @@ form uses ffprobe to validate the file and extract duration/resolution).
 
 See [docs/adding-a-pi.md](docs/adding-a-pi.md) for the full walkthrough.
 
+- Hardware: [docs/hardware.md](docs/hardware.md) is the per-projector kit (parts, links, costs, the unbox-to-playing checklist).
+- Room camera: [docs/camera.md](docs/camera.md) covers RTSP and Wyze Cam snapshots on the console and the live view.
+
+On Windows the Projection5000 SD Flasher (`tools/flasher/README.md`) replaces
+the manual steps below: it writes the card and the Pi enrolls itself on first
+boot. The flasher may also write the player's `[camera]` table (`source`, `rtsp_url`, `wyze_camera`, `snapshot_interval_seconds`, `live_url`) and `/etc/projector-player/wyze.env` (`WYZE_EMAIL`, `WYZE_PASSWORD`, `API_ID`, `API_KEY`); both are described in [docs/camera.md](docs/camera.md).
+
 Short version:
 
 **1. Install the CMS on one Pi (your "controller"):**
