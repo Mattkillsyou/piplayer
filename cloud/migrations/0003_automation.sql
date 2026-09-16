@@ -47,4 +47,20 @@ ALTER TABLE devices ADD COLUMN last_update_message TEXT;
 ALTER TABLE devices ADD COLUMN last_update_ref TEXT;
 -- C: settings keys player_release / auto_update / auto_update_window live in `settings`.
 
+-- D (camera zero-config): the Wyze account (Settings page) lives in `secrets`, each value
+-- AES-GCM encrypted with a key HKDF-derived from the SESSION_SECRET worker secret (secrets.js);
+-- the camera name pattern and camera_config_version (bumped on any change, sent in the
+-- manifest) live in `settings`. Per-device override of the site default: camera_source NULL =
+-- site default (wyze when the account is set, else none) | 'none' | 'wyze' | 'rtsp'.
+-- camera_config_audited_at throttles the camera_config_fetched audit row to once a day.
+CREATE TABLE IF NOT EXISTS secrets (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL,                                 -- 'v1:<iv b64url>:<ciphertext b64url>'
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+ALTER TABLE devices ADD COLUMN camera_source TEXT CHECK (camera_source IN ('none', 'wyze', 'rtsp'));
+ALTER TABLE devices ADD COLUMN camera_rtsp_url TEXT;
+ALTER TABLE devices ADD COLUMN camera_wyze_name TEXT;
+ALTER TABLE devices ADD COLUMN camera_config_audited_at TEXT;
+
 INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3');

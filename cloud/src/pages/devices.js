@@ -6,6 +6,7 @@ import * as auth from "../auth.js";
 import * as db from "../db.js";
 import * as manifest from "../manifest.js";
 import * as media from "../media.js";
+import * as secrets from "../secrets.js";
 import {
   ageSeconds, ageText, esc, fail, HttpError, idParam, intField, localTime, randomToken, redirect, str, wallClock,
 } from "../util.js";
@@ -149,6 +150,40 @@ export function validateLiveUrl(value) {
   return url;
 }
 
+// Camera zero-config (per-device override of the Settings default; the player fetches the
+// result through GET /api/camera-config). Stored: camera_source NULL = site default.
+export const CAMERA_SOURCES = ["none", "wyze", "rtsp"];
+export const MAX_WYZE_NAME = 100;
+export const RTSP_URL_RE = /^rtsps?:\/\/[^\s"'<>]{1,2040}$/;
+
+// Wyze camera name for a device: its override, else the Settings pattern with {device_name}
+// / {device_id} substituted.
+export function wyzeCameraName(device, settings) {
+  const own = (device.camera_wyze_name || "").trim();
+  if (own) return own;
+  return (settings.wyze_camera_pattern || db.DEFAULT_WYZE_CAMERA_PATTERN)
+    .replaceAll("{device_name}", device.name).replaceAll("{device_id}", device.device_id);
+}
+
+// The GET /api/camera-config body for a devices row (camera_source, camera_rtsp_url,
+// camera_wyze_name, name, device_id): {source: "none"} | {source: "rtsp", rtsp_url} |
+// {source: "wyze", wyze: {email, password, api_id, api_key, camera}}, each with the
+// camera_config_version it was built from. wyze falls back to none when the account is unset.
+export async function cameraConfig(env, device, settings) {
+  const version = settings.camera_config_version || 0;
+  let source = device.camera_source || (await secrets.wyzeConfigured(env) ? "wyze" : "none");
+  if (source === "rtsp" && !device.camera_rtsp_url) source = "none";
+  if (source === "rtsp") return { source, rtsp_url: device.camera_rtsp_url, version };
+  if (source === "wyze") {
+    const w = await secrets.getMany(env, secrets.WYZE_NAMES);
+    if (w.wyze_email && w.wyze_password) {
+      return { source, version, wyze: { email: w.wyze_email, password: w.wyze_password, api_id: w.wyze_api_id || "",
+        api_key: w.wyze_api_key || "", camera: wyzeCameraName(device, settings) } };
+    }
+  }
+  return { source: "none", version };
+}
+
 export const statusLamp = (d) => `<span class="status status-${esc(d.lamp)}"><span class="lamp"></span>${esc(d.lamp)}</span>`;
 
 function optionList(rows, selected) {
@@ -201,7 +236,7 @@ function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
         </form>`;
 }
 
-function deviceRow(ctx, d, playlists, groups, canEdit, tz, install) {
+function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wyzeOn) {
   const dis = canEdit ? "" : " disabled";
   const live = liveUrl(d.camera_live_url);
   return `<div class="device-row${isFault(d) ? " is-fault" : ""}">
@@ -254,8 +289,25 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install) {
       ${updateStatus(d, tz)}
 
       <details class="camera-block">
-        <summary>Camera${live ? " · live URL set" : ""}</summary>
+        <summary>Camera${live ? " · live URL set" : ""}${d.camera_source ? ` · ${esc(d.camera_source)}` : ""}</summary>
         <div class="token-block">
+          <form method="post" action="/devices/${d.id}/camera-source" class="row">
+            ${csrfInput(ctx)}
+            <label>Camera source
+              <select name="camera_source"${dis}>
+                <option value=""${d.camera_source ? "" : " selected"}>site default (${wyzeOn ? "wyze" : "none"})</option>
+                ${CAMERA_SOURCES.map((v) => `<option value="${v}"${v === d.camera_source ? " selected" : ""}>${v}</option>`).join("\n                ")}
+              </select>
+            </label>
+            <label>Wyze camera name
+              <input type="text" name="camera_wyze_name" value="${esc(d.camera_wyze_name || "")}" placeholder="${esc(wyzeCameraName({ ...d, camera_wyze_name: "" }, settings))}" maxlength="${MAX_WYZE_NAME}"${dis}>
+            </label>
+            <label>RTSP URL
+              <input type="text" name="camera_rtsp_url" value="${esc(d.camera_rtsp_url || "")}" placeholder="rtsp://user:pass@10.0.0.5:554/stream" maxlength="2048"${dis}>
+            </label>
+            <button type="submit" class="small"${dis}>Save</button>
+          </form>
+          <p class="help small">The player fetches this on start and whenever it changes (<code>GET /api/camera-config</code>) and (re)starts its Wyze bridge with the account from <a href="/settings">Settings</a>${wyzeOn ? "" : " (no Wyze account set yet)"}. Leave the name empty to use the Settings pattern shown.</p>
           <form method="post" action="/devices/${d.id}/camera-url" class="row">
             ${csrfInput(ctx)}
             <label>Camera live URL
@@ -330,6 +382,7 @@ async function devicesPage(ctx) {
             d.player_version, d.current_position, d.current_filename, d.player_status,
             d.last_screenshot_at, d.last_error,
             d.last_camera_at, d.camera_error, d.camera_live_url,
+            d.camera_source, d.camera_rtsp_url, d.camera_wyze_name,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
             p.id AS playlist_id, p.name AS playlist_name,
             g.id AS group_id, g.name AS group_name
@@ -359,6 +412,7 @@ async function devicesPage(ctx) {
   for (const c of recent) byId.get(c.device_id)?.recent_commands.push(c);
   const install = installBaseUrl(env, ctx.url);
   const queued = ctx.url.searchParams.get("queued");
+  const wyzeOn = await secrets.wyzeConfigured(env);
 
   const content = `<div class="page-head">
   <h1>Devices</h1>
@@ -384,7 +438,7 @@ ${/^\d+$/.test(queued || "") ? alertBox(`Update queued for ${queued} device${que
 ${!devices.length
     ? emptyState("NO SIGNAL", `No devices yet.${canEdit ? " Register one above." : ""}`)
     : `<div class="device-rows">
-  ${devices.map((d) => deviceRow(ctx, d, playlists, groups, canEdit, tz, install)).join("\n  ")}
+  ${devices.map((d) => deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wyzeOn)).join("\n  ")}
 </div>`}`;
   return layout(ctx, { title: "Devices", content });
 }
@@ -518,6 +572,31 @@ async function devicesSetCameraUrl(ctx) {
   return redirect("/devices");
 }
 
+// Per-device camera source: '' = site default (row NULL), else none | wyze | rtsp. rtsp needs
+// an rtsp:// URL; the Wyze name is optional (Settings pattern). Any change bumps
+// camera_config_version so the player refetches; the audit row carries the source and name,
+// never the RTSP URL's credentials.
+async function devicesSetCameraSource(ctx) {
+  auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const form = await ctx.form();
+  const source = str(form, "camera_source").trim() || null;
+  if (source !== null && !CAMERA_SOURCES.includes(source)) fail(400, `camera_source must be one of ${CAMERA_SOURCES.join(", ")} or empty for the site default`);
+  const rtsp = str(form, "camera_rtsp_url").trim() || null;
+  if (rtsp !== null && !RTSP_URL_RE.test(rtsp)) fail(400, "camera_rtsp_url must be an rtsp:// or rtsps:// URL");
+  if (source === "rtsp" && rtsp === null) fail(400, "camera_rtsp_url required when camera_source is rtsp");
+  const wyzeName = str(form, "camera_wyze_name").trim() || null;
+  if (wyzeName !== null && ([...wyzeName].length > MAX_WYZE_NAME || /[\x00-\x1f\x7f]/.test(wyzeName))) fail(400, `camera_wyze_name must be at most ${MAX_WYZE_NAME} printable chars`);
+  const row = await db.first(ctx.env, "SELECT camera_source, camera_rtsp_url, camera_wyze_name FROM devices WHERE id = ?", deviceId);
+  if (!row) fail(404, "Device not found");
+  if (row.camera_source === source && row.camera_rtsp_url === rtsp && row.camera_wyze_name === wyzeName) return redirect("/devices");
+  await db.run(ctx.env, "UPDATE devices SET camera_source = ?, camera_rtsp_url = ?, camera_wyze_name = ? WHERE id = ?", source, rtsp, wyzeName, deviceId);
+  await db.bumpCameraConfigVersion(ctx.env);
+  await audit.log(ctx, "device_set_camera_source", "device", deviceId,
+    { camera_source: source ?? "default", camera_wyze_name: wyzeName ?? undefined, camera_rtsp_url: rtsp ? "set" : undefined });
+  return redirect("/devices");
+}
+
 export function register(router) {
   router.get("/devices", devicesPage);
   router.post("/devices", devicesCreate);
@@ -530,4 +609,5 @@ export function register(router) {
   router.get("/devices/:device_id/screenshot", devicesScreenshot);
   router.get("/devices/:device_id/camera", devicesCamera);
   router.post("/devices/:device_id/camera-url", devicesSetCameraUrl);
+  router.post("/devices/:device_id/camera-source", devicesSetCameraSource);
 }

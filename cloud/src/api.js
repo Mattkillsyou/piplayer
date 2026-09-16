@@ -6,8 +6,10 @@ import * as auth from "./auth.js";
 import * as db from "./db.js";
 import * as manifest from "./manifest.js";
 import * as media from "./media.js";
+import * as secrets from "./secrets.js";
 import { installBaseUrl } from "./pages/devices.js";
 import { envInt, fail, HttpError, json, jsonObject, nowUtc, randomToken } from "./util.js";
+import { cameraConfig } from "./pages/devices.js";
 
 export const MAX_SYNC_ERROR_LEN = 200;
 export const MAX_UPDATE_REF_LEN = 100;
@@ -215,8 +217,8 @@ async function enroll(ctx) {
 // Operator endpoint for the flasher (tools/flasher): `Authorization: Bearer p5k_...` (Settings
 // page "My API tokens", editor+ user) -> the live enrollment key plus what the operator needs
 // to sanity-check the console. Audited as api_token_used at most once per hour per token.
-// wyze_configured is D's hook: true once Wyze credentials exist (the provision script then
-// passes --with-wyze); always false until D lands.
+// wyze_configured is true once the Settings page holds a Wyze email + password (the
+// provision script then passes --with-wyze).
 async function operatorEnrollment(ctx) {
   const op = await auth.operatorFromHeader(ctx);
   if (auth.roleRank(op.role) < auth.roleRank("editor")) fail(401, "API token's user is not an editor or admin");
@@ -230,8 +232,26 @@ async function operatorEnrollment(ctx) {
     groups: await db.all(ctx.env, "SELECT id, name FROM device_groups ORDER BY name"),
     playlists: await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name"),
     timezone: settings.timezone,
-    wyze_configured: false,
+    wyze_configured: await secrets.wyzeConfigured(ctx.env),
   });
+}
+
+// Camera zero-config (device bearer): what the player's camera capture and the wyze-bridge
+// need, resolved from the device's override (Devices page) over the site default (Settings):
+// {source: "none"} | {source: "rtsp", rtsp_url} | {source: "wyze", wyze: {email, password,
+// api_id, api_key, camera}}, plus the camera_config_version it corresponds to. The Wyze
+// credentials travel only here, only to the device's own token. Audited as
+// camera_config_fetched at most once a day per device (the player fetches on every start).
+async function getCameraConfig(ctx) {
+  const device = await ownDevice(ctx);
+  const row = await db.first(ctx.env, "SELECT camera_source, camera_rtsp_url, camera_wyze_name FROM devices WHERE id = ?", device.id);
+  const settings = await ctx.settings();
+  const body = await cameraConfig(ctx.env, { ...device, ...row }, settings);
+  const r = await db.run(ctx.env,
+    `UPDATE devices SET camera_config_audited_at = datetime('now')
+      WHERE id = ? AND (camera_config_audited_at IS NULL OR camera_config_audited_at <= datetime('now', '-1 day'))`, device.id);
+  if (r.changes > 0) await audit.log(ctx, "camera_config_fetched", "device", device.id, { device_id: device.device_id, source: body.source }, null);
+  return json(body);
 }
 
 export function register(router) {
@@ -239,6 +259,7 @@ export function register(router) {
   router.post("/api/enroll", enroll);
   router.get("/api/operator/enrollment", operatorEnrollment);
   router.get("/api/sync/:device_id", sync);
+  router.get("/api/camera-config/:device_id", getCameraConfig);
   router.post("/api/screenshots/:device_id", uploadScreenshot);
   router.post("/api/camera/:device_id", uploadCamera);
   router.post("/api/commands/:command_id/result", reportCommandResult);

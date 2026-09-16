@@ -265,6 +265,8 @@ export function register(router) {
 | `player_release` | `PIPLAYER_PLAYER_RELEASE` (`main`); git tag/branch/sha, `db.isGitRef` (alphanumeric first char, `[A-Za-z0-9._/-]`, no `..`, <= 100) | manifest `update.release`: what `update-player` checks out on the Pi |
 | `auto_update` | `PIPLAYER_AUTO_UPDATE` (`off`); `off` or `nightly` (`db.AUTO_UPDATE_MODES`) | manifest `update.auto` |
 | `auto_update_window` | `PIPLAYER_AUTO_UPDATE_WINDOW` (`03:00-05:00`); `HH:MM-HH:MM` site time, may wrap midnight (`db.UPDATE_WINDOW_RE`) | manifest `update.window` |
+| `wyze_camera_pattern` | `{device_name}` (`db.isCameraPattern`: 1-100 printable chars; `{device_name}` / `{device_id}` substituted) | the Wyze camera name a device gets unless it overrides it (`pages/devices.wyzeCameraName`) |
+| `camera_config_version` | 0; `db.bumpCameraConfigVersion` (+1) on any Wyze / pattern / per-device camera-source change | manifest `camera_config_version`: the player refetches `GET /api/camera-config` when it differs from the one it applied |
 
 **Remote updates (feature C).** `pages/devices.COMMANDS` gains `update-player`, `update-os`,
 `update-all` (per-device buttons under Actions, each with a `data-confirm`); `POST /devices/update-all`
@@ -289,7 +291,7 @@ editor: `POST /users/:user_id/tokens` (400 for a viewer) and `POST /users/:user_
 (404 unless the token belongs to that user). `GET /api/operator/enrollment` with
 `Authorization: Bearer p5k_...` (token owner must be editor or admin, else 401) answers
 `{console_url, enrollment_key, groups: [{id, name}], playlists: [{id, name}], timezone,
-wyze_configured}` (`wyze_configured` is always false until feature D lands). Audit:
+wyze_configured}` (`wyze_configured` = `secrets.wyzeConfigured`: a Wyze email and password are set). Audit:
 `api_token_created`, `api_token_revoked` (both carry the name, never the token) and
 `api_token_used` at most once per hour per token (`last_used_at`).
 
@@ -322,6 +324,32 @@ The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
 
 Foreign keys are enforced by D1. Add columns with a new `migrations/000N_*.sql`, never by editing 0001.
+
+## Secrets (`secrets.js`, table `secrets`, migration 0003)
+
+Operator credentials the players need (the Wyze account; later Twilio). `set(env, name, value)`
+(empty deletes) / `get` / `getMany(names)` / `names()` (a Set, no decryption: the "set / not set"
+badges). Values are AES-256-GCM under a key HKDF-derived from `SESSION_SECRET` (info
+`p5k-secrets`, `secrets.HKDF_INFO`), stored as `v1:<iv b64url>:<ciphertext b64url>` with the
+name bound as additional data; `decrypt` answers null (never throws) for a tampered value or
+one written under another `SESSION_SECRET`, so rotating that secret reads as "not set". Nothing
+renders a plaintext: the only reader is `GET /api/camera-config` (device bearer).
+
+**Camera zero-config (feature D).** `/settings` panel "Wyze account": `POST /settings/wyze`
+(admin) with `wyze_email`, `wyze_password`, `wyze_api_id`, `wyze_api_key` (each: filled replaces,
+empty keeps; <= 500 printable chars) and `wyze_camera_pattern`; `POST /settings/wyze/clear` deletes
+the four. Both bump `camera_config_version` when something changed and audit
+`wyze_settings_update` (`{field: "set"}`, the pattern's value) / `wyze_settings_cleared`.
+Devices row "Camera" `<details>` gains `POST /devices/:id/camera-source` (editor+): `camera_source`
+`''` = site default (row NULL; wyze when the account is set, else none) | `none` | `wyze` | `rtsp`
+(`pages/devices.CAMERA_SOURCES`), `camera_rtsp_url` (`rtsp://` / `rtsps://`, required for rtsp),
+`camera_wyze_name` (<= 100, empty = pattern); an unchanged save does not bump; audit
+`device_set_camera_source` (source, name, `camera_rtsp_url: "set"`, never the URL).
+`GET /api/camera-config/:device_id` (own device bearer; `pages/devices.cameraConfig`) answers
+`{source: "none", version}` | `{source: "rtsp", rtsp_url, version}` | `{source: "wyze", version,
+wyze: {email, password, api_id, api_key, camera}}`; wyze without an account and rtsp without a
+URL both fall back to none. Audited `camera_config_fetched` at most once a day per device
+(`devices.camera_config_audited_at`).
 
 ## Camera feed (room camera on the Pi)
 

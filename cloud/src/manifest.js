@@ -194,6 +194,9 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
       auto: settings.auto_update || "off",
       window: settings.auto_update_window || "03:00-05:00",
     },
+    // Camera zero-config: bumped on any Wyze / camera-source change; the player refetches
+    // GET /api/camera-config/<device_id> when it differs from the one it last applied.
+    camera_config_version: settings.camera_config_version || 0,
   };
 }
 

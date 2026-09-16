@@ -3,10 +3,13 @@
 // update policy (player release, nightly auto-update + window), stored in the settings table
 // (db.loadSettings / saveSetting), plus the device enrollment key (shown
 // masked, rotatable; POST /api/enroll checks it) and the admin's personal API tokens
-// (api_tokens; the flasher presents one on GET /api/operator/enrollment to fetch that key).
+// (api_tokens; the flasher presents one on GET /api/operator/enrollment to fetch that key),
+// and the Wyze account for camera zero-config (encrypted in `secrets`, shown only as set /
+// not set; every player fetches it through GET /api/camera-config).
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
+import * as secrets from "../secrets.js";
 import { esc, fail, floatField, idParam, intField, isValidTimeZone, localTime, nowUtc, redirect, str, zoneName } from "../util.js";
 import { alertBox, csrfInput, layout } from "./layout.js";
 
@@ -84,6 +87,40 @@ async function tokensPanel(ctx, me, newToken, tz) {
   ${newTokenBlock(newToken)}
   ${tokenCreateForm(ctx, "/settings/tokens")}
   ${tokenTable(ctx, tokens, tz, (t) => `/settings/tokens/${t.id}/revoke`)}
+</div>`;
+}
+
+// Wyze account: four password inputs that replace the stored value when filled and keep it
+// when left empty, the camera name pattern, and a Clear button. Values are never rendered.
+const WYZE_FIELDS = [["wyze_email", "Wyze account email"], ["wyze_password", "Wyze account password"],
+  ["wyze_api_id", "API key id"], ["wyze_api_key", "API key"]];
+
+async function wyzePanel(ctx, s) {
+  const have = await secrets.names(ctx.env);
+  const badge = (n) => (have.has(n) ? '<span class="badge badge-active">set</span>' : '<span class="badge badge-muted">not set</span>');
+  const configured = have.has("wyze_email") && have.has("wyze_password");
+  return `<div class="panel">
+  <h2>Wyze account (camera zero-config)</h2>
+  <p class="muted small">Players fetch these credentials over their own device token (<code>GET /api/camera-config</code>) and run the Wyze bridge with them, so a freshly flashed Pi shows its camera without any per-device setup. Stored encrypted; never shown again. Status: <strong>${configured ? "configured" : "not configured"}</strong>${configured ? "" : " (the flasher's provision script only installs the bridge once an email and password are set)"}.</p>
+  <form method="post" action="/settings/wyze">
+    ${csrfInput(ctx)}
+    <div class="form-grid">
+      ${WYZE_FIELDS.map(([n, label]) => `<label>${label} ${badge(n)}
+        <input type="password" name="${n}" value="" placeholder="${have.has(n) ? "leave empty to keep" : "not set"}" autocomplete="off" spellcheck="false" maxlength="500">
+      </label>`).join("\n      ")}
+      <label>Camera name pattern
+        <input type="text" name="wyze_camera_pattern" value="${esc(s.wyze_camera_pattern)}" placeholder="${esc(db.DEFAULT_WYZE_CAMERA_PATTERN)}" maxlength="100" required>
+      </label>
+    </div>
+    <p class="help small">The API key id and key come from the Wyze developer portal. The pattern names each device's camera in the Wyze app: <code>{device_name}</code> and <code>{device_id}</code> are substituted; a device can override it on the Devices page. Saving any change bumps <code>camera_config_version</code> (now ${s.camera_config_version}) so every player refetches on its next sync.</p>
+    <div class="row">
+      <button type="submit" class="primary">Save Wyze settings</button>
+    </div>
+  </form>
+  ${configured || have.size ? `<form method="post" action="/settings/wyze/clear" class="inline" data-confirm="Clear the Wyze account? Players lose their camera on the next sync.">
+    ${csrfInput(ctx)}
+    <button type="submit" class="danger">Clear Wyze account</button>
+  </form>` : ""}
 </div>`;
 }
 
@@ -172,6 +209,8 @@ ${revoked ? alertBox("API token revoked.", "ok") : ""}
   </form>
 </div>
 
+${await wyzePanel(ctx, s)}
+
 ${await tokensPanel(ctx, me, newToken, s.timezone)}`;
   return layout(ctx, { title: "Settings", content });
 }
@@ -215,6 +254,41 @@ async function settingsSave(ctx) {
   return redirect("/settings?saved=1");
 }
 
+// Filled fields replace, empty keep; the audit row says which changed, never a value.
+async function wyzeSave(ctx) {
+  auth.requireRole(ctx, "admin");
+  const form = await ctx.form();
+  const current = await ctx.settings();
+  const pattern = str(form, "wyze_camera_pattern").trim() || current.wyze_camera_pattern;
+  if (!db.isCameraPattern(pattern)) fail(400, "wyze_camera_pattern must be 1-100 printable chars");
+  const changed = {};
+  for (const [name] of WYZE_FIELDS) {
+    const v = str(form, name);
+    if (!v) continue;
+    if (v.length > 500 || /[\x00-\x1f\x7f]/.test(v)) fail(400, `${name} must be at most 500 printable chars`);
+    changed[name] = v;
+  }
+  for (const [name, v] of Object.entries(changed)) await secrets.set(ctx.env, name, v);
+  if (pattern !== current.wyze_camera_pattern) {
+    await db.saveSetting(ctx.env, "wyze_camera_pattern", pattern);
+    changed.wyze_camera_pattern = pattern;
+  }
+  if (Object.keys(changed).length) {
+    await db.bumpCameraConfigVersion(ctx.env);
+    await audit.log(ctx, "wyze_settings_update", "settings", "wyze",
+      Object.fromEntries(Object.keys(changed).map((k) => [k, k === "wyze_camera_pattern" ? pattern : "set"])));
+  }
+  return redirect("/settings?saved=1");
+}
+
+async function wyzeClear(ctx) {
+  auth.requireRole(ctx, "admin");
+  for (const name of secrets.WYZE_NAMES) await secrets.set(ctx.env, name, "");
+  await db.bumpCameraConfigVersion(ctx.env);
+  await audit.log(ctx, "wyze_settings_cleared", "settings", "wyze");
+  return redirect("/settings?saved=1");
+}
+
 async function enrollmentRotate(ctx) {
   auth.requireRole(ctx, "admin");
   await db.generateEnrollmentKey(ctx.env);
@@ -250,4 +324,6 @@ export function register(router) {
   router.get("/settings", settingsPage);
   router.post("/settings", settingsSave);
   router.post("/settings/enrollment/rotate", enrollmentRotate);
+  router.post("/settings/wyze", wyzeSave);
+  router.post("/settings/wyze/clear", wyzeClear);
 }
