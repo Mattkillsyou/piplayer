@@ -86,6 +86,7 @@ describe("sync", () => {
     expect(m.playlist.items[0].url).toBe(`${BASE}/api/media/i.png`);
     expect(m.playlist.items[0].effective_duration_seconds).toBe(10);
     expect(m.screenshot_interval_seconds).toBe(60);
+    expect(m.camera_interval_seconds).toBe(10);
     expect(m.server_time).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
     expect(m.commands).toEqual([]);
     const row = await one("SELECT current_position, current_filename, player_status, player_version, last_seen_at, last_ip FROM devices WHERE id = ?", ids.dev.id);

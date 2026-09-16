@@ -1,5 +1,6 @@
 // R2 media serving with Range (port of api.get_media over FileResponse) + screenshot storage.
-// Media objects live at `media/<filename>`, screenshots at `screenshots/<device_id>.jpg`.
+// Media objects live at `media/<filename>`, screenshots at `screenshots/<device_id>.jpg`,
+// camera snapshots at `camera/<device_id>.jpg`.
 import * as auth from "./auth.js";
 import * as db from "./db.js";
 import * as manifest from "./manifest.js";
@@ -10,6 +11,7 @@ export const JPEG_MAGIC = [0xff, 0xd8, 0xff];
 
 export const mediaKey = (filename) => `media/${filename}`;
 export const screenshotKey = (deviceId) => `screenshots/${deviceId}.jpg`;
+export const cameraKey = (deviceId) => `camera/${deviceId}.jpg`;
 
 // ---------------------------------------------------------------------------
 // Serving an R2 object the way Starlette's FileResponse does: Content-Type from the stored
@@ -205,6 +207,19 @@ export function deleteScreenshot(env, deviceId) {
 // Response for the stored screenshot (no-store, nosniff) or 404.
 export function serveScreenshot(request, env, deviceId) {
   return serveObject(request, env.MEDIA, screenshotKey(deviceId), { "cache-control": "no-store" });
+}
+
+// Camera snapshots: same shape as screenshots under `camera/<device_id>.jpg`.
+export function putCamera(env, deviceId, bytes) {
+  return env.MEDIA.put(cameraKey(deviceId), bytes, { httpMetadata: { contentType: "image/jpeg" } });
+}
+
+export function deleteCamera(env, deviceId) {
+  return env.MEDIA.delete(cameraKey(deviceId));
+}
+
+export function serveCamera(request, env, deviceId) {
+  return serveObject(request, env.MEDIA, cameraKey(deviceId), { "cache-control": "no-store" });
 }
 
 export function register(router) {

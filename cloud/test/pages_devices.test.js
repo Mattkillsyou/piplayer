@@ -106,6 +106,8 @@ describe("page content", () => {
     expect(page).toContain('<div class="device-row is-fault">');
     expect(page).toContain('<span class="status status-offline"><span class="lamp"></span>offline</span>');
     expect(page).toContain('<span class="empty-sub">no screenshot yet</span>');
+    expect(page).not.toContain("device-camera"); // no camera snapshot yet: no camera thumb
+    expect(page).toContain("<summary>Camera</summary>"); // but the live URL form is always there
     expect(page).toContain('<span class="value">never</span>');
     expect(page).toContain('<span class="value">—</span>');
     expect(page).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group</span>');

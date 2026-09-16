@@ -1,5 +1,5 @@
-// Device API (port of cms/app/routes/api.py): health, sync manifest, screenshot upload,
-// command results. Auth is `Authorization: Bearer <device token>`; the device_id in the
+// Device API (port of cms/app/routes/api.py): health, sync manifest, screenshot and camera
+// snapshot uploads, command results. Auth is `Authorization: Bearer <device token>`; the device_id in the
 // path must be the token's own device.
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
@@ -45,7 +45,9 @@ async function sync(ctx) {
   const q = ctx.url.searchParams;
 
   // Empty string = last sync fully succeeded; store NULL so the UI can test truthiness.
+  // camera_error works the same way for the player's last camera capture.
   const lastError = (q.get("sync_error") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
+  const cameraError = (q.get("camera_error") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
   await db.run(ctx.env,
     `UPDATE devices SET
         last_seen_at = datetime('now'),
@@ -54,7 +56,8 @@ async function sync(ctx) {
         current_filename = ?,
         player_status = ?,
         player_version = COALESCE(?, player_version),
-        last_error = ?
+        last_error = ?,
+        camera_error = ?
       WHERE id = ?`,
     ctx.ip,
     intQuery(q, "current_position"),
@@ -62,6 +65,7 @@ async function sync(ctx) {
     q.get("player_status"),
     q.get("player_version"),
     lastError,
+    cameraError,
     device.id);
 
   const settings = await ctx.settings();
@@ -83,9 +87,10 @@ async function reportCommandResult(ctx) {
   return json({ ok: true });
 }
 
-async function uploadScreenshot(ctx) {
+// Multipart JPEG upload shared by /api/screenshots and /api/camera: `what` names the image in
+// the 400 wording, `maxBytes` caps the file, `store(deviceId, bytes)` writes it to R2.
+async function receiveJpeg(ctx, what, maxBytes, store) {
   const device = await ownDevice(ctx);
-  const maxBytes = envInt(ctx.env, "PIPLAYER_MAX_SCREENSHOT_BYTES", 5 * 1024 * 1024);
   const tooLarge = () => fail(413, `File exceeds ${maxBytes} bytes`);
   // Same wording as web._receive_upload, which streams the body and rejects as it goes.
   if (!/^multipart\/form-data\s*;.*boundary=/i.test(ctx.request.headers.get("content-type") || "")) {
@@ -104,11 +109,26 @@ async function uploadScreenshot(ctx) {
   const file = [...form.values()].find((v) => v instanceof File);
   if (!file) fail(400, "no file in upload (field 'file')");
   const bytes = new Uint8Array(await file.arrayBuffer());
-  if (!media.isJpeg(bytes)) fail(400, "screenshot must be a JPEG image");
+  if (!media.isJpeg(bytes)) fail(400, `${what} must be a JPEG image`);
   if (bytes.length > maxBytes) tooLarge();
 
-  await media.putScreenshot(ctx.env, device.device_id, bytes);
+  await store(device.device_id, bytes);
+  return { device, bytes };
+}
+
+async function uploadScreenshot(ctx) {
+  const maxBytes = envInt(ctx.env, "PIPLAYER_MAX_SCREENSHOT_BYTES", 5 * 1024 * 1024);
+  const { device, bytes } = await receiveJpeg(ctx, "screenshot", maxBytes, (id, b) => media.putScreenshot(ctx.env, id, b));
   await db.run(ctx.env, "UPDATE devices SET last_screenshot_at = datetime('now') WHERE id = ?", device.id);
+  return json({ ok: true, size_bytes: bytes.length });
+}
+
+// Camera snapshot (player/player/camera.py): same protocol as screenshots, stored at
+// camera/<device_id>.jpg, stamps last_camera_at and clears camera_error.
+async function uploadCamera(ctx) {
+  const maxBytes = envInt(ctx.env, "PIPLAYER_MAX_CAMERA_BYTES", 2 * 1024 * 1024);
+  const { device, bytes } = await receiveJpeg(ctx, "camera snapshot", maxBytes, (id, b) => media.putCamera(ctx.env, id, b));
+  await db.run(ctx.env, "UPDATE devices SET last_camera_at = datetime('now'), camera_error = NULL WHERE id = ?", device.id);
   return json({ ok: true, size_bytes: bytes.length });
 }
 
@@ -154,5 +174,6 @@ export function register(router) {
   router.post("/api/enroll", enroll);
   router.get("/api/sync/:device_id", sync);
   router.post("/api/screenshots/:device_id", uploadScreenshot);
+  router.post("/api/camera/:device_id", uploadCamera);
   router.post("/api/commands/:command_id/result", reportCommandResult);
 }

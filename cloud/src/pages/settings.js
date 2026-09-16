@@ -1,5 +1,5 @@
-// /settings (admin only, cloud-only page): site timezone, screenshot interval and default
-// image duration, stored in the settings table (db.loadSettings / saveSetting), plus the
+// /settings (admin only, cloud-only page): site timezone, screenshot and camera intervals and
+// default image duration, stored in the settings table (db.loadSettings / saveSetting), plus the
 // device enrollment key (shown masked, rotatable; POST /api/enroll checks it).
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
@@ -8,6 +8,7 @@ import { esc, fail, floatField, intField, isValidTimeZone, localTime, nowUtc, re
 import { alertBox, csrfInput, layout } from "./layout.js";
 
 export const MIN_SCREENSHOT_INTERVAL = 15;
+export const MIN_CAMERA_INTERVAL = 5;
 
 function timeZoneOptions() {
   try {
@@ -43,11 +44,14 @@ ${rotated ? alertBox("Enrollment key rotated. Cards flashed with the old key mus
       <label>Screenshot interval (seconds, at least ${MIN_SCREENSHOT_INTERVAL})
         <input type="number" name="screenshot_interval" value="${esc(s.screenshot_interval)}" min="${MIN_SCREENSHOT_INTERVAL}" step="1" required>
       </label>
+      <label>Camera snapshot interval (seconds, at least ${MIN_CAMERA_INTERVAL})
+        <input type="number" name="camera_interval" value="${esc(s.camera_interval)}" min="${MIN_CAMERA_INTERVAL}" step="1" required>
+      </label>
       <label>Default image duration (seconds)
         <input type="number" name="default_image_duration" value="${esc(s.default_image_duration)}" min="0.5" max="86400" step="0.5" required>
       </label>
     </div>
-    <p class="help small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot. The image duration applies to images without a per-item override.</p>
+    <p class="help small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot; the camera interval works the same way for room camera snapshots. The image duration applies to images without a per-item override.</p>
     <div class="row">
       <button type="submit" class="primary">Save settings</button>
     </div>
@@ -78,11 +82,14 @@ async function settingsSave(ctx) {
   const interval = intField(str(form, "screenshot_interval"), "screenshot_interval");
   if (interval === null) fail(400, "screenshot_interval required");
   if (interval < MIN_SCREENSHOT_INTERVAL) fail(400, `screenshot_interval must be at least ${MIN_SCREENSHOT_INTERVAL} seconds`);
+  const camera = intField(str(form, "camera_interval"), "camera_interval");
+  if (camera === null) fail(400, "camera_interval required");
+  if (camera < MIN_CAMERA_INTERVAL) fail(400, `camera_interval must be at least ${MIN_CAMERA_INTERVAL} seconds`);
   const duration = floatField(str(form, "default_image_duration"), "default_image_duration",
     "default_image_duration must be a positive number");
   if (duration === null) fail(400, "default_image_duration required");
   if (duration <= 0 || duration > 86400) fail(400, "default_image_duration must be a positive number of seconds (at most 86400)");
-  const values = { timezone, screenshot_interval: interval, default_image_duration: duration };
+  const values = { timezone, screenshot_interval: interval, camera_interval: camera, default_image_duration: duration };
   await db.batch(ctx.env, Object.entries(values).map(([k, v]) =>
     ["INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", k, String(v)]));
   await audit.log(ctx, "settings_update", "settings", null, values);

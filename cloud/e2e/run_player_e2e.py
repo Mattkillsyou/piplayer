@@ -17,6 +17,9 @@ What it asserts, in order:
      executed, its result POSTed (device_commands.completed_at/result), and the
      executed-command ledger holds the id; the ghost item removed -> sync_error clears.
   5. cycle 4: full re-verify after force-sync; last_error is NULL again.
+  6. cycle 5: the camera thread's capture (PIPLAYER_CAMERA_SNAPSHOT_FILE stands in for ffmpeg)
+     lands in R2 as camera/<id>.jpg + last_camera_at; a failing capture round-trips as
+     camera_error on the next sync and clears again; /devices and /dashboard show the snapshot.
 """
 import argparse
 import hashlib
@@ -68,6 +71,13 @@ def make_media(work):
     with open(shot, "rb") as f:
         out["_shot"] = f.read()
     assert out["_shot"][:3] == b"\xff\xd8\xff"
+    # the room camera frame: a different size so its bytes cannot be confused with the screenshot
+    cam = os.path.join(work, "cam.jpg")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240", "-frames:v", "1", "-q:v", "5", cam], check=True)
+    with open(cam, "rb") as f:
+        out["_cam"] = f.read()
+    assert out["_cam"][:3] == b"\xff\xd8\xff" and out["_cam"] != out["_shot"]
+    out["_cam_path"] = cam
     return out
 
 
@@ -179,7 +189,14 @@ def parity_probes(base, token):
     assert r.status_code == 200 and r.json() == {"ok": True, "size_bytes": len(jpeg)}, r.text
     r = requests.post(shots, files={"file": ("x.jpg", b"\xff\xd8\xff" + b"\0" * (6 * 1024 * 1024), "image/jpeg")}, headers=h)
     assert r.status_code == 413 and r.json() == {"detail": "File exceeds 5242880 bytes"}, r.text
-    print("parity probes: Range 400/416 text/plain, multipart/byteranges, int params 400, screenshot wording ok")
+    cam = base + "/api/camera/" + DEVICE_ID
+    r = requests.post(cam, data=jpeg, headers=dict(h, **{"Content-Type": "image/jpeg"}))
+    assert r.status_code == 400 and r.json() == {"detail": "expected a multipart/form-data upload"}, r.text
+    r = requests.post(cam, files={"file": ("x.jpg", b"\x89PNG" + b"\0" * 9, "image/jpeg")}, headers=h)
+    assert r.status_code == 400 and r.json() == {"detail": "camera snapshot must be a JPEG image"}, r.text
+    r = requests.post(cam, files={"file": ("x.jpg", b"\xff\xd8\xff" + b"\0" * (2 * 1024 * 1024 + 1), "image/jpeg")}, headers=h)
+    assert r.status_code == 413 and r.json() == {"detail": "File exceeds 2097152 bytes"}, r.text
+    print("parity probes: Range 400/416 text/plain, multipart/byteranges, int params 400, screenshot + camera wording ok")
 
 
 def main():
@@ -229,6 +246,10 @@ def run(base, persist, work, media, pid):
         "PIPLAYER_MPV_SOCKET": os.path.join(state_dir, "mpv.sock"),
         "PIPLAYER_CONFIG": os.path.join(work, "does-not-exist.toml"),
         "PIPLAYER_POLL": "5",
+        # [camera] through the environment; the snapshot-file hook stands in for ffmpeg + RTSP
+        "PIPLAYER_CAMERA_SOURCE": "rtsp",
+        "PIPLAYER_CAMERA_RTSP_URL": "rtsp://127.0.0.1:1/nothing-listens-here",
+        "PIPLAYER_CAMERA_SNAPSHOT_FILE": media["_cam_path"],
     })
     import player.config as pconfig
     import player.daemon as daemon
@@ -371,6 +392,9 @@ def run(base, persist, work, media, pid):
     assert manifest["commands"] == []
     print("cycle 4: full verify without re-download, last_error cleared")
 
+    # --- cycle 5: room camera snapshot -> R2 + last_camera_at, camera_error round-trip -------
+    camera_cycle(cfg, mpv, state, scheduler, media, device, work, persist, admin)
+
     # --- edge cases the golden verifier probes (the player never sends these) ------------
     parity_probes(base, dev_row["token"])
 
@@ -381,6 +405,63 @@ def run(base, persist, work, media, pid):
         print("devices page shows the device and the command result")
     else:
         print("devices page is a stub (%d); skipped the UI check" % r.status_code)
+
+
+def camera_cycle(cfg, mpv, state, scheduler, media, device, work, persist, admin):
+    """The camera thread's capture_once() is driven by hand (no thread, no sleeps) and the
+    daemon cycle that follows carries its error text up as the camera_error sync param."""
+    try:
+        from player.camera import CameraCapture
+        import player.daemon as daemon
+    except ImportError as e:
+        print("player has no camera module yet (%s); skipped the camera cycle" % e)
+        return
+    assert cfg.camera_source == "rtsp" and cfg.camera_rtsp_url.startswith("rtsp://"), (cfg.camera_source, cfg.camera_rtsp_url)
+    camera = CameraCapture(cfg)  # not started: capture_once() below is the thread body, one step at a time
+    assert camera.capture_once() is True, camera.error
+    assert camera.error == "", camera.error
+    row = device()
+    assert row["last_camera_at"], "camera snapshot not recorded"
+    assert row["camera_error"] is None, row["camera_error"]
+    got = os.path.join(work, "cam-from-r2.jpg")
+    assert ec.r2_get(persist, "camera/%s.jpg" % DEVICE_ID, got), "camera snapshot missing in R2"
+    assert open(got, "rb").read() == media["_cam"], "camera snapshot bytes differ"
+    assert ec.r2_get(persist, "screenshots/%s.jpg" % DEVICE_ID, got) and open(got, "rb").read() == media["_shot"], "screenshot slot was touched"
+    print("cycle 5: camera snapshot in R2 (%d bytes), last_camera_at=%s" % (len(media["_cam"]), row["last_camera_at"]))
+
+    # the console shows it: thumb + age chip on both pages, served session-only with no-store
+    for path, label in (("/devices", "devices"), ("/dashboard", "dashboard")):
+        r = admin.get(path)
+        assert r.status_code == 200, (path, r.status_code)
+        assert ('/devices/%d/camera?t=' % row["id"]) in r.text and "cam \u00b7 " in r.text, "%s page does not show the camera snapshot" % label
+        assert "Camera: " not in r.text, "%s page shows a camera error" % label
+    r = admin.get("/devices/%d/camera" % row["id"])
+    assert r.status_code == 200 and r.content == media["_cam"], (r.status_code, len(r.content))
+    assert r.headers["Content-Type"] == "image/jpeg" and r.headers["Cache-Control"] == "no-store", r.headers
+    assert r.headers["X-Content-Type-Options"] == "nosniff", r.headers
+    assert requests.get(cfg.cms_url + "/devices/%d/camera" % row["id"], allow_redirects=False).status_code == 303, "camera route is not session-only"
+    print("cycle 5: /devices and /dashboard show the snapshot; /devices/%d/camera is session-only, no-store" % row["id"])
+
+    # a failing capture (the hook file vanishes) becomes camera_error on the next sync ...
+    os.environ["PIPLAYER_CAMERA_SNAPSHOT_FILE"] = os.path.join(work, "camera-gone.jpg")
+    assert camera.capture_once() is False
+    assert camera.error.startswith("snapshot file:"), camera.error
+    manifest = daemon.run_cycle(cfg, mpv, state, scheduler, camera=camera)
+    assert manifest is not None
+    assert manifest["camera_interval_seconds"] == 10, manifest["camera_interval_seconds"]
+    row = device()
+    assert row["camera_error"] and row["camera_error"].startswith("snapshot file:"), row["camera_error"]
+    r = admin.get("/devices")
+    assert "Camera: snapshot file:" in r.text, "devices page does not show camera_error"
+    print("cycle 5: camera_error=%r reached the console" % row["camera_error"])
+    # ... and clears once a capture works again
+    os.environ["PIPLAYER_CAMERA_SNAPSHOT_FILE"] = media["_cam_path"]
+    assert camera.capture_once() is True, camera.error
+    manifest = daemon.run_cycle(cfg, mpv, state, scheduler, camera=camera)
+    assert manifest is not None
+    row = device()
+    assert row["camera_error"] is None, row["camera_error"]
+    print("cycle 5: camera_error cleared after a good capture")
 
 
 if __name__ == "__main__":

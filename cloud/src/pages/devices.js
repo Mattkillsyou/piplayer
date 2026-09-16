@@ -1,5 +1,6 @@
 // Port of web.devices_* + devices.html: register / assign / group / regen-token / delete /
-// command / screenshot, plus decorateDevices() which the dashboard shares.
+// command / screenshot / camera snapshot + live URL, plus decorateDevices() which the
+// dashboard shares.
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
@@ -51,6 +52,9 @@ export async function decorateDevices(env, rows, settings, now = new Date()) {
     const shotAge = ageSeconds(dd.last_screenshot_at, now);
     dd.screenshot_age = shotAge === null ? null : ageText(shotAge);
     dd.screenshot_stale = shotAge !== null && shotAge > 3 * settings.screenshot_interval;
+    const camAge = ageSeconds(dd.last_camera_at, now);
+    dd.camera_age = camAge === null ? null : ageText(camAge);
+    dd.camera_stale = camAge !== null && camAge > 3 * settings.camera_interval;
     const seen = ageSeconds(dd.last_seen_at, now);
     dd.seen_age = seen === null ? null : ageText(seen);
     dd.offline = seen === null || seen > OFFLINE_AFTER_SECONDS;
@@ -97,6 +101,51 @@ export function deviceScreen(d, { link = false, now = false, tz = null, staleTit
     </div>`;
 }
 
+// Room camera snapshot (only rendered when the device has ever sent one): the same
+// `.device-screen` block as the projector screenshot with a CAM chip, age + live/stale chip,
+// and the player's camera_error in the warn style underneath.
+const cameraHref = (d) => `/devices/${d.id}/camera?t=${esc(encodeURIComponent(d.last_camera_at))}`;
+
+export function cameraScreen(d, { link = false, tz = null, staleTitle = "" } = {}) {
+  const error = d.camera_error
+    ? `<div class="alert warn small" title="Reported by the player on its last sync">Camera: ${esc(d.camera_error)}</div>`
+    : "";
+  if (!d.last_camera_at) return error;
+  const img = `<img src="${cameraHref(d)}" class="device-thumb${d.camera_stale ? " device-thumb-stale" : ""}" alt="Latest camera snapshot from ${esc(d.name)}">`;
+  return `<div class="device-screen device-camera${d.camera_stale ? " is-stale" : ""}">
+      ${link ? `<a href="${cameraHref(d)}" target="_blank" title="Open the latest camera snapshot">${img}</a>` : img}
+      <span class="screenshot-age">
+        <span class="screen-chip tl"${tz ? ` title="${esc(localTime(d.last_camera_at, tz))}"` : ""}>cam · ${esc(d.camera_age)}</span>
+        ${d.camera_stale
+    ? `<span class="screen-chip tr is-stale badge-stale" title="${staleTitle}">stale</span>`
+    : '<span class="screen-chip tr">live</span>'}
+      </span>
+    </div>
+    ${error}`;
+}
+
+// The operator-pasted live URL: absolute https only, no credentials, at most 2048 chars.
+// liveUrl() returns the normalised URL or null (used again at render time, so the iframe
+// only ever gets a URL that passes); validateLiveUrl() is the form rule (empty clears, 400 otherwise).
+export function liveUrl(value) {
+  const v = (value || "").trim();
+  if (!v || v.length > 2048) return null;
+  let u;
+  try {
+    u = new URL(v);
+  } catch {
+    return null;
+  }
+  return u.protocol === "https:" && u.hostname && !u.username && !u.password ? u.href : null;
+}
+
+export function validateLiveUrl(value) {
+  if (!(value || "").trim()) return null;
+  const url = liveUrl(value);
+  if (!url) fail(400, "camera_live_url must be an absolute https:// URL");
+  return url;
+}
+
 export const statusLamp = (d) => `<span class="status status-${esc(d.lamp)}"><span class="lamp"></span>${esc(d.lamp)}</span>`;
 
 function optionList(rows, selected) {
@@ -139,9 +188,11 @@ function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
 
 function deviceRow(ctx, d, playlists, groups, canEdit, tz, install) {
   const dis = canEdit ? "" : " disabled";
+  const live = liveUrl(d.camera_live_url);
   return `<div class="device-row${isFault(d) ? " is-fault" : ""}">
     <div class="device-ident">
       ${deviceScreen(d, { link: true, staleTitle: "No new screenshot for more than 3 capture intervals" })}
+      ${cameraScreen(d, { link: true, staleTitle: "No new camera snapshot for more than 3 camera intervals" })}
       <span class="device-name">${esc(d.name)}</span>
       <span class="device-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}</span>
       ${statusLamp(d)}
@@ -185,6 +236,25 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install) {
       </div>
 
       ${d.last_error ? `<div class="alert error" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
+
+      <details class="camera-block">
+        <summary>Camera${live ? " · live URL set" : ""}</summary>
+        <div class="token-block">
+          <form method="post" action="/devices/${d.id}/camera-url" class="row">
+            ${csrfInput(ctx)}
+            <label>Camera live URL
+              <input type="url" name="camera_live_url" value="${esc(live || "")}" placeholder="https://cam-lobby.example.com/" pattern="https://.*" maxlength="2048"${dis}>
+            </label>
+            <button type="submit" class="small"${dis}>Save</button>
+          </form>
+          <p class="help small">Page the console embeds for the live view (e.g. a Cloudflare Tunnel hostname to the Wyze bridge player). Snapshots come from the Pi on their own; see docs/camera.md.</p>
+          ${live ? `<div class="action-buttons">
+            <a href="${esc(live)}" target="_blank" rel="noopener noreferrer" class="button small">Live</a>
+            <button type="button" class="small" data-live-frame="live-frame-${d.id}">Show live</button>
+          </div>
+          <iframe id="live-frame-${d.id}" class="live-frame" data-src="${esc(live)}" title="Live camera: ${esc(d.name)}" sandbox="allow-same-origin allow-scripts" referrerpolicy="no-referrer" hidden></iframe>` : ""}
+        </div>
+      </details>
 
       ${d.recent_commands.length ? `<details>
         <summary>Recent commands (${d.recent_commands.length})</summary>
@@ -238,6 +308,7 @@ async function devicesPage(ctx) {
     `SELECT d.id, d.device_id, d.name, d.last_seen_at, d.last_ip,
             d.player_version, d.current_position, d.current_filename, d.player_status,
             d.last_screenshot_at, d.last_error,
+            d.last_camera_at, d.camera_error, d.camera_live_url,
             p.id AS playlist_id, p.name AS playlist_name,
             g.id AS group_id, g.name AS group_name
        FROM devices d
@@ -346,6 +417,7 @@ async function devicesDelete(ctx) {
   if (!row) fail(404, "Device not found");
   await db.run(ctx.env, "DELETE FROM devices WHERE id = ?", deviceId);
   await media.deleteScreenshot(ctx.env, row.device_id);
+  await media.deleteCamera(ctx.env, row.device_id);
   await audit.log(ctx, "device_delete", "device", deviceId, { device_id: row.device_id, name: row.name });
   return redirect("/devices");
 }
@@ -377,6 +449,30 @@ async function devicesScreenshot(ctx) {
   }
 }
 
+// Latest camera snapshot, same rules as the screenshot.
+async function devicesCamera(ctx) {
+  auth.requireUser(ctx);
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const row = await db.first(ctx.env, "SELECT device_id FROM devices WHERE id = ?", deviceId);
+  if (!row) fail(404, "Not Found");
+  try {
+    return await media.serveCamera(ctx.request, ctx.env, row.device_id);
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 404) fail(404, "no camera snapshot yet");
+    throw e;
+  }
+}
+
+async function devicesSetCameraUrl(ctx) {
+  auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const url = validateLiveUrl(str(await ctx.form(), "camera_live_url"));
+  await requireRow(ctx.env, "devices", deviceId, "Device");
+  await db.run(ctx.env, "UPDATE devices SET camera_live_url = ? WHERE id = ?", url, deviceId);
+  await audit.log(ctx, "device_set_camera_url", "device", deviceId, { camera_live_url: url });
+  return redirect("/devices");
+}
+
 export function register(router) {
   router.get("/devices", devicesPage);
   router.post("/devices", devicesCreate);
@@ -386,4 +482,6 @@ export function register(router) {
   router.post("/devices/:device_id/delete", devicesDelete);
   router.post("/devices/:device_id/command", devicesSendCommand);
   router.get("/devices/:device_id/screenshot", devicesScreenshot);
+  router.get("/devices/:device_id/camera", devicesCamera);
+  router.post("/devices/:device_id/camera-url", devicesSetCameraUrl);
 }

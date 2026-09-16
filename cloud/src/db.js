@@ -47,24 +47,26 @@ export async function assertMigrated(env) {
 // Settings (/settings page). Stored as strings in `settings`; env vars are the defaults.
 // ---------------------------------------------------------------------------
 
-export const SETTING_KEYS = ["timezone", "screenshot_interval", "default_image_duration", "enrollment_key"];
+export const SETTING_KEYS = ["timezone", "screenshot_interval", "camera_interval", "default_image_duration", "enrollment_key"];
 
 export function defaultSettings(env) {
   return {
     timezone: "UTC",
     screenshot_interval: envInt(env, "PIPLAYER_SCREENSHOT_INTERVAL", 60),
+    camera_interval: envInt(env, "PIPLAYER_CAMERA_INTERVAL", 10),
     default_image_duration: envFloat(env, "PIPLAYER_DEFAULT_IMAGE_DURATION", 10),
     enrollment_key: "", // generated on first read (loadSettings), never from env
   };
 }
 
-// {timezone, screenshot_interval (int seconds), default_image_duration (float seconds),
-// enrollment_key (secret shared with the flasher; POST /api/enroll)}.
+// {timezone, screenshot_interval (int seconds), camera_interval (int seconds), default_image_duration
+// (float seconds), enrollment_key (secret shared with the flasher; POST /api/enroll)}.
 export async function loadSettings(env) {
   const s = defaultSettings(env);
   for (const row of await all(env, "SELECT key, value FROM settings")) {
     if (row.key === "timezone" && row.value) s.timezone = row.value;
     else if (row.key === "screenshot_interval" && Number.isFinite(+row.value)) s.screenshot_interval = parseInt(row.value, 10);
+    else if (row.key === "camera_interval" && Number.isFinite(+row.value)) s.camera_interval = parseInt(row.value, 10);
     else if (row.key === "default_image_duration" && Number.isFinite(+row.value)) s.default_image_duration = parseFloat(row.value);
     else if (row.key === "enrollment_key" && row.value) s.enrollment_key = row.value;
   }

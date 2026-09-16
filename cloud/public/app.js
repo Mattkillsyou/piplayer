@@ -33,6 +33,17 @@
     btn.textContent = hidden ? 'Hide' : 'Show';
   });
 
+  // Camera live view (Devices page): <button data-live-frame="<iframe id>"> loads the iframe's
+  // data-src on first click (never on page load) and toggles it.
+  document.addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('[data-live-frame]') : null;
+    var frame = btn && document.getElementById(btn.dataset.liveFrame);
+    if (!frame) return;
+    if (!frame.getAttribute('src') && frame.dataset.src) frame.src = frame.dataset.src;
+    frame.hidden = !frame.hidden;
+    btn.textContent = frame.hidden ? 'Show live' : 'Hide live';
+  });
+
   function csrf() {
     var m = document.querySelector('meta[name="csrf-token"]');
     return m ? m.content : '';

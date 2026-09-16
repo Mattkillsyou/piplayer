@@ -71,7 +71,7 @@ in its own try/catch. Locally: `wrangler dev --test-scheduled` then `GET /__sche
   cookies,           // Set-Cookie strings to append (auth.js fills it; you normally never touch it)
   form(),            // Promise<FormData>, memoised (the CSRF check already read it; reading again is free);
                      //   malformed body → 400. Use util.str(form, "name") for string fields.
-  settings(),        // Promise<{timezone, screenshot_interval, default_image_duration, enrollment_key}>, memoised
+  settings(),        // Promise<{timezone, screenshot_interval, camera_interval, default_image_duration, enrollment_key}>, memoised
 }
 ```
 
@@ -253,11 +253,12 @@ export function register(router) {
 |---|---|---|
 | `timezone` | `UTC` (IANA name, validate with `isValidTimeZone`) | every rendered timestamp, `server_time`, schedule evaluation |
 | `screenshot_interval` | `PIPLAYER_SCREENSHOT_INTERVAL` (60) | manifest `screenshot_interval_seconds`, stale badge (`> 3 ×`) |
+| `camera_interval` | `PIPLAYER_CAMERA_INTERVAL` (10, min 5) | manifest `camera_interval_seconds`, camera snapshot stale badge (`> 3 ×`) |
 | `default_image_duration` | `PIPLAYER_DEFAULT_IMAGE_DURATION` (10) | effective duration of images |
 | `enrollment_key` | random 32-byte urlsafe token, generated on the first `loadSettings` (never from env) | `POST /api/enroll` (the flasher bakes it into cards); `/settings` shows it and `POST /settings/enrollment/rotate` replaces it (`db.generateEnrollmentKey`) |
 
 Other limits stay env vars: `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB), `PIPLAYER_MAX_SCREENSHOT_BYTES`
-(5 MiB), `PIPLAYER_AUDIT_RETENTION_DAYS` (365). Read them with `envInt(env, name, fallback)`.
+(5 MiB), `PIPLAYER_MAX_CAMERA_BYTES` (2 MiB), `PIPLAYER_AUDIT_RETENTION_DAYS` (365). Read them with `envInt(env, name, fallback)`.
 Optional `PIPLAYER_PUBLIC_BASE_URL`: when set, the Devices install snippet prints it as `CMS_URL`
 and drops the "edit it if this Pi reaches the CMS another way" note (`pages/devices.installBaseUrl`).
 
@@ -273,7 +274,28 @@ CHECKs/FKs/indexes) plus:
 - `uploads(id TEXT PK, user_id, key, upload_id, name, size, sha256, media_type, duration_seconds, width, height, parts JSON '[]', received, created_at)`
 - `meta(key PK, value)` with `schema_version = 1`
 
+`migrations/0002_camera.sql` (schema_version 2) adds to `devices`: `last_camera_at TEXT`,
+`camera_error TEXT` (player's last camera capture error, NULL = healthy) and `camera_live_url TEXT`
+(validated https URL or NULL). The test harness applies every file in `migrations/` in order
+(`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
+
 Foreign keys are enforced by D1. Add columns with a new `migrations/000N_*.sql`, never by editing 0001.
+
+## Camera feed (room camera on the Pi)
+
+Mirrors the screenshot path end to end; the Pi side is `player/player/camera.py`, setup in
+`docs/camera.md`.
+
+| where | what |
+|---|---|
+| `POST /api/camera/:device_id` (`api.js` uploadCamera, shares `receiveJpeg` with screenshots) | bearer = own device; multipart, first file part, JPEG magic, `PIPLAYER_MAX_CAMERA_BYTES`; stores R2 `camera/<device_id>.jpg` (`media.putCamera`), stamps `last_camera_at`, clears `camera_error` |
+| `GET /api/sync/:device_id?camera_error=` | trimmed to `MAX_SYNC_ERROR_LEN` (200), empty/absent -> NULL, stored in `devices.camera_error` on every sync |
+| manifest | `camera_interval_seconds` from the `camera_interval` setting |
+| `GET /devices/:id/camera` (`pages/devices.js`) | session users only, `image/jpeg`, `cache-control: no-store`, nosniff; 404 "no camera snapshot yet". The pages link it with `?t=<last_camera_at>` |
+| `pages/devices.cameraScreen(d, opts)` | the `.device-screen.device-camera` thumb + `cam · <age>` chip + live/stale chip (stale = `> 3 × camera_interval`, set by `decorateDevices` as `camera_age` / `camera_stale`), then `camera_error` as `.alert.warn.small`; renders only the alert when there is no snapshot yet. Used by the Devices rows and the dashboard tiles |
+| `POST /devices/:id/camera-url` (editor+) | form field `camera_live_url`: empty clears, else `liveUrl()` (absolute https, no credentials, <= 2048 chars) or 400; audit `device_set_camera_url` |
+| Devices row "Camera" `<details>` | the live URL form (disabled for viewers), and when the stored URL passes `liveUrl()` again: a "Live" new-tab link and a `Show live` button (`public/app.js` `data-live-frame`) that copies the iframe's `data-src` into `src` on first click; the iframe is `sandbox="allow-same-origin allow-scripts" referrerpolicy="no-referrer"` and starts `hidden`. A stored value that fails validation is never rendered |
+| delete device | removes `camera/<device_id>.jpg` alongside the screenshot |
 
 ## Tests
 

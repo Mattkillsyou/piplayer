@@ -19,7 +19,7 @@ const shot = (dev, body, field = "file") => {
   fd.set(field, new Blob([body], { type: "image/jpeg" }), "s.jpg");
   return api(`/api/screenshots/${dev.device_id}`, { method: "POST", body: fd, headers: bearer(dev.token) });
 };
-const settings = (c, fields) => post(c, "/settings", { timezone: "UTC", screenshot_interval: "60", default_image_duration: "10", ...fields });
+const settings = (c, fields) => post(c, "/settings", { timezone: "UTC", screenshot_interval: "60", camera_interval: "10", default_image_duration: "10", ...fields });
 
 let r, pid, dev, dev2, dev3, mA, mB;
 const FULL = new Uint8Array(1000).map((_, i) => i % 251);

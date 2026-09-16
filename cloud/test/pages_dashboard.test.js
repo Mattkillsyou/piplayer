@@ -68,6 +68,7 @@ describe("dashboard", () => {
     expect(page).toContain("<code>b-dev</code> · G1");
     expect(page).toContain('<span class="now-via">via group: G1</span>');
     expect(page).toContain('<span class="empty-sub">no screenshot yet</span>');
+    expect(page).not.toContain("device-camera"); // no camera snapshot yet
     expect(page).toContain('<span class="device-meta">last seen never</span>');
     // device C: schedule wins
     expect(page).toContain('<span class="now-via">via schedule: Always on</span>');

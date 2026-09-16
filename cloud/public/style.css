@@ -1025,6 +1025,7 @@ details > div, details > ul { padding: 8px 10px; }
 .install-cmd { white-space: pre-wrap; word-break: break-all; font-size: var(--p5k-text-label); color: var(--p5k-soft); }
 .token-block .action-buttons { display: flex; flex-direction: row; gap: 6px; }
 .token-block .action-buttons form { flex: 1; }
+.live-frame { display: block; width: 100%; aspect-ratio: 16 / 9; border: 1px solid var(--p5k-rule-2); background: #000; }
 .token-block .action-buttons button { width: 100%; padding: 6px; }
 
 @media (max-width: 1100px) {

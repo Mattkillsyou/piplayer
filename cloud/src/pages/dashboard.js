@@ -2,7 +2,7 @@
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, localTime, nowUtc, zoneName } from "../util.js";
-import { decorateDevices, deviceScreen, isFault, statusLamp } from "./devices.js";
+import { cameraScreen, decorateDevices, deviceScreen, isFault, statusLamp } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 
 const DASHBOARD_AUDIT_TAIL = 8;
@@ -10,6 +10,7 @@ const DASHBOARD_AUDIT_TAIL = 8;
 function deviceCard(ctx, d, tz, canEdit) {
   return `<div class="device-card${isFault(d) ? " is-fault" : ""}">
     ${deviceScreen(d, { now: true, tz, staleTitle: "No new screenshot for more than 3 capture intervals: the player may be idle, black or down" })}
+    ${cameraScreen(d, { tz, staleTitle: "No new camera snapshot for more than 3 camera intervals: the camera or the Pi may be down" })}
     <div class="device-card-body">
       <div class="device-card-head">
         <div>
@@ -57,7 +58,7 @@ async function dashboard(ctx) {
   const rows = await db.all(env,
     `SELECT d.id, d.device_id, d.name, d.last_seen_at, d.last_ip, d.playlist_id, d.group_id,
             d.current_position, d.current_filename, d.player_status,
-            d.last_screenshot_at, d.last_error,
+            d.last_screenshot_at, d.last_error, d.last_camera_at, d.camera_error,
             p.name AS playlist_name, g.name AS group_name
        FROM devices d
        LEFT JOIN playlists p ON p.id = d.playlist_id

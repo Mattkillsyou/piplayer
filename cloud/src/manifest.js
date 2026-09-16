@@ -184,6 +184,7 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
     next_rule: nextRule,
     commands,
     screenshot_interval_seconds: settings.screenshot_interval,
+    camera_interval_seconds: settings.camera_interval,
     // Site wall-clock with UTC offset, e.g. 2026-09-14T15:03:07-07:00 (schedules use this clock).
     server_time: serverTimeIso(settings.timezone, now),
   };

@@ -1,12 +1,12 @@
-// /settings (admin only): timezone validated via Intl, screenshot interval >= 15, default image
-// duration, saved to the settings table, audit settings_update, effects on other pages.
+// /settings (admin only): timezone validated via Intl, screenshot interval >= 15, camera
+// interval >= 5, default image duration, saved to the settings table, audit settings_update, effects on other pages.
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { query } from "./helpers.js";
 import { audits, detail, device, post, roleMatrix, roles } from "./pages_common.js";
 
 let r;
-const GOOD = { timezone: "America/Los_Angeles", screenshot_interval: "120", default_image_duration: "7.5" };
+const GOOD = { timezone: "America/Los_Angeles", screenshot_interval: "120", camera_interval: "20", default_image_duration: "7.5" };
 // The enrollment key is generated on first read, so it is always present; keep it out of the diffs.
 const settings = () => query("SELECT key, value FROM settings WHERE key != 'enrollment_key' ORDER BY key");
 const enrollmentKey = () => query("SELECT value FROM settings WHERE key = 'enrollment_key'").then((r) => r[0]?.value);
@@ -20,6 +20,7 @@ describe("settings", () => {
     await roleMatrix(r, "GET", "/settings", { minRole: "admin" });
     await roleMatrix(r, "POST", "/settings", { minRole: "admin", fields: GOOD });
     expect(await settings()).toEqual([
+      { key: "camera_interval", value: "20" },
       { key: "default_image_duration", value: "7.5" },
       { key: "screenshot_interval", value: "120" },
       { key: "timezone", value: "America/Los_Angeles" },
@@ -31,6 +32,7 @@ describe("settings", () => {
     const page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('name="timezone" value="UTC"');
     expect(page).toContain('name="screenshot_interval" value="60"');
+    expect(page).toContain('name="camera_interval" value="10"');
     expect(page).toContain('name="default_image_duration" value="10"');
     expect(page).toContain('<option value="Europe/London">');
     expect(page).toContain('href="/settings" class="active"');
@@ -45,6 +47,9 @@ describe("settings", () => {
       [{ ...GOOD, screenshot_interval: "abc" }, "screenshot_interval must be an integer"],
       [{ ...GOOD, screenshot_interval: "1.5" }, "screenshot_interval must be an integer"],
       [{ ...GOOD, screenshot_interval: "" }, "screenshot_interval required"],
+      [{ ...GOOD, camera_interval: "4" }, "camera_interval must be at least 5 seconds"],
+      [{ ...GOOD, camera_interval: "x" }, "camera_interval must be an integer"],
+      [{ ...GOOD, camera_interval: "" }, "camera_interval required"],
       [{ ...GOOD, default_image_duration: "0" }, "default_image_duration must be a positive number"],
       [{ ...GOOD, default_image_duration: "-3" }, "default_image_duration must be a positive number"],
       [{ ...GOOD, default_image_duration: "inf" }, "default_image_duration must be a positive number"],
@@ -64,17 +69,19 @@ describe("settings", () => {
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/settings?saved=1");
     expect(await settings()).toEqual([
+      { key: "camera_interval", value: "20" },
       { key: "default_image_duration", value: "7.5" },
       { key: "screenshot_interval", value: "120" },
       { key: "timezone", value: "Europe/Berlin" },
     ]);
     const [a] = await audits("settings_update");
     expect(a.username).toBe("admin");
-    expect(JSON.parse(a.details)).toEqual({ timezone: "Europe/Berlin", screenshot_interval: 120, default_image_duration: 7.5 });
+    expect(JSON.parse(a.details)).toEqual({ timezone: "Europe/Berlin", screenshot_interval: 120, camera_interval: 20, default_image_duration: 7.5 });
     const page = await (await r.admin.get("/settings?saved=1")).text();
     expect(page).toContain("Settings saved.");
     expect(page).toContain('name="timezone" value="Europe/Berlin"');
     expect(page).toContain('name="screenshot_interval" value="120"');
+    expect(page).toContain('name="camera_interval" value="20"');
     expect(page).toContain('name="default_image_duration" value="7.5"');
 
     // other pages: zone name, image duration hint, stale threshold (3 x 120 s), manifest interval
@@ -87,6 +94,7 @@ describe("settings", () => {
     if (sync.status === 200) {
       const body = await sync.json();
       expect(body.screenshot_interval_seconds).toBe(120);
+      expect(body.camera_interval_seconds).toBe(20);
       expect(body.server_time).toMatch(/\+0[12]:00$/);
     }
     // a fresh screenshot within 3 x 120 s is not stale
