@@ -68,8 +68,8 @@ def learn_code(host: str | None = None, timeout: float = LEARN_TIMEOUT_SECONDS, 
         sleep(1)
         try:
             packet = dev.check_data()
-        except broadlink.exceptions.ReadError:   # nothing received yet
-            continue
+        except (broadlink.exceptions.ReadError, broadlink.exceptions.StorageError):
+            continue   # nothing received yet (some RM firmware answers -5 "storage full" meanwhile)
         if packet:
             return base64.b64encode(bytes(packet)).decode()
     raise RuntimeError(f"nothing learned in {int(timeout)} s (press the remote at the RM4)")

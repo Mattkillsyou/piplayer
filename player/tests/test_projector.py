@@ -30,6 +30,7 @@ class FakeRm:
         self.learning = False
         self.learned: bytes | None = None   # what check_data returns once learning
         self.checks = 0
+        self.storage_full = False           # check_data raises StorageError (-5) while nothing captured
 
     def auth(self):
         return self.auth_ok
@@ -45,8 +46,11 @@ class FakeRm:
 
     def check_data(self):
         self.checks += 1
+        exc = sys.modules["broadlink"].exceptions
         if self.learned is None or self.checks < 3:
-            raise sys.modules["broadlink"].exceptions.ReadError("no data")
+            if self.storage_full:
+                raise exc.StorageError("The device storage is full")
+            raise exc.ReadError("no data")
         return self.learned
 
 
@@ -57,6 +61,7 @@ def rm(monkeypatch):
     mod = types.ModuleType("broadlink")
     exc = types.ModuleType("broadlink.exceptions")
     exc.ReadError = type("ReadError", (Exception,), {})
+    exc.StorageError = type("StorageError", (Exception,), {})
     mod.exceptions = exc
     mod.calls = []
     mod.discover = lambda timeout=10, **kw: mod.calls.append(("discover", timeout)) or ([dev] if dev.host else [])
@@ -108,6 +113,13 @@ def test_learn_polls_until_the_remote_is_pressed(rm):
     rm.learned = PACKET
     assert projector.learn_code(sleep=lambda s: None) == B64
     assert rm.learning and rm.checks == 3
+
+
+def test_learn_keeps_polling_through_storage_full(rm):
+    rm.learned = PACKET
+    rm.storage_full = True
+    assert projector.learn_code(sleep=lambda s: None) == B64
+    assert rm.checks == 3
 
 
 def test_learn_gives_up_after_the_window(rm, monkeypatch):
