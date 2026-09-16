@@ -251,7 +251,7 @@ most once every 10 minutes (`journalctl -u projector-player.service | grep
 | `upload failed: HTTP 401` / `403` | Device token rejected (same as for screenshots). | Devices page → Token / install → **New token**, update `config.toml`. |
 | `upload failed: HTTP 413` | The console rejected the size. | Same as "snapshot too large". |
 | `upload failed: HTTP 404` | Console without the camera endpoint. | Upgrade the console. |
-| `ConnectionError: ...` / `ReadTimeout` | Console unreachable from the Pi. | Same fix as for a player that is not syncing (see adding-a-pi.md, Troubleshooting). |
+| `HTTPSConnectionPool(host='console.example.com', port=443): Max retries exceeded with url: /api/camera/...` or `...: Read timed out. (read timeout=15)` (a requests connection/timeout message naming the console host; no `ConnectionError:` prefix) | Console unreachable from the Pi. | Same fix as for a player that is not syncing (see adding-a-pi.md, Troubleshooting). |
 
 **Snapshot shows but goes STALE.**
 

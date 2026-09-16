@@ -16,8 +16,8 @@ of bringing a Pi up is in [adding-a-pi.md](adding-a-pi.md).
 | --- | --- | --- | --- | --- |
 | Raspberry Pi 5, 4 GB | The player. 4 GB is plenty; 2 GB works but leaves no headroom for the Wyze bridge container. | 1 | $60 | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-5/) |
 | Raspberry Pi 27 W USB-C power supply | Official PSU. Anything weaker makes the Pi 5 throttle its USB ports (the IR blaster is USB-powered). | 1 | $12 | [raspberrypi.com](https://www.raspberrypi.com/products/27w-power-supply/) |
-| Raspberry Pi 5 Case (with fan) | Official case, fan included. Alternative: Argon NEO 5 (passive aluminium, about $15). | 1 | $10 | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-5-case/), [argon40.com](https://argon40.com/search?q=neo+5) |
-| microSD 32 GB, high endurance | Boot + media. Use an endurance card (Samsung PRO Endurance or SanDisk MAX Endurance); consumer cards wear out in a year of 24/7 looping. | 1 | $11 | [samsung.com](https://www.samsung.com/us/computing/memory-storage/memory-cards/), [sandisk.com](https://www.sandisk.com/products/memory-cards) |
+| Raspberry Pi 5 Case (with fan) | Official case, fan included. Alternative: Argon NEO 5 (aluminium, built-in fan, about $19). | 1 | $10 | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-5-case/), [argon40.com](https://argon40.com/products/argon-neo-case-for-raspberry-pi-5) |
+| microSD 32 GB, high endurance | Boot + media. Use an endurance card (Samsung PRO Endurance or SanDisk MAX Endurance); consumer cards wear out in a year of 24/7 looping. | 1 | $11 | [samsung.com](https://www.samsung.com/us/memory-storage/memory-card/pro-endurance-adapter-microsdxc-32gb-sku-mb-mj32ka-am/) (MB-MJ32KA/AM), [sandisk.com](https://www.sandisk.com/products/memory-cards/microsd-cards/sandisk-max-endurance-uhs-i-microsd?sku=SDSQQVR-032G-GN6IA) (SDSQQVR-032G) |
 | micro-HDMI (D) to HDMI (A) cable, 2 m, 4K60 | Pi to projector. The official cable is fine; any cable rated HDMI 2.0 / 4K60 works. Plug into **HDMI0** (the port closer to USB-C). | 1 | $8 | [raspberrypi.com](https://www.raspberrypi.com/products/micro-hdmi-to-standard-hdmi-a-cable/) |
 
 Subtotal: about $101.
@@ -26,7 +26,7 @@ Subtotal: about $101.
 
 | Part | Purpose | Qty | Approx. USD | Link |
 | --- | --- | --- | --- | --- |
-| Broadlink RM4 mini | IR blaster that turns the projector on and off. Powered from one of the Pi's USB ports; needs line of sight to the projector's IR receiver. 2.4 GHz Wi-Fi only. | 1 | $25 | [ibroadlink.com](https://www.ibroadlink.com/), [Amazon search](https://www.amazon.com/s?k=Broadlink+RM4+mini) |
+| Broadlink RM4 mini | IR blaster that turns the projector on and off. Powered from one of the Pi's USB ports; needs line of sight to the projector's IR receiver. 2.4 GHz Wi-Fi only. | 1 | $25 | [amazon.com](https://www.amazon.com/dp/B07ZSF46BX) (ASIN B07ZSF46BX; Broadlink's own store no longer lists the mini) |
 | Wyze Plug | Smart plug on the projector's mains lead: hard power-cycle from your phone when IR is not enough. 2.4 GHz Wi-Fi only. Sold in 2-packs (about $20). | 1 | $14 | [wyze.com](https://www.wyze.com/products/wyze-plug) |
 
 Subtotal: about $39.
@@ -46,7 +46,7 @@ and a Wyze API key; the RTSP path needs nothing extra.
 | Part | Purpose | Qty | Approx. USD | Link |
 | --- | --- | --- | --- | --- |
 | Cat6 patch cable, 3 m | Wired ethernet to the Pi. Wi-Fi works, but a wire is one less thing to debug remotely. | 1 | $7 | any retailer |
-| Raspberry Pi PoE+ HAT for Pi 5 (optional) | Power and network over one cable from a PoE+ switch; replaces the USB-C PSU. **Pi 5 version only**; the Pi 4 PoE+ HAT does not fit the Pi 5 header. | 0-1 | $25 | [raspberrypi.com](https://www.raspberrypi.com/products/) |
+| PoE+ HAT for Pi 5 (optional) | Power and network over one cable from a PoE+ switch; replaces the USB-C PSU. **Pi 5 version only**: the official [PoE+ HAT](https://www.raspberrypi.com/products/poe-plus-hat/) is the Pi 3B+/4 part and does not fit the Pi 5 header, and Raspberry Pi's own Pi 5 version ([design article](https://www.raspberrypi.com/news/designing-the-poe-hat-for-raspberry-pi-5-compact-efficient-power-and-networking/)) has no product page yet. Use a third-party one, e.g. 52Pi P30 (bundles the Active Cooler). | 0-1 | $30 | [52pi.com](https://52pi.com/products/p30-poe-hat-for-raspberry-pi-5-with-official-pi-5-active-cooler) |
 
 Subtotal: about $7 (PoE+ HAT excluded).
 
@@ -86,7 +86,7 @@ Everything else in the kit is the same.
 | --- | --- | --- | --- | --- |
 | Raspberry Pi 4 Model B, 4 GB | 1080p output only (no 4K playback). H.264 decodes in software unless you enable `hwdec=v4l2m2m-copy` in mpv.conf (README, Operating notes). | 1 | $55 | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-4-model-b/) |
 | Raspberry Pi 15 W USB-C power supply | Official Pi 4 PSU. | 1 | $8 | [raspberrypi.com](https://www.raspberrypi.com/products/type-c-power-supply/) |
-| Flirc Raspberry Pi 4 case | Passive aluminium case (the whole case is the heatsink). No fan to fail. | 1 | $16 | [flirc.tv](https://flirc.tv/search?q=raspberry+pi+4) |
+| Flirc Raspberry Pi 4 case | Passive aluminium case (the whole case is the heatsink). No fan to fail. | 1 | $17 | [flirc.tv](https://flirc.tv/products/flirc-raspberry-pi-4-case-silver) |
 | micro-HDMI (D) to HDMI (A) cable | Same cable as the Pi 5 (both use micro-HDMI). | 1 | $8 | see Compute |
 | microSD 32 GB, high endurance | Same card as the Pi 5. | 1 | $11 | see Compute |
 
@@ -96,9 +96,9 @@ Pi 5 for new builds).
 ## Compatibility notes
 
 - **Pi 5 Active Cooler and the official case lid are mutually exclusive.** The
-  official Pi 5 Case ships with its own fan; do not also buy the Active Cooler
-  for a cased Pi. Buy the Active Cooler only for a caseless or Argon NEO 5
-  mount.
+  official Pi 5 Case and the Argon NEO 5 both ship with their own fan; do not
+  also buy the Active Cooler for a cased Pi. Buy the Active Cooler only for a
+  caseless mount (the 52Pi PoE+ HAT bundle already includes one).
 - **2.4 GHz Wi-Fi.** The Broadlink RM4 mini, the Wyze Plug and the Wyze Cam v3
   are all 2.4 GHz only. Your access point must broadcast a 2.4 GHz SSID (a
   5 GHz-only network, or a combined SSID that steers new clients to 5 GHz,
@@ -132,7 +132,7 @@ Pi 5 for new builds).
 | Wyze Cam v3 | $36 |
 | **Total with Wyze Cam v3** | **about $220** |
 
-Optional extras not in the totals: PoE+ HAT $25, audio $8-70. One-time per
+Optional extras not in the totals: PoE+ HAT $30, audio $8-70. One-time per
 fleet: card reader $10, spare Pi 5 + PSU $72.
 
 ## Unbox to playing
