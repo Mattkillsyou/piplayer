@@ -158,8 +158,9 @@ Per unit, in order. Steps 1-4 happen at the desk; 5-10 at the projector.
    the Pi case and another on the HDMI plug that will go into the projector.
 2. **Flash the card.** On Windows run the Projection5000 SD Flasher
    (`tools/flasher/README.md`): fill in the device id, name, Wi-Fi (if not
-   wired) and timezone, insert the card, click Flash. The exe carries the
-   console URL and enrollment key, so no login is needed. Flash the spare
+   wired) and timezone, insert the card, click Flash. On first run enter
+   the console URL and your operator token; the flasher fetches the
+   enrollment key itself (`docs/automation.md` section B). Flash the spare
    card the same way with the same device id. (No Windows? Follow
    [adding-a-pi.md](adding-a-pi.md) with Raspberry Pi Imager instead.)
 3. **Assemble.** Pi into the case (fan header connected), microSD in. If you

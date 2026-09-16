@@ -500,7 +500,7 @@ routes and markup for LAN-only sites.
 | Mode | `projector_power_mode` | `manual` (default) or `auto` |
 | Broadlink host | `broadlink_host` | optional IP of the RM4 mini; empty means discover it on the LAN |
 | Learned codes | `projector_ir_codes` | JSON `{power_on, power_off, input_hdmi1}` of base64 Broadlink packets, filled by learning (below); shown as badges |
-| State | `projector_state`, `projector_error` | `on`, `off` or `unknown` plus the last error, reported by the player, best effort; shown as a lamp and an error line |
+| State | `projector_state` (cloud), `projector_power_state` (cms), `projector_error` | `on`, `off` or `unknown` plus the last error, reported by the player, best effort; shown as a lamp and an error line |
 
 Beside the selects sit **On** and **Off** buttons and, for Broadlink, a
 **Learn Power On**, **Learn Power Off** and **Learn Input HDMI1** button
@@ -563,10 +563,9 @@ leaves the stored codes alone. Learning blocks the player's poll for up to
    console before switching the device to `auto`.
 
 The learned packets are plain base64 strings and identical for every
-projector of the same model: a second device with the same projector can be
-given the codes by pasting them into its Projector block instead of learning
-again. Learning always needs the physical remote; the console cannot invent
-a code and ships no library of them.
+projector of the same model, but the Projector block has no codes input:
+each device learns its own codes. Learning always needs the physical
+remote; the console cannot invent a code and ships no library of them.
 
 **CEC option.** Set Control to `cec`; nothing to learn. The player runs
 `cec-ctl` (package `v4l-utils`, installed by `install-player.sh`) on the
