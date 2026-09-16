@@ -1,6 +1,7 @@
 // /settings (admin only, cloud-only page): site timezone, screenshot and camera intervals,
-// default image duration and the group/playlist new devices get on first enrollment, stored in
-// the settings table (db.loadSettings / saveSetting), plus the device enrollment key (shown
+// default image duration, the group/playlist new devices get on first enrollment and the remote
+// update policy (player release, nightly auto-update + window), stored in the settings table
+// (db.loadSettings / saveSetting), plus the device enrollment key (shown
 // masked, rotatable; POST /api/enroll checks it) and the admin's personal API tokens
 // (api_tokens; the flasher presents one on GET /api/operator/enrollment to fetch that key).
 import * as audit from "../audit.js";
@@ -136,6 +137,21 @@ ${revoked ? alertBox("API token revoked.", "ok") : ""}
       </label>
     </div>
     <p class="help small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot; the camera interval works the same way for room camera snapshots. The image duration applies to images without a per-item override. The group and playlist are applied when a device enrolls for the first time (<code>POST /api/enroll</code>); re-enrolling a known device keeps its current assignment.</p>
+    <h3>Player updates</h3>
+    <div class="form-grid">
+      <label>Player release (git tag, branch or sha)
+        <input type="text" name="player_release" value="${esc(s.player_release)}" placeholder="main" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9._/-]{0,99}" required>
+      </label>
+      <label>Auto-update
+        <select name="auto_update">
+          ${db.AUTO_UPDATE_MODES.map((m) => `<option value="${m}"${m === s.auto_update ? " selected" : ""}>${m}</option>`).join("\n          ")}
+        </select>
+      </label>
+      <label>Auto-update window (site time, HH:MM-HH:MM)
+        <input type="text" name="auto_update_window" value="${esc(s.auto_update_window)}" placeholder="03:00-05:00" pattern="([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d" required>
+      </label>
+    </div>
+    <p class="help small">"Update player" on the Devices page (and "Update all players") checks this release out on the Pi and reinstalls the player. With auto-update <code>nightly</code> every player does the same by itself inside the window, at most once a day, and skips when it is already on that release. Each Pi reports the outcome on its next sync (Devices page).</p>
     <div class="row">
       <button type="submit" class="primary">Save settings</button>
     </div>
@@ -179,8 +195,18 @@ async function settingsSave(ctx) {
   if (enrollGroup !== null && !(await db.first(ctx.env, "SELECT id FROM device_groups WHERE id = ?", enrollGroup))) fail(400, "enroll_group_id: unknown group");
   const enrollPlaylist = intField(str(form, "enroll_playlist_id"), "enroll_playlist_id");
   if (enrollPlaylist !== null && !(await db.first(ctx.env, "SELECT id FROM playlists WHERE id = ?", enrollPlaylist))) fail(400, "enroll_playlist_id: unknown playlist");
+  // Update policy: an omitted (empty) field keeps its current value, so older callers that
+  // only post the four site fields never lose it.
+  const current = await ctx.settings();
+  const release = str(form, "player_release").trim() || current.player_release;
+  if (!db.isGitRef(release)) fail(400, "player_release must be a git tag, branch or sha (letters, digits, . _ / -; at most 100 chars)");
+  const autoUpdate = str(form, "auto_update").trim() || current.auto_update;
+  if (!db.AUTO_UPDATE_MODES.includes(autoUpdate)) fail(400, `auto_update must be one of ${db.AUTO_UPDATE_MODES.join(", ")}`);
+  const window = str(form, "auto_update_window").trim() || current.auto_update_window;
+  if (!db.UPDATE_WINDOW_RE.test(window)) fail(400, "auto_update_window must be HH:MM-HH:MM (24-hour, site time)");
   const values = { timezone, screenshot_interval: interval, camera_interval: camera, default_image_duration: duration,
-    enroll_group_id: enrollGroup, enroll_playlist_id: enrollPlaylist };
+    enroll_group_id: enrollGroup, enroll_playlist_id: enrollPlaylist,
+    player_release: release, auto_update: autoUpdate, auto_update_window: window };
   // null (none) deletes the row so the settings table only holds what is set
   await db.batch(ctx.env, Object.entries(values).map(([k, v]) => (v === null
     ? ["DELETE FROM settings WHERE key = ?", k]

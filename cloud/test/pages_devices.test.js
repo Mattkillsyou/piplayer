@@ -1,5 +1,6 @@
 // /devices: register (device_id regex), assign, group, regen-token, delete (+ R2 screenshot),
-// command, screenshot serving, recent commands, token/install block gated by role.
+// command, screenshot serving, recent commands, token/install block gated by role, remote
+// update buttons + fleet "Update all players" + the player's reported update status.
 import { beforeAll, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import * as media from "../src/media.js";
@@ -44,6 +45,8 @@ describe("role matrix", () => {
     expect(vw).not.toContain("Reboot Pi");
     expect(vw).not.toContain("New token");
     expect(vw).not.toContain("Delete device");
+    expect(vw).not.toContain("Update player");
+    expect(vw).not.toContain("Update all players");
     expect(vw).toContain('<span class="help small">Viewer access: read-only.</span>');
     expect(vw).toContain('name="group_id" data-autosubmit disabled');
     expect(vw).toContain('name="playlist_id" data-autosubmit disabled');
@@ -55,6 +58,12 @@ describe("role matrix", () => {
       expect(page).not.toContain("Viewer access: read-only.");
       expect(page).toContain('<button type="submit" class="small primary" title="Tell the Pi to re-sync from the CMS now">Resync</button>');
       expect(page).toContain('<button type="submit" class="small danger">Reboot Pi</button>');
+      for (const cmd of ["update-player", "update-os", "update-all"]) expect(page).toContain(`<input type="hidden" name="command" value="${cmd}">`);
+      expect(page).toContain(">Update player</button>");
+      expect(page).toContain(">Update OS</button>");
+      expect(page).toContain(">Update all</button>");
+      expect(page).toContain('<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Queue a player software update (release main) on every device? Playback restarts on each Pi.">');
+      expect(page).toContain(">Update all players</button>");
       expect(page).toContain("<summary>Token / install</summary>");
       expect(page).toContain(`<code class="token">${w.dev.token}</code>`);
       expect(page).toContain("cd piplayer/player");
@@ -92,6 +101,7 @@ describe("page content", () => {
     expect(page).not.toContain(XSS);
     expect(page).toContain('data-confirm="Delete device x&#39;);alert(1);//dev?"');
     expect(page).toContain('data-confirm="Reboot x&#39;);alert(1);//dev?"');
+    expect(page).toContain('data-confirm="Update the player software on x&#39;);alert(1);//dev? Playback restarts."');
     expect(page).toContain('<span class="now-label">active now · via schedule: r</span>');   // the rule wins over the default
     expect(page).toContain('<span class="now-playlist">Default PL</span>');
     expect(page).toContain(`<a href="/devices/${w.dev.id}/schedule" class="button">Schedule (1)</a>`);
@@ -214,16 +224,17 @@ describe("assign / group / token / command / delete", () => {
     expect(await detail(await post(r.editor, `/devices/${NOPE}/command`, { command: "reboot" }), 404)).toBe("Device not found");
     expect(await detail(await post(r.editor, `/devices/${dev.id}/command`, { command: "rm-rf" }), 400)).toBe("unknown command");
     expect(await query("SELECT id FROM device_commands WHERE device_id = ?", dev.id)).toEqual([]);
-    for (const command of ["reboot", "force-sync", "restart-mpv"]) {
+    for (const command of ["reboot", "force-sync", "restart-mpv", "update-player", "update-os", "update-all"]) {
       expect((await post(r.editor, `/devices/${dev.id}/command`, { command })).status).toBe(303);
     }
     const rows = await query("SELECT command, issued_by, completed_at, delivery_count FROM device_commands WHERE device_id = ? ORDER BY id", dev.id);
-    expect(rows.map((x) => x.command)).toEqual(["reboot", "force-sync", "restart-mpv"]);
+    expect(rows.map((x) => x.command)).toEqual(["reboot", "force-sync", "restart-mpv", "update-player", "update-os", "update-all"]);
     expect(rows[0].issued_by).toBe((await one("SELECT id FROM users WHERE username = 'ed'")).id);
     expect(rows[0].delivery_count).toBe(0);
     const [a] = await audits("device_send_command");
-    expect(JSON.parse(a.details)).toMatchObject({ command: "restart-mpv" });
+    expect(JSON.parse(a.details)).toMatchObject({ command: "update-all" });
     expect(typeof JSON.parse(a.details).command_id).toBe("number");
+    await query("DELETE FROM device_commands WHERE device_id = ?", dev.id);
   });
 
   it("delete removes the row, its screenshot in R2, audits; 404 for unknown", async () => {
@@ -305,5 +316,58 @@ describe("query budget", () => {
     expect(rows[2].active_playlist_name).toBe("Budget sched PL");
     expect(rows[5].active_playlist_id).toBeNull();
     for (const d of devs) await query("DELETE FROM devices WHERE id = ?", d.id);
+  });
+});
+
+describe("remote updates", () => {
+  it("shows the player's last update report: ok as a muted line, a failure as an error box", async () => {
+    const dev = await device("upd-1", "Upd <one>");
+    let page = await (await r.viewer.get("/devices")).text();
+    expect(page).not.toContain("update-status");
+    await query("UPDATE devices SET last_update_at = datetime('now', '-3 hours'), last_update_ok = 1, last_update_message = 'already at abc123', last_update_ref = 'v1.4.0' WHERE id = ?", dev.id);
+    page = await (await r.viewer.get("/devices")).text();
+    expect(page).toContain('<p class="update-status muted small" title="Reported by the player after its last update">Update ok <code>v1.4.0</code> · 3 h ago · ');
+    expect(page).toContain(" UTC: already at abc123</p>");
+    expect(page).not.toContain("Update failed");
+    await query("UPDATE devices SET last_update_at = datetime('now', '-90 seconds'), last_update_ok = 0, last_update_message = 'install-player.sh exited 1: <pip>', last_update_ref = NULL WHERE id = ?", dev.id);
+    page = await (await r.viewer.get("/devices")).text();
+    expect(page).toContain('<div class="alert error update-status" title="Reported by the player after its last update">Update failed · 1 min ago · ');
+    expect(page).toContain(" UTC: install-player.sh exited 1: &lt;pip&gt;</div>");
+    expect(page).not.toContain("<code></code>");
+    await query("DELETE FROM devices WHERE id = ?", dev.id);
+  });
+
+  it("Update all players queues one command per device, skips devices already waiting, audits, banners", async () => {
+    await query("DELETE FROM device_commands");
+    const before = (await query("SELECT COUNT(*) AS n FROM devices"))[0].n;
+    expect(before).toBeGreaterThan(1);
+    expect(await detail(await post(r.editor, "/devices/update-all", { command: "reboot" }), 400)).toBe("unknown command");
+    expect(await query("SELECT id FROM device_commands")).toEqual([]);
+    await roleMatrix(r, "POST", "/devices/update-all", { fields: { command: "update-player" } });
+    let rows = await query("SELECT device_id, command, issued_by, completed_at FROM device_commands ORDER BY device_id");
+    expect(rows.length).toBe(before);
+    expect(new Set(rows.map((x) => x.command))).toEqual(new Set(["update-player"]));
+    expect(rows[0].issued_by).toBe((await one("SELECT id FROM users WHERE username = 'ed'")).id);
+    const [a] = await audits("device_update_all");
+    expect(a).toMatchObject({ username: "ed", target_type: "device", target_id: null, details: `{"command": "update-player", "queued": ${before}}` });
+    // a second click while every device still waits queues nothing; once one device reports, only it gets a new one
+    let res = await post(r.editor, "/devices/update-all", { command: "update-player" });
+    expect(res.headers.get("location")).toBe("/devices?queued=0");
+    expect((await query("SELECT COUNT(*) AS n FROM device_commands"))[0].n).toBe(before);
+    await query("UPDATE device_commands SET completed_at = datetime('now'), result = 'ok' WHERE device_id = ?", w.dev.id);
+    res = await post(r.editor, "/devices/update-all", { command: "update-player" });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/devices?queued=1");
+    rows = await query("SELECT id FROM device_commands WHERE device_id = ? AND completed_at IS NULL", w.dev.id);
+    expect(rows.length).toBe(1);
+    // the other fleet commands are allowed too; the banner counts what was queued
+    res = await post(r.editor, "/devices/update-all", { command: "update-os" });
+    expect(res.headers.get("location")).toBe(`/devices?queued=${before}`);
+    const page = await (await r.editor.get(`/devices?queued=${before}`)).text();
+    expect(page).toContain(`<div class="alert ok" role="alert">Update queued for ${before} devices.</div>`);
+    expect(await (await r.editor.get("/devices?queued=1")).text()).toContain("Update queued for 1 device.");
+    expect(await (await r.editor.get("/devices?queued=<x>")).text()).not.toContain("Update queued");
+    expect((await post(r.editor, "/devices/update-all", { command: "update-all" })).status).toBe(303);
+    await query("DELETE FROM device_commands");
   });
 });

@@ -1,5 +1,6 @@
 // Device API: sync status + manifest, command delivery cap (contract 4), sync_error
-// (contract 5), command results, screenshot upload, docs routes 404.
+// (contract 5), update_status report + manifest `update` block, command results, screenshot
+// upload, docs routes 404.
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -89,6 +90,7 @@ describe("sync", () => {
     expect(m.camera_interval_seconds).toBe(10);
     expect(m.server_time).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
     expect(m.commands).toEqual([]);
+    expect(m.update).toEqual({ release: "main", auto: "off", window: "03:00-05:00" }); // Settings defaults
     const row = await one("SELECT current_position, current_filename, player_status, player_version, last_seen_at, last_ip FROM devices WHERE id = ?", ids.dev.id);
     expect(row).toMatchObject({ current_position: 0, current_filename: "i.png", player_status: "playing", player_version: "test-0.0.1", last_ip: "203.0.113.9" });
     expect(row.last_seen_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
@@ -127,6 +129,51 @@ describe("sync", () => {
     expect((await one("SELECT last_error FROM devices WHERE id = ?", ids.dev.id)).last_error.length).toBe(200);
     await sync(ids.dev);
     expect((await one("SELECT last_error FROM devices WHERE id = ?", ids.dev.id)).last_error).toBeNull();
+  });
+});
+
+describe("update_status", () => {
+  const cols = () => one("SELECT last_update_at, last_update_ok, last_update_message, last_update_ref FROM devices WHERE id = ?", ids.dev.id);
+
+  it("stores the player's post-update report in the last_update columns and audits it", async () => {
+    expect(await cols()).toEqual({ last_update_at: null, last_update_ok: null, last_update_message: null, last_update_ref: null });
+    let r = await sync(ids.dev, { update_status: JSON.stringify({ ref: "v1.4.0", started: "2026-09-15T03:00:10+00:00", finished: "2026-09-15T03:02:40+00:00", ok: true, message: "updated abc123 -> def456", previous_version: "1.3.0" }) });
+    expect(r.status).toBe(200);
+    expect(await cols()).toEqual({ last_update_at: "2026-09-15 03:02:40", last_update_ok: 1, last_update_message: "updated abc123 -> def456", last_update_ref: "v1.4.0" });
+    const [a] = await query("SELECT username, target_type, target_id, details FROM audit_log WHERE action = 'device_update_reported' ORDER BY id DESC");
+    expect(a).toEqual({ username: null, target_type: "device", target_id: String(ids.dev.id), details: '{"device_id": "dev-1", "ref": "v1.4.0", "ok": true, "message": "updated abc123 -> def456"}' });
+    // a failure; finished missing -> stamped now; message capped like sync_error; the report is one-shot: a plain sync leaves it alone
+    r = await sync(ids.dev, { update_status: JSON.stringify({ ref: "main", ok: false, message: "x".repeat(300) }) });
+    expect(r.status).toBe(200);
+    let row = await cols();
+    expect(row.last_update_ok).toBe(0);
+    expect(row.last_update_message.length).toBe(200);
+    expect(row.last_update_ref).toBe("main");
+    expect(row.last_update_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    await sync(ids.dev, { player_status: "playing" });
+    expect(await cols()).toEqual(row);
+    // ok as 1/0 too (a shell-built report), unparsable finished -> now, empty strings -> NULL
+    await sync(ids.dev, { update_status: JSON.stringify({ ok: 1, finished: "yesterday", message: "", ref: "" }) });
+    row = await cols();
+    expect(row).toMatchObject({ last_update_ok: 1, last_update_message: null, last_update_ref: null });
+    // anything that is not a JSON object is ignored, never a 400: the sync must keep working
+    for (const bad of ["notjson", "[1]", "null", "\"str\"", ""]) {
+      expect((await sync(ids.dev, { update_status: bad })).status, bad).toBe(200);
+      expect(await cols(), bad).toEqual(row);
+    }
+    expect((await query("SELECT id FROM audit_log WHERE action = 'device_update_reported'")).length).toBe(3);
+  });
+
+  it("the CHECK admits the update and projector commands and ir-learn:<name>, nothing else", async () => {
+    for (const c of ["update-player", "update-os", "update-all", "projector-on", "projector-off", "ir-learn:power_on"]) {
+      const id = await issue(ids.other, c);
+      const m = await (await sync(ids.other)).json();
+      expect(m.commands.find((x) => x.id === id), c).toMatchObject({ command: c });
+      await postResult(ids.other, id, { result: "ok" });
+    }
+    for (const c of ["rm-rf", "ir-learn", "update"]) {
+      await expect(issue(ids.other, c), c).rejects.toThrow(/CHECK constraint|constraint failed/);
+    }
   });
 });
 

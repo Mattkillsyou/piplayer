@@ -48,7 +48,15 @@ export async function assertMigrated(env) {
 // ---------------------------------------------------------------------------
 
 export const SETTING_KEYS = ["timezone", "screenshot_interval", "camera_interval", "default_image_duration", "enrollment_key",
-  "enroll_group_id", "enroll_playlist_id"];
+  "enroll_group_id", "enroll_playlist_id", "player_release", "auto_update", "auto_update_window"];
+
+// Remote updates (manifest `update` block). player_release is a git ref the Pi checks out
+// (tag, branch or sha): starts with an alphanumeric so it can never read as a shell/git option,
+// no '..', at most 100 chars. auto_update_window is "HH:MM-HH:MM" site-local (may wrap midnight).
+export const GIT_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}$/;
+export const isGitRef = (v) => typeof v === "string" && GIT_REF_RE.test(v) && !v.includes("..");
+export const UPDATE_WINDOW_RE = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
+export const AUTO_UPDATE_MODES = ["off", "nightly"];
 
 export function defaultSettings(env) {
   return {
@@ -59,12 +67,16 @@ export function defaultSettings(env) {
     enrollment_key: "", // generated on first read (loadSettings), never from env
     enroll_group_id: null, // group / playlist applied to a device on its FIRST enrollment (api.enroll);
     enroll_playlist_id: null, // null = none; a deleted row is treated as none at enrollment time
+    player_release: env.PIPLAYER_PLAYER_RELEASE && isGitRef(env.PIPLAYER_PLAYER_RELEASE) ? env.PIPLAYER_PLAYER_RELEASE : "main",
+    auto_update: AUTO_UPDATE_MODES.includes(env.PIPLAYER_AUTO_UPDATE) ? env.PIPLAYER_AUTO_UPDATE : "off",
+    auto_update_window: UPDATE_WINDOW_RE.test(env.PIPLAYER_AUTO_UPDATE_WINDOW || "") ? env.PIPLAYER_AUTO_UPDATE_WINDOW : "03:00-05:00",
   };
 }
 
 // {timezone, screenshot_interval (int seconds), camera_interval (int seconds), default_image_duration
 // (float seconds), enrollment_key (secret shared with the flasher; POST /api/enroll), enroll_group_id /
-// enroll_playlist_id (int or null)}.
+// enroll_playlist_id (int or null), player_release (git ref), auto_update ('off' | 'nightly'),
+// auto_update_window ('HH:MM-HH:MM')}.
 export async function loadSettings(env) {
   const s = defaultSettings(env);
   for (const row of await all(env, "SELECT key, value FROM settings")) {
@@ -74,6 +86,9 @@ export async function loadSettings(env) {
     else if (row.key === "default_image_duration" && Number.isFinite(+row.value)) s.default_image_duration = parseFloat(row.value);
     else if (row.key === "enrollment_key" && row.value) s.enrollment_key = row.value;
     else if ((row.key === "enroll_group_id" || row.key === "enroll_playlist_id") && /^\d+$/.test(row.value)) s[row.key] = parseInt(row.value, 10);
+    else if (row.key === "player_release" && isGitRef(row.value)) s.player_release = row.value;
+    else if (row.key === "auto_update" && AUTO_UPDATE_MODES.includes(row.value)) s.auto_update = row.value;
+    else if (row.key === "auto_update_window" && UPDATE_WINDOW_RE.test(row.value)) s.auto_update_window = row.value;
   }
   if (!s.enrollment_key) s.enrollment_key = await generateEnrollmentKey(env, false);
   return s;

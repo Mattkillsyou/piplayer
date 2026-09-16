@@ -187,6 +187,13 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
     camera_interval_seconds: settings.camera_interval,
     // Site wall-clock with UTC offset, e.g. 2026-09-14T15:03:07-07:00 (schedules use this clock).
     server_time: serverTimeIso(settings.timezone, now),
+    // Remote updates (Settings): the git ref update-player checks out, whether the daemon
+    // updates itself nightly and the site-local window it may do so in.
+    update: {
+      release: settings.player_release || "main",
+      auto: settings.auto_update || "off",
+      window: settings.auto_update_window || "03:00-05:00",
+    },
   };
 }
 

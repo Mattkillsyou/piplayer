@@ -118,6 +118,7 @@ describe("resolve_active_playlist_id / manifest_for_device", () => {
     expect(m.commands).toEqual([]);
     expect(m.screenshot_interval_seconds).toBe(60);
     expect(m.server_time).toBe("2026-09-14T12:00:07+00:00");
+    expect(m.update).toEqual({ release: "main", auto: "off", window: "03:00-05:00" }); // defaults when settings lack them
     const p = m.playlist;
     expect(p.id).toBe(ids.plA);
     expect(p.name).toBe("A");

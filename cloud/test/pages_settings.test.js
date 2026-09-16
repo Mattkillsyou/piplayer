@@ -1,5 +1,6 @@
 // /settings (admin only): timezone validated via Intl, screenshot interval >= 15, camera
-// interval >= 5, default image duration, saved to the settings table, audit settings_update, effects on other pages.
+// interval >= 5, default image duration, player update policy (git ref, off|nightly, HH:MM-HH:MM
+// window), saved to the settings table, audit settings_update, effects on other pages + manifest.
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { query } from "./helpers.js";
@@ -7,6 +8,10 @@ import { audits, detail, device, group, playlist, post, roleMatrix, roles } from
 
 let r;
 const GOOD = { timezone: "America/Los_Angeles", screenshot_interval: "120", camera_interval: "20", default_image_duration: "7.5" };
+// Every save stores the update policy too (omitted fields keep their current value = the defaults here).
+const UPDATE_ROWS = [{ key: "auto_update", value: "off" }, { key: "auto_update_window", value: "03:00-05:00" }, { key: "player_release", value: "main" }];
+const withUpdate = (rows) => [...rows, ...UPDATE_ROWS].sort((a, b) => (a.key < b.key ? -1 : 1));
+const UPDATE_AUDIT = { player_release: "main", auto_update: "off", auto_update_window: "03:00-05:00" };
 // The enrollment key is generated on first read, so it is always present; keep it out of the diffs.
 const settings = () => query("SELECT key, value FROM settings WHERE key != 'enrollment_key' ORDER BY key");
 const enrollmentKey = () => query("SELECT value FROM settings WHERE key = 'enrollment_key'").then((r) => r[0]?.value);
@@ -19,12 +24,12 @@ describe("settings", () => {
   it("admin only", async () => {
     await roleMatrix(r, "GET", "/settings", { minRole: "admin" });
     await roleMatrix(r, "POST", "/settings", { minRole: "admin", fields: GOOD });
-    expect(await settings()).toEqual([
+    expect(await settings()).toEqual(withUpdate([
       { key: "camera_interval", value: "20" },
       { key: "default_image_duration", value: "7.5" },
       { key: "screenshot_interval", value: "120" },
       { key: "timezone", value: "America/Los_Angeles" },
-    ]);
+    ]));
     await query("DELETE FROM settings");
   });
 
@@ -34,6 +39,10 @@ describe("settings", () => {
     expect(page).toContain('name="screenshot_interval" value="60"');
     expect(page).toContain('name="camera_interval" value="10"');
     expect(page).toContain('name="default_image_duration" value="10"');
+    expect(page).toContain('name="player_release" value="main"');
+    expect(page).toContain('<option value="off" selected>off</option>');
+    expect(page).toContain('<option value="nightly">nightly</option>');
+    expect(page).toContain('name="auto_update_window" value="03:00-05:00"');
     expect(page).toContain('<option value="Europe/London">');
     expect(page).toContain('href="/settings" class="active"');
     expect(page).not.toContain("Settings saved.");
@@ -55,6 +64,14 @@ describe("settings", () => {
       [{ ...GOOD, default_image_duration: "inf" }, "default_image_duration must be a positive number"],
       [{ ...GOOD, default_image_duration: "86401" }, "default_image_duration must be a positive number"],
       [{ ...GOOD, default_image_duration: "" }, "default_image_duration required"],
+      [{ ...GOOD, player_release: "-rf" }, "player_release must be a git tag, branch or sha"],
+      [{ ...GOOD, player_release: "a..b" }, "player_release must be a git tag, branch or sha"],
+      [{ ...GOOD, player_release: "v1;rm" }, "player_release must be a git tag, branch or sha"],
+      [{ ...GOOD, player_release: "a".repeat(101) }, "player_release must be a git tag, branch or sha"],
+      [{ ...GOOD, auto_update: "weekly" }, "auto_update must be one of off, nightly"],
+      [{ ...GOOD, auto_update_window: "3:00-5:00" }, "auto_update_window must be HH:MM-HH:MM"],
+      [{ ...GOOD, auto_update_window: "03:00" }, "auto_update_window must be HH:MM-HH:MM"],
+      [{ ...GOOD, auto_update_window: "24:00-05:00" }, "auto_update_window must be HH:MM-HH:MM"],
     ];
     await query("DELETE FROM audit_log WHERE action = 'settings_update'");
     for (const [fields, msg] of cases) {
@@ -68,16 +85,16 @@ describe("settings", () => {
     const res = await post(r.admin, "/settings", { ...GOOD, timezone: " Europe/Berlin " });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/settings?saved=1");
-    expect(await settings()).toEqual([
+    expect(await settings()).toEqual(withUpdate([
       { key: "camera_interval", value: "20" },
       { key: "default_image_duration", value: "7.5" },
       { key: "screenshot_interval", value: "120" },
       { key: "timezone", value: "Europe/Berlin" },
-    ]);
+    ]));
     const [a] = await audits("settings_update");
     expect(a.username).toBe("admin");
     expect(JSON.parse(a.details)).toEqual({ timezone: "Europe/Berlin", screenshot_interval: 120, camera_interval: 20, default_image_duration: 7.5,
-      enroll_group_id: null, enroll_playlist_id: null });
+      enroll_group_id: null, enroll_playlist_id: null, ...UPDATE_AUDIT });
     const page = await (await r.admin.get("/settings?saved=1")).text();
     expect(page).toContain("Settings saved.");
     expect(page).toContain('name="timezone" value="Europe/Berlin"');
@@ -145,6 +162,39 @@ describe("settings", () => {
     expect((await post(r.admin, "/settings", { ...GOOD, enroll_group_id: "", enroll_playlist_id: "" })).status).toBe(303);
     expect((await settings()).filter((x) => x.key.startsWith("enroll_"))).toEqual([]);
     await query("DELETE FROM device_groups WHERE id = ?", gid);
+    await query("DELETE FROM settings");
+  });
+
+  it("player updates: git ref / mode / window saved, shown selected, carried by the manifest; omitted fields keep their value", async () => {
+    await query("DELETE FROM settings");
+    let res = await post(r.admin, "/settings", { ...GOOD, player_release: " v2.1.0 ", auto_update: "nightly", auto_update_window: "22:30-01:15" });
+    expect(res.status).toBe(303);
+    expect((await settings()).filter((x) => x.key in UPDATE_AUDIT)).toEqual([
+      { key: "auto_update", value: "nightly" }, { key: "auto_update_window", value: "22:30-01:15" }, { key: "player_release", value: "v2.1.0" },
+    ]);
+    expect(JSON.parse((await audits("settings_update"))[0].details)).toMatchObject({ player_release: "v2.1.0", auto_update: "nightly", auto_update_window: "22:30-01:15" });
+    const page = await (await r.admin.get("/settings")).text();
+    expect(page).toContain('name="player_release" value="v2.1.0"');
+    expect(page).toContain('<option value="nightly" selected>nightly</option>');
+    expect(page).toContain('name="auto_update_window" value="22:30-01:15"');
+    // the player sees the policy on its next sync
+    const dev = await device("upd-dev", "Upd dev");
+    const sync = await SELF.fetch(`http://piplayer.test/api/sync/${dev.device_id}`, { headers: { authorization: `Bearer ${dev.token}` } });
+    expect(sync.status).toBe(200);
+    expect((await sync.json()).update).toEqual({ release: "v2.1.0", auto: "nightly", window: "22:30-01:15" });
+    // a save without the update fields (older form) keeps them
+    res = await post(r.admin, "/settings", GOOD);
+    expect(res.status).toBe(303);
+    expect((await settings()).filter((x) => x.key in UPDATE_AUDIT).map((x) => x.value)).toEqual(["nightly", "22:30-01:15", "v2.1.0"]);
+    // a branch with a slash and a sha are refs too
+    for (const ref of ["release/2026-09", "eecd133", "feature_x-1"]) {
+      expect((await post(r.admin, "/settings", { ...GOOD, player_release: ref })).status, ref).toBe(303);
+    }
+    // a junk stored value falls back to the default rather than reaching the player
+    await query("UPDATE settings SET value = '-rf' WHERE key = 'player_release'");
+    await query("UPDATE settings SET value = 'x' WHERE key = 'auto_update_window'");
+    const m = await (await SELF.fetch(`http://piplayer.test/api/sync/${dev.device_id}`, { headers: { authorization: `Bearer ${dev.token}` } })).json();
+    expect(m.update).toEqual({ release: "main", auto: "nightly", window: "03:00-05:00" });
     await query("DELETE FROM settings");
   });
 

@@ -7,9 +7,10 @@ import * as db from "./db.js";
 import * as manifest from "./manifest.js";
 import * as media from "./media.js";
 import { installBaseUrl } from "./pages/devices.js";
-import { envInt, fail, HttpError, json, jsonObject, randomToken } from "./util.js";
+import { envInt, fail, HttpError, json, jsonObject, nowUtc, randomToken } from "./util.js";
 
 export const MAX_SYNC_ERROR_LEN = 200;
+export const MAX_UPDATE_REF_LEN = 100;
 export const DEVICE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/; // same rule as the Devices page
 export const MAX_DEVICE_NAME = 120;
 
@@ -69,9 +70,38 @@ async function sync(ctx) {
     cameraError,
     device.id);
 
+  await storeUpdateStatus(ctx, device, q.get("update_status"));
+
   const settings = await ctx.settings();
   const body = await manifest.manifest_for_device(ctx.env, device, ctx.url.origin, settings);
   return new Response(manifest.manifest_json(body), { headers: { "content-type": "application/json" } });
+}
+
+// ?update_status=<json> is sent once by the daemon that starts after update-player.sh /
+// update-os.sh ran (the script restarts the service last, so the daemon that queued the command
+// is gone): {ref, started, finished, ok, message, previous_version}. Stored in the devices
+// last_update_* columns for the Devices page and audited as device_update_reported. Anything
+// that is not a JSON object is ignored: a malformed status must not break the sync.
+async function storeUpdateStatus(ctx, device, raw) {
+  if (!raw) return;
+  let st;
+  try {
+    st = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!st || typeof st !== "object" || Array.isArray(st)) return;
+  const ok = st.ok === true || st.ok === 1 ? 1 : 0;
+  const message = String(st.message ?? "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
+  const ref = String(st.ref ?? "").trim().slice(0, MAX_UPDATE_REF_LEN) || null;
+  // finished is the Pi's clock (ISO 8601); fall back to now when it is missing or unparsable
+  const finished = Date.parse(String(st.finished ?? ""));
+  const at = Number.isFinite(finished) ? nowUtc(new Date(finished)) : null;
+  await db.run(ctx.env,
+    `UPDATE devices SET last_update_at = COALESCE(?, datetime('now')), last_update_ok = ?,
+        last_update_message = ?, last_update_ref = ? WHERE id = ?`, at, ok, message, ref, device.id);
+  await audit.log(ctx, "device_update_reported", "device", device.id,
+    { device_id: device.device_id, ref: ref ?? undefined, ok: Boolean(ok), message: message ?? undefined }, null);
 }
 
 async function reportCommandResult(ctx) {

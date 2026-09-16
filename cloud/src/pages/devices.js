@@ -9,9 +9,11 @@ import * as media from "../media.js";
 import {
   ageSeconds, ageText, esc, fail, HttpError, idParam, intField, localTime, randomToken, redirect, str, wallClock,
 } from "../util.js";
-import { csrfInput, emptyState, layout } from "./layout.js";
+import { alertBox, csrfInput, emptyState, layout } from "./layout.js";
 
-export const COMMANDS = ["reboot", "force-sync", "restart-mpv"];
+export const COMMANDS = ["reboot", "force-sync", "restart-mpv", "update-player", "update-os", "update-all"];
+// The fleet "Update all players" button queues one of these for every device (POST /devices/update-all).
+export const FLEET_COMMANDS = ["update-player", "update-os", "update-all"];
 const DEVICE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 // A player that has not synced for this long is shown as offline (it polls every 30 s and
 // backs off to at most 300 s when the CMS is unreachable, in which case it cannot reach us anyway).
@@ -178,6 +180,18 @@ export function installBaseUrl(env, url) {
   return { base: configured || url.origin, configured: Boolean(configured) };
 }
 
+// What the player reported after its last update-player / update-os run (api.storeUpdateStatus):
+// a failure is an error box so it stands out, success a muted line; nothing until the first report.
+export function updateStatus(d, tz) {
+  if (!d.last_update_at) return "";
+  const when = `${esc(ageText(ageSeconds(d.last_update_at)))} · ${esc(localTime(d.last_update_at, tz))}`;
+  const ref = d.last_update_ref ? ` <code>${esc(d.last_update_ref)}</code>` : "";
+  const msg = d.last_update_message ? `: ${esc(d.last_update_message)}` : "";
+  return d.last_update_ok
+    ? `<p class="update-status muted small" title="Reported by the player after its last update">Update ok${ref} · ${when}${msg}</p>`
+    : `<div class="alert error update-status" title="Reported by the player after its last update">Update failed${ref} · ${when}${msg}</div>`;
+}
+
 function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
   return `<form method="post" action="/devices/${d.id}/command" class="inline"${extra}>
           ${csrfInput(ctx)}
@@ -236,6 +250,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install) {
       </div>
 
       ${d.last_error ? `<div class="alert error" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
+      ${updateStatus(d, tz)}
 
       <details class="camera-block">
         <summary>Camera${live ? " · live URL set" : ""}</summary>
@@ -270,6 +285,11 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install) {
         ${commandForm(ctx, d, "force-sync", "Resync", "small primary", "Tell the Pi to re-sync from the CMS now")}
         ${commandForm(ctx, d, "restart-mpv", "Restart mpv", "small", "Restart the mpv playback process")}
         ${commandForm(ctx, d, "reboot", "Reboot Pi", "small danger", "", ` data-confirm="Reboot ${esc(d.name)}?"`)}
+      </div>
+      <div class="action-buttons">
+        ${commandForm(ctx, d, "update-player", "Update player", "small", "Check out the Settings release on the Pi and reinstall the player", ` data-confirm="Update the player software on ${esc(d.name)}? Playback restarts."`)}
+        ${commandForm(ctx, d, "update-os", "Update OS", "small", "apt-get upgrade on the Pi; reboots if the OS asks for it", ` data-confirm="Update OS packages on ${esc(d.name)}? The Pi may reboot."`)}
+        ${commandForm(ctx, d, "update-all", "Update all", "small", "Player software, then OS packages", ` data-confirm="Update player and OS on ${esc(d.name)}? The Pi may reboot."`)}
       </div>
       <details>
         <summary>Token / install</summary>
@@ -309,6 +329,7 @@ async function devicesPage(ctx) {
             d.player_version, d.current_position, d.current_filename, d.player_status,
             d.last_screenshot_at, d.last_error,
             d.last_camera_at, d.camera_error, d.camera_live_url,
+            d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
             p.id AS playlist_id, p.name AS playlist_name,
             g.id AS group_id, g.name AS group_name
        FROM devices d
@@ -336,6 +357,7 @@ async function devicesPage(ctx) {
   }
   for (const c of recent) byId.get(c.device_id)?.recent_commands.push(c);
   const install = installBaseUrl(env, ctx.url);
+  const queued = ctx.url.searchParams.get("queued");
 
   const content = `<div class="page-head">
   <h1>Devices</h1>
@@ -348,9 +370,15 @@ async function devicesPage(ctx) {
       <input type="text" name="name" placeholder="Lobby Projector" required>
     </label>
     <button type="submit" class="primary">Register</button>
-  </form>` : ""}
+  </form>
+  ${devices.length ? `<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Queue a player software update (release ${esc(settings.player_release)}) on every device? Playback restarts on each Pi.">
+    ${csrfInput(ctx)}
+    <input type="hidden" name="command" value="update-player">
+    <button type="submit" title="Queue update-player on every device that is not already waiting for one">Update all players</button>
+  </form>` : ""}` : ""}
 </div>
 ${canEdit ? '<p class="help small">After registering, open "Token / install" on the new device and run that command on the Pi.</p>' : ""}
+${/^\d+$/.test(queued || "") ? alertBox(`Update queued for ${queued} device${queued === "1" ? "" : "s"}.`, "ok") : ""}
 
 ${!devices.length
     ? emptyState("NO SIGNAL", `No devices yet.${canEdit ? " Register one above." : ""}`)
@@ -434,6 +462,22 @@ async function devicesSendCommand(ctx) {
   return redirect("/devices");
 }
 
+// Fleet action: queue one update command for every device that is not already waiting for
+// the same one (a second click while the first is still queued must not double-update).
+async function devicesUpdateAll(ctx) {
+  const user = auth.requireRole(ctx, "editor");
+  const command = str(await ctx.form(), "command") || "update-player";
+  if (!FLEET_COMMANDS.includes(command)) fail(400, "unknown command");
+  const { changes } = await db.run(ctx.env,
+    `INSERT INTO device_commands (device_id, command, issued_by)
+     SELECT d.id, ?, ? FROM devices d
+      WHERE NOT EXISTS (SELECT 1 FROM device_commands c
+                         WHERE c.device_id = d.id AND c.command = ? AND c.completed_at IS NULL)`,
+    command, user.id, command);
+  await audit.log(ctx, "device_update_all", "device", null, { command, queued: changes });
+  return redirect(`/devices?queued=${changes}`);
+}
+
 // Latest screenshot, session users only (never cached: the URL carries ?t= but the
 // browser must not keep an old frame).
 async function devicesScreenshot(ctx) {
@@ -481,6 +525,7 @@ export function register(router) {
   router.post("/devices/:device_id/regen-token", devicesRegenToken);
   router.post("/devices/:device_id/delete", devicesDelete);
   router.post("/devices/:device_id/command", devicesSendCommand);
+  router.post("/devices/update-all", devicesUpdateAll);
   router.get("/devices/:device_id/screenshot", devicesScreenshot);
   router.get("/devices/:device_id/camera", devicesCamera);
   router.post("/devices/:device_id/camera-url", devicesSetCameraUrl);

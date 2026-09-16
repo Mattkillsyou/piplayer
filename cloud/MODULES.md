@@ -71,7 +71,8 @@ in its own try/catch. Locally: `wrangler dev --test-scheduled` then `GET /__sche
   cookies,           // Set-Cookie strings to append (auth.js fills it; you normally never touch it)
   form(),            // Promise<FormData>, memoised (the CSRF check already read it; reading again is free);
                      //   malformed body → 400. Use util.str(form, "name") for string fields.
-  settings(),        // Promise<{timezone, screenshot_interval, camera_interval, default_image_duration, enrollment_key}>, memoised
+  settings(),        // Promise<{timezone, screenshot_interval, camera_interval, default_image_duration, enrollment_key,
+                     //   enroll_group_id, enroll_playlist_id, player_release, auto_update, auto_update_window}>, memoised
 }
 ```
 
@@ -173,7 +174,9 @@ non-empty by `audit.pyJson()` (Python `json.dumps` text: `{"a": 1, "b": [1, 2]}`
 `device_set_group`, `device_regen_token`, `device_delete`, `device_send_command`,
 `device_schedule_create`, `device_schedule_delete`, `group_create`, `group_assign_playlist`,
 `group_delete`, `user_create`, `user_set_role`, `user_set_password`, `user_delete`
-(+ new: `settings_update`, `enrollment_key_rotated`, `device_enrolled`, `device_reenrolled`). `audit.clientIp(ctx)` is exported too.
+(+ new: `settings_update`, `enrollment_key_rotated`, `device_enrolled`, `device_reenrolled`,
+`device_update_all` (fleet button: `{command, queued}`), `device_update_reported` (user null: the
+player's post-update report `{device_id, ref, ok, message}`)). `audit.clientIp(ctx)` is exported too.
 
 ## pages/layout.js
 
@@ -258,6 +261,24 @@ export function register(router) {
 | `camera_interval` | `PIPLAYER_CAMERA_INTERVAL` (10, min 5) | manifest `camera_interval_seconds`, camera snapshot stale badge (`> 3 ×`) |
 | `default_image_duration` | `PIPLAYER_DEFAULT_IMAGE_DURATION` (10) | effective duration of images |
 | `enrollment_key` | random 32-byte urlsafe token, generated on the first `loadSettings` (never from env) | `POST /api/enroll` (the flasher fetches it live through `GET /api/operator/enrollment` and writes it to each card); `/settings` shows it and `POST /settings/enrollment/rotate` replaces it (`db.generateEnrollmentKey`) |
+| `enroll_group_id` / `enroll_playlist_id` | none (int or null; a deleted row reads as none) | applied to a device on its first `POST /api/enroll` only |
+| `player_release` | `PIPLAYER_PLAYER_RELEASE` (`main`); git tag/branch/sha, `db.isGitRef` (alphanumeric first char, `[A-Za-z0-9._/-]`, no `..`, <= 100) | manifest `update.release`: what `update-player` checks out on the Pi |
+| `auto_update` | `PIPLAYER_AUTO_UPDATE` (`off`); `off` or `nightly` (`db.AUTO_UPDATE_MODES`) | manifest `update.auto` |
+| `auto_update_window` | `PIPLAYER_AUTO_UPDATE_WINDOW` (`03:00-05:00`); `HH:MM-HH:MM` site time, may wrap midnight (`db.UPDATE_WINDOW_RE`) | manifest `update.window` |
+
+**Remote updates (feature C).** `pages/devices.COMMANDS` gains `update-player`, `update-os`,
+`update-all` (per-device buttons under Actions, each with a `data-confirm`); `POST /devices/update-all`
+(editor+, form field `command` in `FLEET_COMMANDS`, default `update-player`) queues that command
+for every device that is not already waiting for the same one (one `INSERT ... SELECT ... WHERE NOT
+EXISTS`), audits `device_update_all` and redirects to `/devices?queued=<n>` (ok banner). The daemon
+that starts after the update script ran reports once through `GET /api/sync/:id?update_status=<json>`
+(`{ref, started, finished, ok, message, previous_version}`; `api.storeUpdateStatus`): stored in
+`devices.last_update_at` (the report's `finished`, else now) / `last_update_ok` (1/0) /
+`last_update_message` (<= 200) / `last_update_ref` (<= 100), audited `device_update_reported`; a value
+that is not a JSON object is ignored so the sync never fails on it. `pages/devices.updateStatus(d, tz)`
+renders it under the facts: `p.update-status.muted.small` "Update ok ..." or `.alert.error.update-status`
+"Update failed ..." (ref, age + local time, message). A save of `/settings` that omits the three update
+fields keeps their current values (older callers only post the four site fields).
 
 **Operator API tokens** (`api_tokens`, migration 0003): the admin's own tokens live in the
 "My API tokens" panel of `/settings`. `POST /settings/tokens` (`name`, 1-60 chars) mints
@@ -292,7 +313,11 @@ CHECKs/FKs/indexes) plus:
 `migrations/0002_camera.sql` (schema_version 2) adds to `devices`: `last_camera_at TEXT`,
 `camera_error TEXT` (player's last camera capture error, NULL = healthy) and `camera_live_url TEXT`
 (validated https URL or NULL). `migrations/0003_automation.sql` (schema_version 3) adds
-`api_tokens(id, user_id → users ON DELETE CASCADE, name, token_hash UNIQUE, created_at, last_used_at)`.
+`api_tokens(id, user_id → users ON DELETE CASCADE, name, token_hash UNIQUE, created_at, last_used_at)`,
+rebuilds `device_commands` (rename-copy-drop, rows and ids kept, index recreated) so its CHECK admits
+`reboot`, `force-sync`, `restart-mpv`, `update-player`, `update-os`, `update-all`, `projector-on`,
+`projector-off` and `ir-learn:%` (E reuses this, never rebuild again), and adds to `devices`:
+`last_update_at TEXT`, `last_update_ok INTEGER`, `last_update_message TEXT`, `last_update_ref TEXT`.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
 

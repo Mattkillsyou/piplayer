@@ -990,6 +990,8 @@ tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
 .device-actions .action-buttons button.small { font-size: var(--p5k-text-label); letter-spacing: var(--p5k-track-label); color: var(--p5k-phosphor); border-color: var(--p5k-rule-strong); }
 .device-actions .action-buttons button.small.danger { background: var(--p5k-hatch); border-color: var(--p5k-rule-max); }
 .device-actions .action-buttons button.small.primary { color: var(--p5k-on-solid); border-color: var(--p5k-fill-solid); }
+.device-actions .action-buttons + .action-buttons { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--p5k-rule-2); }
+.device-row p.update-status { margin: 0; }
 
 details { border: 1px solid var(--p5k-rule-2); }
 details summary {
