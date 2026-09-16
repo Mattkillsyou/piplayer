@@ -17,12 +17,17 @@
 # The daemon runs this through sudo from inside projector-player.service, whose
 # cgroup the final restart would kill (the script included), so the first thing
 # it does is re-launch itself as a transient unit with systemd-run and return.
+#
+# PIPLAYER_ROOT (tests only) prefixes every absolute path so the whole flow,
+# rollback included, runs as a normal user in a scratch directory with fake
+# git remote / systemctl / apt-get on PATH (player/tests/test_updater.py).
 set -Eeuo pipefail
 
 REPO_URL="${PIPLAYER_REPO_URL:-https://github.com/Mattkillsyou/piplayer.git}"
-INSTALL_DIR="/opt/piplayer/player"
+ROOT="${PIPLAYER_ROOT:-}"
+INSTALL_DIR="${ROOT}/opt/piplayer/player"
 PREV_DIR="${INSTALL_DIR}.prev"
-DATA_DIR="/var/lib/projector-player"
+DATA_DIR="${ROOT}/var/lib/projector-player"
 STATUS_FILE="${DATA_DIR}/update-status.json"
 LOG_FILE="${DATA_DIR}/update.log"
 SERVICE="projector-player.service"
@@ -37,7 +42,7 @@ case "${2:-}" in
     *) echo "Unknown argument: ${2} (supported: --then-os)" >&2; exit 1 ;;
 esac
 
-if [[ $EUID -ne 0 ]]; then
+if [[ $EUID -ne 0 && -z "${ROOT}" ]]; then
     echo "Please run as root (sudo $0 ${REF})" >&2
     exit 1
 fi
@@ -114,8 +119,8 @@ update() {
         fail "bad ref: ${REF}"
     fi
     log "== update-player ${REF} (running ${PREV_VERSION})"
-    rm -rf /opt/piplayer/src-*
-    SRC_DIR="/opt/piplayer/src-$(date +%Y%m%d%H%M%S)"
+    rm -rf "${ROOT}/opt/piplayer"/src-*
+    SRC_DIR="${ROOT}/opt/piplayer/src-$(date +%Y%m%d%H%M%S)"
     mkdir -p "$(dirname "${SRC_DIR}")"
 
     local sha

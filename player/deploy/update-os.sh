@@ -9,14 +9,16 @@
 # daemon reports it on its next sync and then reboots if asked to. Output is
 # appended to /var/lib/projector-player/update.log. Like update-player.sh the
 # script re-launches itself as a transient systemd unit so a long apt run
-# never blocks (or gets killed with) the daemon.
+# never blocks (or gets killed with) the daemon. PIPLAYER_ROOT (tests only)
+# prefixes the absolute paths, as in update-player.sh.
 set -Eeuo pipefail
 
-DATA_DIR="/var/lib/projector-player"
+ROOT="${PIPLAYER_ROOT:-}"
+DATA_DIR="${ROOT}/var/lib/projector-player"
 STATUS_FILE="${DATA_DIR}/update-status.json"
 LOG_FILE="${DATA_DIR}/update.log"
 
-if [[ $EUID -ne 0 ]]; then
+if [[ $EUID -ne 0 && -z "${ROOT}" ]]; then
     echo "Please run as root (sudo $0)" >&2
     exit 1
 fi
@@ -65,7 +67,7 @@ main() {
     trap - ERR
     local summary
     summary="$(grep -E '^[0-9]+ upgraded, ' "${LOG_FILE}" | tail -n 1 || true)"
-    if [[ -f /var/run/reboot-required ]]; then
+    if [[ -f "${ROOT}/var/run/reboot-required" ]]; then
         write_status true "${summary:-packages upgraded}; reboot required" true
     else
         write_status true "${summary:-packages upgraded}" false

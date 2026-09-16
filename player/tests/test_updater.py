@@ -1,7 +1,11 @@
 """Remote updates: script invocation shape, update-status.json reporting, nightly window."""
 import json
 import os
+import shutil
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -163,3 +167,185 @@ def test_auto_off_or_missing_update_block_never_runs(cfg, runs):
     assert updater.maybe_auto_update(cfg, None, PlayerState(), now=at(3, 10)) is False
     assert updater.maybe_auto_update(cfg, {"auto": "off"}, PlayerState(), now=at(3, 10)) is False
     assert runs.args == []
+
+
+# ------------------------------------------- the scripts in a fake root ---
+# update-player.sh / update-os.sh run end to end as a normal user: PIPLAYER_ROOT
+# prefixes every absolute path, the "remote" is a local git repo whose
+# install-player.sh is a stub that writes RELEASE, and systemctl / apt-get are
+# PATH shims that log their calls. Only real systemd and apt stay Pi-only.
+
+DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
+
+
+def posix(p):
+    s = str(p).replace("\\", "/")
+    return f"/{s[0].lower()}{s[2:]}" if len(s) > 1 and s[1] == ":" else s
+
+
+def git(repo, *args):
+    cmd = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args]
+    return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+INSTALLER_STUB = """#!/usr/bin/env bash
+set -e
+[[ "$1" == --upgrade ]] || { echo "expected --upgrade, got $*" >&2; exit 2; }
+%s
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+D="${PIPLAYER_ROOT}/opt/piplayer/player"
+mkdir -p "$D/deploy"
+cp -r "$SRC/player" "$D/"
+cp "$SRC"/deploy/*.sh "$D/deploy/"
+echo "${PIPLAYER_RELEASE_SHA}" > "$D/RELEASE"
+echo "stub install-player.sh --upgrade ${PIPLAYER_RELEASE_SHA}"
+"""
+
+SHIMS = {
+    "python3": '#!/usr/bin/env bash\nexec "%s" "$@"\n' % posix(sys.executable),
+    "systemctl": '#!/usr/bin/env bash\necho "systemctl $*" >> "${SHIM_LOG}"\n'
+                 'case "$1" in is-active) echo "${FAKE_ACTIVE:-active}";; show) echo "${FAKE_RESTARTS:-0}";; esac\n',
+    "apt-get": '#!/usr/bin/env bash\necho "apt-get $*" >> "${SHIM_LOG}"\n'
+               '[[ "${FAKE_APT_RC:-0}" == 0 ]] || exit "${FAKE_APT_RC}"\n'
+               '[[ "$*" == *upgrade* ]] && echo "3 upgraded, 0 newly installed, 0 to remove and 0 not upgraded."\nexit 0\n',
+}
+
+
+@pytest.fixture
+def fake_pi(tmp_path):
+    """Fake root with RELEASE at the repo's first commit; .run(script, *args, **env) executes a deploy script."""
+    shims = tmp_path / "bin"
+    shims.mkdir()
+    for name, body in SHIMS.items():
+        (shims / name).write_text(body)
+        (shims / name).chmod(0o755)
+    repo = tmp_path / "repo"
+    (repo / "player" / "player").mkdir(parents=True)
+    (repo / "player" / "deploy").mkdir()
+    (repo / "player" / "player" / "__init__.py").write_text('__version__ = "0.2.0"\n')
+    for name in ("update-player.sh", "update-os.sh"):
+        shutil.copy(DEPLOY / name, repo / "player" / "deploy" / name)
+    (repo / "player" / "deploy" / "install-player.sh").write_text(INSTALLER_STUB % "")
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "one")
+    root = tmp_path / "root"
+    install = root / "opt" / "piplayer" / "player"
+    (install / "deploy").mkdir(parents=True)
+    (install / "RELEASE").write_text(git(repo, "rev-parse", "HEAD") + "\n")
+    shutil.copy(DEPLOY / "update-os.sh", install / "deploy" / "update-os.sh")
+    shim_log = tmp_path / "shim.log"
+    shim_log.write_text("")
+
+    def run(script, *args, **extra):
+        env = {**os.environ, "PATH": posix(shims) + os.pathsep + os.environ.get("PATH", ""),
+               "PIPLAYER_ROOT": posix(root), "PIPLAYER_REPO_URL": posix(repo),
+               "PIPLAYER_UPDATE_DETACHED": "1", "SHIM_LOG": posix(shim_log), **extra}
+        return subprocess.run(["bash", posix(DEPLOY / script), *args], env=env, capture_output=True, text=True)
+
+    data = root / "var" / "lib" / "projector-player"
+    return SimpleNamespace(run=run, root=root, repo=repo, shim_log=shim_log, install=install,
+                           status=lambda: json.loads((data / "update-status.json").read_text()),
+                           log=lambda: (data / "update.log").read_text())
+
+
+def commit(repo, text, branch=None, installer=None):
+    if branch:
+        git(repo, "checkout", "-q", "-b", branch)
+    (repo / "player" / "player" / "__init__.py").write_text(f'__version__ = "{text}"\n')
+    if installer is not None:
+        (repo / "player" / "deploy" / "install-player.sh").write_text(installer)
+    git(repo, "commit", "-qam", text)
+    return git(repo, "rev-parse", "HEAD")
+
+
+needs_tools = pytest.mark.skipif(shutil.which("bash") is None or shutil.which("git") is None,
+                                 reason="bash and git needed")
+
+
+@needs_tools
+def test_update_player_script_end_to_end_in_a_fake_root(fake_pi):
+    release = fake_pi.install / "RELEASE"
+    prev = fake_pi.install.with_name("player.prev")
+    sha1 = release.read_text().strip()
+
+    # already at the ref: nothing touched, nothing restarted
+    res = fake_pi.run("update-player.sh", "main")
+    assert res.returncode == 0, res.stderr + fake_pi.log()
+    st = fake_pi.status()
+    assert (st["ref"], st["ok"], st["message"], st["previous_version"]) == ("main", True, f"already at {sha1}", sha1)
+    assert not prev.exists()
+    assert fake_pi.shim_log.read_text() == ""
+    assert not list(fake_pi.install.parent.glob("src-*"))
+
+    # one commit ahead: .prev kept, RELEASE advanced, timer armed then service restarted
+    sha2 = commit(fake_pi.repo, "0.2.1")
+    res = fake_pi.run("update-player.sh", "main")
+    assert res.returncode == 0, res.stderr + fake_pi.log()
+    st = fake_pi.status()
+    assert st["ok"] is True and st["message"] == f"updated {sha1} -> {sha2}"
+    assert release.read_text().strip() == sha2
+    assert (prev / "RELEASE").read_text().strip() == sha1
+    assert fake_pi.shim_log.read_text().splitlines() == [
+        "systemctl restart projector-player-postcheck.timer", "systemctl restart projector-player.service"]
+    assert f"stub install-player.sh --upgrade {sha2}" in fake_pi.log()
+
+    # post-check: healthy service leaves everything alone
+    fake_pi.shim_log.write_text("")
+    res = fake_pi.run("update-player.sh", "--postcheck", FAKE_ACTIVE="active", FAKE_RESTARTS="1")
+    assert res.returncode == 0, res.stderr
+    assert "post-check ok: projector-player.service active, 1 restarts" in fake_pi.log()
+    assert release.read_text().strip() == sha2 and prev.exists()
+
+    # post-check: crash-looping service rolls back to .prev
+    res = fake_pi.run("update-player.sh", "--postcheck", FAKE_ACTIVE="failed", FAKE_RESTARTS="5")
+    assert res.returncode == 0, res.stderr
+    assert release.read_text().strip() == sha1
+    assert not prev.exists()
+    st = fake_pi.status()
+    assert st["ok"] is False and st["ref"] == sha2 and st["previous_version"] == sha1
+    assert st["message"] == f"rolled back to {sha1}: player failed with 5 restarts after the update"
+    assert fake_pi.shim_log.read_text().splitlines()[-2:] == [
+        "systemctl reset-failed projector-player.service", "systemctl restart projector-player.service"]
+
+    # a failing installer restores .prev and reports the failure
+    sha3 = commit(fake_pi.repo, "broken", branch="broken", installer=INSTALLER_STUB % "exit 1")
+    res = fake_pi.run("update-player.sh", "broken")
+    assert res.returncode == 1
+    st = fake_pi.status()
+    assert st["ok"] is False and st["message"].startswith("install-player.sh --upgrade failed")
+    assert st["ref"] == "broken" and sha3 != sha1
+    assert release.read_text().strip() == sha1
+    assert not prev.exists()
+    assert not list(fake_pi.install.parent.glob("src-*"))
+
+    # a sha instead of a branch, with --then-os: the player update chains into update-os.sh
+    fake_pi.shim_log.write_text("")
+    res = fake_pi.run("update-player.sh", sha2, "--then-os")
+    assert res.returncode == 0, res.stderr + fake_pi.log()
+    assert f"status: ok=true updated {sha1} -> {sha2}" in fake_pi.log()
+    assert fake_pi.status()["ref"] == "os" and fake_pi.status()["ok"] is True
+    assert fake_pi.shim_log.read_text().splitlines()[-3:] == [
+        "apt-get update", "apt-get -y -o Dpkg::Options::=--force-confold upgrade", "apt-get -y autoremove"]
+
+    # unknown ref, and a second argument the script does not know
+    assert fake_pi.run("update-player.sh", "no-such-ref").returncode == 1
+    assert fake_pi.status()["message"] == "ref not found: no-such-ref"
+    assert "Unknown argument" in fake_pi.run("update-player.sh", "main", "--bogus").stderr
+
+
+@needs_tools
+def test_update_os_script_in_a_fake_root(fake_pi):
+    res = fake_pi.run("update-os.sh")
+    assert res.returncode == 0, res.stderr + fake_pi.log()
+    st = fake_pi.status()
+    assert (st["ref"], st["ok"], st["previous_version"], st["reboot_required"]) == ("os", True, None, False)
+    assert st["message"] == "3 upgraded, 0 newly installed, 0 to remove and 0 not upgraded."
+    (fake_pi.root / "var" / "run").mkdir(parents=True)
+    (fake_pi.root / "var" / "run" / "reboot-required").write_text("")
+    assert fake_pi.run("update-os.sh").returncode == 0
+    st = fake_pi.status()
+    assert st["reboot_required"] is True and st["message"].endswith("; reboot required")
+    assert fake_pi.run("update-os.sh", FAKE_APT_RC="100").returncode == 1
+    st = fake_pi.status()
+    assert st["ok"] is False and st["message"].startswith("apt failed at line") and st["reboot_required"] is False
