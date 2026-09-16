@@ -924,6 +924,8 @@ tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
   .device-card { flex-wrap: wrap; }
   .device-card > .device-camera, .device-card > .alert { order: 9; flex: 1 1 100%; width: auto; }
   .device-card .screen-chip { display: none; }
+  /* the full-width camera thumb has room for its age/stale chips */
+  .device-card .device-camera .screen-chip { display: block; }
   .device-card .screen-now { left: 4px; right: 4px; bottom: 3px; font-size: 8px; text-shadow: none; }
   .device-card .device-thumb-empty { gap: 2px; padding: 4px; }
   .device-card .device-thumb-empty .empty-title { font-size: 8px; }
