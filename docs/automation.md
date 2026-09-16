@@ -62,7 +62,73 @@ only devices that enroll afterwards.
 
 ## B. Flasher fetches the enrollment key live (flasher + cloud)
 
-Coming in this branch.
+**What it does.** The SD flasher no longer carries the site's enrollment key
+baked into the exe. Instead each operator holds a personal API token; on
+every launch the flasher presents that token to the cloud console, fetches
+the current enrollment key together with the console name and the group and
+playlist lists, and writes the fresh key onto the card. Rotating the key on
+the Settings page takes effect on the next flash, with no rebuild of the exe,
+and one build of the flasher serves every operator.
+
+**Cloud console.**
+
+- Table `api_tokens(id, user_id, name, token_hash, created_at, last_used_at)`.
+  A token is `p5k_` followed by 32 URL-safe characters. Only its SHA-256 hash
+  is stored and lookups compare in constant time; the plain token is shown
+  once, at creation, and cannot be recovered afterwards.
+- Tokens are managed in two places: the Users page (admin, any user's tokens)
+  and a "My API tokens" section on the Settings page (the admin's own). Both
+  offer create (name it after the person or laptop that will hold it) and
+  revoke. A revoked token fails immediately.
+- `GET /api/operator/enrollment` with `Authorization: Bearer p5k_<token>`
+  returns `{console_url, enrollment_key, groups: [{id, name}],
+  playlists: [{id, name}], timezone}` (and `wyze_configured: true|false` once
+  D lands). It is read-only, answers only tokens whose user is an admin or
+  editor, and returns 401 for anything else: a missing or malformed header,
+  an unknown or revoked token, or a viewer's token. The token's
+  `last_used_at` is refreshed and an `api_token_used` audit entry is written
+  at most once per hour per token, so the audit log shows who is flashing
+  without filling up on every launch.
+
+**Flasher.** On first run the tool asks for the console URL and an operator
+token and stores them in `%APPDATA%\Projection5000\flasher.json`. On Windows
+the token is protected with DPAPI (`win32crypt`, tied to the Windows user
+account); if that module is missing the token is written in plain text and
+the tool warns you. Every later launch calls `GET /api/operator/enrollment`,
+shows the console name and URL plus the fetched group and playlist lists, and
+passes the fresh enrollment key into the provision script it writes to the
+card. There is no per-card group or playlist choice: the site-wide defaults
+from section A decide what a new device gets. `build.ps1` no longer bakes a
+key; a `--key` override remains for offline builds where the console cannot
+be reached at flash time. The card layout and `firstrun.sh` are unchanged
+apart from where the key comes from, and the paste-a-device-token path still
+bypasses enrollment. See `tools/flasher/README.md` for the tool itself.
+
+**Operator steps** (once per operator):
+
+1. Sign in to the cloud console as an admin, open Settings, and under "My
+   API tokens" click Create, giving the token a name such as
+   `matt-laptop`. To issue a token for another admin or editor, use the
+   Users page instead.
+2. Copy the `p5k_...` value now: it is shown once. Treat it like a password.
+3. Start the flasher, enter the console URL
+   (`https://projectors.photogen5000.com`) and paste the token. The flasher
+   confirms by showing the console name and the group and playlist lists.
+
+**Rotation.** Two independent secrets are involved.
+
+- *Enrollment key* (Settings page): rotate it when a flashed but unbooted
+  card is lost. Cards written with the old key fail enrollment with a 401;
+  cards flashed after the rotation pick up the new key automatically. No
+  rebuild, no operator action.
+- *Operator token*: revoke it on the Users page or under "My API tokens" when
+  an operator leaves or a laptop is lost, then create a new one and enter it
+  in the flasher. The Users page shows each token's last use, so a token that
+  has not been used in months is easy to spot and revoke. The audit log's
+  `api_token_used` entries name the token behind every flashing session.
+
+The Python console (`cms/`) has no operator tokens: a LAN-only site flashes
+with the offline `--key` build, pasting the key from the cms Settings page.
 
 ## C. Remote updates: player software and OS packages (player + cloud + cms)
 

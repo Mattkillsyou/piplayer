@@ -16,18 +16,23 @@ You'll need:
 
 > **On Windows: use the Projection5000 SD Flasher** (`tools/flasher/README.md`).
 > It replaces sections 1, 2, 4 and 5 below: fill in the form, insert a card,
-> click Flash, put the card in the Pi. No console login is needed: the exe
-> carries the console's **enrollment key** (Settings page, baked in by
-> `build.ps1`) and the Pi enrolls itself on first boot, creating the device
-> and fetching its token. Re-flashing a card with the same device id
-> re-enrolls the same device (same token, same playlist); rotate the key on the
-> Settings page if a flashed card is lost, then rebuild the exe. If the
+> click Flash, put the card in the Pi. No console login is needed on the Pi:
+> the flasher fetches the console's current **enrollment key** live at every
+> launch, using a personal operator API token you create once on the cloud
+> console (Settings page, "My API tokens", or the Users page for admins) and
+> enter into the flasher on its first run. The Pi then enrolls itself on
+> first boot, creating the device and fetching its token. Re-flashing a card
+> with the same device id re-enrolls the same device (same token, same
+> playlist). Rotate the key on the Settings page if a flashed card is lost:
+> the next flash picks up the new key, no rebuild needed. If the
 > Settings page names a default group and playlist ("New devices join
 > group" / "New devices get playlist"), the device gets them on its first
-> enrollment only; see [automation.md](automation.md). Both consoles
-> enroll: the cloud console and the Python console (`cms/`) each have the
-> Settings page with the key and the two defaults. The manual
-> path that follows still works.
+> enrollment only; see [automation.md](automation.md) sections A and B. Both
+> consoles enroll: the cloud console and the Python console (`cms/`) each
+> have the Settings page with the key and the two defaults, but only the
+> cloud console issues operator tokens; for a LAN-only cms site build the
+> flasher with the offline `--key` override and paste the key from the cms
+> Settings page. The manual path that follows still works.
 
 ## 1. Flash Raspberry Pi OS Lite (64-bit)
 
