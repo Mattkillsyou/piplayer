@@ -42,19 +42,16 @@
     Baked into the flasher so a freshly flashed Pi registers itself on first boot (no login needed).
     Re-flashing a card re-enrolls the same device with its existing token.
   </p>
-  <details>
-    <summary class="small">Show key</summary>
-    <div class="token-block">
-      <code class="token">{{ enrollment_key }}</code>
-    </div>
-  </details>
-  <div class="action-buttons">
-    <form method="post" action="/settings/enrollment/rotate" class="inline"
-          data-confirm="Rotate the enrollment key? Cards flashed with the old key that have not booted yet will no longer enroll.">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="danger small">Rotate key</button>
-    </form>
+  <div class="enrollment-key">
+    <label for="enrollment-key" class="small">Enrollment key</label>
+    <input type="password" id="enrollment-key" value="{{ enrollment_key }}" readonly spellcheck="false" autocomplete="off">
+    <button type="button" class="small" data-reveal="enrollment-key">Show</button>
   </div>
+  <form method="post" action="/settings/enrollment/rotate" class="inline"
+        data-confirm="Rotate the enrollment key? Cards flashed with the old key that have not booted yet will no longer enroll.">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger">Rotate key</button>
+  </form>
   <p class="muted small">Rotate if a card or flasher build is lost; devices already enrolled are unaffected.</p>
 </div>
 {% endblock %}

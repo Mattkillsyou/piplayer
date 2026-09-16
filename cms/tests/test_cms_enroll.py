@@ -68,11 +68,14 @@ def test_settings_reject_unknown_ids(admin, field):
     assert query("SELECT * FROM settings WHERE key = ?", (field,)) == []
 
 
-def test_settings_page_shows_selection_and_none_clears(admin, tok):
+def test_settings_page_shows_selection_and_none_clears(admin, cms, tok):
     gid = create_group(admin, f"g-{tok}")
     save(admin, gid, "")
     page = admin.get("/settings").text
     assert f'<option value="{gid}" selected>' in page and 'name="enroll_playlist_id"' in page
+    # Enrollment key masked behind the same input + reveal button the cloud console renders.
+    assert f'<input type="password" id="enrollment-key" value="{cms.db.enrollment_key()}" readonly' in page
+    assert 'data-reveal="enrollment-key">Show</button>' in page
     assert save(admin, "", "").status_code == 303
     assert query("SELECT * FROM settings WHERE key = 'enroll_group_id'") == []
 
