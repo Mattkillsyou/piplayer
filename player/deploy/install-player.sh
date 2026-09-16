@@ -224,6 +224,9 @@ if [[ "${WITH_WYZE}" == 1 ]]; then
         curl -fsSL https://get.docker.com | sh
     fi
     systemctl enable --now docker.service
+    # Pre-pull the bridge image: the unit's ExecStartPre pull would otherwise
+    # run inside the daemon's first `systemctl restart` (30 s budget) on a Pi.
+    docker pull mrlt8/wyze-bridge:latest || true
 
     WYZE_ENV="${DATA_DIR}/wyze.env"
     if [[ -n "${WYZE_EMAIL:-}" && -n "${WYZE_PASSWORD:-}" && -n "${WYZE_API_ID:-}" && -n "${WYZE_API_KEY:-}" ]]; then

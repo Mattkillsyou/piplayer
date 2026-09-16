@@ -394,8 +394,8 @@ applies the answer without restarting itself:
    `projector`): `WYZE_EMAIL`, `WYZE_PASSWORD`, `API_ID`, `API_KEY`. The
    bridge unit now reads its `--env-file` from there rather than from
    `/etc/projector-player/wyze.env`, which the daemon (running as
-   `projector`) could not write. An older `/etc/projector-player/wyze.env`
-   is ignored once the unit has been updated by the installer.
+   `projector`) could not write. The installer moves an older
+   `/etc/projector-player/wyze.env` to the new path when it finds one.
 2. Runs `sudo -n systemctl restart projector-wyze-bridge.service` (allowed
    by the sudoers drop-in `/etc/sudoers.d/projector-player`) when the source
    is `wyze`, so the bridge logs in with the new credentials; with `none` or
@@ -411,12 +411,18 @@ manifest carries the key. A player that never sees the key behaves exactly as
 before. If the fetch fails (console unreachable, 401), the player keeps its
 current camera configuration, logs a warning in
 `journalctl -u projector-player.service`, and retries on the next sync that
-still shows a different version.
+still shows a different version. A failed apply (the env file could not be
+written, or the bridge restart outran its 30 s budget) is handled the same
+way and also shows up as `camera_error` on the Devices page; the daemon
+never stops over it.
 
 **Installer and flasher.** `install-player.sh --with-wyze` still installs
 Docker and `projector-wyze-bridge.service`, but no longer needs the `WYZE_*`
-variables: the unit tolerates a missing env file, stays enabled, and is
-started by the daemon once it has fetched credentials. The flasher's
+variables: no empty template is written, the unit tolerates a missing env
+file, stays enabled, and is started by the daemon once it has fetched
+credentials (the installer pre-pulls the bridge image so that first restart
+does not wait on the download). `--upgrade` refreshes the wyze unit whenever
+it is installed. The flasher's
 provision script passes `--with-wyze` automatically when
 `GET /api/operator/enrollment` reports `wyze_configured: true` (section B),
 which it does once the Wyze email and password are set. So the order for a new

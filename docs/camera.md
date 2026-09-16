@@ -99,9 +99,12 @@ The bridge needs an API key in addition to your Wyze email and password.
 ### Install with `--with-wyze`
 
 Run the player installer with the `--with-wyze` flag. It apt-installs ffmpeg
-(always), installs Docker with the get.docker.com convenience script, writes
-the credentials file, installs `projector-wyze-bridge.service` and, when
+(always), installs Docker with the get.docker.com convenience script and
+pre-pulls the bridge image, writes the credentials file when the four
+`WYZE_*` vars are given, installs `projector-wyze-bridge.service` and, when
 `WYZE_CAMERA` is given, adds the `[camera]` table to `config.toml` for you.
+On a cloud-console site leave the `WYZE_*` vars out: the daemon writes the
+file itself from `GET /api/camera-config`.
 
 ```bash
 cd ~/piplayer/player
@@ -119,20 +122,29 @@ sudo -E bash deploy/install-player.sh --with-wyze
 `WYZE_CAMERA` is the camera's name exactly as shown in the Wyze app. The
 installer writes:
 
-- `/etc/projector-player/wyze.env` (mode 600, root): `WYZE_EMAIL`,
-  `WYZE_PASSWORD`, `API_ID`, `API_KEY`. If any of the four `WYZE_*` vars is
-  missing it writes a template with empty values instead and leaves an
-  existing file alone, so you (or the SD Flasher) can fill it in later:
+- `/var/lib/projector-player/wyze.env` (mode 600, owned by `projector`):
+  `WYZE_EMAIL`, `WYZE_PASSWORD`, `API_ID`, `API_KEY`. Written only when all
+  four `WYZE_*` vars are given; otherwise an existing file is kept, a legacy
+  `/etc/projector-player/wyze.env` from an older install is moved here, and
+  with neither the installer writes nothing (no template any more) and says
+  so: the daemon creates the file from the console's camera config on its
+  first sync, and on a Python-console site you write it by hand:
 
   ```bash
-  sudo nano /etc/projector-player/wyze.env
+  sudo nano /var/lib/projector-player/wyze.env
+  sudo chown projector:projector /var/lib/projector-player/wyze.env
+  sudo chmod 600 /var/lib/projector-player/wyze.env
   sudo systemctl restart projector-wyze-bridge.service
   ```
 
 - `/etc/systemd/system/projector-wyze-bridge.service`: runs the container
-  with `--env-file /etc/projector-player/wyze.env`, bound to localhost only:
-  RTSP on `127.0.0.1:8554` and the bridge's web player on `127.0.0.1:5000`.
-  Nothing is reachable from the LAN.
+  with `--env-file /var/lib/projector-player/wyze.env`, bound to localhost
+  only: RTSP on `127.0.0.1:8554` and the bridge's web player on
+  `127.0.0.1:5000`. Nothing is reachable from the LAN. The unit has
+  `ConditionPathExists=` on the env file, so without credentials it is
+  skipped rather than failed and the daemon starts it later with
+  `sudo -n systemctl restart projector-wyze-bridge.service` (allowed by the
+  `/etc/sudoers.d/projector-player` drop-in).
 - The `[camera]` table (only if `WYZE_CAMERA` was set and the file has no
   `[camera]` yet):
 
@@ -141,6 +153,12 @@ installer writes:
   source = "wyze"
   wyze_camera = "Lobby Cam"
   ```
+
+The `[camera]` table is the manual override: it is what the player uses
+when the console sends no `camera_config_version` (Python console, older
+cloud console) and also when the console's answer is `source = "none"`
+(the console cannot switch off a hand-configured camera). Whenever the
+console names a camera, the fetched configuration wins.
 
 With `source = "wyze"` the player derives the stream URL itself:
 `rtsp://127.0.0.1:8554/<name>`, where `<name>` is the Wyze name lowercased
@@ -158,8 +176,11 @@ the first good one).
 
 Re-running the installer without `--with-wyze` keeps the bridge unit and
 `wyze.env` in place and carries the `[camera]` table over (it lives among
-the keys the installer preserves). `--uninstall` removes the unit, the
-container and the credentials file; Docker itself stays installed.
+the keys the installer preserves); `--upgrade` refreshes the wyze unit as
+well whenever it is installed, which is how a player set up before this
+change gets the `/var/lib` env-file path (its `/etc` copy is moved).
+`--uninstall` removes the unit, the container and the credentials file;
+Docker itself stays installed.
 
 ## `[camera]` keys in config.toml
 
@@ -270,8 +291,11 @@ most once every 10 minutes (`journalctl -u projector-player.service | grep
 **Wyze bridge keeps restarting.**
 
 - `journalctl -u projector-wyze-bridge.service -n 100`. Typical causes:
-  empty `wyze.env` (the installer's template), wrong password, expired API
-  key (create a new one in the portal, edit `wyze.env`, restart the unit),
+  wrong password, expired API key (create a new one in the portal, replace
+  it on the console's Settings page or edit `wyze.env` and restart the
+  unit), a missing `wyze.env` (the unit is skipped until the daemon has
+  fetched the camera config; `journalctl -u projector-player.service`
+  shows the fetch),
   2FA on the account (add `TOTP_KEY=` or use an account without 2FA), no
   internet at boot (it retries every 10 s), or Docker not running
   (`sudo systemctl status docker`).

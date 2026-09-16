@@ -214,6 +214,14 @@ def test_gui_fetches_the_key_on_launch(monkeypatch, tmp_path):
     assert app.console_status.cget("text") == "Console https://c.example: enrollment key fetched (2 groups, 1 playlists)."
     log = app.log_text.get("1.0", "end")
     assert "Groups: Lobby, Halls. Playlists: Loop." in log and KEY not in log
+    # wyze_configured from the console reaches the card config (render_provision adds --with-wyze)
+    assert app.values()["with_wyze"] is False and flasher.card_cfg(app.values())["with_wyze"] is False
+    app._apply_enrollment(dict(ENROLLMENT, wyze_configured=True))
+    assert flasher.card_cfg(app.values())["with_wyze"] is True
+    assert "installer will run with --with-wyze" in app.log_text.get("1.0", "end")
+    assert " --with-wyze" in flasher.firstboot.render_provision(flasher.card_cfg(app.values()))
+    app._apply_enrollment(dict(ENROLLMENT))
+    assert flasher.card_cfg(app.values())["with_wyze"] is False
     # Connect: a changed URL/token is saved and the key fetched again; a rejected token is reported, key kept.
     app.v["console_url"].set("https://down.example")
     app.connect()

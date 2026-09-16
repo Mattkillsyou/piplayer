@@ -101,8 +101,9 @@ def apply(cfg: PlayerConfig, data: dict, camera: CameraCapture) -> str:
 def maybe_apply(cfg: PlayerConfig, manifest: dict, camera: CameraCapture, state) -> bool:
     """Fetch + apply when the manifest's camera_config_version differs from
     state.camera_config_version (None at start: the first manifest always
-    fetches). A failed fetch is logged and retried next cycle. Returns True
-    when a config was applied."""
+    fetches). A failed fetch or apply is logged, surfaced as camera.error and
+    retried next cycle; the daemon never dies over it. Returns True when a
+    config was applied."""
     version = manifest.get("camera_config_version")
     if not isinstance(version, int) or version == state.camera_config_version:
         return False
@@ -111,7 +112,12 @@ def maybe_apply(cfg: PlayerConfig, manifest: dict, camera: CameraCapture, state)
     except (requests.RequestException, ValueError) as e:
         log.warning("camera config fetch failed (will retry): %s", e)
         return False
-    apply(cfg, data, camera)
+    try:
+        apply(cfg, data, camera)
+    except (OSError, subprocess.SubprocessError) as e:   # wyze.env write or a slow bridge restart (first docker pull)
+        log.warning("camera config apply failed (will retry): %s", e)
+        camera.error = f"camera config: {e}"[:200]
+        return False
     state.camera_config_version = version
     log.info("camera config v%s applied: source=%s", version, camera.source)
     return True

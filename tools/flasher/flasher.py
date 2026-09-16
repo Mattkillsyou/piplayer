@@ -281,6 +281,7 @@ class App:
         self.q = queue.Queue()
         self.disks = []
         self.v = {}  # tk variables by key
+        self.with_wyze = False  # console reported wyze_configured: the installer runs with --with-wyze
         self._build()
         self._apply_settings(load_settings())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -526,6 +527,9 @@ class App:
         self.console_status.configure(text=f"Console {r['console_url']}: enrollment key fetched "
                                            f"({len(r['groups'])} groups, {len(r['playlists'])} playlists).")
         self.log(f"Console {r['console_url']}: enrollment key fetched. Groups: {groups}. Playlists: {playlists}.")
+        self.with_wyze = bool(r.get("wyze_configured"))
+        if self.with_wyze:
+            self.log("Console reports Wyze configured: installer will run with --with-wyze.")
 
     def _apply_settings(self, s: dict):
         for k in SETTINGS_KEYS:
@@ -546,6 +550,7 @@ class App:
             if isinstance(val, str) and k not in UNSTRIPPED:
                 val = val.strip()
             out[k] = val
+        out["with_wyze"] = self.with_wyze
         return out
 
     # ----- actions
@@ -749,6 +754,7 @@ def card_cfg(v: dict) -> dict:
     cfg["console_url"] = v["console_url"].strip().rstrip("/")
     # The token field only counts while the Advanced box is ticked (a collapsed leftover must not bypass enrollment).
     cfg["token"] = v["token"].strip() if v.get("advanced") else ""
+    cfg["with_wyze"] = bool(v.get("with_wyze"))
     return cfg
 
 

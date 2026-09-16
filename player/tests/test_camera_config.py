@@ -189,6 +189,21 @@ def test_fetch_failure_is_retried_next_cycle(cfg, cms, mpv, client, runs):
     assert len(cms.camera_config_calls) == 2
 
 
+def test_slow_bridge_restart_does_not_kill_the_cycle(cfg, cms, mpv, client, monkeypatch):
+    """First boot: the unit's ExecStartPre docker pull can outlast the 30 s restart budget."""
+    def slow_run(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+    monkeypatch.setattr(camera_config.subprocess, "run", slow_run)
+    cam = CameraCapture(cfg)
+    state = PlayerState(backoff=5)
+    cms.manifest["camera_config_version"] = 1
+    cms.camera_config = {"source": "wyze", "wyze": WYZE}
+    assert run_cycle(cfg, client, state, camera=cam) is not None
+    assert state.camera_config_version is None            # retried next cycle
+    assert cam.error.startswith("camera config: ")
+    assert camera_config.wyze_env_path(cfg).read_text() == ENV_TEXT
+
+
 # ------------------------------------------------------ deploy files ---
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
