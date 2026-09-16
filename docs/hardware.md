@@ -46,7 +46,7 @@ and a Wyze API key; the RTSP path needs nothing extra.
 | Part | Purpose | Qty | Approx. USD | Link |
 | --- | --- | --- | --- | --- |
 | Cat6 patch cable, 3 m | Wired ethernet to the Pi. Wi-Fi works, but a wire is one less thing to debug remotely. | 1 | $7 | any retailer |
-| PoE+ HAT for Pi 5 (optional) | Power and network over one cable from a PoE+ switch; replaces the USB-C PSU. **Pi 5 version only**: the official [PoE+ HAT](https://www.raspberrypi.com/products/poe-plus-hat/) is the Pi 3B+/4 part and does not fit the Pi 5 header, and Raspberry Pi's own Pi 5 version ([design article](https://www.raspberrypi.com/news/designing-the-poe-hat-for-raspberry-pi-5-compact-efficient-power-and-networking/)) has no product page yet. Use a third-party one, e.g. 52Pi P30 (bundles the Active Cooler). | 0-1 | $30 | [52pi.com](https://52pi.com/products/p30-poe-hat-for-raspberry-pi-5-with-official-pi-5-active-cooler) |
+| PoE+ HAT for Pi 5 (optional) | Power and network over one cable from a PoE+ switch; replaces the USB-C PSU. **Pi 5 version only**. Raspberry Pi sells no PoE HAT for the Pi 5: the only official [PoE+ HAT](https://www.raspberrypi.com/products/poe-plus-hat/) is the Pi 3B+/4 part and does not fit the Pi 5 header (checked against the raspberrypi.com product index, September 2026). Use a third-party Pi 5 HAT such as the 52Pi P30, which bundles the official Active Cooler. | 0-1 | $30 | [52pi.com](https://52pi.com/products/p30-poe-hat-for-raspberry-pi-5-with-official-pi-5-active-cooler) |
 
 Subtotal: about $7 (PoE+ HAT excluded).
 
