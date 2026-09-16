@@ -21,10 +21,11 @@ You'll need:
 > launch, using a personal operator API token you create once on the cloud
 > console (Settings page, "My API tokens", or the Users page for another
 > admin or editor; admins only) and enter into the flasher on its first run.
-> The Pi then enrolls itself on first boot, creating the device and fetching its token. Re-flashing a card
-> with the same device id re-enrolls the same device (same token, same
-> playlist). Rotate the key on the Settings page if a flashed card is lost:
-> the next flash picks up the new key, no rebuild needed. If the
+> The Pi then enrolls itself on first boot, creating the device and fetching
+> its token. Re-flashing a card with the same device id re-enrolls the same
+> device (same token, same playlist). Rotate the key on the Settings page if
+> a flashed card is lost: the next flash picks up the new key, no rebuild
+> needed. If the
 > Settings page names a default group and playlist ("New devices join
 > group" / "New devices get playlist"), the device gets them on its first
 > enrollment only; see [automation.md](automation.md) sections A and B. Both

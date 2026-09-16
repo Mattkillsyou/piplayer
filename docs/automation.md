@@ -91,8 +91,8 @@ and one build of the flasher serves every operator.
   `--with-wyze`. The endpoint is read-only, answers only tokens whose user
   is an admin or editor, and returns 401 for anything else: a missing or
   malformed header, an unknown or revoked token, or a viewer's token. The
-  token's `last_used_at` is refreshed and an `api_token_used` audit entry is written
-  at most once per hour per token, so the audit log shows who is flashing
+  token's `last_used_at` is refreshed and an `api_token_used` audit entry is
+  written at most once per hour per token, so the audit log shows who is flashing
   without filling up on every launch.
 
 **Flasher.** On first run the tool asks for the console URL and an operator
@@ -103,13 +103,15 @@ plain text and the log warns you. (Plain form values such as the last Wi-Fi
 name live in a separate `%LOCALAPPDATA%\Projection5000\flasher.json`.) Every
 later launch calls `GET /api/operator/enrollment`, shows the console name and
 URL plus the fetched group and playlist lists, and passes the fresh
-enrollment key into the provision script it writes to the card. There is no per-card group or playlist choice: the site-wide defaults
-from section A decide what a new device gets. `build.ps1` no longer bakes a
-key; `-Key <enrollment key>` (with `-ConsoleUrl <url>`, or the env vars
-`FLASHER_ENROLL_KEY` / `FLASHER_CONSOLE_URL`) remains for offline builds where
-the console cannot be reached at flash time. The card layout and
+enrollment key into the provision script it writes to the card. There is no
+per-card group or playlist choice: the site-wide defaults from section A
+decide what a new device gets. `build.ps1` no longer bakes a key;
+`-Key <enrollment key>` (with `-ConsoleUrl <url>`, or the env vars
+`FLASHER_ENROLL_KEY` / `FLASHER_CONSOLE_URL`) remains for offline builds
+where the console cannot be reached at flash time. The card layout and
 `firstrun.sh` are unchanged apart from where the key comes from, and the
-paste-a-device-token path still bypasses enrollment. See `tools/flasher/README.md` for the tool itself.
+paste-a-device-token path still bypasses enrollment. See
+`tools/flasher/README.md` for the tool itself.
 
 **Operator steps** (once per operator):
 
