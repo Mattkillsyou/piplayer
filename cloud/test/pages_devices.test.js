@@ -39,12 +39,23 @@ describe("role matrix", () => {
     expect(vw).not.toContain(w.dev.token);
     expect(vw).not.toContain("DEVICE_TOKEN=");
     expect(vw).not.toContain("Token / install");
-    expect(vw).not.toContain("Register a new device");
+    expect(vw).not.toContain('action="/devices" class="head-actions"');
+    expect(vw).not.toContain("After registering");
     expect(vw).not.toContain("Reboot Pi");
+    expect(vw).not.toContain("New token");
+    expect(vw).not.toContain("Delete device");
+    expect(vw).toContain('<span class="help small">Viewer access: read-only.</span>');
     expect(vw).toContain('name="group_id" data-autosubmit disabled');
     expect(vw).toContain('name="playlist_id" data-autosubmit disabled');
     for (const c of [r.editor, r.admin]) {
       const page = await (await c.get("/devices")).text();
+      expect(page).toContain('<form method="post" action="/devices" class="head-actions">');
+      expect(page).toContain('<button type="submit" class="primary">Register</button>');
+      expect(page).toContain('<p class="help small">After registering, open "Token / install" on the new device and run that command on the Pi.</p>');
+      expect(page).not.toContain("Viewer access: read-only.");
+      expect(page).toContain('<button type="submit" class="small primary" title="Tell the Pi to re-sync from the CMS now">Resync</button>');
+      expect(page).toContain('<button type="submit" class="small danger">Reboot Pi</button>');
+      expect(page).toContain("<summary>Token / install</summary>");
       expect(page).toContain(`<code class="token">${w.dev.token}</code>`);
       expect(page).toContain("cd piplayer/player");
       expect(page).toContain(`DEVICE_ID=${w.dev.device_id}`);
@@ -81,22 +92,29 @@ describe("page content", () => {
     expect(page).not.toContain(XSS);
     expect(page).toContain('data-confirm="Delete device x&#39;);alert(1);//dev?"');
     expect(page).toContain('data-confirm="Reboot x&#39;);alert(1);//dev?"');
-    expect(page).toContain('<span class="playlist">Default PL</span>');
-    expect(page).toContain("via schedule: r");         // the rule wins over the default
-    expect(page).toContain('<span class="lamp lamp-playing">playing</span>');
-    expect(page).toContain(`Schedule (1)</a>`);
-    expect(page).toContain("Sync problem: download failed: &lt;b&gt;a.mp4&lt;/b&gt;");
-    expect(page).toContain("1 min ago");
-    expect(page).toContain("10.0.0.7");
-    expect(page).toContain("v1.2.3");
-    expect(page).toContain('<span class="now">#3 clip.mp4</span>');
-    expect(page).toContain('<span class="screen-now">#3 clip.mp4</span>');
+    expect(page).toContain('<span class="now-label">active now · via schedule: r</span>');   // the rule wins over the default
+    expect(page).toContain('<span class="now-playlist">Default PL</span>');
+    expect(page).toContain(`<a href="/devices/${w.dev.id}/schedule" class="button">Schedule (1)</a>`);
+    expect(page).toContain('<div class="alert error" title="Reported by the player on its last sync">Sync problem: download failed: &lt;b&gt;a.mp4&lt;/b&gt;</div>');
+    expect(page).toContain('<span class="label">last seen</span><span class="value">1 min ago<br>');
+    expect(page).toContain('<span class="label">ip</span><span class="value">10.0.0.7</span>');
+    expect(page).toContain('<span class="label">agent</span><span class="value">v1.2.3</span>');
+    expect(page).toContain('<span class="now-file">#3 clip.mp4 · playing</span>');
+    expect(page).toContain('<span class="status status-playing"><span class="lamp"></span>playing</span>');
+    expect(page).toContain('<div class="device-row">');
+    // the never-synced XSS device is offline, so a fault row with the NO SIGNAL thumb
+    expect(page).toContain('<div class="device-row is-fault">');
+    expect(page).toContain('<span class="status status-offline"><span class="lamp"></span>offline</span>');
+    expect(page).toContain('<span class="empty-sub">no screenshot yet</span>');
+    expect(page).toContain('<span class="value">never</span>');
+    expect(page).toContain('<span class="value">—</span>');
+    expect(page).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group</span>');
     expect(page).toContain(`<option value="${w.gid}" selected>Lobby group</option>`);
     expect(page).toContain(`<option value="${w.pid}" selected>Default PL</option>`);
     expect(page).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
     await query("DELETE FROM device_schedules WHERE device_id = ?", w.dev.id);
     const again = await (await r.admin.get("/devices")).text();
-    expect(again).toContain("device default");
+    expect(again).toContain('<span class="now-label">active now · via device default</span>');
   });
 
   it("a malformed stored schedule row never 500s the page", async () => {
@@ -114,7 +132,7 @@ describe("page content", () => {
     await query("UPDATE device_groups SET playlist_id = ? WHERE id = ?", gpl, w.gid);
     const dev = await device("grouped", "Grouped", { group_id: w.gid });
     const page = await (await r.admin.get("/devices")).text();
-    expect(page).toContain("group: Lobby group");
+    expect(page).toContain('<span class="now-label">active now · via group: Lobby group</span>');
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 
@@ -127,10 +145,11 @@ describe("page content", () => {
     await query("UPDATE device_commands SET completed_at = datetime('now'), result = 'ok <done>' WHERE id = ?", rows[4].id);
     await query("UPDATE device_commands SET completed_at = datetime('now') WHERE id = ?", rows[3].id);
     const page = await (await r.viewer.get("/devices")).text();
-    expect(page).toContain("Recent commands");
+    expect(page).toContain("<summary>Recent commands (5)</summary>");
     expect(page).toContain("delivered ×2, no result yet");
     expect(page).toContain('<span class="badge badge-stale">undeliverable: no result after 5 deliveries</span>');
-    expect(page).toContain("done: ok &lt;done&gt;");
+    expect(page).toContain("done · ok &lt;done&gt;");
+    expect(page).toContain("<code>force-sync</code> →");
     expect((page.match(/<li>/g) || []).length).toBe(5);
     expect(page).toContain("queued");
   });
@@ -241,8 +260,13 @@ describe("screenshot", () => {
     // stale badge: 10 min > 3 x 60 s
     const page = await (await r.viewer.get("/devices")).text();
     expect(page).toContain(`/devices/${dev.id}/screenshot?t=`);
-    expect(page).toContain("10 min ago");
-    expect(page).toContain('title="No new screenshot for more than 3 capture intervals">stale</span>');
+    expect(page).toContain(`<a href="/devices/${dev.id}/screenshot?t=`);
+    expect(page).toContain('<span class="screen-chip tl">10 min ago</span>');
+    expect(page).toContain('<div class="device-screen is-stale">');
+    expect(page).toContain('<span class="screen-chip tr is-stale badge-stale" title="No new screenshot for more than 3 capture intervals">stale</span>');
+    await query("UPDATE devices SET last_screenshot_at = datetime('now') WHERE id = ?", dev.id);
+    const fresh = await (await r.viewer.get("/devices")).text();
+    expect(fresh).toContain('<span class="screen-chip tr">live</span>');
   });
 });
 

@@ -374,3 +374,34 @@ def test_animated_gif_loops_to_fill_its_duration(cfg, cms):
         {"length": "10", "demuxer-lavf-o": "ignore_loop=0"},
         {},
         {"image-display-duration": "10"}]
+
+
+# ------------------------------------------------- progress callback + ENOSPC ---
+
+def test_on_progress_reports_each_item_and_bytes(cfg, cms):
+    cms.files["a.mp4"] = b"A" * 10
+    cms.files["b.mp4"] = b"B" * 10
+    cms.set_playlist(["a.mp4", "b.mp4"])
+    (cfg.media_dir / "a.mp4").write_bytes(cms.files["a.mp4"])    # present but not indexed: gets verified
+    seen = []
+    sync_once(cfg, on_progress=seen.append)
+    assert seen[0] == {"phase": "verifying", "index": 1, "total": 2, "filename": "a.mp4", "bytes_done": None, "bytes_total": 10}
+    assert seen[1] == {"phase": "downloading", "index": 2, "total": 2, "filename": "b.mp4", "bytes_done": 0, "bytes_total": 10}
+    assert seen[-1]["bytes_done"] == 10 and seen[-1]["filename"] == "b.mp4"
+
+
+def test_enospc_is_reported_as_no_space_left(cfg, cms, monkeypatch):
+    import errno
+    cms.files["a.mp4"] = b"A" * 10
+    cms.set_playlist(["a.mp4"])
+
+    def full(*a, **k):
+        raise OSError(errno.ENOSPC, "No space left on device")
+    monkeypatch.setattr(sync, "_download_item", full)
+    changed, manifest, err = sync_once(cfg)
+    assert err == "1 of 1 items missing: no space left on device"
+    # a full card fails every remaining item: the phrase must survive the summary form too
+    cms.files["b.mp4"] = b"B" * 10
+    cms.set_playlist(["a.mp4", "b.mp4"])
+    changed, manifest, err = sync_once(cfg)
+    assert err == "2 of 2 items missing: no space left on device"

@@ -1,8 +1,9 @@
-# Matt Brown's Projection5000
+# Matt Brown's Projection5000 (formerly PiPlayer)
 
 Self-hosted Screenly-style digital signage for Raspberry Pi. Loop videos on
-projectors, manage everything from a single web UI, update content remotely.
-The repo, services and paths keep the `piplayer` name; the product and its web UI are "Projection5000".
+projectors, manage everything from a single web console, update content
+remotely. The product is Projection5000; the repository, service names, config
+paths and cookie keep their original `piplayer` / `projector-*` names.
 
 ## What's here
 
@@ -113,7 +114,6 @@ very first admin is created; it does not change an existing password.
 device ID and a token. On the Devices page, expand **Token / install** under
 Actions — it shows the exact install command, with the CMS URL your browser
 is using. Copy it.
-Windows users: flash and pre-configure cards with the Projection5000 SD Flasher instead (steps 2 and 3 become a form and a click), see [tools/flasher/README.md](tools/flasher/README.md).
 
 **3. Install the player on each Pi:**
 

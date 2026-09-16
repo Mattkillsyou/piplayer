@@ -4,27 +4,33 @@ import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, envInt, fail, idParam, localTime, redirect } from "../util.js";
-import { csrfInput, layout } from "./layout.js";
+import { csrfInput, emptyState, layout } from "./layout.js";
 
 // Jinja's `| round(1)`: one decimal, always shown ('5.0').
 const round1 = (n) => (Math.round(n * 10) / 10).toFixed(1);
 
-function uploadPanel(maxBytes, ctx) {
-  return `<div class="panel upload-panel">
-  <h2>Drop media</h2>
-  <p class="muted">
-    Max ${round1(maxBytes / 1024 / 1024 / 1024)} GB per file.
-    Videos: .mp4, .mov, .m4v, .mkv, .webm (1080p H.264 recommended).
-    Images: .jpg, .png, .gif, .webp, .bmp. Duration and resolution are read in your browser before the upload;
-    the file is hashed first, so a duplicate is refused before any bytes are sent.
-  </p>
-  <form id="upload-form" method="post" action="/library/upload/init" data-init="/library/upload/init">
-    ${csrfInput(ctx)}
-    <input type="file" name="file" id="file-input" accept="video/*,image/*" multiple required>
-    <button type="submit" class="primary">Upload</button>
-  </form>
-  <ul id="upload-queue" class="upload-queue"></ul>
-  <div id="upload-status" class="muted"></div>
+function uploadGrid(maxBytes, ctx) {
+  return `<div class="library-grid">
+  <div class="dropzone brackets">
+    <span class="dropzone-title">DROP MEDIA</span>
+    <p>Max ${round1(maxBytes / 1024 / 1024 / 1024)} GB per file. Videos: mp4 · mov · m4v · mkv · webm (1080p H.264 recommended). Images: jpg · png · gif · webp · bmp.</p>
+    <form id="upload-form" method="post" action="/library/upload/init" data-init="/library/upload/init">
+      ${csrfInput(ctx)}
+      <input type="file" name="file" id="file-input" accept="video/*,image/*" multiple required aria-label="Choose files">
+      <button type="submit" class="primary">Upload</button>
+    </form>
+  </div>
+  <div class="upload-panel">
+    <div class="upload-panel-head">
+      <h2>Upload queue</h2>
+      <span class="tag">hashed before sending</span>
+    </div>
+    <div class="upload-panel-body">
+      <ul id="upload-queue" class="upload-queue"></ul>
+      <div id="upload-status" class="muted"></div>
+      <p class="help small">Duration and resolution are read in your browser before the upload; the file is hashed first, so a duplicate is refused before any bytes are sent.</p>
+    </div>
+  </div>
 </div>`;
 }
 
@@ -42,11 +48,11 @@ function row(v, tz, editor, ctx) {
   return `    <tr>
       <td>${badge}</td>
       <td class="name">${esc(v.original_name)}</td>
-      <td>${round1(v.size_bytes / 1024 / 1024)} MB</td>
-      <td>${duration}</td>
-      <td>${res}</td>
-      <td>${esc(v.codec || "—")}</td>
-      <td class="muted">${esc(localTime(v.uploaded_at, tz))}</td>
+      <td class="nowrap">${round1(v.size_bytes / 1024 / 1024)} MB</td>
+      <td class="nowrap">${duration}</td>
+      <td class="nowrap">${res}</td>
+      <td class="muted">${esc(v.codec || "—")}</td>
+      <td class="muted nowrap">${esc(localTime(v.uploaded_at, tz))}</td>
       <td>${del}
       </td>
     </tr>`;
@@ -60,7 +66,8 @@ async function libraryPage(ctx) {
     `SELECT id, original_name, filename, media_type, size_bytes, duration_seconds, width, height, codec, uploaded_at
      FROM media ORDER BY uploaded_at DESC, id DESC`);
   const maxBytes = envInt(ctx.env, "PIPLAYER_MAX_UPLOAD_BYTES", 5 * 1024 * 1024 * 1024);
-  const table = items.length ? `<div class="table-scroll">
+  const totalBytes = items.reduce((n, v) => n + (v.size_bytes || 0), 0);
+  const table = items.length ? `<div class="table-wrap">
 <table class="data">
   <thead>
     <tr><th>Type</th><th>Name</th><th>Size</th><th>Duration</th><th>Resolution</th><th>Codec</th><th>Uploaded</th><th></th></tr>
@@ -69,10 +76,13 @@ async function libraryPage(ctx) {
 ${items.map((v) => row(v, tz, editor, ctx)).join("\n")}
   </tbody>
 </table>
-</div>` : `<p class="muted empty">No media yet.${editor ? " Upload above." : ""}</p>`;
-  const content = `<h1>Library</h1>
+</div>` : emptyState("NO MEDIA", `No media yet.${editor ? " Drop a file above." : ""}`);
+  const content = `<div class="page-head">
+  <h1>Library</h1>
+  <span class="page-meta">${items.length} file${items.length === 1 ? "" : "s"} · ${round1(totalBytes / 1024 / 1024 / 1024)} GB on disk</span>
+</div>
 
-${editor ? uploadPanel(maxBytes, ctx) : ""}
+${editor ? uploadGrid(maxBytes, ctx) : ""}
 
 <h2>Media (${items.length})</h2>
 ${table}`;

@@ -32,6 +32,13 @@ UPLOAD_TMP_MAX_AGE_SECONDS = 60 * 60
 require_editor = auth.require_role("editor")
 require_admin = auth.require_role("admin")
 
+# A device that has not polled for this long is shown as offline (the player
+# polls every 30 s by default and backs off to at most 300 s when the CMS is
+# unreachable, in which case it cannot reach us anyway).
+OFFLINE_AFTER_SECONDS = 180
+LAMP_STATES = ("playing", "paused", "idle", "mpv-down")
+DASHBOARD_AUDIT_TAIL = 8
+
 
 def _template_context(request: Request) -> dict:
     return {"csrf_token": auth.csrf_token(request)}
@@ -80,6 +87,7 @@ def local_zone_name() -> str:
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR), context_processors=[_template_context])
 templates.env.globals["app_name"] = "Projection5000"
+templates.env.globals["app_eyebrow"] = "Matt Brown's"
 templates.env.globals["default_image_duration"] = config.DEFAULT_IMAGE_DURATION
 templates.env.filters["local"] = local_filter
 
@@ -134,7 +142,7 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
     ip = _client_ip(request)
     wait = auth.login_locked_for(ip, username)
     if wait:
-        return _render(request, "login.html", status_code=429,
+        return _render(request, "login.html", status_code=429, locked=True,
                        error=f"Too many failed attempts; try again in {wait} s")
     if len(password.encode("utf-8")) > auth.MAX_PASSWORD_BYTES:
         return _render(request, "login.html", status_code=400, error=auth.PASSWORD_TOO_LONG_MSG)
@@ -196,7 +204,13 @@ def _decorate_device(cur, dd: dict, now: dt.datetime) -> dict:
         dd["screenshot_age"] = None
         dd["screenshot_stale"] = False
     seen = parse_db_utc(dd.get("last_seen_at"))
-    dd["seen_age"] = age_text((dt.datetime.now(dt.timezone.utc) - seen).total_seconds()) if seen else None
+    seen_seconds = (dt.datetime.now(dt.timezone.utc) - seen).total_seconds() if seen else None
+    dd["seen_age"] = age_text(seen_seconds) if seen else None
+    dd["offline"] = seen_seconds is None or seen_seconds > OFFLINE_AFTER_SECONDS
+    # what the status lamp shows: offline beats whatever the player last reported;
+    # the value becomes a CSS class, so anything unknown from the device reads as idle
+    reported = dd.get("player_status") or "idle"
+    dd["lamp"] = "offline" if dd["offline"] else (reported if reported in LAMP_STATES else "idle")
     return dd
 
 
@@ -221,6 +235,11 @@ def dashboard(request: Request, user=Depends(auth.require_user)):
             """
         ).fetchall()
         device_list = [_decorate_device(cur, dict(d), now) for d in devices]
+        audit_tail = cur.execute(
+            """SELECT username, action, target_type, target_id, ip, created_at
+               FROM audit_log ORDER BY created_at DESC, id DESC LIMIT ?""",
+            (DASHBOARD_AUDIT_TAIL,),
+        ).fetchall()
     return _render(
         request,
         "dashboard.html",
@@ -228,6 +247,9 @@ def dashboard(request: Request, user=Depends(auth.require_user)):
         media_bytes=media_stats["bytes"],
         playlist_count=playlists_n,
         devices=device_list,
+        audit_tail=[dict(r) for r in audit_tail],
+        server_now=dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
+        zone=local_zone_name(),
     )
 
 

@@ -42,11 +42,12 @@ describe("audit page", () => {
     expect(page).toContain("<code>2030-01-01 00:00 UTC</code>");
     expect(page).toContain('<span class="muted small">x</span> 1');
     expect(page).toContain("1.2.3.4");
-    expect(page).toContain("Times are shown in the site's zone (UTC)");
+    expect(page).toContain("times in UTC (database stores UTC)");
     expect(page).toContain(`<span class="badge badge-viewer">viewer</span>`);
 
     page = await (await r.viewer.get("/audit?limit=2")).text();
-    expect(page).toContain("Last 2 entries.");
+    expect(page).toContain("last 2 entries");
+    expect(page).toContain("tail -n 2 audit.log");
     expect(page).toContain("tie-2");
     expect(page).toContain("tie-1");
     expect(page).not.toContain("tie-0");
@@ -57,7 +58,7 @@ describe("audit page", () => {
     await query("INSERT INTO settings (key, value) VALUES ('timezone', 'Asia/Tokyo')");
     const page = await (await r.viewer.get("/audit")).text();
     expect(page).toContain("<code>2030-01-01 09:00 GMT+9</code>");
-    expect(page).toContain("zone (GMT+9)");
+    expect(page).toContain("times in GMT+9");
     await query("DELETE FROM settings");
   });
 });

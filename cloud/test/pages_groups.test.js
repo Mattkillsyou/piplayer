@@ -31,12 +31,12 @@ describe("groups", () => {
     expect(page).toContain("x&#39;);alert(1);//grp");
     expect(page).toContain("<td>1</td>");
     expect(page).toContain(`<option value="${w.pid}" selected>Fallback</option>`);
-    expect(page).toContain('data-autosubmit disabled');
-    expect(page).not.toContain("New group");
+    expect(page).toContain('data-autosubmit aria-label="Default playlist for x&#39;);alert(1);//grp" disabled');
+    expect(page).not.toContain("new group");
     expect(page).not.toContain("data-confirm");
     page = await (await r.editor.get("/groups")).text();
     expect(page).toContain('data-confirm="Delete x&#39;);alert(1);//grp? Devices in the group will lose this fallback."');
-    expect(page).toContain("New group");
+    expect(page).toContain("new group");
     expect(page).not.toContain("onchange");
   });
 

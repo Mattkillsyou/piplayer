@@ -80,7 +80,7 @@ describe("settings", () => {
     // other pages: zone name, image duration hint, stale threshold (3 x 120 s), manifest interval
     const dev = await device("set-dev", "Set dev", { last_screenshot_at: "2020-06-01 12:00:00", last_seen_at: "2020-06-01 12:00:00" });
     const audit = await (await r.admin.get("/audit")).text();
-    expect(audit).toMatch(/zone \((CET|CEST|GMT\+[12])\)/);
+    expect(audit).toMatch(/times in (CET|CEST|GMT\+[12])/);
     const dash = await (await r.admin.get("/dashboard")).text();
     expect(dash).toMatch(/2020-06-01 14:00 (CEST|GMT\+2)/);
     const sync = await SELF.fetch(`http://piplayer.test/api/sync/${dev.device_id}`, { headers: { authorization: `Bearer ${dev.token}` } });

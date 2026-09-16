@@ -3,12 +3,12 @@ import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, idParam, intField, json, jsonObject, localTime, redirect, str } from "../util.js";
-import { csrfInput, layout } from "./layout.js";
+import { csrfInput, emptyState, layout } from "./layout.js";
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const round1 = (n) => Number(n).toFixed(1);
 
-// Rewrite positions 0..n-1 in (position, id) order — one statement, run after a removal.
+// Rewrite positions 0..n-1 in (position, id) order: one statement, run after a removal.
 const RENUMBER_SQL = `UPDATE playlist_items
    SET position = (SELECT rn FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY position, id) - 1 AS rn
                                      FROM playlist_items WHERE playlist_id = ?1) x
@@ -34,35 +34,37 @@ async function playlistsPage(ctx) {
     if (p.group_count) parts.push(`${p.group_count} group default(s) will be cleared`);
     const confirm = `Delete playlist ${p.name}?` + (parts.length ? ` ${parts.join("; ")}.` : "");
     return `<tr>
-      <td><a href="/playlists/${p.id}">${esc(p.name)}</a></td>
+      <td class="name"><a href="/playlists/${p.id}">${esc(p.name)}</a></td>
       <td>${p.item_count}</td>
-      <td>
+      <td class="muted">
         <span title="devices with this as their default">${plural(p.device_count, "device")}</span>
         ${p.group_count ? ` · ${plural(p.group_count, "group")}` : ""}
         ${p.schedule_count ? ` · ${plural(p.schedule_count, "schedule rule")}` : ""}
       </td>
-      <td>${esc(localTime(p.updated_at, tz))}</td>
+      <td class="muted nowrap">${esc(localTime(p.updated_at, tz))}</td>
       <td>
-        <a href="/playlists/${p.id}" class="button small">${canEdit ? "Edit" : "View"}</a>
-        ${canEdit ? `<form method="post" action="/playlists/${p.id}/delete" class="inline" data-confirm="${esc(confirm)}">
-          ${csrfInput(ctx)}
-          <button type="submit" class="danger small">Delete</button>
-        </form>` : ""}
+        <div class="action-buttons">
+          <a href="/playlists/${p.id}" class="button small">${canEdit ? "Edit" : "View"}</a>
+          ${canEdit ? `<form method="post" action="/playlists/${p.id}/delete" class="inline" data-confirm="${esc(confirm)}">
+            ${csrfInput(ctx)}
+            <button type="submit" class="danger small">Delete</button>
+          </form>` : ""}
+        </div>
       </td>
     </tr>`;
   };
-  const content = `<h1>Playlists</h1>
-
-${canEdit ? `<div class="panel">
-  <h2>New playlist</h2>
-  <form method="post" action="/playlists" class="row">
+  const content = `<div class="page-head">
+  <h1>Playlists</h1>
+  ${canEdit ? `<form method="post" action="/playlists" class="head-actions">
     ${csrfInput(ctx)}
-    <input type="text" name="name" placeholder="e.g., Lobby Loop" required>
+    <label>new playlist
+      <input type="text" name="name" placeholder="e.g., Lobby Loop" required>
+    </label>
     <button type="submit" class="primary">Create</button>
-  </form>
-</div>` : ""}
+  </form>` : ""}
+</div>
 
-${!rows.length ? `<p class="muted empty">No playlists yet.${canEdit ? " Create one above." : ""}</p>` : `<div class="table-scroll">
+${!rows.length ? emptyState("NO PLAYLISTS", `No playlists yet.${canEdit ? " Create one above." : ""}`) : `<div class="table-wrap">
 <table class="data">
   <thead>
     <tr><th>Name</th><th>Items</th><th>Used by</th><th>Updated</th><th></th></tr>
@@ -114,19 +116,21 @@ async function playlistsEdit(ctx) {
   const defaultImageDuration = Number.isInteger(dur) ? dur.toFixed(1) : String(dur);
 
   const itemRow = (it, i) => `<tr data-item-id="${it.id}">
-      <td class="drag-handle" title="Drag to reorder">${canEdit ? "⋮⋮" : ""}</td>
+      <td class="drag-handle" title="Drag to reorder, or focus and press the up/down arrow keys">${canEdit ? `<span role="button" tabindex="0" aria-label="Move ${esc(it.original_name)}">⣿</span>` : ""}</td>
       <td class="position-cell">${i + 1}</td>
       <td>
         ${it.media_type === "video" ? '<span class="badge badge-video">VIDEO</span>' : '<span class="badge badge-image">IMAGE</span>'}
       </td>
-      <td>${esc(it.original_name)}</td>
-      <td>${it.duration_seconds ? `${round1(it.duration_seconds)} s` : "—"}</td>
+      <td class="name">${esc(it.original_name)}</td>
+      <td class="muted nowrap">${it.duration_seconds ? `${round1(it.duration_seconds)} s` : "—"}</td>
       <td>
         ${canEdit ? `<form method="post" action="/playlists/${playlist.id}/items/${it.id}/duration" class="inline duration-form">
           ${csrfInput(ctx)}
           <input type="number" name="duration" min="0.5" max="86400" step="0.5"
                  value="${esc(it.duration_override_seconds || "")}"
-                 placeholder="${it.media_type === "image" ? esc(defaultImageDuration) : "auto"}">
+                 placeholder="${it.media_type === "image" ? esc(defaultImageDuration) : "auto"}"
+                 aria-label="Duration override in seconds">
+          <span class="unit">sec</span>
           <button type="submit" class="small">Set</button>
         </form>` : esc(it.duration_override_seconds || "—")}
       </td>
@@ -138,26 +142,27 @@ async function playlistsEdit(ctx) {
       </td>
     </tr>`;
   const option = (m) => `<option value="${m.id}">
-      [${esc(m.media_type.toUpperCase())}] ${esc(m.original_name)}${m.duration_seconds ? ` (${round1(m.duration_seconds)}s)` : ""}
-    </option>`;
+        [${esc(m.media_type.toUpperCase())}] ${esc(m.original_name)}${m.duration_seconds ? ` (${round1(m.duration_seconds)}s)` : ""}
+      </option>`;
 
   const content = `<a href="/playlists" class="back">← All playlists</a>
-<h1>${esc(playlist.name)}</h1>
-
-${canEdit ? `<div class="panel">
-  <form method="post" action="/playlists/${playlist.id}/rename" class="row rename-form">
+<div class="page-head playlist-head">
+  ${canEdit ? `<form method="post" action="/playlists/${playlist.id}/rename" class="row">
     ${csrfInput(ctx)}
-    <input type="text" name="name" value="${esc(playlist.name)}" required>
+    <label>playlist name
+      <input type="text" name="name" value="${esc(playlist.name)}" required>
+    </label>
     <button type="submit">Rename</button>
-  </form>
-</div>` : ""}
+  </form>` : `<h1>${esc(playlist.name)}</h1>`}
+  <span class="page-meta">${items.length} item${items.length === 1 ? "" : "s"}${canEdit ? " · drag rows to reorder" : ""}</span>
+</div>
 
 <h2>Playlist order (${items.length})</h2>
-<p class="muted small">${canEdit ? "Drag rows to reorder. " : ""}Empty duration = play natural length for videos, ${esc(defaultImageDuration)}s default for images.</p>
-${!items.length ? `<p class="muted empty">Empty.${canEdit ? " Add media below." : ""}</p>` : `<div class="table-scroll">
+<p class="help small">Empty duration = play natural length for videos, ${esc(defaultImageDuration)}s default for images.</p>
+${!items.length ? emptyState("EMPTY REEL", `Nothing queued.${canEdit ? " Add media below." : ""}`) : `<div class="table-wrap">
 <table class="data sortable-table" id="playlist-items">
   <thead>
-    <tr><th></th><th>#</th><th>Type</th><th>Name</th><th>Natural duration</th><th>Override (s)</th><th></th></tr>
+    <tr><th></th><th>#</th><th>Type</th><th>Name</th><th>Natural</th><th>Override</th><th></th></tr>
   </thead>
   <tbody id="sortable-body" data-playlist-id="${playlist.id}"${canEdit ? "" : ' data-readonly="1"'}>
     ${items.map(itemRow).join("\n    ")}
@@ -167,15 +172,18 @@ ${!items.length ? `<p class="muted empty">Empty.${canEdit ? " Add media below." 
 
 ${canEdit ? `<h2>Add media</h2>
 ${!available.length
-    ? '<p class="muted empty">All uploaded media is already in this playlist, or you haven\'t uploaded anything. <a href="/library">Go to Library</a>.</p>'
-    : `<form method="post" action="/playlists/${playlist.id}/items" class="row">
-  ${csrfInput(ctx)}
-  <select name="media_id" required>
-    <option value="">— pick media —</option>
-    ${available.map(option).join("\n    ")}
-  </select>
-  <button type="submit" class="primary">Add to playlist</button>
-</form>`}` : ""}`;
+    ? `<p class="help small">All uploaded media is already in this playlist, or you haven't uploaded anything. <a href="/library">Go to Library</a>.</p>`
+    : `<div class="table-foot">
+  <form method="post" action="/playlists/${playlist.id}/items">
+    ${csrfInput(ctx)}
+    <select name="media_id" required aria-label="Media to add">
+      <option value="">— pick media —</option>
+      ${available.map(option).join("\n      ")}
+    </select>
+    <button type="submit" class="primary">Add</button>
+  </form>
+</div>`}
+${items.length ? '<div class="drop-hint"><span>⣿</span><span class="sans">Drag a row by its handle and drop it where it should play. The new order is saved at once; devices pick it up on their next poll.</span></div>' : ""}` : ""}`;
   return layout(ctx, { title: playlist.name, content, scripts: ["/static/sortable.min.js"] });
 }
 

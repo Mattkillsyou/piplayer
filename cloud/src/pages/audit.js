@@ -24,29 +24,35 @@ async function auditPage(ctx) {
     `SELECT id, user_id, username, action, target_type, target_id, details, ip, created_at
        FROM audit_log ORDER BY created_at DESC, id DESC LIMIT ?`, limit);
   const row = (e) => `<tr>
-      <td class="nowrap"><code>${esc(localTime(e.created_at, tz))}</code></td>
-      <td>${esc(e.username || "—")}</td>
-      <td><code>${esc(e.action)}</code></td>
-      <td>${e.target_type ? `<span class="muted small">${esc(e.target_type)}</span> ${esc(e.target_id)}` : "—"}</td>
-      <td><span class="muted small mono">${esc(e.details || "")}</span></td>
-      <td><span class="muted small">${esc(e.ip || "—")}</span></td>
+      <td class="nowrap log-t"><code>${esc(localTime(e.created_at, tz))}</code></td>
+      <td class="log-u">${esc(e.username || "—")}</td>
+      <td class="log-a"><code>${esc(e.action)}</code></td>
+      <td class="nowrap">${e.target_type ? `<span class="muted small">${esc(e.target_type)}</span> ${esc(e.target_id ?? "")}` : "—"}</td>
+      <td class="log-d"><span class="muted small mono">${esc(e.details || "")}</span></td>
+      <td class="muted nowrap">${esc(e.ip || "—")}</td>
     </tr>`;
-  const content = `<h1>Audit log</h1>
-<p class="muted small">Last ${entries.length} entries. Times are shown in the site's zone (${esc(zoneName(tz))}); the database stores UTC.</p>
-
-${!entries.length ? '<p class="muted empty">No entries yet.</p>' : `<div class="terminal">
-<div class="terminal-head"><span class="eyebrow">Audit tail · last ${entries.length}</span><span class="blink" aria-hidden="true"></span></div>
-<div class="table-scroll">
-<table class="data">
-  <thead>
-    <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr>
-  </thead>
-  <tbody>
-    ${entries.map(row).join("\n    ")}
-  </tbody>
-</table>
+  const content = `<div class="page-head">
+  <h1>Audit log</h1>
+  <span class="page-meta">last ${entries.length} entr${entries.length === 1 ? "y" : "ies"} · times in ${esc(zoneName(tz))} (database stores UTC)</span>
 </div>
-</div>`}`;
+
+<div class="terminal">
+  <div class="terminal-head">
+    <h2>tail -n ${limit} audit.log</h2>
+    <span class="meta">newest first · <a href="/audit?limit=1000">show 1000</a></span>
+  </div>
+  ${!entries.length ? '<div class="terminal-foot">no entries yet <span class="cursor-blink" aria-hidden="true"></span></div>' : `<div class="table-wrap">
+  <table class="data">
+    <thead>
+      <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr>
+    </thead>
+    <tbody>
+      ${entries.map(row).join("\n      ")}
+    </tbody>
+  </table>
+  </div>
+  <div class="terminal-foot">end of tail <span class="cursor-blink" aria-hidden="true"></span></div>`}
+</div>`;
   return layout(ctx, { title: "Audit log", content });
 }
 

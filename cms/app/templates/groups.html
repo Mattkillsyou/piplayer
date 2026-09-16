@@ -1,24 +1,27 @@
 {% extends "base.html" %}
-{% block title %}Groups · {{ app_name }}{% endblock %}
+{% block title %}Groups — {{ app_name }}{% endblock %}
 {% block content %}
-<h1>Device groups</h1>
-<p class="muted small">Devices in a group use the group's playlist as their fallback (when the device has no default and no schedule matches).</p>
-
-{% if user.role != 'viewer' %}
-<div class="panel">
-  <h2>New group</h2>
-  <form method="post" action="/groups" class="row">
+<div class="page-head">
+  <h1>Device groups</h1>
+  {% if user.role != 'viewer' %}
+  <form method="post" action="/groups" class="head-actions">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="text" name="name" placeholder="e.g., Lobby projectors" required>
+    <label>new group
+      <input type="text" name="name" placeholder="e.g., Lobby projectors" required>
+    </label>
     <button type="submit" class="primary">Create</button>
   </form>
+  {% endif %}
 </div>
-{% endif %}
+<p class="help small">Devices in a group use the group's playlist as their fallback (when the device has no default and no schedule matches).</p>
 
 {% if not groups %}
-  <p class="muted empty">No groups yet.</p>
+  <div class="empty">
+    <span class="empty-title">NO GROUPS</span>
+    <p>No groups yet.{% if user.role != 'viewer' %} Create one above.{% endif %}</p>
+  </div>
 {% else %}
-<div class="table-scroll">
+<div class="table-wrap">
 <table class="data">
   <thead>
     <tr><th>Name</th><th>Devices</th><th>Default playlist</th><th></th></tr>
@@ -26,12 +29,12 @@
   <tbody>
     {% for g in groups %}
     <tr>
-      <td>{{ g.name }}</td>
+      <td class="name">{{ g.name }}</td>
       <td>{{ g.device_count }}</td>
       <td>
         <form method="post" action="/groups/{{ g.id }}/assign" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <select name="playlist_id" onchange="this.form.submit()" {% if user.role == 'viewer' %}disabled{% endif %}>
+          <select name="playlist_id" data-autosubmit aria-label="Default playlist for {{ g.name }}" {% if user.role == 'viewer' %}disabled{% endif %}>
             <option value="">— none —</option>
             {% for p in playlists %}
             <option value="{{ p.id }}" {% if p.id == g.playlist_id %}selected{% endif %}>{{ p.name }}</option>

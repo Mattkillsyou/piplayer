@@ -3,7 +3,7 @@
 // devices pages all resolve the active playlist through the same function so they agree.
 import * as db from "./db.js";
 import * as schedules from "./schedules.js";
-import { serverTimeIso, sha256Hex, wallClock } from "./util.js";
+import { serverTimeIso, sha256Hex, wallClock, zoneOffsetMinutes } from "./util.js";
 
 export const MAX_COMMAND_DELIVERIES = 5;
 
@@ -108,6 +108,20 @@ export async function pending_commands(env, deviceRowId) {
   return cmds;
 }
 
+const pad2 = (n) => String(n).padStart(2, "0");
+
+// A site wall-clock minute {year, month, day, hour, minute} as ISO 8601 with the zone's
+// numeric offset at that moment, e.g. 2026-09-15T22:00-07:00 (Python:
+// datetime.astimezone().isoformat(timespec="minutes")).
+function wallIsoMinutes(timeZone, w) {
+  const naive = Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute);
+  let off = zoneOffsetMinutes(timeZone, new Date(naive));
+  off = zoneOffsetMinutes(timeZone, new Date(naive - off * 60000)); // settle across a DST edge
+  const a = Math.abs(off);
+  return `${w.year}-${pad2(w.month)}-${pad2(w.day)}T${pad2(w.hour)}:${pad2(w.minute)}` +
+    `${off < 0 ? "-" : "+"}${pad2(Math.floor(a / 60))}:${pad2(a % 60)}`;
+}
+
 // The /api/sync body. `device` is the devices row (id, device_id, name, playlist_id, group_id);
 // `baseUrl` is the request origin (https://host) the media URLs are built on.
 export async function manifest_for_device(env, device, baseUrl, settings, now = new Date()) {
@@ -148,9 +162,26 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
 
   const commands = await pending_commands(env, device.id);
 
+  // Nothing to play right now: tell the player when the next schedule rule starts so its
+  // standby screen can say so.
+  let nextRule = null;
+  if (playlistBlock === null || !playlistBlock.items.length) {
+    const rows = await db.all(env,
+      `SELECT s.id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time,
+              s.days_of_week, s.start_date, s.end_date, p.name AS playlist_name
+         FROM device_schedules s LEFT JOIN playlists p ON p.id = s.playlist_id
+        WHERE s.device_id = ?`, device.id);
+    const upcoming = schedules.next_start(rows, wall);
+    if (upcoming) {
+      const [rule, startsAt] = upcoming;
+      nextRule = { name: rule.name, playlist: rule.playlist_name ?? null, starts_at: wallIsoMinutes(settings.timezone, startsAt) };
+    }
+  }
+
   return {
     device: { id: device.device_id, name: device.name },
     playlist: playlistBlock,
+    next_rule: nextRule,
     commands,
     screenshot_interval_seconds: settings.screenshot_interval,
     // Site wall-clock with UTC offset, e.g. 2026-09-14T15:03:07-07:00 (schedules use this clock).

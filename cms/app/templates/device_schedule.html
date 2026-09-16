@@ -1,29 +1,37 @@
 {% extends "base.html" %}
-{% block title %}{{ device.name }} schedule · {{ app_name }}{% endblock %}
+{% block title %}{{ device.name }} schedule — {{ app_name }}{% endblock %}
 {% block content %}
 <a href="/devices" class="back">← Devices</a>
-<span class="page-eyebrow">Schedule · {{ device.device_id }}</span>
-<h1>{{ device.name }}</h1>
-<p class="muted small">Controller time now: <code>{{ now }}</code> (zone {{ zone }}). Rules use the controller's local wall-clock time; if this is not your venue's time, set the controller Pi's timezone with <code>sudo timedatectl set-timezone Region/City</code>.</p>
+<div class="page-head">
+  <div>
+    <span class="eyebrow">Schedule · {{ device.device_id }}</span>
+    <h1>{{ device.name }}</h1>
+  </div>
+  <span class="page-meta"><strong>controller {{ now }}</strong><br>rules use the controller's local wall-clock time (zone {{ zone }})</span>
+</div>
+<p class="zone-note">If this is not your venue's time, set the controller Pi's timezone with <code>sudo timedatectl set-timezone Region/City</code>.</p>
 
 <h2>Rules ({{ rules | length }})</h2>
-<p class="muted small">When multiple rules match, the one with the highest priority wins. If no rule matches, the device's default playlist (set on the Devices page) plays. A window that crosses midnight (e.g. 22:00–02:00) belongs to the day it starts on, so "Fri 22:00–02:00" runs until Saturday 02:00.</p>
+<p class="help small">When multiple rules match, the one with the highest priority wins. If no rule matches, the device's default playlist (set on the Devices page) plays. A window that crosses midnight (e.g. 22:00–02:00) belongs to the day it starts on, so "Fri 22:00–02:00" runs until Saturday 02:00.</p>
 {% if not rules %}
-  <p class="muted empty">No rules: the device plays its default playlist always.</p>
+  <div class="empty">
+    <span class="empty-title">NO RULES</span>
+    <p>The device plays its default playlist always.</p>
+  </div>
 {% else %}
-<div class="table-scroll">
+<div class="table-wrap">
 <table class="data">
   <thead>
-    <tr><th>Priority</th><th>Name</th><th>Playlist</th><th>When</th><th>Active now?</th><th></th></tr>
+    <tr><th>Prio</th><th>Name</th><th>Playlist</th><th>When</th><th>State</th><th></th></tr>
   </thead>
   <tbody>
     {% for r in rules %}
     <tr {% if r.matches_now %}class="rule-active"{% endif %}>
-      <td class="prio">{{ r.priority }}</td>
-      <td>{{ r.name }}</td>
+      <td class="position-cell">{{ r.priority }}</td>
+      <td class="name">{{ r.name }}</td>
       <td>{{ r.playlist_name or "—" }}</td>
-      <td><span class="muted small">{{ r.summary }}</span></td>
-      <td>{% if r.matches_now %}<span class="badge badge-active">active now</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="muted">{{ r.summary }}</td>
+      <td>{% if r.matches_now %}<span class="badge badge-active">active now</span>{% else %}<span class="badge badge-muted">waiting</span>{% endif %}</td>
       <td>
         {% if user.role != 'viewer' %}
         <form method="post" action="/devices/{{ device.id }}/schedule/{{ r.id }}/delete" class="inline" data-confirm="Delete rule {{ r.name }}?">
@@ -40,8 +48,8 @@
 {% endif %}
 
 {% if user.role != 'viewer' %}
-<h2>Add a rule</h2>
 <div class="panel">
+  <h2>Add rule</h2>
   <form method="post" action="/devices/{{ device.id }}/schedule">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">
@@ -59,23 +67,25 @@
       <label>Priority
         <input type="number" name="priority" value="10" min="0" max="1000">
       </label>
-      <label>Start time (HH:MM)
+    </div>
+    <div class="form-grid">
+      <label>Start time
         <input type="time" name="start_time" placeholder="06:00">
       </label>
-      <label>End time (HH:MM)
+      <label>End time
         <input type="time" name="end_time" placeholder="09:00">
       </label>
       <label>Start date
         <input type="date" name="start_date">
       </label>
       <label>End date
-        <input type="date" name="end_date">
+        <input type="date" name="end_date" placeholder="never">
       </label>
     </div>
-    <p class="muted small">Leave both times empty for all day. An end time earlier than the start time wraps past midnight and counts as the start day.</p>
+    <p class="help small">Leave both times empty for all day. An end time earlier than the start time wraps past midnight and counts as the start day.</p>
 
     <fieldset class="days-fieldset">
-      <legend>Days of week (leave blank for all days)</legend>
+      <legend>Days (leave blank for all days)</legend>
       <label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="0">Mon</label>
       <label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="1">Tue</label>
       <label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="2">Wed</label>
@@ -86,20 +96,10 @@
       <input type="hidden" name="days_of_week" id="days-hidden" value="">
     </fieldset>
 
-    <button type="submit" class="primary">Add rule</button>
+    <div class="row">
+      <button type="submit" class="primary">Add rule</button>
+    </div>
   </form>
 </div>
-
-<script>
-(function() {
-  const form = document.querySelector('form[action$="/schedule"]');
-  if (!form) return;
-  form.addEventListener('submit', function() {
-    const checks = form.querySelectorAll('input[name="days_of_week_chk"]:checked');
-    const value = Array.from(checks).map(c => c.value).join('');
-    document.getElementById('days-hidden').value = value;
-  });
-})();
-</script>
 {% endif %}
 {% endblock %}

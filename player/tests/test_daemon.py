@@ -10,6 +10,8 @@ from fakes import FakeCms, FakeMpv
 from player import daemon
 from player.daemon import PlayerState, run_cycle
 from player.mpv_client import MpvClient
+from player.screens import layout
+from player.status import StatusScreens
 
 
 @pytest.fixture
@@ -17,6 +19,23 @@ def mpv(monkeypatch):
     fake = FakeMpv()
     fake.install(monkeypatch)
     return fake
+
+
+@pytest.fixture
+def screens(cfg, client, monkeypatch):
+    s = StatusScreens(cfg, client, "0.2.0")
+    monkeypatch.setattr(s, "throttled", lambda seconds=2.0: True)   # every progress event counts in tests
+    return s
+
+
+def screen_loads(mpv):
+    """Basenames of the status screen PNGs loaded so far, in order."""
+    return [c["url"].replace("\\", "/").rsplit("/", 1)[-1] for c in mpv.commands("loadfile")
+            if c["url"].endswith(".png")]
+
+
+def screen_texts(screens):
+    return [t["text"] for t in layout(screens.current)]
 
 
 @pytest.fixture
@@ -70,12 +89,16 @@ def test_cached_manifest_is_pushed_while_cms_unreachable(cfg, cms, mpv, client):
     assert state.backoff == 20
 
 
-def test_no_cache_and_offline_does_nothing(cfg, cms, mpv, client):
+def test_no_cache_and_offline_shows_offline_screen(cfg, cms, mpv, client, screens):
     cms.unreachable = True
     state = fresh_state(cfg)
-    run_cycle(cfg, client, state)
-    assert mpv.commands("loadfile") == []
+    run_cycle(cfg, client, state, screens=screens)
+    assert screen_loads(mpv) == ["offline.png"]
     assert state.last_manifest is None
+    assert state.last_failure == "unreachable"
+    assert screens.current.kind == "offline" and "no cached content" in screen_texts(screens)
+    run_cycle(cfg, client, state, screens=screens)
+    assert screen_loads(mpv) == ["offline.png"]      # same screen: not reloaded
 
 
 def test_first_sync_online_pushes_and_logs_mpv_version(cfg, cms, mpv, client, caplog):
@@ -299,3 +322,239 @@ def test_sync_crash_does_not_skip_mpv_reconcile(cfg, cms, mpv, client, monkeypat
     run_cycle(cfg, client, state)
     assert names(mpv) == ["a.mp4"]
     assert state.backoff == 10
+
+
+# ------------------------------------------------------------ status screens ---
+
+def test_unassigned_device_shows_pairing_screen_without_clearing_mpv(cfg, cms, mpv, client, screens):
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    assert screen_loads(mpv) == ["pairing.png"]
+    assert screens.current.kind == "pairing" and "assign a playlist to this device in the console" in screen_texts(screens)
+    assert mpv.commands("stop") == [] and mpv.commands("playlist-clear") == []
+    mpv.restart()                                   # new mpv instance starts black: screen is re-shown
+    run_cycle(cfg, client, state, screens=screens)
+    assert screen_loads(mpv) == ["pairing.png", "pairing.png"]
+
+
+def test_empty_playlist_shows_waiting_with_next_rule(cfg, cms, mpv, client, screens):
+    cms.manifest["playlist"] = {"id": 1, "name": "Day", "source": "device-default", "hash": "sha256:x", "items": []}
+    cms.manifest["next_rule"] = {"name": "Night", "playlist": "After hours", "starts_at": "2026-01-06T22:00:00+00:00"}
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    assert screens.current.kind == "waiting"
+    texts = screen_texts(screens)
+    assert "playlist Day has no items" in texts
+    assert "next: Night \u00b7 After hours at Tue 22:00" in texts
+    cms.manifest["playlist"] = None                  # rules exist but none active: still waiting, not pairing
+    run_cycle(cfg, client, state, screens=screens)
+    assert screens.current.kind == "waiting" and "no schedule rule is active" in screen_texts(screens)
+
+
+def test_rejected_token_shows_error_screen(cfg, cms, mpv, client, screens):
+    cms.sync_status = 401
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    assert state.last_failure == "token"
+    assert screen_loads(mpv) == ["error.png"]
+    assert screens.current.kind == "error" and screens.current.reason == "token"
+    assert "the console refused this device's token" in screen_texts(screens)
+
+
+def test_content_replaces_status_screen_and_announces_now_playing(cfg, cms, mpv, client, screens):
+    cms.unreachable = True
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    assert screens.current.kind == "offline"
+    cms.unreachable = False
+    cms.files["a.mp4"] = b"A" * 10
+    cms.files["b.mp4"] = b"B" * 10
+    cms.set_playlist(["a.mp4", "b.mp4"])
+    run_cycle(cfg, client, state, screens=screens)
+    assert "syncing.png" in screen_loads(mpv)            # progress shown while the offline screen was up
+    assert names(mpv) == ["a.mp4", "b.mp4"] and mpv.current["path"].endswith("a.mp4")
+    assert screens.current is None
+    assert [o[0] for o in mpv.overlays] == ["overlay-add"]
+    assert mpv.overlays[0][1] == StatusScreens.OVERLAY_ID
+    # a playlist change while playing announces again; an unchanged poll does not
+    run_cycle(cfg, client, state, screens=screens)
+    assert len(mpv.overlays) == 1
+    cms.files["c.mp4"] = b"C" * 10
+    cms.set_playlist(["a.mp4", "b.mp4", "c.mp4"])
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4", "b.mp4", "c.mp4"]
+    assert [o[0] for o in mpv.overlays] == ["overlay-add", "overlay-add"]
+
+
+def test_syncing_screen_never_interrupts_playing_content(cfg, cms, mpv, client, screens):
+    seed_local(cfg, cms, ["a.mp4"])
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4"] and screens.current is None
+    n = len(mpv.commands("loadfile"))
+    cms.files["b.mp4"] = b"B" * 10
+    cms.set_playlist(["a.mp4", "b.mp4"])
+    run_cycle(cfg, client, state, screens=screens)
+    assert (cfg.media_dir / "b.mp4").is_file()
+    assert names(mpv) == ["a.mp4", "b.mp4"] and mpv.current["path"].endswith("a.mp4")
+    assert not any(c["url"].endswith(".png") for c in mpv.commands("loadfile")[n:])
+    assert screens.current is None
+    assert cms.sync_calls[-1]["player_status"] == "playing"
+
+
+def test_status_screen_is_reported_as_idle_not_playing(cfg, cms, mpv, client, screens):
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)      # pairing screen up
+    run_cycle(cfg, client, state, screens=screens)
+    assert cms.sync_calls[-1]["player_status"] == "idle"
+    assert "current_filename" not in cms.sync_calls[-1]
+
+
+def test_enospc_during_download_shows_storage_full(cfg, cms, mpv, client, screens, monkeypatch):
+    import errno
+    from player import sync as sync_mod
+    cms.files["a.mp4"] = b"A" * 10
+    cms.set_playlist(["a.mp4"])
+
+    def full(*a, **k):
+        raise OSError(errno.ENOSPC, "No space left on device")
+    monkeypatch.setattr(sync_mod, "_download_item", full)
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    assert state.storage_full is True
+    assert screens.current.kind == "error" and screens.current.reason == "storage"
+    assert "1 of 1 items missing: no space left on device" in screen_texts(screens)
+    assert mpv.commands("stop") == []
+    cms.files["b.mp4"] = b"B" * 10                      # a full card fails every item: still STORAGE FULL
+    cms.set_playlist(["a.mp4", "b.mp4"])
+    run_cycle(cfg, client, state, screens=screens)
+    assert state.storage_full is True
+    assert screens.current.reason == "storage" and "2 of 2 items missing: no space left on device" in screen_texts(screens)
+
+
+def test_every_item_failing_shows_error_screen(cfg, cms, mpv, client, screens):
+    cms.files["a.mp4"] = b"A" * 10
+    cms.set_playlist(["a.mp4"])
+    cms.files.clear()                                   # download 404s
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    assert screens.current.kind == "error" and screens.current.reason == "other"
+    assert "download failed: a.mp4: HTTP 404" in screen_texts(screens)
+    cms.files["a.mp4"] = b"A" * 10                      # file appears: content takes over
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4"] and screens.current is None
+
+
+def test_mpv_idle_for_four_cycles_shows_player_fault(cfg, cms, mpv, client, screens, caplog):
+    seed_local(cfg, cms, ["a.mp4", "b.mp4"])
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    n = len(mpv.commands("loadfile"))
+    with caplog.at_level(logging.WARNING, logger="piplayer"):
+        for _ in range(4):
+            mpv.current = None                           # every entry keeps failing to start
+            run_cycle(cfg, client, state, screens=screens)
+    loads = mpv.commands("loadfile")[n:]
+    assert [c["flags"] for c in loads[:2]] == ["replace", "append"]   # the one re-push after two idle cycles
+    assert [x for x in screen_loads(mpv) if x != "syncing.png"] == ["error.png"]   # (cycle 1 verified the unindexed files)
+    assert screens.current.reason == "player" and "mpv could not start any of 2 items" in screen_texts(screens)
+    assert sum("player fault screen" in r.getMessage() for r in caplog.records) == 1
+    m = len(mpv.commands("loadfile"))
+    run_cycle(cfg, client, state, screens=screens)       # stays on the fault screen, no more re-pushes
+    assert len(mpv.commands("loadfile")) == m
+    cms.files["c.mp4"] = b"C" * 10                       # a playlist change pushes content again
+    cms.set_playlist(["c.mp4"])
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["c.mp4"] and screens.current is None
+
+
+def test_unassign_then_reassign_same_playlist_resumes_content(cfg, cms, mpv, client, screens):
+    seed_local(cfg, cms, ["a.mp4"])
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4"]
+    h = cms.manifest["playlist"]["hash"]
+    saved = dict(cms.manifest["playlist"])
+    cms.manifest["playlist"] = None                     # unassigned: media pruned, pairing screen up
+    run_cycle(cfg, client, state, screens=screens)
+    assert screens.current.kind == "pairing" and names(mpv) == ["pairing.png"]
+    cms.manifest["playlist"] = saved                    # the very same playlist (same hash) comes back
+    assert cms.manifest["playlist"]["hash"] == h
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4"] and screens.current is None
+    assert state.applied_hash == h
+    assert [o[0] for o in mpv.overlays][-1] == "overlay-add"
+
+
+def test_verify_all_while_fault_screen_does_not_strand_syncing_screen(cfg, cms, mpv, client, screens):
+    seed_local(cfg, cms, ["a.mp4", "b.mp4"])
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    for _ in range(4):
+        mpv.current = None
+        run_cycle(cfg, client, state, screens=screens)
+    assert screens.current.reason == "player"
+    state.force_verify = True                           # daily verify_all (or a force-sync) while on the fault screen
+    run_cycle(cfg, client, state, screens=screens)
+    assert "syncing.png" in screen_loads(mpv)[-2:]      # progress was shown over the fault screen...
+    assert screens.current is None and names(mpv) == ["a.mp4", "b.mp4"]   # ...then the content was pushed again
+    mpv.current = None                                  # still cannot start: the fault screen returns
+    run_cycle(cfg, client, state, screens=screens)
+    assert screens.current.reason == "player"
+    for _ in range(3):
+        run_cycle(cfg, client, state, screens=screens)  # mpv shows the PNG fine: nothing is re-rendered
+    assert screens.current.reason == "player" and screen_loads(mpv)[-1] == "error.png"
+
+
+def test_player_fault_retries_content_slowly(cfg, cms, mpv, client, screens):
+    seed_local(cfg, cms, ["a.mp4"])
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    for _ in range(4):
+        mpv.current = None                              # no display: not even the fault PNG starts
+        run_cycle(cfg, client, state, screens=screens)
+    assert screens.current.reason == "player" and names(mpv) == ["error.png"]
+    n = len(mpv.commands("loadfile"))
+    cycles = 0
+    while names(mpv) == ["error.png"]:                  # display fixed: mpv now plays whatever it is given
+        run_cycle(cfg, client, state, screens=screens)
+        cycles += 1
+        assert cycles <= daemon.FAULT_RETRY_CYCLES
+    assert names(mpv) == ["a.mp4"] and mpv.current["path"].endswith("a.mp4")
+    assert screens.current is None
+    assert len(mpv.commands("loadfile")) == n + 1       # exactly one retry push
+    for _ in range(3):
+        run_cycle(cfg, client, state, screens=screens)  # and it stays on content
+    assert names(mpv) == ["a.mp4"] and screens.current is None and state.idle_streak == 0
+
+
+def test_partial_push_failure_does_not_keep_screen_flag(cfg, cms, mpv, client, screens, monkeypatch):
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)      # pairing screen up
+    cms.files["a.mp4"] = b"A" * 10
+    cms.files["b.mp4"] = b"B" * 10
+    cms.set_playlist(["a.mp4", "b.mp4"])
+    real_append = MpvClient.load_append
+    monkeypatch.setattr(MpvClient, "load_append", lambda self, path, options=None: False)
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4"]                      # the first item replaced the PNG before the append failed
+    assert state.applied_hash is None and screens.current is None
+    assert cms.sync_calls[-1]["player_status"] == "idle"
+    monkeypatch.setattr(MpvClient, "load_append", real_append)
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4", "b.mp4"]
+    assert cms.sync_calls[-1]["player_status"] == "playing"
+
+
+def test_syncing_screen_is_not_rendered_while_mpv_is_down(cfg, cms, mpv, client, screens):
+    cms.files["a.mp4"] = b"A" * 10
+    cms.set_playlist(["a.mp4"])
+    mpv.alive = False
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    assert (cfg.media_dir / "a.mp4").is_file()
+    assert screens.current is None and not (screens.dir / "syncing.png").exists()
+    assert mpv.commands("loadfile") == []
+    mpv.restart()
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4"]

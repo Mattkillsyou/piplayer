@@ -159,9 +159,31 @@ def _manifest_for_device(device: dict, request: Request, now: dt.datetime | None
 
     commands = _pending_commands(device["id"])
 
+    # Nothing to play right now: tell the player when the next schedule rule
+    # starts so its standby screen can say so.
+    next_rule = None
+    if playlist_block is None or not playlist_block["items"]:
+        with db.cursor() as cur:
+            rows = cur.execute(
+                """SELECT s.id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time,
+                          s.days_of_week, s.start_date, s.end_date, p.name AS playlist_name
+                   FROM device_schedules s LEFT JOIN playlists p ON p.id = s.playlist_id
+                   WHERE s.device_id = ?""",
+                (device["id"],),
+            ).fetchall()
+        upcoming = schedules.next_start([dict(r) for r in rows], now)
+        if upcoming:
+            rule, starts_at = upcoming
+            next_rule = {
+                "name": rule["name"],
+                "playlist": rule.get("playlist_name"),
+                "starts_at": starts_at.astimezone().isoformat(timespec="minutes"),
+            }
+
     return {
         "device": {"id": device["device_id"], "name": device["name"]},
         "playlist": playlist_block,
+        "next_rule": next_rule,
         "commands": commands,
         "screenshot_interval_seconds": config.SCREENSHOT_INTERVAL_SECONDS,
         # Local wall-clock with UTC offset, e.g. 2026-09-14T15:03:07-07:00 (schedules use this clock).

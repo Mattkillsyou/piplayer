@@ -1,6 +1,8 @@
-// Shared page behaviour. No names are ever interpolated into inline JS: destructive forms
-// carry data-confirm="..." and selects that used to be onchange="this.form.submit()" carry
-// data-autosubmit, both handled here so every submit goes through the same confirm + CSRF path.
+// Shared page behaviour for the Projection5000 console. No names are ever interpolated into
+// inline JS: destructive forms carry data-confirm="...", selects that used to be
+// onchange="this.form.submit()" carry data-autosubmit, and every other behaviour hangs off an
+// id or data attribute handled here. upload.js (library) and sortable.min.js (playlist
+// editor) are loaded per page.
 (function () {
   'use strict';
 
@@ -52,37 +54,119 @@
     });
   }
 
-  // Playlist editor: drag rows of #sortable-body (rendered with data-item-id) and save the order.
+  // Phone nav: the menu button in the top bar.
+  function initNav() {
+    var toggle = document.querySelector('.nav-toggle');
+    if (!toggle) return;
+    toggle.addEventListener('click', function () {
+      var bar = toggle.closest('.topbar');
+      var open = bar.classList.toggle('nav-open');
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  }
+
+  // Playlist editor: drag rows of #sortable-body (rendered with data-item-id), or move a
+  // focused handle with the arrow keys, and save the order.
   function initSortable() {
     var body = document.getElementById('sortable-body');
-    if (!body || !window.Sortable || body.dataset.readonly) return;
+    if (!body || body.dataset.readonly) return;
     var playlistId = parseInt(body.dataset.playlistId, 10);
-    Sortable.create(body, {
-      handle: '.drag-handle',
-      animation: 150,
-      ghostClass: 'sortable-ghost',
-      onEnd: function () {
-        var rows = Array.prototype.slice.call(body.querySelectorAll('tr[data-item-id]'));
-        var ids = rows.map(function (tr) { return parseInt(tr.dataset.itemId, 10); });
-        // Optimistic position renumber
-        rows.forEach(function (tr, idx) {
-          var cell = tr.querySelector('.position-cell');
-          if (cell) cell.textContent = idx + 1;
-        });
-        postJson('/playlists/' + playlistId + '/items/reorder', { order: ids }).then(function (r) {
-          if (!r.ok) {
-            alert('Reorder not saved (HTTP ' + r.status + '); reloading');
-            window.location.reload();
-          }
-        }).catch(function (err) {
-          alert('Reorder error: ' + err.message);
+
+    function saveOrder() {
+      var rows = Array.prototype.slice.call(body.querySelectorAll('tr[data-item-id]'));
+      var ids = rows.map(function (tr) { return parseInt(tr.dataset.itemId, 10); });
+      // Optimistic position renumber
+      rows.forEach(function (tr, idx) {
+        var cell = tr.querySelector('.position-cell');
+        if (cell) cell.textContent = idx + 1;
+      });
+      postJson('/playlists/' + playlistId + '/items/reorder', { order: ids }).then(function (r) {
+        if (!r.ok) {
+          alert('Reorder not saved (HTTP ' + r.status + '); reloading');
           window.location.reload();
-        });
+        }
+      }).catch(function (err) {
+        alert('Reorder error: ' + err.message);
+        window.location.reload();
+      });
+    }
+
+    if (window.Sortable) {
+      Sortable.create(body, {
+        handle: '.drag-handle',
+        animation: 150,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        onEnd: saveOrder
+      });
+    }
+
+    body.addEventListener('keydown', function (e) {
+      var handle = e.target.closest && e.target.closest('.drag-handle [role="button"]');
+      if (!handle || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+      var row = handle.closest('tr');
+      var other = e.key === 'ArrowUp' ? row.previousElementSibling : row.nextElementSibling;
+      if (!other) return;
+      e.preventDefault();
+      if (e.key === 'ArrowUp') body.insertBefore(row, other); else body.insertBefore(other, row);
+      handle.focus();
+      saveOrder();
+    });
+  }
+
+  // Dashboard: All / Faults filter on the monitor wall.
+  function initWallFilter() {
+    var filters = document.getElementById('wall-filters');
+    var wall = document.getElementById('monitor-wall');
+    if (!filters || !wall) return;
+    filters.addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-filter]');
+      if (!btn) return;
+      wall.classList.toggle('faults-only', btn.dataset.filter === 'faults');
+      filters.querySelectorAll('button[data-filter]').forEach(function (b) {
+        b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
+      });
+    });
+  }
+
+  // Library: dropping files on the panel fills the file input (upload.js drives the queue).
+  function initDropzone() {
+    var input = document.getElementById('file-input');
+    var zone = input && input.closest('.dropzone');
+    if (!zone) return;
+    ['dragenter', 'dragover'].forEach(function (name) {
+      zone.addEventListener(name, function (e) { e.preventDefault(); zone.classList.add('is-over'); });
+    });
+    ['dragleave', 'drop'].forEach(function (name) {
+      zone.addEventListener(name, function (e) { e.preventDefault(); zone.classList.remove('is-over'); });
+    });
+    zone.addEventListener('drop', function (e) {
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+        input.files = e.dataTransfer.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
       }
     });
   }
 
+  // Schedule form: fold the checked days into the hidden days_of_week field ("0123456" subset).
+  function initDays() {
+    var days = document.getElementById('days-hidden');
+    if (!days || !days.form) return;
+    days.form.addEventListener('submit', function () {
+      var checks = days.form.querySelectorAll('input[name="days_of_week_chk"]:checked');
+      days.value = Array.prototype.map.call(checks, function (c) { return c.value; }).join('');
+    });
+  }
+
+  function init() {
+    initNav();
+    initSortable();
+    initWallFilter();
+    initDropzone();
+    initDays();
+  }
+
   window.piplayer = { csrf: csrf, postJson: postJson };
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initSortable);
-  else initSortable();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
 })();

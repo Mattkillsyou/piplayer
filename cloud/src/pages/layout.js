@@ -3,6 +3,7 @@
 import { esc, html } from "../util.js";
 
 export const APP_NAME = "Projection5000";
+export const APP_EYEBROW = "Matt Brown's";
 
 const NAV = [
   ["/dashboard", "Dashboard", (p) => p === "/dashboard"],
@@ -20,9 +21,24 @@ export function csrfInput(ctx) {
   return `<input type="hidden" name="csrf_token" value="${esc(ctx.csrf)}">`;
 }
 
-// A `<div class="alert error">` (or class 'ok') for the message slot, '' when message is empty.
+// A `<div class="alert error">` (or class 'ok' / 'warn') for the message slot, '' when message is empty.
 export function alertBox(message, kind = "error") {
-  return message ? `<div class="alert ${esc(kind)}">${esc(message)}</div>` : "";
+  return message ? `<div class="alert ${esc(kind)}" role="alert">${esc(message)}</div>` : "";
+}
+
+// The PROJECTION[5000] wordmark; `cursor` adds the blinking block used on the login card and
+// `tag` picks the outer element (the auth card uses an h1 so .wordmark and h1 styles share it).
+export function wordmark(cursor = false, tag = "span") {
+  return `<${tag} class="wordmark">PROJECTION<span class="wordmark-key">5000</span>${cursor ? '<span class="wordmark-cursor" aria-hidden="true"></span>' : ""}</${tag}>`;
+}
+
+// Dashed "NO SIGNAL"-style empty state: title in the display face, one line of help, optional action HTML.
+export function emptyState(title, text, action = "") {
+  return `<div class="empty">
+    <span class="empty-title">${esc(title)}</span>
+    <p>${text}</p>
+    ${action}
+  </div>`;
 }
 
 // The wordmark lockup: eyebrow above, model number knocked out as a keycap. `large` is the
@@ -60,13 +76,18 @@ function navHtml(ctx) {
     .join("\n      ");
   return `<header class="topbar">
     <div class="brand">
-      ${wordmark()}
+      <a href="/dashboard" aria-label="${APP_NAME} dashboard">
+        <span class="brand-eyebrow">${esc(APP_EYEBROW)}</span>
+        ${wordmark()}
+      </a>
     </div>
-    <nav>
+    <button type="button" class="nav-toggle" aria-label="Menu" aria-expanded="false" aria-controls="site-nav">&#8801;</button>
+    <nav id="site-nav" aria-label="Console">
       ${links}
     </nav>
     <div class="user">
-      <span>${esc(user.username)} <span class="badge badge-${esc(user.role)}">${esc(user.role)}</span></span>
+      <span class="username">${esc(user.username)}</span>
+      <span class="badge badge-${esc(user.role)}">${esc(user.role)}</span>
       <form method="post" action="/logout" class="inline">
         ${csrfInput(ctx)}
         <button type="submit" class="link">Log out</button>
@@ -75,10 +96,10 @@ function navHtml(ctx) {
   </header>`;
 }
 
-// {title, content (already-escaped HTML), status, message, messageKind, bodyClass, scripts
-// (extra <script src> paths under /static)} -> Response.
-export function layout(ctx, { title, content, status = 200, message = "", messageKind = "error", bodyClass = "", scripts = [] } = {}) {
-  const fullTitle = title ? `${title} · ${APP_NAME}` : APP_NAME;
+// {title, content (already-escaped HTML), status, message, messageKind, scripts (extra
+// <script src> paths under /static), bodyClass} -> Response.
+export function layout(ctx, { title, content, status = 200, message = "", messageKind = "error", scripts = [], bodyClass = "" } = {}) {
+  const fullTitle = title ? `${title} — ${APP_NAME}` : APP_NAME;
   const extra = scripts.map((s) => `<script src="${esc(s)}"></script>`).join("\n  ");
   const page = `<!doctype html>
 <html lang="en">

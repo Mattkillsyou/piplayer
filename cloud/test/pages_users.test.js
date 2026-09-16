@@ -29,7 +29,7 @@ describe("users", () => {
     await post(r.admin, "/users", { username: XSS + "u", password: "pw123456", role: "viewer" });
     const page = await (await r.admin.get("/users")).text();
     expect(page).toContain('admin <span class="muted small">(you)</span>');
-    expect(page).toContain('name="role" data-autosubmit disabled');
+    expect(page).toContain('name="role" data-autosubmit aria-label="Role for admin" disabled');
     expect(page).not.toContain(XSS);
     expect(page).toContain('data-confirm="Delete x&#39;);alert(1);//u?"');
     expect(page).toContain('<span class="badge badge-editor">editor</span>');
