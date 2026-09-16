@@ -303,7 +303,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
               <input type="text" name="camera_wyze_name" value="${esc(d.camera_wyze_name || "")}" placeholder="${esc(wyzeCameraName({ ...d, camera_wyze_name: "" }, settings))}" maxlength="${MAX_WYZE_NAME}"${dis}>
             </label>
             <label>RTSP URL
-              <input type="text" name="camera_rtsp_url" value="${esc(d.camera_rtsp_url || "")}" placeholder="rtsp://user:pass@10.0.0.5:554/stream" maxlength="2048"${dis}>
+              <input type="password" name="camera_rtsp_url" value="" autocomplete="off" placeholder="${d.camera_rtsp_url ? "set (leave empty to keep)" : "rtsp://user:pass@10.0.0.5:554/stream"}" maxlength="2048"${dis}>
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
@@ -573,7 +573,7 @@ async function devicesSetCameraUrl(ctx) {
 }
 
 // Per-device camera source: '' = site default (row NULL), else none | wyze | rtsp. rtsp needs
-// an rtsp:// URL; the Wyze name is optional (Settings pattern). Any change bumps
+// an rtsp:// URL (never rendered back; an empty field keeps it); the Wyze name is optional (Settings pattern). Any change bumps
 // camera_config_version so the player refetches; the audit row carries the source and name,
 // never the RTSP URL's credentials.
 async function devicesSetCameraSource(ctx) {
@@ -582,13 +582,15 @@ async function devicesSetCameraSource(ctx) {
   const form = await ctx.form();
   const source = str(form, "camera_source").trim() || null;
   if (source !== null && !CAMERA_SOURCES.includes(source)) fail(400, `camera_source must be one of ${CAMERA_SOURCES.join(", ")} or empty for the site default`);
-  const rtsp = str(form, "camera_rtsp_url").trim() || null;
+  const row = await db.first(ctx.env, "SELECT camera_source, camera_rtsp_url, camera_wyze_name FROM devices WHERE id = ?", deviceId);
+  if (!row) fail(404, "Device not found");
+  // The RTSP URL carries credentials and is never rendered back: an empty field keeps the stored
+  // one while the source stays rtsp (switching the source away clears it).
+  const rtsp = str(form, "camera_rtsp_url").trim() || (source === "rtsp" ? row.camera_rtsp_url : null);
   if (rtsp !== null && !RTSP_URL_RE.test(rtsp)) fail(400, "camera_rtsp_url must be an rtsp:// or rtsps:// URL");
   if (source === "rtsp" && rtsp === null) fail(400, "camera_rtsp_url required when camera_source is rtsp");
   const wyzeName = str(form, "camera_wyze_name").trim() || null;
   if (wyzeName !== null && ([...wyzeName].length > MAX_WYZE_NAME || /[\x00-\x1f\x7f]/.test(wyzeName))) fail(400, `camera_wyze_name must be at most ${MAX_WYZE_NAME} printable chars`);
-  const row = await db.first(ctx.env, "SELECT camera_source, camera_rtsp_url, camera_wyze_name FROM devices WHERE id = ?", deviceId);
-  if (!row) fail(404, "Device not found");
   if (row.camera_source === source && row.camera_rtsp_url === rtsp && row.camera_wyze_name === wyzeName) return redirect("/devices");
   await db.run(ctx.env, "UPDATE devices SET camera_source = ?, camera_rtsp_url = ?, camera_wyze_name = ? WHERE id = ?", source, rtsp, wyzeName, deviceId);
   await db.bumpCameraConfigVersion(ctx.env);

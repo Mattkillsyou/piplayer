@@ -20,6 +20,8 @@ What it asserts, in order:
   6. cycle 5: the camera thread's capture (PIPLAYER_CAMERA_SNAPSHOT_FILE stands in for ffmpeg)
      lands in R2 as camera/<id>.jpg + last_camera_at; a failing capture round-trips as
      camera_error on the next sync and clears again; /devices and /dashboard show the snapshot.
+  7. GET /api/camera-config/<id> (device bearer only): a per-device RTSP source set on the
+     Devices page is served, bumps the manifest's camera_config_version, is never rendered back.
 """
 import argparse
 import hashlib
@@ -98,6 +100,33 @@ def seed_library(persist, media):
               % (", duration_override_seconds" if name == "still-b.png" else "", pid, pos,
                  ", 7.5" if name == "still-b.png" else "", ec.sql_str(name)))
     return pid
+
+
+def camera_config_probes(base, admin, dev_row):
+    """GET /api/camera-config/<id> is device-bearer only; a per-device RTSP source set on the
+    Devices page reaches it, bumps the manifest's camera_config_version, and its credentials
+    never come back in the page. Runs last: the version bump would make the next player cycle
+    refetch and replace the env-configured camera."""
+    h = {"Authorization": "Bearer " + dev_row["token"]}
+    url = base + "/api/camera-config/" + DEVICE_ID
+    assert requests.get(url).status_code == 401, "camera-config without a bearer is not 401"
+    before = requests.get(url, headers=h).json()
+    assert before["source"] == "none" and isinstance(before["version"], int), before
+    v0 = before["version"]
+    rtsp = "rtsp://user:s3cret@10.0.0.9:554/e2e"
+    r = admin.post("/devices/%d/camera-source" % dev_row["id"], {"camera_source": "rtsp", "camera_rtsp_url": rtsp})
+    assert r.status_code == 303, (r.status_code, r.text[:300])
+    assert requests.get(url, headers=h).json() == {"source": "rtsp", "rtsp_url": rtsp, "version": v0 + 1}
+    manifest = requests.get(base + "/api/sync/" + DEVICE_ID, headers=h).json()
+    assert manifest["camera_config_version"] == v0 + 1, manifest.get("camera_config_version")
+    page = admin.get("/devices").text
+    assert 'placeholder="set (leave empty to keep)"' in page and "s3cret" not in page and "10.0.0.9" not in page, "devices page renders the RTSP URL"
+    # an empty field keeps the URL (no change, no bump); back to the site default clears it
+    assert admin.post("/devices/%d/camera-source" % dev_row["id"], {"camera_source": "rtsp", "camera_rtsp_url": ""}).status_code == 303
+    assert requests.get(url, headers=h).json()["version"] == v0 + 1
+    assert admin.post("/devices/%d/camera-source" % dev_row["id"], {"camera_source": ""}).status_code == 303
+    assert requests.get(url, headers=h).json() == {"source": "none", "version": v0 + 2}
+    print("camera-config: bearer-only, rtsp source served + version %d -> %d, URL never rendered" % (v0, v0 + 2))
 
 
 def register_device(admin, persist, pid):
@@ -397,6 +426,7 @@ def run(base, persist, work, media, pid):
 
     # --- edge cases the golden verifier probes (the player never sends these) ------------
     parity_probes(base, dev_row["token"])
+    camera_config_probes(base, admin, dev_row)
 
     # every status the player sends is visible to the browser too (page owned by P2; skip a stub)
     r = admin.get("/devices")
