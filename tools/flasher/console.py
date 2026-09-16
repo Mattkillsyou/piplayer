@@ -1,7 +1,8 @@
 """Talk to a Projection5000 console (stdlib urllib, no session).
 
 The flasher itself never enrolls: the Pi does that on first boot. enroll() mirrors what the rendered
-projection5000-provision.sh does and is used by the tests; check_health() backs the GUI's "Test connection".
+projection5000-provision.sh does and is used by the tests; check_health() backs the GUI's "Test connection";
+fetch_enrollment() trades the operator's API token for the console's current enrollment key.
 """
 import json
 import urllib.error
@@ -23,9 +24,9 @@ def _base(console_url: str) -> str:
     return base
 
 
-def _request(base: str, path: str, body: dict = None) -> dict:
+def _request(base: str, path: str, body: dict = None, headers: dict = None) -> dict:
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(base + path, data=data, headers=HEADERS)
+    req = urllib.request.Request(base + path, data=data, headers={**HEADERS, **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             raw = resp.read().decode("utf-8", "replace")
@@ -70,3 +71,21 @@ def enroll(console_url: str, key: str, device_id: str, name: str) -> tuple:
     if not isinstance(token, str) or not token:
         raise ConsoleError("/api/enroll: response carries no token")
     return token, str(r.get("cms_url") or base)
+
+
+def fetch_enrollment(console_url: str, token: str) -> dict:
+    """GET /api/operator/enrollment with `Authorization: Bearer <operator token>`. Returns the console's answer
+    ({console_url, enrollment_key, groups: [{id, name}], playlists: [{id, name}], timezone, ...}); ConsoleError
+    on a rejected token (401) or a malformed answer. Never enrolls and never sends anything but the token."""
+    base = _base(console_url)
+    r = _request(base, "/api/operator/enrollment", headers={"Authorization": f"Bearer {token.strip()}"})
+    key = r.get("enrollment_key")
+    if not isinstance(key, str) or not key.strip():
+        raise ConsoleError("/api/operator/enrollment: response carries no enrollment_key")
+    r["enrollment_key"] = key.strip()
+    if not isinstance(r.get("console_url"), str) or not r["console_url"]:
+        r["console_url"] = base
+    for k in ("groups", "playlists"):
+        items = r.get(k) if isinstance(r.get(k), list) else []
+        r[k] = [g for g in items if isinstance(g, dict) and isinstance(g.get("name"), str)]
+    return r

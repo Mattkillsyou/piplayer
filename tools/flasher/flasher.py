@@ -4,6 +4,7 @@ Run: python flasher.py            (relaunches itself elevated if needed)
      python flasher.py --selfcheck (prints the generated first-boot scripts, exits 0)
      python flasher.py --dry-run   (no admin needed; Flash stops before touching the card)
 """
+import base64
 import ctypes
 import io
 import json
@@ -17,7 +18,7 @@ import time
 import tkinter as tk
 import traceback
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import bundle
 import console
@@ -26,12 +27,13 @@ import imagefetch
 import windisk
 
 APP_TITLE = "Projection5000 SD Flasher"
-# Persisted between runs. Never the enrollment key or the token: the baked console.json is the key's only home.
+# Persisted between runs (%LOCALAPPDATA%). Never the enrollment key or a token: the key is fetched from the console
+# on every launch with the operator token, which lives DPAPI-protected in the operator config (%APPDATA%).
 SETTINGS_KEYS = ("name", "device_id", "console_url", "ssid", "wifi_country", "wifi_hidden", "ethernet_only",
                  "username", "ssh", "timezone", "keymap", "image_mode", "image_path")
 # Entry fields whose value is taken verbatim (everything else is stripped of surrounding whitespace).
 UNSTRIPPED = ("password", "wifi_password")
-CONSOLE_JSON = "console.json"  # {"console_url": ..., "enrollment_key": ...}, written by build.ps1
+CONSOLE_JSON = "console.json"  # {"console_url": ..., "enrollment_key": ...}, written by build.ps1 (key optional)
 DEFAULT_CONSOLE_URL = "https://projectors.photogen5000.com"
 COUNTRIES = ["US", "GB", "CA", "AU", "NZ", "DE", "FR", "ES", "IT", "NL", "SE", "NO", "DK", "FI", "IE", "JP", "MX", "BR"]
 TIMEZONES = ["America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York", "America/Phoenix",
@@ -106,6 +108,72 @@ def save_settings(values: dict) -> None:
         pass
 
 
+# ---------------------------------------------------------------- operator config (console URL + API token)
+
+def operator_config_path() -> Path:
+    base = os.environ.get("APPDATA") or str(Path.home())
+    return Path(base) / "Projection5000" / "flasher.json"
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.c_void_p)]
+
+
+def _dpapi(data: bytes, protect: bool) -> bytes:
+    """CryptProtectData / CryptUnprotectData (user-scoped DPAPI: only this Windows account can read it back)."""
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    buf = ctypes.create_string_buffer(data, len(data))
+    inp = _DataBlob(len(data), ctypes.cast(buf, ctypes.c_void_p))
+    out = _DataBlob()
+    fn = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    if not fn(ctypes.byref(inp), None, None, None, None, 0, ctypes.byref(out)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        kernel32.LocalFree(out.pbData)
+
+
+def load_operator_config() -> dict:
+    """{"console_url", "token"} from %APPDATA%\\Projection5000\\flasher.json; empty strings when absent or unreadable
+    (a DPAPI blob from another account or a damaged file simply means the operator is asked again)."""
+    out = {"console_url": "", "token": ""}
+    try:
+        d = json.loads(operator_config_path().read_text("utf-8"))
+    except (OSError, ValueError):
+        return out
+    if not isinstance(d, dict):
+        return out
+    if isinstance(d.get("console_url"), str):
+        out["console_url"] = d["console_url"].strip()
+    tok = d.get("token")
+    if isinstance(tok, str) and tok:
+        if d.get("token_dpapi"):
+            try:
+                tok = _dpapi(base64.b64decode(tok), protect=False).decode("utf-8")
+            except Exception:
+                tok = ""
+        out["token"] = tok.strip()
+    return out
+
+
+def save_operator_config(console_url: str, token: str) -> str:
+    """Write the operator config, DPAPI-protecting the token. Returns a warning ('' when protected)."""
+    d = {"console_url": console_url.strip().rstrip("/"), "token": token.strip(), "token_dpapi": False}
+    warning = ""
+    try:
+        d["token"] = base64.b64encode(_dpapi(d["token"].encode("utf-8"), protect=True)).decode("ascii")
+        d["token_dpapi"] = True
+    except Exception as e:
+        warning = f"WARNING: DPAPI is not available ({e}); the operator token is stored in plain text in {operator_config_path()}."
+    p = operator_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(d, indent=2), "utf-8")
+    return warning
+
+
 # ---------------------------------------------------------------- player files for the card
 
 def build_player_archive(out=None) -> bytes:
@@ -166,10 +234,14 @@ def console_defaults() -> dict:
     return out
 
 
-def write_console_json(path, console_url: str, enrollment_key: str) -> None:
-    """build.ps1 stages console.json with this (same rules as the form, so a bad key fails the build)."""
-    problems = [p for p in (firstboot.console_url_problem(console_url),
-                            firstboot.enrollment_key_problem(enrollment_key.strip())) if p]
+def write_console_json(path, console_url: str, enrollment_key: str = "") -> None:
+    """build.ps1 stages console.json with this (same rules as the form, so a bad key fails the build). The key
+    is optional: without one the flasher fetches it from the console with the operator token (build.ps1 -Key
+    bakes one for offline builds)."""
+    problems = [firstboot.console_url_problem(console_url)]
+    if enrollment_key.strip():
+        problems.append(firstboot.enrollment_key_problem(enrollment_key.strip()))
+    problems = [p for p in problems if p]
     if problems:
         raise ValueError(" ".join(problems))
     Path(path).write_text(json.dumps({"console_url": console_url.strip().rstrip("/"),
@@ -180,8 +252,9 @@ def console_summary() -> str:
     """One line for --selfcheck: what this build will prefill."""
     c = console_defaults()
     if not c["console_url"]:
-        return "console: none (build with FLASHER_CONSOLE_URL and FLASHER_ENROLL_KEY to prefill the form)"
-    return f"console: {c['console_url']} (enrollment key: {'set' if c['enrollment_key'] else 'missing'})"
+        return "console: none (the operator enters the console URL and API token on first run)"
+    key = "set" if c["enrollment_key"] else "fetched with the operator token"
+    return f"console: {c['console_url']} (enrollment key: {key})"
 
 
 # ---------------------------------------------------------------- GUI
@@ -203,6 +276,15 @@ class App:
         self._fit_to_screen()
         self._pump()
         self.refresh_disks()
+        # The operator config wins over the remembered URL; with a token the key is fetched on every launch.
+        op = load_operator_config()
+        if op["console_url"]:
+            self.v["console_url"].set(op["console_url"])
+        self.v["operator_token"].set(op["token"])
+        if op["token"]:
+            self.fetch_key()
+        else:
+            root.after(0, self.first_run)
 
     # ----- form
     def _var(self, key, default="", kind=tk.StringVar):
@@ -237,20 +319,29 @@ class App:
         con.columnconfigure(1, weight=1)
         self.baked = console_defaults()
         self._entry(con, 0, "Console URL", "console_url", self.baked["console_url"] or DEFAULT_CONSOLE_URL)
-        key = self._entry(con, 1, "Enrollment key", "enrollment_key", self.baked["enrollment_key"], show="*")
+        # Row 2 is created before row 1 on purpose: the key's "Show" stays the first one in the frame.
+        key = self._entry(con, 2, "Enrollment key", "enrollment_key", self.baked["enrollment_key"], show="*")
         self._var("show_key", False, tk.BooleanVar)
         ttk.Checkbutton(con, text="Show", variable=self.v["show_key"],
                         command=lambda: key.configure(show="" if self.v["show_key"].get() else "*")
+                        ).grid(row=2, column=2, padx=2)
+        tok = self._entry(con, 1, "Operator API token", "operator_token", show="*")
+        self._var("show_token", False, tk.BooleanVar)
+        ttk.Checkbutton(con, text="Show", variable=self.v["show_token"],
+                        command=lambda: tok.configure(show="" if self.v["show_token"].get() else "*")
                         ).grid(row=1, column=2, padx=2)
-        ttk.Label(con, text="(baked into this build; the Pi enrolls itself on first boot)").grid(
-            row=2, column=1, sticky="w", padx=4)
-        ttk.Button(con, text="Test connection", command=self.test_connection).grid(row=3, column=1, sticky="w",
-                                                                                   padx=4, pady=2)
+        self.console_status = ttk.Label(con, text="(the key is fetched from the console with the token; "
+                                                  "the Pi enrolls itself on first boot)")
+        self.console_status.grid(row=3, column=0, columnspan=3, sticky="w", padx=4)
+        btns = ttk.Frame(con)
+        btns.grid(row=4, column=0, columnspan=3, sticky="w")
+        ttk.Button(btns, text="Connect", command=self.connect).pack(side="left", padx=4, pady=2)
+        ttk.Button(btns, text="Test connection", command=self.test_connection).pack(side="left", padx=4, pady=2)
         ttk.Checkbutton(con, text="Advanced: I already have a device token",
                         variable=self._var("advanced", False, tk.BooleanVar), command=self._toggle_advanced
-                        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=4)
+                        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=4)
         self.advanced = ttk.Frame(con)
-        self.advanced.grid(row=5, column=0, columnspan=3, sticky="we")
+        self.advanced.grid(row=6, column=0, columnspan=3, sticky="we")
         self.advanced.columnconfigure(1, weight=1)
         self._entry(self.advanced, 0, "Device token", "token")
         self.advanced.grid_remove()  # collapsed until the box is ticked
@@ -374,6 +465,56 @@ class App:
             self.post(lambda: self.log(msg))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def first_run(self):
+        """No operator token yet: ask for the console URL and an API token. Cancel leaves the manual key entry."""
+        url = simpledialog.askstring(APP_TITLE, "Console URL:", initialvalue=self.values()["console_url"],
+                                     parent=self.root)
+        token = url and simpledialog.askstring(
+            APP_TITLE, "Operator API token (console Settings page, \"My API tokens\"):", show="*", parent=self.root)
+        if not url or not token:
+            self.log("No operator API token: click Connect after entering one, or paste an enrollment key.")
+            return
+        self.v["console_url"].set(url)
+        self.v["operator_token"].set(token)
+        self.connect()
+
+    def connect(self):
+        """Save the console URL + operator token (%APPDATA%, DPAPI-protected) and fetch the enrollment key."""
+        v = self.values()
+        problem = firstboot.console_url_problem(v["console_url"]) or (
+            "" if v["operator_token"] else "Operator API token is required (console Settings page).")
+        if problem:
+            messagebox.showerror(APP_TITLE, problem)
+            return
+        warning = save_operator_config(v["console_url"], v["operator_token"])
+        if warning:
+            self.log(warning)
+        self.fetch_key()
+
+    def fetch_key(self):
+        """GET /api/operator/enrollment with the operator token; the answer fills the enrollment key field."""
+        v = self.values()
+        self.console_status.configure(text=f"Fetching the enrollment key from {v['console_url']} ...")
+
+        def work():
+            try:
+                r = console.fetch_enrollment(v["console_url"], v["operator_token"])
+            except console.ConsoleError as e:
+                msg = f"Enrollment key fetch FAILED: {e}"
+                self.post(lambda: (self.log(msg), self.console_status.configure(text=msg)))
+                return
+            self.post(lambda: self._apply_enrollment(r))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_enrollment(self, r: dict):
+        self.v["enrollment_key"].set(r["enrollment_key"])
+        groups = ", ".join(g["name"] for g in r["groups"]) or "none"
+        playlists = ", ".join(p["name"] for p in r["playlists"]) or "none"
+        self.console_status.configure(text=f"Console {r['console_url']}: enrollment key fetched "
+                                           f"({len(r['groups'])} groups, {len(r['playlists'])} playlists).")
+        self.log(f"Console {r['console_url']}: enrollment key fetched. Groups: {groups}. Playlists: {playlists}.")
 
     def _apply_settings(self, s: dict):
         for k in SETTINGS_KEYS:

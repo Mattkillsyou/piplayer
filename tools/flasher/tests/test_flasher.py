@@ -79,7 +79,10 @@ def test_console_json_resource_frozen_and_source(monkeypatch, tmp_path):
     monkeypatch.setattr(flasher.sys, "frozen", True, raising=False)
     monkeypatch.setattr(flasher.sys, "_MEIPASS", str(mei), raising=False)
     assert flasher.build_info() == "built now"
-    assert flasher.console_summary() == "console: https://frozen.example (enrollment key: missing)"
+    assert flasher.console_summary() == "console: https://frozen.example (enrollment key: fetched with the operator token)"
+    # A URL-only console.json is the normal build now (the key comes from the console at run time).
+    flasher.write_console_json(mei / "console.json", "https://frozen.example/")
+    assert flasher.console_defaults() == {"console_url": "https://frozen.example", "enrollment_key": ""}
     (mei / "build_info.txt").unlink()
     assert flasher.build_info() == "frozen build, no build_info.txt"
     # build.ps1 refuses a bad key or URL before PyInstaller runs.
@@ -124,16 +127,121 @@ def test_ensure_admin_paths(monkeypatch):
 def test_settings_never_store_secrets(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     flasher.save_settings({"name": "Lobby", "password": "pi-secret", "wifi_password": "wifi-secret",
-                           "enrollment_key": "k-secret", "token": "tok", "ssid": "Venue", "console_url": "https://c"})
+                           "enrollment_key": "k-secret", "token": "tok", "operator_token": "p5k_secret",
+                           "ssid": "Venue", "console_url": "https://c"})
     text = (tmp_path / "Projection5000" / "flasher.json").read_text()
     assert "Lobby" in text and "Venue" in text and "https://c" in text
-    for secret in ("pi-secret", "wifi-secret", "k-secret", "tok"):
+    for secret in ("pi-secret", "wifi-secret", "k-secret", "tok", "p5k_secret"):
         assert secret not in text
     assert flasher.load_settings()["name"] == "Lobby"
     # A corrupt or non-object settings file must not stop the program from starting.
     for junk in ("[]", "123", '"x"', "null", "true", "{not json"):
         (tmp_path / "Projection5000" / "flasher.json").write_text(junk)
         assert flasher.load_settings() == {}
+
+
+OPERATOR_TOKEN = "p5k_" + "o" * 32
+ENROLLMENT = {"console_url": "https://c.example", "enrollment_key": KEY, "timezone": "UTC",
+              "groups": [{"id": 1, "name": "Lobby"}, {"id": 2, "name": "Halls"}], "playlists": [{"id": 7, "name": "Loop"}]}
+
+
+def test_operator_config_round_trip_is_dpapi_protected(tmp_path):
+    path = Path(tmp_path / "appdata" / "Projection5000" / "flasher.json")  # APPDATA from conftest
+    assert flasher.operator_config_path() == path
+    assert flasher.load_operator_config() == {"console_url": "", "token": ""}  # no file yet
+    assert flasher.save_operator_config("https://c.example/", " " + OPERATOR_TOKEN + " ") == ""
+    text = path.read_text("utf-8")
+    assert OPERATOR_TOKEN not in text and '"token_dpapi": true' in text and "https://c.example" in text
+    assert flasher.load_operator_config() == {"console_url": "https://c.example", "token": OPERATOR_TOKEN}
+    # A blob from another account (or a damaged file) reads back as "no token": the operator is asked again.
+    path.write_text(text.replace('"token": "', '"token": "AAAA'), "utf-8")
+    assert flasher.load_operator_config() == {"console_url": "https://c.example", "token": ""}
+    for junk in ("[]", "{not json", '{"console_url": 5, "token": 7}'):
+        path.write_text(junk, "utf-8")
+        assert flasher.load_operator_config() == {"console_url": "", "token": ""}
+
+
+def test_operator_config_falls_back_to_plain_text_with_a_warning(monkeypatch, tmp_path):
+    def no_dpapi(data, protect):
+        raise OSError("no crypt32")
+
+    monkeypatch.setattr(flasher, "_dpapi", no_dpapi)
+    warning = flasher.save_operator_config("https://c.example", OPERATOR_TOKEN)
+    assert warning.startswith("WARNING: DPAPI is not available") and "flasher.json" in warning
+    text = flasher.operator_config_path().read_text("utf-8")
+    assert OPERATOR_TOKEN in text and '"token_dpapi": false' in text
+    assert flasher.load_operator_config()["token"] == OPERATOR_TOKEN
+
+
+def test_gui_fetches_the_key_on_launch(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    flasher.save_settings(dict(FORM, console_url="https://remembered.example"))
+    flasher.save_operator_config("https://c.example", OPERATOR_TOKEN)
+    seen = []
+
+    def fetch(url, token):
+        seen.append((url, token))
+        if "down" in url:
+            raise flasher.console.ConsoleError("HTTP 401 Unauthorized")
+        return dict(ENROLLMENT)
+
+    monkeypatch.setattr(flasher.console, "fetch_enrollment", fetch)
+    monkeypatch.setattr(flasher.simpledialog, "askstring", lambda *a, **k: pytest.fail("prompted with a token set"))
+    root = _root()
+    app = flasher.App(root)
+    assert app.values()["console_url"] == "https://c.example"  # the operator config wins over the remembered URL
+    assert _pump(root, app, lambda: app.values()["enrollment_key"] == KEY)
+    assert seen == [("https://c.example", OPERATOR_TOKEN)]
+    assert app.console_status.cget("text") == "Console https://c.example: enrollment key fetched (2 groups, 1 playlists)."
+    log = app.log_text.get("1.0", "end")
+    assert "Groups: Lobby, Halls. Playlists: Loop." in log and KEY not in log
+    # Connect: a changed URL/token is saved and the key fetched again; a rejected token is reported, key kept.
+    app.v["console_url"].set("https://down.example")
+    app.connect()
+    assert _pump(root, app, lambda: "Enrollment key fetch FAILED: HTTP 401" in app.log_text.get("1.0", "end"))
+    assert flasher.load_operator_config() == {"console_url": "https://down.example", "token": OPERATOR_TOKEN}
+    assert app.values()["enrollment_key"] == KEY and "FAILED" in app.console_status.cget("text")
+    errors = []
+    monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a: errors.append(a[1]))
+    app.v["operator_token"].set("")
+    app.connect()
+    assert "Operator API token is required" in errors[-1] and len(seen) == 2
+    app.v["operator_token"].set(OPERATOR_TOKEN)
+    app.v["console_url"].set("http://8.8.8.8")
+    app.connect()
+    assert "https://" in errors[-1] and len(seen) == 2
+    root.destroy()
+
+
+def test_gui_first_run_prompts_for_url_and_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    answers = ["https://c.example/", OPERATOR_TOKEN]
+    prompts = []
+
+    def ask(title, prompt, **kw):
+        prompts.append((prompt, kw.get("initialvalue"), kw.get("show")))
+        return answers.pop(0)
+
+    monkeypatch.setattr(flasher.simpledialog, "askstring", ask)
+    monkeypatch.setattr(flasher.console, "fetch_enrollment", lambda url, token: dict(ENROLLMENT))
+    root = _root()
+    app = flasher.App(root)
+    assert _pump(root, app, lambda: app.values()["enrollment_key"] == KEY)
+    assert prompts[0][0] == "Console URL:" and prompts[0][1] == flasher.DEFAULT_CONSOLE_URL
+    assert prompts[1][0].startswith("Operator API token") and prompts[1][2] == "*"
+    assert flasher.load_operator_config() == {"console_url": "https://c.example", "token": OPERATOR_TOKEN}
+    assert app.values()["operator_token"] == OPERATOR_TOKEN
+    root.destroy()
+    # Cancelled prompt: nothing saved, the form stays usable with a pasted key.
+    flasher.operator_config_path().unlink()
+    monkeypatch.setattr(flasher.simpledialog, "askstring", lambda *a, **k: None)
+    root = _root()
+    app = flasher.App(root)
+    assert _pump(root, app, lambda: "No operator API token" in app.log_text.get("1.0", "end"))
+    assert not flasher.operator_config_path().exists() and app.values()["enrollment_key"] == ""
+    root.destroy()
 
 
 def test_write_firstboot_files(tmp_path):

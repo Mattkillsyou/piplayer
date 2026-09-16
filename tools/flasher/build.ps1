@@ -1,6 +1,13 @@
 # Build tools/flasher/dist/Projection5000-SD-Flasher.exe with PyInstaller.
-# Usage (from any directory):  powershell -ExecutionPolicy Bypass -File tools\flasher\build.ps1
+# Usage (from any directory):  powershell -ExecutionPolicy Bypass -File tools\flasher\build.ps1 [-ConsoleUrl <url>] [-Key <key>]
 # Set $env:FLASHER_PYTHON to pick the interpreter (default: python on PATH, must be 3.11+ with tkinter).
+# -ConsoleUrl (or FLASHER_CONSOLE_URL) prefills the console URL. No key is baked in: the flasher fetches the
+# enrollment key from the console with the operator's API token. -Key (or FLASHER_ENROLL_KEY) bakes one
+# anyway for offline builds.
+param(
+    [string]$ConsoleUrl = $env:FLASHER_CONSOLE_URL,
+    [string]$Key = $env:FLASHER_ENROLL_KEY
+)
 $ErrorActionPreference = 'Stop'
 $python = if ($env:FLASHER_PYTHON) { $env:FLASHER_PYTHON } else { 'python' }
 Set-Location $PSScriptRoot
@@ -36,18 +43,18 @@ try {
 $info = Join-Path $stage 'build_info.txt'
 [IO.File]::WriteAllText($info, "built $(Get-Date -Format s) from commit $commit with $(& $python --version)")
 
-# Console defaults baked into the exe: FLASHER_CONSOLE_URL and FLASHER_ENROLL_KEY (the console's Settings
-# page) become console.json and prefill the form. FLASHER_NO_CONSOLE=1 builds without (operator types both).
+# Console defaults baked into the exe (optional): -ConsoleUrl becomes console.json and prefills the form;
+# -Key adds an enrollment key for offline builds (otherwise the flasher fetches it with the operator token).
 $consoleJson = Join-Path $stage 'console.json'
 Remove-Item -Force $consoleJson -ErrorAction SilentlyContinue
 $consoleData = @()
-if ($env:FLASHER_NO_CONSOLE -ne '1') {
-    if (-not $env:FLASHER_CONSOLE_URL -or -not $env:FLASHER_ENROLL_KEY) {
-        throw "set FLASHER_CONSOLE_URL and FLASHER_ENROLL_KEY (or FLASHER_NO_CONSOLE=1 for a build without console defaults)"
-    }
+if ($Key -and -not $ConsoleUrl) { throw "-Key needs -ConsoleUrl (or FLASHER_CONSOLE_URL)" }
+if ($ConsoleUrl) {
     $env:CONSOLE_JSON_OUT = $consoleJson
-    & $python -c "import os, flasher; flasher.write_console_json(os.environ['CONSOLE_JSON_OUT'], os.environ['FLASHER_CONSOLE_URL'], os.environ['FLASHER_ENROLL_KEY'])"
-    if ($LASTEXITCODE -ne 0) { throw "FLASHER_CONSOLE_URL / FLASHER_ENROLL_KEY rejected" }
+    $env:CONSOLE_JSON_URL = $ConsoleUrl
+    $env:CONSOLE_JSON_KEY = "$Key"
+    & $python -c "import os, flasher; flasher.write_console_json(os.environ['CONSOLE_JSON_OUT'], os.environ['CONSOLE_JSON_URL'], os.environ.get('CONSOLE_JSON_KEY', ''))"
+    if ($LASTEXITCODE -ne 0) { throw "-ConsoleUrl / -Key rejected" }
     $consoleData = @('--add-data', "$consoleJson;.")
 }
 
@@ -102,8 +109,11 @@ $bundled = (Select-String -Path $out -Pattern '^bundled image: ' | Select-Object
 if ($env:FLASHER_NO_BUNDLE -ne '1' -and -not ($bundled -like '*(trailer ok)')) { throw "exe does not see its bundled image: '$bundled'" }
 Write-Host $bundled
 $consoleLine = (Select-String -Path $out -Pattern '^console: ' | Select-Object -First 1).Line
-if ($env:FLASHER_NO_CONSOLE -ne '1' -and $consoleLine -ne "console: $($env:FLASHER_CONSOLE_URL.TrimEnd('/')) (enrollment key: set)") {
-    throw "exe does not see its console.json: '$consoleLine'"
+if ($ConsoleUrl) {
+    $keyState = if ($Key) { 'set' } else { 'fetched with the operator token' }
+    if ($consoleLine -ne "console: $($ConsoleUrl.TrimEnd('/')) (enrollment key: $keyState)") {
+        throw "exe does not see its console.json: '$consoleLine'"
+    }
 }
 Write-Host $consoleLine
 Write-Host "OK: $exe ($([math]::Round((Get-Item $exe).Length / 1MB, 1)) MB), selfcheck output in $out"

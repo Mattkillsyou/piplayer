@@ -20,6 +20,7 @@ REPO = Path(__file__).resolve().parents[3]
 CMS_DIR = REPO / "cms"
 PYTHON = CMS_DIR / ".venv" / "Scripts" / "python.exe"
 KEY = "stub-enrollment-key_0123456789abcdef"
+OPERATOR_TOKEN = "p5k_" + "o" * 32
 
 
 def _free_port() -> int:
@@ -47,6 +48,14 @@ class StubConsole(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/health":
             return self._json(200, {"ok": True})
+        if self.path == "/api/operator/enrollment":
+            self.calls.append((self.path, self.headers.get("Authorization")))
+            if self.headers.get("Authorization") != f"Bearer {OPERATOR_TOKEN}":
+                return self._json(401, {"detail": "invalid API token"})
+            return self._json(200, {"console_url": f"http://127.0.0.1:{self.server.server_port}", "enrollment_key": KEY,
+                                    "groups": [{"id": 1, "name": "Lobby"}, {"id": 2, "name": "Halls"}],
+                                    "playlists": [{"id": 7, "name": "Loop"}], "timezone": "UTC",
+                                    "wyze_configured": False})
         self._json(404, {"detail": "Not Found"})
 
     def do_POST(self):
@@ -103,6 +112,45 @@ def test_check_health(stub):
     with pytest.raises(console.ConsoleError, match="is this a Projection5000 console"):
         console.check_health(stub + "/notaconsole")
     assert not any(path == "/api/enroll" for path, _ in StubConsole.calls)  # a health check never enrolls
+
+
+def test_fetch_enrollment(stub):
+    r = console.fetch_enrollment(stub + "/", " " + OPERATOR_TOKEN + " ")
+    assert r["enrollment_key"] == KEY and r["console_url"] == stub and r["timezone"] == "UTC"
+    assert [g["name"] for g in r["groups"]] == ["Lobby", "Halls"] and [p["name"] for p in r["playlists"]] == ["Loop"]
+    assert StubConsole.calls == [("/api/operator/enrollment", f"Bearer {OPERATOR_TOKEN}")]
+    with pytest.raises(console.ConsoleError, match="invalid API token"):
+        console.fetch_enrollment(stub, "p5k_wrong")
+    assert not any(path == "/api/enroll" for path, _ in StubConsole.calls)  # the fetch never enrolls
+    with pytest.raises(console.ConsoleError, match="is this a Projection5000 console"):
+        console.fetch_enrollment(stub + "/notaconsole", OPERATOR_TOKEN)
+
+
+def test_fetch_enrollment_tolerates_a_sparse_answer(monkeypatch):
+    class Sparse(http.server.BaseHTTPRequestHandler):
+        body = {"enrollment_key": " k-0123456789abcdefghij "}
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            raw = json.dumps(self.body).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    srv, base = _serve(Sparse)
+    try:
+        r = console.fetch_enrollment(base, OPERATOR_TOKEN)
+        assert r == {"enrollment_key": "k-0123456789abcdefghij", "console_url": base, "groups": [], "playlists": []}
+        Sparse.body = {"enrollment_key": KEY, "groups": "no", "playlists": [{"id": 1}, {"id": 2, "name": "ok"}, 3]}
+        assert console.fetch_enrollment(base, OPERATOR_TOKEN)["playlists"] == [{"id": 2, "name": "ok"}]
+        Sparse.body = {"console_url": base}
+        with pytest.raises(console.ConsoleError, match="no enrollment_key"):
+            console.fetch_enrollment(base, OPERATOR_TOKEN)
+    finally:
+        srv.shutdown()
 
 
 def test_unreachable_and_bad_url():
