@@ -473,7 +473,212 @@ the snapshot on the tile.
 
 ## E. Projector power (player + cloud + cms)
 
-Coming in this branch.
+**What it does.** The console turns the projector on and off. Each device
+has a Projector block on the Devices page with On and Off buttons, and an
+auto mode that switches the projector on a few minutes before content is
+due and off once nothing has been scheduled for a while, so a room that
+plays 09:00-17:00 on weekdays has its projector powered only then, with
+nobody carrying a remote. Two ways to drive the projector are supported:
+
+- **Broadlink** (IR): the Broadlink RM4 mini from [hardware.md](hardware.md),
+  on the same LAN as the Pi with line of sight to the projector's IR
+  receiver. The IR codes are learned once per projector model from the
+  console; the Broadlink app is only needed to get the blaster onto Wi-Fi.
+- **CEC** (HDMI): projectors that honour HDMI-CEC are driven over the HDMI
+  cable already in place, with no extra hardware. Support is patchy across
+  projector brands, so treat it as the option to try first and fall back to
+  IR when the projector ignores it.
+
+Both consoles carry the feature; the Python console (`cms/`) has the same
+routes and markup for LAN-only sites.
+
+**Per device** (Devices page, Projector block, editor and above):
+
+| Field | Column | Values |
+|---|---|---|
+| Control | `projector_control` | `none` (default), `broadlink` or `cec` |
+| Mode | `projector_power_mode` | `manual` (default) or `auto` |
+| Broadlink host | `broadlink_host` | optional IP of the RM4 mini; empty means discover it on the LAN |
+| Learned codes | `projector_ir_codes` | JSON `{power_on, power_off, input_hdmi1}` of base64 Broadlink packets, filled by learning (below); shown as badges |
+| State | `projector_state`, `projector_error` | `on`, `off` or `unknown` plus the last error, reported by the player, best effort; shown as a lamp and an error line |
+
+Beside the selects sit **On** and **Off** buttons and, for Broadlink, a
+**Learn Power On**, **Learn Power Off** and **Learn Input HDMI1** button
+each. The state lamp shows what the player last sent, not a measurement:
+neither IR nor CEC reads the projector's real state back, so after someone
+powers the projector at the wall the lamp is wrong until the next command.
+A device whose control is `none` shows no buttons and ignores the mode.
+
+**Settings** (Settings page, admin):
+
+| Setting | Key | Values |
+|---|---|---|
+| Projector lead time | `projector_lead_minutes` | minutes before a scheduled start to switch on; default 3 |
+| Projector idle-off delay | `projector_idle_minutes` | minutes with nothing scheduled before switching off; default 10 |
+
+Both are site-wide and only matter for devices in `auto` mode.
+
+**Commands.** Three shapes in the `device_commands` CHECK list (admitted by
+migration 0003 together with the update commands of section C; the table is
+not rebuilt again), issued and delivered like `reboot` and audited like the
+other commands:
+
+| Command | What the player does |
+|---|---|
+| `projector-on` | sends the `power_on` code (Broadlink) or `cec-ctl --to 0 --image-view-on` (CEC) |
+| `projector-off` | sends the `power_off` code (Broadlink) or `cec-ctl --to 0 --standby` (CEC) |
+| `ir-learn:<name>` | puts the RM4 mini into learning mode for 30 s and returns the captured packet as base64 in the command result; `<name>` is `power_on`, `power_off` or `input_hdmi1` |
+
+The result of `projector-on` / `projector-off` is `projector on sent via
+broadlink` (or `cec`) or `projector-on failed: <reason>` (no blaster found on
+the LAN, Broadlink auth failed, no `power_on` code learned yet, `cec-ctl`
+missing or timing out). The player retries a failed send once, immediately,
+before reporting the failure. An `ir-learn:<name>` result is the JSON
+`{"learned": "<name>", "code": "<base64>"}`; the console stores the code in
+`projector_ir_codes` under that name and the matching badge lights up. A
+result of `ir-learn <name> failed: nothing learned in 30 s` (or no blaster)
+leaves the stored codes alone. Learning blocks the player's poll for up to
+30 s, so the next sync is late by that much; nothing else is affected.
+
+**Learning flow** (once per projector model):
+
+1. Set Control to `broadlink` on the device and save. Fill in the Broadlink
+   host if the RM4 mini sits on another subnet than the Pi: discovery is a
+   LAN broadcast and does not cross routers.
+2. Click **Learn Power On**. The console queues `ir-learn:power_on` and
+   shows a 30 s countdown hint; the player picks the command up on its next
+   poll (within 30 s) and the RM4 mini's indicator lights while it listens.
+3. Hold the projector's own remote in front of the RM4 mini and press its
+   power button once, inside the 30 s. Some remotes have separate on and
+   off buttons, some a single toggle. With a toggle, learn the same button
+   as both `power_on` and `power_off`; auto mode still behaves, because the
+   player only sends a code when the wanted state changes, never blindly.
+   (The one weak spot: a send that half-fails and is retried can toggle the
+   projector straight back. Discrete on and off buttons, where the remote
+   has them, are the safer choice.)
+4. When the command result arrives (next poll), the **power_on** badge
+   appears. Repeat for **Learn Power Off** and, if the projector has to be
+   told which input to show after powering on, **Learn Input HDMI1**.
+5. Click **On** and **Off** once each to prove the codes work from the
+   console before switching the device to `auto`.
+
+The learned packets are plain base64 strings and identical for every
+projector of the same model: a second device with the same projector can be
+given the codes by pasting them into its Projector block instead of learning
+again. Learning always needs the physical remote; the console cannot invent
+a code and ships no library of them.
+
+**CEC option.** Set Control to `cec`; nothing to learn. The player runs
+`cec-ctl` (package `v4l-utils`, installed by `install-player.sh`) on the
+Pi's HDMI0 CEC adapter `/dev/cec0`: it first claims a playback logical
+address (`--playback -S`; a fresh adapter is unregistered and the projector
+ignores standby from an unregistered source), then addresses the projector
+as logical address 0, the display. On the projector, HDMI-CEC is usually
+off by default and hides in the menu under a brand name (`HDMI Link`,
+`HDMI Control`, `Anynet+`, `BRAVIA Sync`, `SimpLink`, `VIERA Link`): turn
+it on, plus any separate "power on by HDMI" and "power off by HDMI"
+toggles. Then click **On** and **Off** from the console. If the projector
+ignores one of them (waking from deep standby is the usual failure, because
+the projector's HDMI port is unpowered while it is off), switch that device
+to Broadlink. The Pi must be on HDMI0 (the port next to USB-C), as
+[hardware.md](hardware.md) already asks.
+
+**Auto mode.** The manifest gains an optional `projector` key:
+`{control, mode, want, codes, broadlink_host}`, or `null` when the device's
+control is `none`. The console computes `want` on every sync
+(`manifest.projector_want`) from the same schedule rows that pick the
+playlist, using `schedules.next_start` (the rule the Python console already
+had and the cloud console now ports):
+
+- `want = "on"` while a playlist is active for the device, from the lead
+  time (default 3 min) before the next schedule rule starts, and until the
+  idle-off delay (default 10 min) has passed since a playlist was last
+  active. A gap between two schedules shorter than the delay therefore never
+  cycles the lamp.
+- `want = "off"` otherwise.
+
+The player acts only on a change of `want` (an `on` seen twice sends
+nothing) and reports the outcome in the `projector_state` and
+`projector_error` sync parameters, which the Devices page shows as the lamp
+and, when set, an error line. `projector_error` clears on the next
+successful send; a transition that failed (after its one immediate retry)
+is not tried again until `want` changes, so the error stays visible until
+someone fixes the blaster or the next scheduled change comes round. The
+object carries `want` in `manual` mode too, but the player then ignores it
+and only acts on the On/Off commands. A player that never sees the key
+(older console, control `none`) does nothing, like every other manifest key
+in this branch.
+
+Two consequences of the "playlist active" rule to plan around:
+
+- A device with a fallback playlist assigned (its own or its group's) and no
+  schedules is active around the clock, so in auto mode its projector never
+  turns off. To have the projector power down, drive that device by
+  schedules alone: clear the fallback playlist and add a schedule for the
+  hours it should play. The gap in the schedule is what switches it off.
+- The lead time is measured on the console's clock in the site timezone
+  (Settings), like the schedules themselves; the player's poll interval
+  (30 s) comes on top. Three minutes covers most projectors' warm-up; raise
+  it for a lamp projector that takes longer to show a picture.
+
+With the defaults: a schedule starting at 09:00 flips `want` to `on` at
+08:57 and the code goes out on the player's next poll; content ending at
+17:00 flips `want` to `off` at 17:10 and the projector powers down within
+the following poll. `input_hdmi1` is learned and stored for projectors that
+need it, but nothing sends it yet: leave the projector on the Pi's input, or
+set the projector to remember its last input across power cycles.
+
+**Wyze Plug.** The smart plug from hardware.md stays as the hard
+power-cycle of last resort from the Wyze app; the console does not drive
+it. Leave it on: a projector whose mains are cut cannot be reached by IR or
+CEC.
+
+**Python console.** `cms/` has the same Projector block, the same three
+commands, the same manifest key and the same two settings (env in
+`/etc/projector-cms/env`: `PIPLAYER_PROJECTOR_LEAD_MINUTES`,
+`PIPLAYER_PROJECTOR_IDLE_MINUTES`, integers 0-1440); the `db.py` ALTER
+guards add the six device columns on start.
+
+**Operator steps** (once per projector):
+
+1. Broadlink only: pair the RM4 mini in the Broadlink app on the 2.4 GHz
+   network, then in the blaster's settings in the app make sure **Lock
+   device** is off (a locked blaster refuses LAN control from anything but
+   the app; the player logs an auth failure when it finds one). Note its IP
+   if the router hands different subnets to Wi-Fi and wired clients, and
+   enter it as the Broadlink host.
+2. CEC only: enable HDMI-CEC in the projector's menu as above.
+3. Devices page, Projector block: choose the control, learn the codes
+   (Broadlink), test **On** and **Off**, then set Mode to `auto` if the
+   device is driven by schedules.
+4. Settings page: adjust the lead time and idle-off delay if the defaults do
+   not suit the projector's warm-up and the site's schedule gaps.
+
+Players installed before this feature need one `install-player.sh --upgrade`
+(README, "Upgrading a player in place") to get the `broadlink` Python package
+(`player/requirements.txt`) and `v4l-utils`; `update-player` from section C
+does the same.
+
+**Logs on the Pi** when a command reports `failed`:
+
+```bash
+journalctl -u projector-player.service -n 100 | grep -i projector
+cec-ctl -d /dev/cec0 --playback -S            # CEC: claim an address; does the projector answer at all?
+cec-ctl -d /dev/cec0 --to 0 --image-view-on   # CEC: power on by hand
+cec-ctl -d /dev/cec0 --to 0 --standby         # CEC: power off by hand
+```
+
+**Not covered by the automated tests.** The player tests use a fake
+`broadlink` module and a fake `cec-ctl` (discovery, auth, send, learning
+with and without a captured packet, the immediate retry, act-on-change,
+state and error reporting); the console tests cover the commands, the
+per-device fields, the stored codes and the `want` computation with fixed
+clocks. What needs a room: an RM4 mini actually hearing the remote and the
+projector reacting to the packet or the CEC message. Verify on one device:
+learn `power_on` and
+`power_off`, press **Off** with the projector on and **On** with it off, then
+set `auto` and watch one scheduled start and one scheduled end before
+rolling the mode out to the fleet.
 
 ## F. Alerts (cloud only)
 

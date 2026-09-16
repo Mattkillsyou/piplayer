@@ -26,10 +26,10 @@ Subtotal: about $101.
 
 | Part | Purpose | Qty | Approx. USD | Link |
 | --- | --- | --- | --- | --- |
-| Broadlink RM4 mini | IR blaster that turns the projector on and off. Powered from one of the Pi's USB ports; needs line of sight to the projector's IR receiver. 2.4 GHz Wi-Fi only. | 1 | $25 | [amazon.com](https://www.amazon.com/dp/B07ZSF46BX) (ASIN B07ZSF46BX; Broadlink's own store no longer lists the mini) |
-| Wyze Plug | Smart plug on the projector's mains lead: hard power-cycle from your phone when IR is not enough. 2.4 GHz Wi-Fi only. Sold in 2-packs (about $20). | 1 | $14 | [wyze.com](https://www.wyze.com/products/wyze-plug) |
+| Broadlink RM4 mini | IR blaster the console uses to turn the projector on and off ([automation.md](automation.md), section E). Powered from one of the Pi's USB ports; needs line of sight to the projector's IR receiver and must be on the same LAN as the Pi. 2.4 GHz Wi-Fi only. Skip it if the projector honours HDMI-CEC (see Compatibility notes). | 0-1 | $25 | [amazon.com](https://www.amazon.com/dp/B07ZSF46BX) (ASIN B07ZSF46BX; Broadlink's own store no longer lists the mini) |
+| Wyze Plug | Smart plug on the projector's mains lead: hard power-cycle from your phone when IR or CEC is not enough. The console does not drive it. 2.4 GHz Wi-Fi only. Sold in 2-packs (about $20). | 1 | $14 | [wyze.com](https://www.wyze.com/products/wyze-plug) |
 
-Subtotal: about $39.
+Subtotal: about $39 ($14 with a CEC-capable projector).
 
 ## Camera (optional)
 
@@ -113,6 +113,21 @@ Pi 5 for new builds).
 - **micro-HDMI.** Pi 4 and Pi 5 both have two micro-HDMI (type D) ports. Use
   HDMI0, the one closer to the USB-C power port. A standard HDMI (type A)
   cable needs an adapter; buy the right cable instead.
+- **HDMI-CEC instead of the RM4 mini.** Many projectors can be powered on
+  and off over the HDMI cable (CEC; in the projector menu as `HDMI Link`,
+  `HDMI Control`, `Anynet+`, `BRAVIA Sync` or similar, usually off by
+  default). With CEC enabled and the Pi on HDMI0, set the device's
+  Projector control to `cec` on the console and skip the blaster. Test both
+  directions before relying on it: waking from deep standby is what
+  projectors most often ignore. Details in [automation.md](automation.md),
+  section E.
+- **RM4 mini placement.** Stand it where the projector's own remote works
+  from: in front of the IR receiver (the front bezel on most models, the
+  rear panel on some ceiling-mount units), within about 5 m, not behind the
+  lens hood or the Pi case. IR bounces off a white wall or screen, so a
+  blaster aimed at the screen from the projector's shelf usually works too.
+  In the Broadlink app, leave **Lock device** off or the Pi cannot control
+  it. The projector's codes are learned from the console, not in the app.
 - **USB power budget.** The RM4 mini draws under 1 W from a Pi USB port. If
   you also hang a USB audio dongle and a keyboard off the Pi 5, use the 27 W
   PSU (the 15 W Pi 4 PSU makes the Pi 5 limit USB to 600 mA total).
@@ -158,10 +173,11 @@ Per unit, in order. Steps 1-4 happen at the desk; 5-10 at the projector.
 5. **Cable at the projector.** HDMI cable from the Pi's HDMI0 to the
    projector. Ethernet if wired. Mount the Pi with the bracket or Velcro.
    Dress the cables with clips and ties.
-6. **IR blaster.** Plug the RM4 mini into a Pi USB port and stand it with a
-   clear line to the projector's IR receiver (front bezel on most models).
-   Pair it in the Broadlink app on 2.4 GHz and learn the projector's power
-   button.
+6. **IR blaster** (skip for a CEC projector: enable HDMI-CEC in its menu
+   instead). Plug the RM4 mini into a Pi USB port and stand it with a clear
+   line to the projector's IR receiver (front bezel on most models). Pair it
+   in the Broadlink app on 2.4 GHz with **Lock device** off. Do not learn
+   anything in the app; the codes are learned from the console in step 11.
 7. **Smart plug.** Projector mains lead into the Wyze Plug, plug into the
    wall, pair in the Wyze app. Leave it on.
 8. **Camera.** Plug the Wyze Cam in with its own PSU, aim it at the screen
@@ -175,9 +191,13 @@ Per unit, in order. Steps 1-4 happen at the desk; 5-10 at the projector.
     you set up a camera, the row also shows the room snapshot; paste the
     tunnel hostname into **Camera live URL** to enable **Live** (see
     [camera.md](camera.md), "Live view").
-11. **Test the controls.** Projector off and on from the Broadlink app, then
-    from the Wyze Plug. Confirm the Pi keeps running (it is on its own PSU,
-    not the smart plug) and the picture comes back after the projector
-    warms up.
+11. **Projector control.** In the device's Projector block on the Devices
+    page set Control to `broadlink` (or `cec`), learn Power On and Power Off
+    with the projector's remote held at the blaster (30 s per button), then
+    press **Off** and **On** from the console and once from the Wyze Plug.
+    Confirm the Pi keeps running (it is on its own PSU, not the smart plug)
+    and the picture comes back after the projector warms up. Set Mode to
+    `auto` if the device runs on schedules ([automation.md](automation.md),
+    section E).
 12. **Pocket the spare card** in a labelled bag taped inside the projector
     mount, and write the date on it.
