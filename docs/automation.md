@@ -76,40 +76,47 @@ and one build of the flasher serves every operator.
   A token is `p5k_` followed by 32 URL-safe characters. Only its SHA-256 hash
   is stored and lookups compare in constant time; the plain token is shown
   once, at creation, and cannot be recovered afterwards.
-- Tokens are managed in two places: the Users page (admin, any user's tokens)
-  and a "My API tokens" section on the Settings page (the admin's own). Both
-  offer create (name it after the person or laptop that will hold it) and
-  revoke. A revoked token fails immediately.
+- Tokens are managed in two places, both admin only: the "My API tokens"
+  panel of the Settings page (the signed-in admin's own tokens) and the Users
+  page, where each user's row has an "API tokens" fold with that user's
+  tokens (any admin or editor; viewers cannot hold one). Both offer create
+  (name it after the person or laptop that will hold it) and revoke, and show
+  each token's creation and last-use times. A revoked token fails
+  immediately.
 - `GET /api/operator/enrollment` with `Authorization: Bearer p5k_<token>`
   returns `{console_url, enrollment_key, groups: [{id, name}],
-  playlists: [{id, name}], timezone}` (and `wyze_configured: true|false` once
-  D lands). It is read-only, answers only tokens whose user is an admin or
-  editor, and returns 401 for anything else: a missing or malformed header,
-  an unknown or revoked token, or a viewer's token. The token's
-  `last_used_at` is refreshed and an `api_token_used` audit entry is written
+  playlists: [{id, name}], timezone, wyze_configured}`. `wyze_configured` is
+  always `false` until feature D lands; it then turns `true` once Wyze
+  credentials exist, so the flasher's provision script can pass
+  `--with-wyze`. The endpoint is read-only, answers only tokens whose user
+  is an admin or editor, and returns 401 for anything else: a missing or
+  malformed header, an unknown or revoked token, or a viewer's token. The
+  token's `last_used_at` is refreshed and an `api_token_used` audit entry is written
   at most once per hour per token, so the audit log shows who is flashing
   without filling up on every launch.
 
 **Flasher.** On first run the tool asks for the console URL and an operator
-token and stores them in `%APPDATA%\Projection5000\flasher.json`. On Windows
-the token is protected with DPAPI (`win32crypt`, tied to the Windows user
-account); if that module is missing the token is written in plain text and
-the tool warns you. Every later launch calls `GET /api/operator/enrollment`,
-shows the console name and URL plus the fetched group and playlist lists, and
-passes the fresh enrollment key into the provision script it writes to the
-card. There is no per-card group or playlist choice: the site-wide defaults
+token and stores them in `%APPDATA%\Projection5000\flasher.json`. The token is
+protected with Windows DPAPI (`CryptProtectData` via ctypes, tied to the
+Windows user account, no extra package); if DPAPI fails the token is stored in
+plain text and the log warns you. (Plain form values such as the last Wi-Fi
+name live in a separate `%LOCALAPPDATA%\Projection5000\flasher.json`.) Every
+later launch calls `GET /api/operator/enrollment`, shows the console name and
+URL plus the fetched group and playlist lists, and passes the fresh
+enrollment key into the provision script it writes to the card. There is no per-card group or playlist choice: the site-wide defaults
 from section A decide what a new device gets. `build.ps1` no longer bakes a
-key; a `--key` override remains for offline builds where the console cannot
-be reached at flash time. The card layout and `firstrun.sh` are unchanged
-apart from where the key comes from, and the paste-a-device-token path still
-bypasses enrollment. See `tools/flasher/README.md` for the tool itself.
+key; `-Key <enrollment key>` (with `-ConsoleUrl <url>`, or the env vars
+`FLASHER_ENROLL_KEY` / `FLASHER_CONSOLE_URL`) remains for offline builds where
+the console cannot be reached at flash time. The card layout and
+`firstrun.sh` are unchanged apart from where the key comes from, and the
+paste-a-device-token path still bypasses enrollment. See `tools/flasher/README.md` for the tool itself.
 
 **Operator steps** (once per operator):
 
 1. Sign in to the cloud console as an admin, open Settings, and under "My
-   API tokens" click Create, giving the token a name such as
-   `matt-laptop`. To issue a token for another admin or editor, use the
-   Users page instead.
+   API tokens" click Create token, giving it a name such as `matt-laptop`.
+   To issue a token for another admin or editor, open the Users page, expand
+   "API tokens" under their row and create it there.
 2. Copy the `p5k_...` value now: it is shown once. Treat it like a password.
 3. Start the flasher, enter the console URL
    (`https://projectors.photogen5000.com`) and paste the token. The flasher
@@ -121,14 +128,15 @@ bypasses enrollment. See `tools/flasher/README.md` for the tool itself.
   card is lost. Cards written with the old key fail enrollment with a 401;
   cards flashed after the rotation pick up the new key automatically. No
   rebuild, no operator action.
-- *Operator token*: revoke it on the Users page or under "My API tokens" when
+- *Operator token*: revoke it under "My API tokens" or on the Users page when
   an operator leaves or a laptop is lost, then create a new one and enter it
-  in the flasher. The Users page shows each token's last use, so a token that
-  has not been used in months is easy to spot and revoke. The audit log's
+  in the flasher. Both places show each token's last use, so a token that has
+  not been used in months is easy to spot and revoke. The audit log's
   `api_token_used` entries name the token behind every flashing session.
 
 The Python console (`cms/`) has no operator tokens: a LAN-only site flashes
-with the offline `--key` build, pasting the key from the cms Settings page.
+with the offline `build.ps1 -Key` build, pasting the key from the cms Settings
+page.
 
 ## C. Remote updates: player software and OS packages (player + cloud + cms)
 

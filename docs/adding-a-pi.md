@@ -19,9 +19,9 @@ You'll need:
 > click Flash, put the card in the Pi. No console login is needed on the Pi:
 > the flasher fetches the console's current **enrollment key** live at every
 > launch, using a personal operator API token you create once on the cloud
-> console (Settings page, "My API tokens", or the Users page for admins) and
-> enter into the flasher on its first run. The Pi then enrolls itself on
-> first boot, creating the device and fetching its token. Re-flashing a card
+> console (Settings page, "My API tokens", or the Users page for another
+> admin or editor; admins only) and enter into the flasher on its first run.
+> The Pi then enrolls itself on first boot, creating the device and fetching its token. Re-flashing a card
 > with the same device id re-enrolls the same device (same token, same
 > playlist). Rotate the key on the Settings page if a flashed card is lost:
 > the next flash picks up the new key, no rebuild needed. If the
@@ -31,8 +31,8 @@ You'll need:
 > consoles enroll: the cloud console and the Python console (`cms/`) each
 > have the Settings page with the key and the two defaults, but only the
 > cloud console issues operator tokens; for a LAN-only cms site build the
-> flasher with the offline `--key` override and paste the key from the cms
-> Settings page. The manual path that follows still works.
+> flasher with the offline `build.ps1 -Key` override and paste the key from
+> the cms Settings page. The manual path that follows still works.
 
 ## 1. Flash Raspberry Pi OS Lite (64-bit)
 
