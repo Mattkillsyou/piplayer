@@ -111,7 +111,7 @@ def test_capture_uploads_like_screenshots(cam_cfg, cms, ffmpeg):
 
 def test_capture_failure_sets_error_and_logs_once_per_10_min(cam_cfg, cms, ffmpeg, caplog, monkeypatch):
     ffmpeg["result"] = subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"Connection refused")
-    now = [1000.0]
+    now = [10.0]  # seconds after boot: the first failure must still be logged
     monkeypatch.setattr(camera_mod.time, "monotonic", lambda: now[0])
     cam = CameraCapture(cam_cfg)
     with caplog.at_level("WARNING", logger="piplayer.camera"):

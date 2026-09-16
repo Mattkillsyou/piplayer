@@ -87,7 +87,7 @@ class CameraCapture(threading.Thread):
         self.interval = cfg.camera_snapshot_interval_seconds
         self.error = ""
         self._stop = threading.Event()
-        self._last_log = 0.0
+        self._last_log = -LOG_EVERY_SECONDS  # so the first failure is always logged
 
     def update_interval(self, seconds: int) -> None:
         new = max(CAMERA_MIN_INTERVAL, int(seconds))

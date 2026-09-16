@@ -39,10 +39,16 @@ done
 
 if [[ "${UNINSTALL}" == 1 ]]; then
     echo "==> Stopping and disabling services"
-    systemctl disable --now projector-player.service projector-mpv.service projector-wyze-bridge.service 2>/dev/null || true
+    # The wyze unit only exists on --with-wyze installs; systemd refuses the whole
+    # disable call when any named unit is missing, so handle it separately.
+    systemctl disable --now projector-player.service projector-mpv.service 2>/dev/null || true
+    if [[ -f /etc/systemd/system/projector-wyze-bridge.service ]]; then
+        systemctl disable --now projector-wyze-bridge.service 2>/dev/null || true
+    fi
     rm -f /etc/systemd/system/projector-player.service /etc/systemd/system/projector-mpv.service         /etc/systemd/system/projector-wyze-bridge.service
     systemctl daemon-reload
-    systemctl reset-failed projector-player.service projector-mpv.service projector-wyze-bridge.service 2>/dev/null || true
+    systemctl reset-failed projector-player.service projector-mpv.service 2>/dev/null || true
+    systemctl reset-failed projector-wyze-bridge.service 2>/dev/null || true
     if command -v docker >/dev/null 2>&1; then
         docker rm -f projector-wyze-bridge >/dev/null 2>&1 || true
         # Docker itself is left installed.
