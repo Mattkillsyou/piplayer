@@ -161,6 +161,24 @@ def test_operator_config_round_trip_is_dpapi_protected(tmp_path):
         assert flasher.load_operator_config() == {"console_url": "", "token": ""}
 
 
+def test_dpapi_prefers_win32crypt_and_falls_back_to_crypt32(monkeypatch):
+    import sys
+    import types
+
+    calls = []
+    fake = types.ModuleType("win32crypt")
+    fake.CryptProtectData = lambda data, *a: calls.append(("protect", data)) or b"blob:" + data
+    fake.CryptUnprotectData = lambda data, *a: calls.append(("unprotect", data)) or ("", data[5:])
+    monkeypatch.setitem(sys.modules, "win32crypt", fake)
+    assert flasher._dpapi(b"tok", protect=True) == b"blob:tok"
+    assert flasher._dpapi(b"blob:tok", protect=False) == b"tok"
+    assert calls == [("protect", b"tok"), ("unprotect", b"blob:tok")]
+    # Without pywin32 (the venv and the frozen exe) the same calls go through ctypes crypt32.
+    monkeypatch.setitem(sys.modules, "win32crypt", None)
+    blob = flasher._dpapi(b"tok", protect=True)
+    assert blob != b"tok" and flasher._dpapi(blob, protect=False) == b"tok"
+
+
 def test_operator_config_falls_back_to_plain_text_with_a_warning(monkeypatch, tmp_path):
     def no_dpapi(data, protect):
         raise OSError("no crypt32")

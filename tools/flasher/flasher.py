@@ -120,7 +120,18 @@ class _DataBlob(ctypes.Structure):
 
 
 def _dpapi(data: bytes, protect: bool) -> bytes:
-    """CryptProtectData / CryptUnprotectData (user-scoped DPAPI: only this Windows account can read it back)."""
+    """CryptProtectData / CryptUnprotectData (user-scoped DPAPI: only this Windows account can read it back).
+    win32crypt (pywin32) when it is installed, else the same crypt32 calls through ctypes."""
+    try:
+        import win32crypt
+    except ImportError:
+        return _dpapi_ctypes(data, protect)
+    if protect:
+        return win32crypt.CryptProtectData(data, None, None, None, None, 0)
+    return win32crypt.CryptUnprotectData(data, None, None, None, 0)[1]
+
+
+def _dpapi_ctypes(data: bytes, protect: bool) -> bytes:
     crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32")
     kernel32.LocalFree.argtypes = [ctypes.c_void_p]
