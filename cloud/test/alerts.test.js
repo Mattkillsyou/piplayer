@@ -271,7 +271,7 @@ describe("settings panel", () => {
     ]);
     expect(await secrets.get(env, "twilio_auth_token")).toBe("secret-tok");
     const a = (await audits("alert_settings_update"))[0];
-    expect(a.details).toBe('{"alert_offline_minutes": 15, "alert_repeat_minutes": 60, "alert_email": "ops@example.com", "alert_webhook_url": "https://hooks.example.com/z", "twilio_account_sid": "set", "twilio_auth_token": "set", "twilio_from": "set", "twilio_to": "set"}');
+    expect(a.details).toBe('{"alert_offline_minutes": 15, "alert_repeat_minutes": 60, "alert_email": "ops@example.com", "alert_webhook_url": "set", "twilio_account_sid": "set", "twilio_auth_token": "set", "twilio_from": "set", "twilio_to": "set"}');
     let page = await (await r.admin.get("/settings")).text();
     expect(page).not.toContain("secret-tok");
     expect(page).not.toContain("AC9");

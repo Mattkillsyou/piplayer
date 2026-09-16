@@ -394,7 +394,8 @@ async function alertsSave(ctx) {
   await db.batch(ctx.env, Object.entries(values).map(([k, v]) => (v === ""
     ? ["DELETE FROM settings WHERE key = ?", k]
     : ["INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", k, String(v)])));
-  const details = { ...values };
+  // Audit rows are readable by every role; a webhook URL is a write credential for its channel.
+  const details = { ...values, alert_webhook_url: webhook ? "set" : "" };
   for (const [name, v] of Object.entries(twilio)) {
     await secrets.set(ctx.env, name, v);
     details[name] = "set";
