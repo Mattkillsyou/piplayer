@@ -91,7 +91,7 @@ See [docs/adding-a-pi.md](docs/adding-a-pi.md) for the full walkthrough.
 
 On Windows the Projection5000 SD Flasher (`tools/flasher/README.md`) replaces
 the manual steps below: it writes the card and the Pi enrolls itself on first
-boot. The flasher may also write the player's `[camera]` table (`source`, `rtsp_url`, `wyze_camera`, `snapshot_interval_seconds`, `live_url`) and `/etc/projector-player/wyze.env` (`WYZE_EMAIL`, `WYZE_PASSWORD`, `API_ID`, `API_KEY`); both are described in [docs/camera.md](docs/camera.md).
+boot. The flasher may also write the player's `[camera]` table (`source`, `rtsp_url`, `wyze_camera`, `snapshot_interval_seconds`, `live_url`), described in [docs/camera.md](docs/camera.md); Wyze credentials come from the cloud console ([docs/automation.md](docs/automation.md) section D).
 
 Short version:
 

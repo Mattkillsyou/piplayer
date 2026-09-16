@@ -90,8 +90,8 @@ and one build of the flasher serves every operator.
 - `GET /api/operator/enrollment` with `Authorization: Bearer p5k_<token>`
   returns `{console_url, enrollment_key, groups: [{id, name}],
   playlists: [{id, name}], timezone, wyze_configured}`. `wyze_configured` is
-  `true` once the four Wyze secrets of section D are set, so the flasher's
-  provision script passes `--with-wyze`; `false` otherwise. The endpoint is read-only, answers only tokens whose user
+  `true` once the Wyze email and password of section D are set, so the
+  flasher's provision script passes `--with-wyze`; `false` otherwise. The endpoint is read-only, answers only tokens whose user
   is an admin or editor, and returns 401 for anything else: a missing or
   malformed header, an unknown or revoked token, or a viewer's token. The
   token's `last_used_at` is refreshed and an `api_token_used` audit entry is
@@ -358,19 +358,21 @@ above):
 | Wyze camera name | used when the source is `wyze`; empty means "apply the pattern" |
 
 `default` follows the site: `wyze` with the pattern-derived name once the
-four Wyze secrets are set, `none` until then. Set `none` on a device that
+Wyze email and password are set, `none` until then. Set `none` on a device that
 has no camera so its bridge stays down; set `rtsp` for a non-Wyze camera.
-Changes are audited (`device_set_camera`).
+Changes are audited (`device_set_camera_source`).
 
 **Device API.** `GET /api/camera-config/<device_id>` with the device's bearer
-token returns either `{source: "none"}` or
+token returns `{source: "none", version: 3}`,
+`{source: "rtsp", rtsp_url: "rtsp://...", version: 3}` or
 
 ```json
-{"source": "wyze", "rtsp_url": "", "wyze": {"email": "...", "password": "...",
+{"source": "wyze", "version": 3, "wyze": {"email": "...", "password": "...",
  "api_id": "...", "api_key": "...", "camera": "Lobby projector"}}
 ```
 
-(for `rtsp` the `wyze` object is absent and `rtsp_url` is filled). This is
+Every answer carries `version`, the `camera_config_version` it was built
+from. This is
 the only route that ever sends the Wyze credentials anywhere, and only to a
 device that authenticates as itself; it answers 401 to anything else. A
 `camera_config_fetched` audit entry is written at most once per device per
@@ -379,13 +381,14 @@ on every boot.
 
 The manifest gains an optional integer `camera_config_version`. The console
 bumps it whenever anything that feeds the endpoint changes: a Wyze secret,
-the pattern, a device's source, URL or camera name, or the device's own name
-(because the pattern depends on it).
+the pattern, or a device's source, URL or camera name. Renaming a device
+(re-enrolling under a new name) does not bump it: a camera named after the
+device is picked up on the next bump or daemon restart.
 
 **What the Pi does.** On daemon start, and on any sync where the manifest's
-`camera_config_version` differs from the one stored in
-`/var/lib/projector-player/`, the player calls the endpoint and applies the
-answer without restarting itself:
+`camera_config_version` differs from the version it applied last (kept in
+memory; every daemon start fetches again), the player calls the endpoint and
+applies the answer without restarting itself:
 
 1. Writes `/var/lib/projector-player/wyze.env` (mode 600, owned by
    `projector`): `WYZE_EMAIL`, `WYZE_PASSWORD`, `API_ID`, `API_KEY`. The
@@ -397,18 +400,18 @@ answer without restarting itself:
    by the sudoers drop-in `/etc/sudoers.d/projector-player`) when the source
    is `wyze`, so the bridge logs in with the new credentials; with `none` or
    `rtsp` the bridge is left alone.
-3. Swaps its in-memory `[camera]` configuration: the capture thread is
-   restarted with the new source, URL or derived stream name, and the
-   version is stored so the next sync is a no-op.
+3. Swaps its in-memory `[camera]` configuration: the running capture thread
+   is re-pointed at the new source, URL or derived stream name, and the
+   version is remembered so the next sync is a no-op.
 
 The `[camera]` table in `/etc/projector-player/config.toml` is now only a
 fallback for a console that does not send `camera_config_version` (an older
 console, or the Python console); the fetched configuration wins whenever the
 manifest carries the key. A player that never sees the key behaves exactly as
 before. If the fetch fails (console unreachable, 401), the player keeps its
-current camera configuration and retries on the next sync that still shows a
-different version; the failure surfaces as `camera_error` on the Devices
-page like any other camera problem.
+current camera configuration, logs a warning in
+`journalctl -u projector-player.service`, and retries on the next sync that
+still shows a different version.
 
 **Installer and flasher.** `install-player.sh --with-wyze` still installs
 Docker and `projector-wyze-bridge.service`, but no longer needs the `WYZE_*`
@@ -416,7 +419,7 @@ variables: the unit tolerates a missing env file, stays enabled, and is
 started by the daemon once it has fetched credentials. The flasher's
 provision script passes `--with-wyze` automatically when
 `GET /api/operator/enrollment` reports `wyze_configured: true` (section B),
-which it does once the four Wyze secrets are set. So the order for a new
+which it does once the Wyze email and password are set. So the order for a new
 site is: enter the Wyze account on the Settings page first, then flash. Cards
 flashed before the account was entered come up without Docker; run
 `sudo bash deploy/install-player.sh --with-wyze --upgrade` on those Pis once
