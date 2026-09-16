@@ -176,6 +176,13 @@ Settings. Each issue is audited.
 | Auto-update | `auto_update` | `off` (default) or `nightly` |
 | Auto-update window | `auto_update_window` | `HH:MM-HH:MM` on the Pi's local clock; default `03:00-05:00` |
 
+The cloud console takes the same three env vars as defaults when a setting has
+not been saved yet: `PIPLAYER_PLAYER_RELEASE` (default `main`),
+`PIPLAYER_AUTO_UPDATE` (`off` or `nightly`) and `PIPLAYER_AUTO_UPDATE_WINDOW`
+(`HH:MM-HH:MM`, default `03:00-05:00`), set as `[vars]` in
+`cloud/wrangler.toml`; invalid values fall back to the defaults
+(`cloud/src/db.js` `defaultSettings`).
+
 The manifest gains an optional `update: {release, auto, window}` key. A player
 that never sees it (older console, or the Python console without the env vars
 below) behaves exactly as before.
