@@ -69,7 +69,13 @@ flasher fetches it live instead of carrying it:
    console's "New devices" settings, not per card) and the timezone. The key
    lands in the masked "Enrollment key" field and goes on the card. A fetch
    failure (wrong token, revoked token, no network) is shown in the Console box
-   and the log; the field can still be filled by hand.
+   and the log; the field can still be filled by hand. The answer also says
+   whether the console has a Wyze account (`wyze_configured`): when it does, the
+   log shows "Wyze bridge: will be installed" and the card's provision script
+   runs the installer with `--with-wyze` (Docker + the wyze-bridge unit; the
+   camera credentials come from the console later, nothing is written to the
+   card). Otherwise the log says "Wyze bridge: not configured". The flag is
+   never saved and is dropped whenever the URL or token changes or a fetch fails.
 
 The Console box: "Console URL", "Operator API token" (masked, Show), "Enrollment
 key" (masked, Show; fetched, or pasted for an offline session, never written

@@ -75,7 +75,8 @@ def enroll(console_url: str, key: str, device_id: str, name: str) -> tuple:
 
 def fetch_enrollment(console_url: str, token: str) -> dict:
     """GET /api/operator/enrollment with `Authorization: Bearer <operator token>`. Returns the console's answer
-    ({console_url, enrollment_key, groups: [{id, name}], playlists: [{id, name}], timezone, ...}); ConsoleError
+    ({console_url, enrollment_key, groups: [{id, name}], playlists: [{id, name}], timezone, wyze_configured, ...});
+    ConsoleError
     on a rejected token (401) or a malformed answer. Never enrolls and never sends anything but the token."""
     base = _base(console_url)
     r = _request(base, "/api/operator/enrollment", headers={"Authorization": f"Bearer {token.strip()}"})
@@ -88,4 +89,5 @@ def fetch_enrollment(console_url: str, token: str) -> dict:
     for k in ("groups", "playlists"):
         items = r.get(k) if isinstance(r.get(k), list) else []
         r[k] = [g for g in items if isinstance(g, dict) and isinstance(g.get("name"), str)]
+    r["wyze_configured"] = bool(r.get("wyze_configured"))  # the provision script's --with-wyze
     return r

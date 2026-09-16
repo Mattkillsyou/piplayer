@@ -216,16 +216,25 @@ def test_gui_fetches_the_key_on_launch(monkeypatch, tmp_path):
     assert "Groups: Lobby, Halls. Playlists: Loop." in log and KEY not in log
     # wyze_configured from the console reaches the card config (render_provision adds --with-wyze)
     assert app.values()["with_wyze"] is False and flasher.card_cfg(app.values())["with_wyze"] is False
+    assert "Wyze bridge: not configured" in log
     app._apply_enrollment(dict(ENROLLMENT, wyze_configured=True))
     assert flasher.card_cfg(app.values())["with_wyze"] is True
-    assert "installer will run with --with-wyze" in app.log_text.get("1.0", "end")
+    assert "Wyze bridge: will be installed" in app.log_text.get("1.0", "end")
     assert " --with-wyze" in flasher.firstboot.render_provision(flasher.card_cfg(app.values()))
     app._apply_enrollment(dict(ENROLLMENT))
     assert flasher.card_cfg(app.values())["with_wyze"] is False
+    app._apply_enrollment(dict(ENROLLMENT, wyze_configured=True))
+    app.v["operator_token"].set(OPERATOR_TOKEN + "x")  # a changed token/URL drops the flag until the next answer
+    assert flasher.card_cfg(app.values())["with_wyze"] is False
+    app.v["operator_token"].set(OPERATOR_TOKEN)
+    app._apply_enrollment(dict(ENROLLMENT, wyze_configured=True))
     # Connect: a changed URL/token is saved and the key fetched again; a rejected token is reported, key kept.
     app.v["console_url"].set("https://down.example")
+    assert flasher.card_cfg(app.values())["with_wyze"] is False
+    app._apply_enrollment(dict(ENROLLMENT, wyze_configured=True))  # and a failed fetch drops it too
     app.connect()
     assert _pump(root, app, lambda: "Enrollment key fetch FAILED: HTTP 401" in app.log_text.get("1.0", "end"))
+    assert flasher.card_cfg(app.values())["with_wyze"] is False
     assert flasher.load_operator_config() == {"console_url": "https://down.example", "token": OPERATOR_TOKEN}
     assert app.values()["enrollment_key"] == KEY and "FAILED" in app.console_status.cget("text")
     errors = []

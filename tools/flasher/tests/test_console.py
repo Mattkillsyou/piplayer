@@ -33,6 +33,7 @@ class StubConsole(http.server.BaseHTTPRequestHandler):
     """The /api/enroll contract shared by the cloud and Python consoles."""
     devices = {}
     calls = []
+    wyze_configured = False
 
     def log_message(self, *a):
         pass
@@ -55,7 +56,7 @@ class StubConsole(http.server.BaseHTTPRequestHandler):
             return self._json(200, {"console_url": f"http://127.0.0.1:{self.server.server_port}", "enrollment_key": KEY,
                                     "groups": [{"id": 1, "name": "Lobby"}, {"id": 2, "name": "Halls"}],
                                     "playlists": [{"id": 7, "name": "Loop"}], "timezone": "UTC",
-                                    "wyze_configured": False})
+                                    "wyze_configured": self.wyze_configured})
         self._json(404, {"detail": "Not Found"})
 
     def do_POST(self):
@@ -117,8 +118,14 @@ def test_check_health(stub):
 def test_fetch_enrollment(stub):
     r = console.fetch_enrollment(stub + "/", " " + OPERATOR_TOKEN + " ")
     assert r["enrollment_key"] == KEY and r["console_url"] == stub and r["timezone"] == "UTC"
+    assert r["wyze_configured"] is False
+    StubConsole.wyze_configured = "yes"  # coerced to a bool
+    try:
+        assert console.fetch_enrollment(stub, OPERATOR_TOKEN)["wyze_configured"] is True
+    finally:
+        StubConsole.wyze_configured = False
     assert [g["name"] for g in r["groups"]] == ["Lobby", "Halls"] and [p["name"] for p in r["playlists"]] == ["Loop"]
-    assert StubConsole.calls == [("/api/operator/enrollment", f"Bearer {OPERATOR_TOKEN}")]
+    assert StubConsole.calls == [("/api/operator/enrollment", f"Bearer {OPERATOR_TOKEN}")] * 2
     with pytest.raises(console.ConsoleError, match="invalid API token"):
         console.fetch_enrollment(stub, "p5k_wrong")
     assert not any(path == "/api/enroll" for path, _ in StubConsole.calls)  # the fetch never enrolls
@@ -143,7 +150,8 @@ def test_fetch_enrollment_tolerates_a_sparse_answer(monkeypatch):
     srv, base = _serve(Sparse)
     try:
         r = console.fetch_enrollment(base, OPERATOR_TOKEN)
-        assert r == {"enrollment_key": "k-0123456789abcdefghij", "console_url": base, "groups": [], "playlists": []}
+        assert r == {"enrollment_key": "k-0123456789abcdefghij", "console_url": base, "groups": [], "playlists": [],
+                     "wyze_configured": False}
         Sparse.body = {"enrollment_key": KEY, "groups": "no", "playlists": [{"id": 1}, {"id": 2, "name": "ok"}, 3]}
         assert console.fetch_enrollment(base, OPERATOR_TOKEN)["playlists"] == [{"id": 2, "name": "ok"}]
         Sparse.body = {"console_url": base}

@@ -281,7 +281,6 @@ class App:
         self.q = queue.Queue()
         self.disks = []
         self.v = {}  # tk variables by key
-        self.with_wyze = False  # console reported wyze_configured: the installer runs with --with-wyze
         self._build()
         self._apply_settings(load_settings())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -338,6 +337,11 @@ class App:
                         command=lambda: key.configure(show="" if self.v["show_key"].get() else "*")
                         ).grid(row=2, column=2, padx=2)
         tok = self._entry(con, 1, "Operator API token", "operator_token", show="*")
+        # Console reported wyze_configured: the installer runs with --with-wyze. Never saved; the answer of the
+        # last successful fetch only, so a changed URL/token or a failed fetch drops it until the next answer.
+        self.v["with_wyze"] = tk.BooleanVar(value=False)
+        for k in ("console_url", "operator_token"):
+            self.v[k].trace_add("write", lambda *a: self.v["with_wyze"].set(False))
         self._var("show_token", False, tk.BooleanVar)
         ttk.Checkbutton(con, text="Show", variable=self.v["show_token"],
                         command=lambda: tok.configure(show="" if self.v["show_token"].get() else "*")
@@ -514,7 +518,7 @@ class App:
                 r = console.fetch_enrollment(v["console_url"], v["operator_token"])
             except console.ConsoleError as e:
                 msg = f"Enrollment key fetch FAILED: {e}"
-                self.post(lambda: (self.log(msg), self.console_status.configure(text=msg)))
+                self.post(lambda: (self.v["with_wyze"].set(False), self.log(msg), self.console_status.configure(text=msg)))
                 return
             self.post(lambda: self._apply_enrollment(r))
 
@@ -527,9 +531,9 @@ class App:
         self.console_status.configure(text=f"Console {r['console_url']}: enrollment key fetched "
                                            f"({len(r['groups'])} groups, {len(r['playlists'])} playlists).")
         self.log(f"Console {r['console_url']}: enrollment key fetched. Groups: {groups}. Playlists: {playlists}.")
-        self.with_wyze = bool(r.get("wyze_configured"))
-        if self.with_wyze:
-            self.log("Console reports Wyze configured: installer will run with --with-wyze.")
+        self.v["with_wyze"].set(bool(r.get("wyze_configured")))
+        self.log("Wyze bridge: will be installed (console has a Wyze account; installer runs with --with-wyze)."
+                 if self.v["with_wyze"].get() else "Wyze bridge: not configured on the console (installer runs without it).")
 
     def _apply_settings(self, s: dict):
         for k in SETTINGS_KEYS:
@@ -550,7 +554,6 @@ class App:
             if isinstance(val, str) and k not in UNSTRIPPED:
                 val = val.strip()
             out[k] = val
-        out["with_wyze"] = self.with_wyze
         return out
 
     # ----- actions
