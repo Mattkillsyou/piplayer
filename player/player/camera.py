@@ -79,11 +79,15 @@ def upload(cfg: PlayerConfig, data: bytes) -> None:
 
 class CameraCapture(threading.Thread):
     """Background capture + upload loop. `error` is "" while the last cycle
-    worked, else a short text for the console."""
+    worked, else a short text for the console. `source`/`rtsp_url` start from
+    config.toml and can be re-pointed at runtime by camera_config (the console's
+    zero-config answer); with no URL the loop idles."""
 
     def __init__(self, cfg: PlayerConfig):
         super().__init__(name="camera", daemon=True)
         self.cfg = cfg
+        self.source = cfg.camera_source
+        self.rtsp_url = cfg.camera_rtsp_url
         self.interval = cfg.camera_snapshot_interval_seconds
         self.error = ""
         self._stop = threading.Event()
@@ -95,12 +99,21 @@ class CameraCapture(threading.Thread):
             log.info("camera interval updated: %ds -> %ds", self.interval, new)
             self.interval = new
 
+    def set_source(self, source: str, rtsp_url: str) -> None:
+        if (source, rtsp_url) == (self.source, self.rtsp_url):
+            return
+        log.info("camera source updated: %s %s -> %s %s", self.source, self.rtsp_url, source, rtsp_url)
+        self.source, self.rtsp_url = source, rtsp_url
+        self.error = ""
+
     def stop(self) -> None:
         self._stop.set()
 
     def capture_once(self) -> bool:
+        if not self.rtsp_url:
+            return False
         try:
-            upload(self.cfg, grab_jpeg(self.cfg.camera_rtsp_url))
+            upload(self.cfg, grab_jpeg(self.rtsp_url))
         except (CameraError, requests.RequestException) as e:
             self._fail(f"{e}")
             return False
@@ -120,7 +133,7 @@ class CameraCapture(threading.Thread):
             log.warning("camera snapshot failed: %s", self.error)
 
     def run(self) -> None:
-        log.info("camera capture started: %s every %ds", self.cfg.camera_rtsp_url, self.interval)
+        log.info("camera capture started: %s every %ds", self.rtsp_url or "(no camera yet)", self.interval)
         while not self._stop.is_set():
             self.capture_once()
             self._stop.wait(self.interval)

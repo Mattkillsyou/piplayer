@@ -223,6 +223,16 @@ def test_provision_contents_with_enrollment_key():
     assert s.index('"$CONSOLE/api/health" >/dev/null') < s.index("TRIES=0")
 
 
+def test_provision_with_wyze_flag():
+    """wyze_configured from the console: the installer gets --with-wyze; nothing else changes."""
+    plain = firstboot.render_provision(cfg())
+    assert INSTALL_LINE + ")" in plain and "--with-wyze" not in plain
+    s = firstboot.render_provision(cfg(with_wyze=True))
+    assert INSTALL_LINE + " --with-wyze)" in s
+    assert s.replace(INSTALL_LINE + " --with-wyze", INSTALL_LINE) == plain
+    assert firstboot.render_provision(cfg(with_wyze=False)) == plain
+
+
 def test_patch_cmdline():
     base = "console=serial0,115200 console=tty1 root=PARTUUID=abc rootfstype=ext4 fsck.repair=yes rootwait quiet"
     out = firstboot.patch_cmdline(base + "\n")

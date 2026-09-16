@@ -308,10 +308,13 @@ def _wifi_lines(c: dict) -> list:
 def render_provision(cfg: dict) -> str:
     """The boot-time installer. With a device token on the card it installs straight away; otherwise it
     first trades the enrollment key for a token at POST /api/enroll (the same device_id re-enrolls the
-    same device, so a re-flashed card keeps its identity on the console)."""
+    same device, so a re-flashed card keeps its identity on the console). cfg["with_wyze"] (the console's
+    /api/operator/enrollment reported wyze_configured) adds --with-wyze: Docker + the Wyze bridge unit go
+    on at install; the credentials come from the console once the player runs (camera zero-config)."""
     c = _cfg(cfg)
     q = shlex.quote
     console = c["console_url"].rstrip("/")
+    install_flags = " --with-wyze" if c.get("with_wyze") else ""
     if c.get("token"):
         secret = [f"DEVICE_TOKEN={q(c['token'])}", 'CMS_URL="$CONSOLE"']
     else:
@@ -376,7 +379,7 @@ def render_provision(cfg: dict) -> str:
         "     && rm -rf /opt/projection5000-src && mkdir -p /opt/projection5000-src \\",
         '     && tar -xzf "$SRC" -C /opt/projection5000-src \\',
         '     && (cd /opt/projection5000-src/player && DEVICE_ID="$DEVICE_ID" DEVICE_TOKEN="$DEVICE_TOKEN" '
-        'CMS_URL="$CMS_URL" bash deploy/install-player.sh); then',
+        f'CMS_URL="$CMS_URL" bash deploy/install-player.sh{install_flags}); then',
         '    echo "install succeeded $(date)"',
         "    systemctl disable projection5000-provision.service",
         '    rm -f /usr/local/sbin/projection5000-provision.sh "$SRC"',

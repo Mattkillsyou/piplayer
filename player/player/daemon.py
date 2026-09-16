@@ -8,7 +8,7 @@ from pathlib import Path
 
 import requests
 
-from . import __version__, updater
+from . import __version__, camera_config, updater
 from .camera import CameraCapture
 from .commands import _run_reboot, execute_commands
 from .config import load as load_config, PlayerConfig
@@ -121,6 +121,7 @@ class PlayerState:
     last_contact: float | None = None    # monotonic time of the last successful sync
     storage_full: bool = False           # a download hit ENOSPC during the last sync
     last_auto_update: datetime | None = None   # when this daemon last started a nightly update-player
+    camera_config_version: int | None = None   # manifest camera_config_version applied last (None: fetch on start)
 
 
 def _age_text(since: float | None) -> str:
@@ -358,6 +359,8 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
             screenshot.update_interval(int(manifest["screenshot_interval_seconds"]))
         if camera is not None and manifest.get("camera_interval_seconds"):
             camera.update_interval(int(manifest["camera_interval_seconds"]))
+        if camera is not None:
+            camera_config.maybe_apply(cfg, manifest, camera, state)
 
         # Take + upload screenshot if due
         if screenshot is not None and screenshot.due() and mpv.is_alive():
@@ -400,10 +403,9 @@ def main() -> int:
 
     screenshot = ScreenshotScheduler(interval_seconds=60)
     screens = StatusScreens(cfg, mpv, __version__)
-    camera = None
-    if cfg.camera_source != "none":
-        camera = CameraCapture(cfg)
-        camera.start()
+    # always started: idles until config.toml or the console (camera_config) names a stream
+    camera = CameraCapture(cfg)
+    camera.start()
     cleanup_stale_temp(cfg)
 
     state = PlayerState(
@@ -429,8 +431,7 @@ def main() -> int:
             _force_sync_now = False
             state.force_verify = True
 
-    if camera is not None:
-        camera.stop()
+    camera.stop()
     log.info("piplayer stopped")
     return 0
 

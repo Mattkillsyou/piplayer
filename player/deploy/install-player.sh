@@ -10,8 +10,9 @@
 #   DEVICE_ID=... DEVICE_TOKEN=... CMS_URL=... \
 #   WYZE_EMAIL=.. WYZE_PASSWORD=.. WYZE_API_ID=.. WYZE_API_KEY=.. WYZE_CAMERA="Lobby Cam" sudo -E bash deploy/install-player.sh --with-wyze
 # The API id/key come from the Wyze developer portal. Without the WYZE_* vars
-# the credentials file /etc/projector-player/wyze.env is left for the operator
-# or the flasher to fill in (keys: WYZE_EMAIL, WYZE_PASSWORD, API_ID, API_KEY).
+# no credentials file is written: the player daemon fetches them from the
+# console (camera zero-config) into /var/lib/projector-player/wyze.env (keys:
+# WYZE_EMAIL, WYZE_PASSWORD, API_ID, API_KEY) and starts the bridge itself.
 # Upgrade the code in place (deploy/update-player.sh runs this from a fresh
 # checkout; also fine by hand after a git pull). With an existing config.toml
 # the DEVICE_* vars are not needed and config, wyze.env and data are kept;
@@ -87,6 +88,10 @@ fi
 
 # --upgrade with a config.toml in place keeps it and needs no DEVICE_* vars
 KEEP_CONFIG=0
+# an upgrade refreshes the wyze unit too when it is installed
+if [[ "${UPGRADE}" == 1 && -f /etc/systemd/system/projector-wyze-bridge.service ]]; then
+    WITH_WYZE=1
+fi
 if [[ "${UPGRADE}" == 1 && -f "${ETC_DIR}/config.toml" ]]; then
     KEEP_CONFIG=1
 else
@@ -188,16 +193,19 @@ EOF
 chmod 644 "${ETC_DIR}/env"
 fi
 
-echo "==> Granting sudoers rights for reboot, mpv/player restart and the update scripts"
+echo "==> Granting sudoers rights for reboot, mpv/player/wyze-bridge restart and the update scripts"
 cat > /etc/sudoers.d/projector-player <<'EOF'
-# Allow the projector daemon to reboot the Pi, restart mpv / itself and run
-# the update scripts on demand (issued from the CMS via the device_commands queue).
+# Allow the projector daemon to reboot the Pi, restart mpv / itself / the Wyze
+# bridge (after writing new credentials) and run the update scripts on demand
+# (issued from the CMS via the device_commands queue).
 projector ALL=(ALL) NOPASSWD: /sbin/reboot
 projector ALL=(ALL) NOPASSWD: /usr/sbin/reboot
 projector ALL=(ALL) NOPASSWD: /bin/systemctl restart projector-mpv.service
 projector ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart projector-mpv.service
 projector ALL=(ALL) NOPASSWD: /bin/systemctl restart projector-player.service
 projector ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart projector-player.service
+projector ALL=(ALL) NOPASSWD: /bin/systemctl restart projector-wyze-bridge.service
+projector ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart projector-wyze-bridge.service
 projector ALL=(ALL) NOPASSWD: /opt/piplayer/player/deploy/update-player.sh *
 projector ALL=(ALL) NOPASSWD: /usr/bin/bash /opt/piplayer/player/deploy/update-player.sh *
 projector ALL=(ALL) NOPASSWD: /opt/piplayer/player/deploy/update-os.sh
@@ -217,28 +225,27 @@ if [[ "${WITH_WYZE}" == 1 ]]; then
     fi
     systemctl enable --now docker.service
 
-    echo "==> Writing Wyze credentials at ${ETC_DIR}/wyze.env"
+    WYZE_ENV="${DATA_DIR}/wyze.env"
     if [[ -n "${WYZE_EMAIL:-}" && -n "${WYZE_PASSWORD:-}" && -n "${WYZE_API_ID:-}" && -n "${WYZE_API_KEY:-}" ]]; then
-        cat > "${ETC_DIR}/wyze.env" <<EOF
+        echo "==> Writing Wyze credentials at ${WYZE_ENV}"
+        cat > "${WYZE_ENV}" <<EOF
 WYZE_EMAIL=${WYZE_EMAIL}
 WYZE_PASSWORD=${WYZE_PASSWORD}
 API_ID=${WYZE_API_ID}
 API_KEY=${WYZE_API_KEY}
 EOF
-    elif [[ ! -f "${ETC_DIR}/wyze.env" ]]; then
-        echo "    NOTE: WYZE_EMAIL/WYZE_PASSWORD/WYZE_API_ID/WYZE_API_KEY not all set; writing a template to fill in"
-        cat > "${ETC_DIR}/wyze.env" <<'EOF'
-# Wyze account + API key (Wyze developer portal). Read by projector-wyze-bridge.service.
-WYZE_EMAIL=
-WYZE_PASSWORD=
-API_ID=
-API_KEY=
-EOF
+    elif [[ ! -f "${WYZE_ENV}" && -f "${ETC_DIR}/wyze.env" ]]; then
+        echo "==> Moving Wyze credentials from ${ETC_DIR}/wyze.env to ${WYZE_ENV}"
+        mv "${ETC_DIR}/wyze.env" "${WYZE_ENV}"
+    elif [[ ! -f "${WYZE_ENV}" ]]; then
+        echo "    no Wyze credentials given: the player fetches them from the console's camera config"
     else
-        echo "    existing ${ETC_DIR}/wyze.env kept"
+        echo "    existing ${WYZE_ENV} kept"
     fi
-    chmod 600 "${ETC_DIR}/wyze.env"
-    chown root:root "${ETC_DIR}/wyze.env"
+    if [[ -f "${WYZE_ENV}" ]]; then
+        chmod 600 "${WYZE_ENV}"
+        chown "${USER_NAME}:${USER_NAME}" "${WYZE_ENV}"
+    fi
 fi
 
 echo "==> Installing systemd units"
