@@ -919,6 +919,10 @@ tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
   .device-grid { grid-template-columns: 1fr; gap: 10px; }
   .device-card { flex-direction: row; align-items: flex-start; gap: 10px; padding: 10px; }
   .device-card .device-screen { flex: 0 0 104px; width: 104px; border: 1px solid var(--p5k-rule-2); }
+  /* The camera thumb and its error alert are direct children of the card: wrap them onto a
+     full-width row under the body so the phone row stays screenshot + body. */
+  .device-card { flex-wrap: wrap; }
+  .device-card > .device-camera, .device-card > .alert { order: 9; flex: 1 1 100%; width: auto; }
   .device-card .screen-chip { display: none; }
   .device-card .screen-now { left: 4px; right: 4px; bottom: 3px; font-size: 8px; text-shadow: none; }
   .device-card .device-thumb-empty { gap: 2px; padding: 4px; }
@@ -1011,16 +1015,6 @@ details > div, details > ul { padding: 8px 10px; }
 .command-list li { overflow-wrap: anywhere; }
 .command-list code { background: transparent; padding: 0; color: var(--p5k-phosphor); }
 .command-list .muted { color: var(--p5k-muted); }
-/* Room camera (Wyze / RTSP): snapshot under the projector screenshot, live iframe in a details block. */
-.camera-screen { border-top: 1px solid var(--p5k-rule-2); }
-.camera-thumb-stale { opacity: .45; filter: grayscale(1) contrast(1.1); }
-.camera-error { margin: 0; }
-.camera-block { display: flex; flex-direction: column; gap: 10px; }
-.camera-url-form { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
-.camera-url-form label { margin: 0; min-width: 0; }
-.camera-url-form input[type="url"] { width: 100%; }
-.camera-block .action-buttons { display: flex; flex-direction: row; gap: 6px; }
-.camera-frame { display: block; width: 100%; aspect-ratio: 16 / 9; border: 1px solid var(--p5k-rule-3); background: #000; }
 .token-block { display: flex; flex-direction: column; gap: 7px; }
 .token-block p { margin: 0; font-family: var(--p5k-font-sans); font-size: var(--p5k-text-body-sm); }
 .token {
@@ -1035,6 +1029,8 @@ details > div, details > ul { padding: 8px 10px; }
 .install-cmd { white-space: pre-wrap; word-break: break-all; font-size: var(--p5k-text-label); color: var(--p5k-soft); }
 .token-block .action-buttons { display: flex; flex-direction: row; gap: 6px; }
 .token-block .action-buttons form { flex: 1; }
+.live-frame { display: block; width: 100%; aspect-ratio: 16 / 9; border: 1px solid var(--p5k-rule-2); background: #000; }
+.live-frame[hidden] { display: none; }
 .token-block .action-buttons button { width: 100%; padding: 6px; }
 
 @media (max-width: 1100px) {
@@ -1051,6 +1047,7 @@ details > div, details > ul { padding: 8px 10px; }
   .device-row .device-ident .device-id { grid-area: id; font-size: var(--p5k-text-label-sm); }
   .device-row .device-ident .status { grid-area: status; align-self: center; }
   .device-row .device-ident .device-screen { grid-area: screen; margin-top: 8px; }
+  .device-row .device-ident .device-camera { grid-area: auto; grid-column: 1 / -1; }
   .device-row > div + div { border-left: 0; border-top: 1px solid var(--p5k-rule-2); }
   .device-row .assign { grid-template-columns: 1fr; }
   .facts { grid-template-columns: 1fr 1fr; }

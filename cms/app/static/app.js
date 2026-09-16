@@ -155,15 +155,15 @@
     });
   }
 
-  // Devices: the live camera iframe only gets its src after "Show live" is clicked.
+  // Camera live view (Devices page): <button data-live-frame="<iframe id>"> loads the iframe's
+  // data-src on first click (never on page load) and toggles it.
   document.addEventListener('click', function (e) {
-    var btn = e.target.closest && e.target.closest('button[data-live-target]');
-    if (!btn) return;
-    var frame = document.getElementById(btn.dataset.liveTarget);
+    var btn = e.target && e.target.closest ? e.target.closest('[data-live-frame]') : null;
+    var frame = btn && document.getElementById(btn.dataset.liveFrame);
     if (!frame) return;
-    if (!frame.getAttribute('src')) frame.src = frame.dataset.src;
-    frame.hidden = false;
-    btn.hidden = true;
+    if (!frame.getAttribute('src') && frame.dataset.src) frame.src = frame.dataset.src;
+    frame.hidden = !frame.hidden;
+    btn.textContent = frame.hidden ? 'Show live' : 'Hide live';
   });
 
   // Dashboard: All / Faults filter on the monitor wall.

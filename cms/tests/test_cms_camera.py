@@ -105,9 +105,9 @@ def test_sync_stores_camera_error_and_manifest_interval(admin, client, cms, tok)
     assert stored.startswith("rtsp connect failed") and len(stored) == cms.api_routes.MAX_SYNC_ERROR_LEN
 
     html = admin.get("/devices").text
-    assert "camera-error" in html and "rtsp connect failed" in html
+    assert "Camera: rtsp connect failed" in html
     html = admin.get("/dashboard").text
-    assert "camera-error" in html and "rtsp connect failed" in html
+    assert "Camera: rtsp connect failed" in html
 
     # a clean sync clears it
     assert sync(client, dev).status_code == 200
@@ -132,18 +132,18 @@ def test_pages_show_snapshot_and_flag_stale(admin, client, cms, tok):
         return html[start: end if end > 0 else None]
 
     for path in ("/devices", "/dashboard"):
-        assert "camera-thumb" not in block(path), "no snapshot yet must render no camera tile"
+        assert "device-camera" not in block(path), "no snapshot yet must render no camera tile"
 
     assert _upload(client, dev, make_jpeg_bytes(seed=tok)).status_code == 200
     for path in ("/devices", "/dashboard"):
         b = block(path)
         assert f"/devices/{dev['id']}/camera?t=" in b
-        assert "camera-thumb" in b and "camera-age" in b
-        assert "camera-thumb-stale" not in b
+        assert "device-camera" in b and "cam · " in b
+        assert "device-thumb-stale" not in b
 
     execute("UPDATE devices SET last_camera_at = datetime('now', '-1 day') WHERE id = ?", (dev["id"],))
     for path in ("/devices", "/dashboard"):
-        assert "camera-thumb-stale" in block(path), f"{path} does not flag a snapshot older than 3 intervals"
+        assert "device-thumb-stale" in block(path), f"{path} does not flag a snapshot older than 3 intervals"
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ def test_camera_live_url_validation_and_audit(admin, client, make_client, tok):
 
     html = admin.get("/devices").text
     assert f'data-src="{ok}"' in html
-    assert 'class="camera-frame"' in html and 'sandbox="allow-same-origin allow-scripts"' in html
+    assert 'class="live-frame"' in html and 'sandbox="allow-same-origin allow-scripts"' in html
     assert 'referrerpolicy="no-referrer"' in html
     assert f'href="{ok}"' in html and "Show live" in html
 
@@ -178,7 +178,7 @@ def test_camera_live_url_validation_and_audit(admin, client, make_client, tok):
     r = post(admin, f"/devices/{dev['id']}/camera-url", {"camera_live_url": ""})
     assert r.status_code == 303
     assert _row(dev)["camera_live_url"] is None
-    assert "camera-frame" not in admin.get("/devices").text.split(f"Cam Url {tok}", 1)[1][:4000]
+    assert "live-frame" not in admin.get("/devices").text.split(f"Cam Url {tok}", 1)[1][:4000]
 
     # viewers may not set it
     create_user(admin, f"viewer-{tok}", "viewerpass123", role="viewer")
@@ -203,4 +203,4 @@ def test_camera_live_url_is_escaped_and_revalidated_on_render(admin, tok):
     html = admin.get("/devices").text
     section = html.split(f"Cam Xss {tok}", 1)[1][:6000]
     assert "javascript:" not in section
-    assert "camera-frame" not in section
+    assert "live-frame" not in section

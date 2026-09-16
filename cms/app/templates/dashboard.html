@@ -67,15 +67,16 @@
       {% endif %}
     </div>
     {% if d.last_camera_at %}
-    <div class="device-screen camera-screen{% if d.camera_stale %} is-stale{% endif %}">
-      <a href="/devices/{{ d.id }}/camera?t={{ d.last_camera_at }}" target="_blank" title="Open the latest camera snapshot">
-        <img src="/devices/{{ d.id }}/camera?t={{ d.last_camera_at }}" class="device-thumb camera-thumb{% if d.camera_stale %} camera-thumb-stale{% endif %}" alt="Camera view of {{ d.name }}">
-      </a>
-      <span class="camera-age">
-        <span class="screen-chip tl" title="{{ d.last_camera_at | local }}">cam {{ d.camera_age }}</span>
-        {% if d.camera_stale %}<span class="screen-chip tr is-stale badge-stale" title="No new camera snapshot for more than 3 capture intervals">stale</span>{% else %}<span class="screen-chip tr">cam</span>{% endif %}
+    <div class="device-screen device-camera{% if d.camera_stale %} is-stale{% endif %}">
+      <img src="/devices/{{ d.id }}/camera?t={{ d.last_camera_at | urlencode }}" class="device-thumb{% if d.camera_stale %} device-thumb-stale{% endif %}" alt="Latest camera snapshot from {{ d.name }}">
+      <span class="screenshot-age">
+        <span class="screen-chip tl" title="{{ d.last_camera_at | local }}">cam · {{ d.camera_age }}</span>
+        {% if d.camera_stale %}<span class="screen-chip tr is-stale badge-stale" title="No new camera snapshot for more than 3 camera intervals: the camera or the Pi may be down">stale</span>{% else %}<span class="screen-chip tr">live</span>{% endif %}
       </span>
     </div>
+    {% endif %}
+    {% if d.camera_error %}
+    <div class="alert warn small" title="Reported by the player on its last sync">Camera: {{ d.camera_error }}</div>
     {% endif %}
     <div class="device-card-body">
       <div class="device-card-head">
@@ -96,9 +97,6 @@
       <span class="device-meta">last seen {% if d.last_seen_at %}{{ d.seen_age }} · {{ d.last_seen_at | local }}{% else %}never{% endif %}</span>
       {% if d.last_error %}
       <div class="alert error small" title="Reported by the player on its last sync">Sync problem: {{ d.last_error }}</div>
-      {% endif %}
-      {% if d.camera_error %}
-      <div class="alert warn small camera-error" title="Reported by the player on its last sync">Camera: {{ d.camera_error }}</div>
       {% endif %}
       {% if user.role != 'viewer' %}
       <div class="tile-actions">
