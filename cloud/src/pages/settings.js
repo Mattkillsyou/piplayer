@@ -21,11 +21,13 @@ async function settingsPage(ctx) {
   auth.requireRole(ctx, "admin");
   const s = await ctx.settings();
   const saved = ctx.url.searchParams.get("saved") === "1";
+  const rotated = ctx.url.searchParams.get("rotated") === "1";
   const content = `<div class="page-head">
   <h1>Settings</h1>
   <span class="page-meta"><strong>site time ${esc(localTime(nowUtc(), s.timezone))}</strong><br>schedules, the audit log and every timestamp on these pages use this zone</span>
 </div>
 ${saved ? alertBox("Settings saved.", "ok") : ""}
+${rotated ? alertBox("Enrollment key rotated. Cards flashed with the old key must be re-flashed.", "ok") : ""}
 
 <div class="panel">
   <h2>Site settings</h2>
@@ -52,7 +54,7 @@ ${saved ? alertBox("Settings saved.", "ok") : ""}
   </form>
 </div>
 
-<div class="panel settings-panel">
+<div class="panel">
   <h2>Device enrollment</h2>
   <p class="muted small">The flasher bakes this key into every card; a Pi presents it on first boot (<code>POST /api/enroll</code>) and receives its own device token. Rotate it if a card is lost: cards flashed with the old key that have not booted yet stop working.</p>
   <div class="enrollment-key">

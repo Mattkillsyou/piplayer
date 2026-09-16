@@ -39,10 +39,6 @@ function deviceCard(ctx, d, tz, canEdit) {
         </form>
       </div>` : ""}
     </div>
-    <div class="device-card-foot">
-      <code>${esc(d.device_id)}</code>
-      <span${d.last_seen_at ? ` title="${esc(localTime(d.last_seen_at, tz))}"` : ""}>last seen ${d.last_seen_at ? esc(d.seen_age) : "never"}</span>
-    </div>
   </div>`;
 }
 

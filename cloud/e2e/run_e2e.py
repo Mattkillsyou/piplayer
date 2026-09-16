@@ -314,7 +314,7 @@ def create_device(admin, device_id, name):
     if r.status_code != 303:
         raise Blocked("POST /devices -> %s %s" % (r.status_code, r.text[:120]))
     page = admin.get("/devices").text
-    marker = '<code class="device-id">%s</code>' % device_id
+    marker = '<code class="small">%s</code>' % device_id
     if marker not in page:
         marker = device_id
     did = id_after(page, marker, r"/devices/(\d+)/")

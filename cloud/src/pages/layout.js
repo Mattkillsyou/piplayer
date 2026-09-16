@@ -1,5 +1,5 @@
-// Port of templates/base.html (Projection5000 design). Pages build their content string
-// (every value through esc()) and call layout(ctx, {title, content}) to get the HTML Response.
+// Port of templates/base.html. Pages build their content string (every value through esc())
+// and call layout(ctx, {title, content}) to get the HTML Response.
 import { esc, html } from "../util.js";
 
 export const APP_NAME = "Projection5000";
@@ -40,29 +40,6 @@ export function emptyState(title, text, action = "") {
     ${action}
   </div>`;
 }
-
-// The wordmark lockup: eyebrow above, model number knocked out as a keycap. `large` is the
-// login/setup card variant (an <h1> with the blinking cursor).
-export function wordmark(large = false) {
-  if (large) {
-    return `<div class="wordmark wordmark-lg">
-    <span class="wordmark-eyebrow">Matt Brown's</span>
-    <h1 class="wordmark-mark">PROJECTION<span class="wordmark-model">5000</span><span class="wordmark-cursor"></span></h1>
-  </div>`;
-  }
-  return `<a href="/dashboard" class="wordmark" aria-label="Matt Brown's Projection5000">
-        <span class="wordmark-eyebrow">Matt Brown's</span>
-        <span class="wordmark-mark">PROJECTION<span class="wordmark-model">5000</span></span>
-      </a>`;
-}
-
-// The login scene layers (scanlines, floor, skyline, vignette) behind the auth card.
-export const SCENE = `<div class="scene" aria-hidden="true">
-  <div class="scene-scan"></div>
-  <div class="scene-floor"></div>
-  <div class="scene-skyline"><i></i><i></i><i></i></div>
-  <div class="scene-vignette"></div>
-</div>`;
 
 function navHtml(ctx) {
   const user = ctx.user;

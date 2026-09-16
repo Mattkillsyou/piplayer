@@ -68,24 +68,7 @@ export async function requireRow(env, table, rowId, label) {
   if (!(await db.first(env, `SELECT id FROM ${table} WHERE id = ?`, rowId))) fail(404, `${label} not found`);
 }
 
-// Player state for the lamp: the reported status while the device has checked in, else offline.
-export const lampState = (d) => (d.last_seen_at ? d.player_status || "idle" : "offline");
-
-// The 16:9 "screen": screenshot (or NO SIGNAL) under scanlines, age tag, stale badge and the
-// now-playing caption. Shared with the devices page (`link` wraps the image in a new-tab link).
-export function screenHtml(d, tz, { link = false, staleTitle } = {}) {
-  const href = `/devices/${d.id}/screenshot?t=${esc(encodeURIComponent(d.last_screenshot_at))}`;
-  const img = `<img src="${href}" class="device-thumb${d.screenshot_stale ? " device-thumb-stale" : ""}" alt="screenshot">`;
-  const shot = d.last_screenshot_at
-    ? `${link ? `<a href="${href}" target="_blank" title="Open screenshot">${img}</a>` : img}
-      <span class="screen-age screenshot-age" title="screenshot ${esc(d.screenshot_age)} (${esc(localTime(d.last_screenshot_at, tz))})">${esc(d.screenshot_age)}</span>
-      ${d.screenshot_stale ? `<span class="badge badge-stale" title="${staleTitle}">stale</span>` : ""}`
-    : '<div class="device-thumb device-thumb-empty">no screenshot yet</div>';
-  return `<div class="screen">
-      ${shot}
-      ${d.current_filename ? `<span class="screen-now">#${(d.current_position || 0) + 1} ${esc(d.current_filename)}</span>` : ""}
-    </div>`;
-}
+const screenshotHref = (d) => `/devices/${d.id}/screenshot?t=${esc(encodeURIComponent(d.last_screenshot_at))}`;
 
 // The `.device-screen` block shared by the Devices rows and the dashboard wall: thumb (or
 // NO SIGNAL), age chip + live/stale chip; `link` wraps the thumb in a new-tab link, `now`

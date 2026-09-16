@@ -841,17 +841,9 @@ tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
   border-bottom: 1px solid var(--p5k-rule-2);
   background-image: var(--p5k-scanline-strong), var(--p5k-grid-v), var(--p5k-screen-glow);
 }
-.screen::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: var(--p5k-scanline-strong), var(--p5k-screen-vignette);
-  pointer-events: none;
-}
 .device-thumb {
   display: block;
   width: 100%;
-  height: 100%;
   aspect-ratio: 16 / 9;
   object-fit: cover;
   background: #000;
@@ -1215,3 +1207,9 @@ html[data-theme="light"] .auth-card .wordmark { animation: none; }
 /* cloud: upload queue */
 .upload-queue { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .upload-queue li { display: flex; flex-direction: column; gap: 6px; font-size: var(--p5k-text-data-sm); }
+
+/* cloud: enrollment key (settings page) */
+.enrollment-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--p5k-space-2); }
+.enrollment-key label { flex: 0 0 auto; }
+.enrollment-key input { flex: 1 1 20rem; font-family: var(--p5k-font-mono); }
+.enrollment-key + form { margin-top: var(--p5k-space-2); }
