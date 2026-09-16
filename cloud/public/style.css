@@ -1047,6 +1047,8 @@ details > div, details > ul { padding: 8px 10px; }
   .device-row .device-ident .device-id { grid-area: id; font-size: var(--p5k-text-label-sm); }
   .device-row .device-ident .status { grid-area: status; align-self: center; }
   .device-row .device-ident .device-screen { grid-area: screen; margin-top: 8px; }
+  .device-row .device-ident .device-camera { grid-area: auto; grid-column: 1 / -1; }
+  .device-row .device-ident > .alert { grid-column: 1 / -1; }
   .device-row > div + div { border-left: 0; border-top: 1px solid var(--p5k-rule-2); }
   .device-row .assign { grid-template-columns: 1fr; }
   .facts { grid-template-columns: 1fr 1fr; }
