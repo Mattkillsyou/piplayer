@@ -1,6 +1,7 @@
 // Operator API tokens (feature B): create/revoke on /settings (admin, own tokens only, plaintext
-// shown once, only the SHA-256 hash stored), and GET /api/operator/enrollment with a p5k_ bearer:
-// payload shape, 401 cases, last_used_at + api_token_used audit at most once per hour.
+// shown once, only the SHA-256 hash stored), the same for any admin/editor on /users, and
+// GET /api/operator/enrollment with a p5k_ bearer: payload shape, 401 cases, last_used_at +
+// api_token_used audit at most once per hour.
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -83,6 +84,79 @@ describe("/settings API tokens", () => {
     expect(a).toMatchObject({ username: "admin", target_type: "api_token", target_id: String(id), details: '{"name": "to-revoke"}' });
     expect((await fetchEnrollment(bearer(token))).status).toBe(401);
     expect(await (await r.admin.get("/settings?revoked=1")).text()).toContain("API token revoked.");
+  });
+});
+
+describe("/users API tokens (admin issues tokens for other users)", () => {
+  const user = (username) => query("SELECT id, role FROM users WHERE username = ?", username).then((x) => x[0]);
+
+  it("admin creates a token for an editor: shown once under that user, audited with the username, works on the endpoint", async () => {
+    await query("DELETE FROM audit_log WHERE action LIKE 'api_token_%'");
+    const ed = await user("ed");
+    const res = await post(r.admin, `/users/${ed.id}/tokens`, { name: " editor laptop " });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const m = /id="new-api-token" value="([^"]+)"/.exec(html);
+    expect(m, "token shown once").not.toBeNull();
+    const token = m[1];
+    expect(token).toMatch(TOKEN_RX);
+    // the block sits inside the editor's tokens row (the only <details> opened), not the admin's
+    expect(html.split("<details open>").length).toBe(2);
+    expect(html.indexOf("<details open>")).toBeLessThan(html.indexOf(`action="/users/${ed.id}/tokens"`));
+    expect(html.indexOf('id="new-api-token"')).toBeGreaterThan(html.indexOf("<details open>"));
+    const row = (await tokens()).find((t) => t.name === "editor laptop");
+    expect(row).toMatchObject({ user_id: ed.id, token_hash: await auth.apiTokenHash(token), last_used_at: null });
+    const [a] = await audits("api_token_created");
+    expect(a).toMatchObject({ username: "admin", target_type: "api_token", target_id: String(row.id), details: '{"name": "editor laptop", "username": "ed"}' });
+    expect((await fetchEnrollment(bearer(token))).status).toBe(200);
+    // the plaintext is gone on the next render; the token is listed with its revoke form
+    const page = await (await r.admin.get("/users")).text();
+    expect(page).toContain("editor laptop");
+    expect(page).not.toContain(token);
+    expect(page).not.toContain(row.token_hash);
+    expect(page).toContain(`action="/users/${ed.id}/tokens/${row.id}/revoke"`);
+    // the token is the editor's, not the admin's: /settings does not list it
+    expect(await (await r.admin.get("/settings")).text()).not.toContain("editor laptop");
+    expect(await (await r.editor.get("/settings")).status).toBe(403);
+  });
+
+  it("400 for a viewer target (no create form on the page), 404 for an unknown user, name validation", async () => {
+    const vw = await user("vw");
+    expect(await detail(await post(r.admin, `/users/${vw.id}/tokens`, { name: "v" }), 400)).toContain("viewers cannot hold API tokens");
+    expect(await detail(await post(r.admin, `/users/${NOPE}/tokens`, { name: "v" }), 404)).toBe("User not found");
+    const ed = await user("ed");
+    expect(await detail(await post(r.admin, `/users/${ed.id}/tokens`, { name: "  " }), 400)).toContain("name must be 1-60 chars");
+    expect(await detail(await post(r.admin, `/users/${ed.id}/tokens`, { name: "x".repeat(61) }), 400)).toContain("name must be 1-60 chars");
+    expect((await tokens()).some((t) => t.user_id === vw.id)).toBe(false);
+    const page = await (await r.admin.get("/users")).text();
+    expect(page).not.toContain(`action="/users/${vw.id}/tokens"`);
+    expect(page).toContain(`action="/users/${ed.id}/tokens"`);
+  });
+
+  it("revoke: 404 unless the token belongs to that user id; audits name + username; token stops working", async () => {
+    const ed = await user("ed");
+    const vw = await user("vw");
+    await post(r.admin, `/users/${ed.id}/tokens`, { name: "ed-revoke" });
+    const id = (await tokens()).find((t) => t.name === "ed-revoke").id;
+    const own = await create(r.admin, "admin-own");
+    const ownId = (await tokens()).find((t) => t.name === "admin-own").id;
+    expect(await detail(await post(r.admin, `/users/${vw.id}/tokens/${id}/revoke`), 404)).toBe("token not found");
+    expect(await detail(await post(r.admin, `/users/${ed.id}/tokens/${ownId}/revoke`), 404)).toBe("token not found");
+    expect(await detail(await post(r.admin, `/users/${ed.id}/tokens/${NOPE}/revoke`), 404)).toBe("token not found");
+    expect(await detail(await post(r.admin, `/users/${ed.id}/tokens/abc/revoke`), 400)).toContain("token_id");
+    expect((await fetchEnrollment(bearer(own))).status).toBe(200);
+    const res = await post(r.admin, `/users/${ed.id}/tokens/${id}/revoke`);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/users?revoked=1");
+    expect((await tokens()).some((t) => t.id === id)).toBe(false);
+    expect((await tokens()).some((t) => t.id === ownId)).toBe(true);
+    const [a] = await audits("api_token_revoked");
+    expect(a).toMatchObject({ username: "admin", target_type: "api_token", target_id: String(id), details: '{"name": "ed-revoke", "username": "ed"}' });
+    expect(await (await r.admin.get("/users?revoked=1")).text()).toContain("API token revoked.");
+    // an admin's own token is also revocable from the Users page (any user's tokens)
+    const me = await user("admin");
+    expect((await post(r.admin, `/users/${me.id}/tokens/${ownId}/revoke`)).status).toBe(303);
+    expect((await fetchEnrollment(bearer(own))).status).toBe(401);
   });
 });
 

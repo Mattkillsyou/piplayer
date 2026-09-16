@@ -26,43 +26,63 @@ function optionList(rows, selected) {
   return rows.map((r) => `<option value="${r.id}"${r.id === selected ? " selected" : ""}>${esc(r.name)}</option>`).join("\n          ");
 }
 
-// The admin's own tokens (never the hash) and the create form; `newToken` is the plaintext
-// of a token created by this very request, shown once and never again.
-async function tokensPanel(ctx, me, newToken, tz) {
-  const tokens = await db.all(ctx.env,
-    "SELECT id, name, created_at, last_used_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC, id DESC", me.id);
+// Shared with the Users page (admins manage any user's tokens there): the create form, the
+// shown-once plaintext block and the token table. `revokePath(t)` names the revoke route.
+export const userTokens = (env, userId) => db.all(env,
+  "SELECT id, name, created_at, last_used_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC, id DESC", userId);
+
+// Validated name from a create form, or 400.
+export function tokenName(form) {
+  const name = str(form, "name").trim();
+  if (!name || [...name].length > MAX_TOKEN_NAME) fail(400, `name must be 1-${MAX_TOKEN_NAME} chars`);
+  return name;
+}
+
+export const newTokenBlock = (newToken) => (newToken ? `<div class="alert ok" role="alert">New token (copy it now, it is not shown again):</div>
+  <div class="enrollment-key">
+    <label for="new-api-token" class="small">Token</label>
+    <input type="text" id="new-api-token" value="${esc(newToken)}" readonly spellcheck="false" autocomplete="off">
+  </div>` : "");
+
+export const tokenCreateForm = (ctx, action, label = "Token name") => `<form method="post" action="${action}" class="inline">
+    ${csrfInput(ctx)}
+    <input type="text" name="name" placeholder="token name (e.g. office laptop)" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="${esc(label)}">
+    <button type="submit" class="primary small">Create token</button>
+  </form>`;
+
+export function tokenTable(ctx, tokens, tz, revokePath) {
+  if (!tokens.length) return "";
   const rows = tokens.map((t) => `<tr>
       <td class="name">${esc(t.name)}</td>
       <td class="muted nowrap">${esc(localTime(t.created_at, tz))}</td>
       <td class="muted nowrap">${t.last_used_at ? esc(localTime(t.last_used_at, tz)) : "never"}</td>
       <td>
-        <form method="post" action="/settings/tokens/${t.id}/revoke" class="inline" data-confirm="Revoke the token ${esc(t.name)}? Flashers using it stop working.">
+        <form method="post" action="${revokePath(t)}" class="inline" data-confirm="Revoke the token ${esc(t.name)}? Flashers using it stop working.">
           ${csrfInput(ctx)}
           <button type="submit" class="danger small">Revoke</button>
         </form>
       </td>
     </tr>`).join("\n    ");
-  return `<div class="panel">
-  <h2>My API tokens</h2>
-  <p class="muted small">Personal tokens for the flasher (<code>GET /api/operator/enrollment</code>, <code>Authorization: Bearer p5k_...</code>): it fetches the current enrollment key on every launch, so cards never carry a stale key. A token acts with your role; revoke it if the machine holding it is lost.</p>
-  ${newToken ? `<div class="alert ok" role="alert">New token (copy it now, it is not shown again):</div>
-  <div class="enrollment-key">
-    <label for="new-api-token" class="small">Token</label>
-    <input type="text" id="new-api-token" value="${esc(newToken)}" readonly spellcheck="false" autocomplete="off">
-  </div>` : ""}
-  <form method="post" action="/settings/tokens" class="inline">
-    ${csrfInput(ctx)}
-    <input type="text" name="name" placeholder="token name (e.g. office laptop)" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="Token name">
-    <button type="submit" class="primary small">Create token</button>
-  </form>
-  ${tokens.length ? `<div class="table-wrap">
+  return `<div class="table-wrap">
   <table class="data">
     <thead><tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead>
     <tbody>
     ${rows}
     </tbody>
   </table>
-  </div>` : ""}
+  </div>`;
+}
+
+// The admin's own tokens (never the hash) and the create form; `newToken` is the plaintext
+// of a token created by this very request, shown once and never again.
+async function tokensPanel(ctx, me, newToken, tz) {
+  const tokens = await userTokens(ctx.env, me.id);
+  return `<div class="panel">
+  <h2>My API tokens</h2>
+  <p class="muted small">Personal tokens for the flasher (<code>GET /api/operator/enrollment</code>, <code>Authorization: Bearer p5k_...</code>): it fetches the current enrollment key on every launch, so cards never carry a stale key. A token acts with your role; revoke it if the machine holding it is lost. Tokens for other admins and editors are issued on the <a href="/users">Users</a> page.</p>
+  ${newTokenBlock(newToken)}
+  ${tokenCreateForm(ctx, "/settings/tokens")}
+  ${tokenTable(ctx, tokens, tz, (t) => `/settings/tokens/${t.id}/revoke`)}
 </div>`;
 }
 
@@ -180,8 +200,7 @@ async function enrollmentRotate(ctx) {
 // not travel in a URL). Only the hash is stored; the audit row carries the name, never the token.
 async function tokenCreate(ctx) {
   const me = auth.requireRole(ctx, "admin");
-  const name = str(await ctx.form(), "name").trim();
-  if (!name || [...name].length > MAX_TOKEN_NAME) fail(400, `name must be 1-${MAX_TOKEN_NAME} chars`);
+  const name = tokenName(await ctx.form());
   const token = auth.newApiToken();
   const id = (await db.run(ctx.env, "INSERT INTO api_tokens (user_id, name, token_hash) VALUES (?, ?, ?)",
     me.id, name, await auth.apiTokenHash(token))).last_row_id;

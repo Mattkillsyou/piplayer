@@ -1,16 +1,39 @@
-// Port of web.users_* + users.html (admin only).
+// Port of web.users_* + users.html (admin only), plus each admin/editor's operator API tokens
+// (api_tokens; feature B): an admin issues or revokes a token for any user here, the Settings
+// page holds the admin's own. A viewer's token would only ever get 401 on the operator
+// endpoint, so viewers get no create form (and the route answers 400).
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, idParam, localTime, redirect, str } from "../util.js";
-import { csrfInput, layout } from "./layout.js";
+import { alertBox, csrfInput, layout } from "./layout.js";
+import { newTokenBlock, tokenCreateForm, tokenName, tokenTable, userTokens } from "./settings.js";
 
 const ROLE_OK = (role) => auth.ROLES.includes(role);
 
-async function usersPage(ctx) {
+// Second row under a user: their tokens and (admin/editor only) the create form; `newToken`
+// is the plaintext of a token created by this very request, shown once under its user.
+async function tokensRow(ctx, u, tz, newToken) {
+  const tokens = await userTokens(ctx.env, u.id);
+  const canHold = u.role !== "viewer";
+  if (!tokens.length && !canHold) return "";
+  return `<tr class="user-tokens">
+      <td colspan="6">
+        <details${newToken ? " open" : ""}>
+          <summary class="small">API tokens (${tokens.length})</summary>
+          ${newToken ? newTokenBlock(newToken) : ""}
+          ${canHold ? tokenCreateForm(ctx, `/users/${u.id}/tokens`, `Token name for ${u.username}`) : '<p class="muted small">Viewers cannot use operator tokens; change the role first.</p>'}
+          ${tokenTable(ctx, tokens, tz, (t) => `/users/${u.id}/tokens/${t.id}/revoke`)}
+        </details>
+      </td>
+    </tr>`;
+}
+
+async function usersPage(ctx, created = null) {
   const me = auth.requireRole(ctx, "admin");
   const tz = (await ctx.settings()).timezone;
   const users = await db.all(ctx.env, "SELECT id, username, role, created_at FROM users ORDER BY username");
+  const revoked = ctx.url.searchParams.get("revoked") === "1";
   const row = (u) => `<tr>
       <td class="name">${esc(u.username)}${u.id === me.id ? ' <span class="muted small">(you)</span>' : ""}</td>
       <td><span class="badge badge-${esc(u.role)}">${esc(u.role)}</span></td>
@@ -37,10 +60,13 @@ async function usersPage(ctx) {
         </form>` : ""}
       </td>
     </tr>`;
+  const rows = [];
+  for (const u of users) rows.push(row(u), await tokensRow(ctx, u, tz, created?.userId === u.id ? created.token : ""));
   const content = `<div class="page-head">
   <h1>Users</h1>
   <span class="page-meta">${users.length} account${users.length === 1 ? "" : "s"}</span>
 </div>
+${revoked ? alertBox("API token revoked.", "ok") : ""}
 
 <div class="panel">
   <h2>New user</h2>
@@ -71,10 +97,11 @@ async function usersPage(ctx) {
 <table class="data">
   <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Change role</th><th>Reset password</th><th></th></tr></thead>
   <tbody>
-    ${users.map(row).join("\n    ")}
+    ${rows.filter(Boolean).join("\n    ")}
   </tbody>
 </table>
-</div>`;
+</div>
+<p class="help small">Operator API tokens let the flasher fetch the enrollment key (<code>GET /api/operator/enrollment</code>); a token acts with its user's role, so only admins and editors can hold one. The plain token is shown once, at creation.</p>`;
   return layout(ctx, { title: "Users", content });
 }
 
@@ -138,7 +165,37 @@ async function usersDelete(ctx) {
   return redirect("/users");
 }
 
+// Issue a token for another admin or editor; the page re-renders once with the plaintext
+// under that user (no redirect: the secret must not travel in a URL). Only the hash is stored.
+async function userTokenCreate(ctx) {
+  auth.requireRole(ctx, "admin");
+  const userId = idParam(ctx.params.user_id, "user_id");
+  const name = tokenName(await ctx.form());
+  const user = await db.first(ctx.env, "SELECT id, username, role FROM users WHERE id = ?", userId);
+  if (!user) fail(404, "User not found");
+  if (user.role === "viewer") fail(400, "viewers cannot hold API tokens; change the role first");
+  const token = auth.newApiToken();
+  const id = (await db.run(ctx.env, "INSERT INTO api_tokens (user_id, name, token_hash) VALUES (?, ?, ?)",
+    userId, name, await auth.apiTokenHash(token))).last_row_id;
+  await audit.log(ctx, "api_token_created", "api_token", id, { name, username: user.username });
+  return usersPage(ctx, { userId, token });
+}
+
+async function userTokenRevoke(ctx) {
+  auth.requireRole(ctx, "admin");
+  const userId = idParam(ctx.params.user_id, "user_id");
+  const tokenId = idParam(ctx.params.token_id, "token_id");
+  const row = await db.first(ctx.env,
+    "SELECT t.id, t.name, u.username FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.id = ? AND t.user_id = ?", tokenId, userId);
+  if (!row) fail(404, "token not found");
+  await db.run(ctx.env, "DELETE FROM api_tokens WHERE id = ?", tokenId);
+  await audit.log(ctx, "api_token_revoked", "api_token", tokenId, { name: row.name, username: row.username });
+  return redirect("/users?revoked=1");
+}
+
 export function register(router) {
+  router.post("/users/:user_id/tokens", userTokenCreate);
+  router.post("/users/:user_id/tokens/:token_id/revoke", userTokenRevoke);
   router.get("/users", usersPage);
   router.post("/users", usersCreate);
   router.post("/users/:user_id/role", usersSetRole);
