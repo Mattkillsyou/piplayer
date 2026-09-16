@@ -706,24 +706,49 @@ have several open at once.
 | `camera-error` | `camera_error` is set (section D) | it clears |
 | `projector-error` | `projector_error` is set (section E) | it clears |
 
-`screenshot-stale` is skipped while a device is offline: the `offline`
-alert already covers it, and a device that has never uploaded a screenshot
-(no `last_screenshot_at`) is not stale, just new. Devices that have never
-synced at all (`last_seen` empty, the row created by enrollment seconds ago)
-are skipped by `offline` too.
+While a device is offline nothing else is evaluated for it: the other
+columns are frozen at their last sync, so those alerts neither open nor
+close until the device is back (`offline` already covers it). A device that
+has never uploaded a screenshot (no `last_screenshot_at`) is not stale, just
+new, and a device that has never synced at all (`last_seen` empty, the row
+created by enrollment seconds ago) is skipped by `offline` too. **Offline
+after** is never applied below the Devices page's own 3-minute offline
+threshold.
 
 **Dedupe, recovery and reminders.** Alerts live in a D1 table
 `alerts(id, device_id, kind, opened_at, closed_at, notified_at)`. There is
 at most one open row per (device, kind): a condition that stays true from
 one run to the next does nothing; when it turns false the row's `closed_at`
-is set and a "recovered" message goes out; when it turns true again a new
-row opens. While a row stays open, the console re-sends the message once
-every **Repeat while open** (`alert_repeat_minutes`, default 240, so four
-hours; 0 turns reminders off) so a projector that has been dark since Friday
-is still mentioned on Monday. Both settings are site-wide. A run sends one
-message per alert event, never a digest; five projectors going offline
-together is five messages. Every send (or failed send) is audited
-(`alert_notified`, `alert_notify_failed` with the channel and the error), so
+is set and it is reported under RECOVERED; when it turns true again a new
+row opens. While a row stays open, the console mentions it again once every
+**Repeat while open** (`alert_repeat_minutes`, default 240, so four hours;
+0 turns reminders off) so a projector that has been dark since Friday is
+still mentioned on Monday. Both settings are site-wide. A run sends **one
+digest** per channel, not one message per alert: everything that opened,
+recovered or is still open past the repeat interval in that run goes out
+together, so five projectors going offline together is one message with
+five lines. A run with nothing to say sends nothing. The digest is plain
+text in three blocks, each headed by a count and listing one line per
+alert as `<device name> (<device_id>): <kind text> since <opened_at> UTC`:
+
+```
+ALERT 2
+Lobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41:00 UTC
+Bar (pi-bar): camera error since 2026-09-16 09:41:00 UTC
+RECOVERED 1
+Foyer (pi-foyer): player process down since 2026-09-16 08:10:00 UTC
+STILL OPEN 1
+Roof (pi-roof): no new screenshot since 2026-09-15 22:00:00 UTC
+```
+
+The kind texts are `offline (no sync)`, `player process down`, `no new
+screenshot`, `sync error`, `remote update failed`, `camera error` and
+`projector error`. The subject (email subject, webhook `title`, first SMS
+line) is `Projection5000: <n> opened, <m> recovered, <k> still open`, with
+the zero parts left out. Opening and closing are audited per alert
+(`alert_opened`, `alert_closed`, target the device, details `{kind}`); a
+channel that fails is audited `alert_notify_failed` (target the channel,
+details the error) and not retried, the next reminder covers it, so
 `/audit` answers "did the SMS go?".
 
 **Cron.** `wrangler.toml` `[triggers]` now carries two schedules,
@@ -750,19 +775,27 @@ run `npx wrangler dev --test-scheduled` and hit
 The four Twilio values sit in the same encrypted `secrets` table as the Wyze
 account (section D: AES-GCM under a key derived from `SESSION_SECRET`,
 shown only as **set** / **not set**, replaced by re-entering, all four lost
-if `SESSION_SECRET` is rotated). SMS is off until all four are set. Each
-channel has a **Send test** button next to it that sends an `alert.test`
-message through that channel alone and shows the provider's answer on the
-page (the Email Routing "destination not verified" error and Twilio's
-`21608` "unverified number" on a trial account both show up here, so test
-before you need it). Tests are audited (`alert_test_sent`).
+if `SESSION_SECRET` is rotated). SMS is off until all four are set. Saving
+the section is audited `alert_settings_update` (credentials logged as
+`set`, never their values). Each channel has a **Send test** button next to
+it (disabled until that channel is configured) that sends a plain test
+message, subject `Projection5000: test alert`, through that channel alone
+and shows the provider's answer on the page (the Email Routing "destination
+not verified" error and Twilio's `21608` "unverified number" on a trial
+account both show up here, so test before you need it). Tests are audited
+(`alert_test_sent`).
 
 **Email.** Sent through the Cloudflare `send_email` binding declared in
 `wrangler.toml` as `[[send_email]] name = "ALERT_MAIL"`, from
-`alerts@photogen5000.com`, subject
-`[Projection5000] <device name>: <kind>` (or `... recovered`), plain text
-body with the device, the kind, when it opened, the detail (last seen, the
-error text) and a link to the device on the Devices page. The binding has
+`alerts@photogen5000.com` (`From: Projection5000 alerts <alerts@...>`),
+subject `Projection5000: <n> opened, <m> recovered, <k> still open`, plain
+text body = the digest lines above, nothing else (no links; open `/alerts`
+or the Devices page for detail). The binding takes exactly one recipient
+per message, so **Email to** with three addresses is three sends of the
+same mail, in the order listed; the first address the binding rejects (an
+unverified one) stops the loop, the addresses after it are skipped for that
+run, and the failure is audited once for the channel. Keep the list to
+verified addresses. The binding has
 two hard rules that shape the operator steps: the sender must be an address
 on a zone with Email Routing enabled, and every recipient must be a
 **verified destination address** of that zone's Email Routing. Sending to an
@@ -770,54 +803,52 @@ unverified address throws; the console reports it as a failed send and moves
 on to the next channel. There is no per-message cost and no daily cap worth
 worrying about at fleet-alert volumes.
 
-**Webhook.** One `POST` per alert event, `Content-Type: application/json`,
-a 10 s timeout, no retry (the reminder covers a missed one). Body:
+**Webhook.** One `POST` per run with something to report,
+`Content-Type: application/json`, `User-Agent: Projection5000-alerts`, a
+10 s timeout, no retry (the next reminder covers a missed one). Body:
 
 ```json
 {
-  "event": "alert.opened",
-  "site": "https://projectors.photogen5000.com",
-  "alert": {
-    "id": 42,
-    "kind": "offline",
-    "device_id": "pi-lobby",
-    "device_name": "Lobby projector",
-    "opened_at": "2026-09-16T09:41:00Z",
-    "closed_at": null,
-    "detail": "last seen 14 min ago"
-  },
-  "text": "Lobby projector: offline (last seen 14 min ago)",
-  "content": "Lobby projector: offline (last seen 14 min ago)"
+  "site": "Projection5000",
+  "title": "Projection5000: 1 opened, 1 recovered",
+  "text": "Projection5000: 1 opened, 1 recovered\nALERT 1\nLobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41:00 UTC\nRECOVERED 1\nBar (pi-bar): camera error since 2026-09-16 08:10:00 UTC",
+  "content": "Projection5000: 1 opened, 1 recovered\nALERT 1\nLobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41:00 UTC\nRECOVERED 1\nBar (pi-bar): camera error since 2026-09-16 08:10:00 UTC",
+  "message": "ALERT 1\nLobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41:00 UTC\nRECOVERED 1\nBar (pi-bar): camera error since 2026-09-16 08:10:00 UTC"
 }
 ```
 
-`event` is `alert.opened`, `alert.reminder`, `alert.closed` (then
-`closed_at` is set and the text ends in `recovered`) or `alert.test` (then
-`alert` is a sample). The one-line summary is repeated under `text` and
-`content` so a Slack incoming webhook and a Discord webhook URL both render
-it with no transformation; ntfy shows the raw body when you post to a topic
-URL, so put a filter in front (or a tiny worker) if you want only the summary
-there. Anything else (Home Assistant, n8n, a Zapier catch hook) reads
-`alert`. The URL must be `https://` (saving an `http://` URL is rejected with
-400); the console never follows redirects and treats any non-2xx as a failed
-send.
+`title` is the subject; `text` and `content` are the subject plus the
+digest, so a Slack incoming webhook (reads `text`) and a Discord webhook
+URL (reads `content`) both render it with no transformation; ntfy, when you
+post to a topic URL, takes `title` and `message` (the digest without the
+repeated subject). There is no per-alert structure and no `event` key: a
+test send is the same shape with the test subject and text, and anything
+that wants the individual alerts (Home Assistant, n8n, a Zapier catch hook)
+splits `message` on newlines. The URL must be `https://` (saving an
+`http://` URL is rejected with 400); redirects follow the worker's `fetch`
+defaults, and any non-2xx answer is a failed send.
 
-**SMS.** A single REST call per event to
+**SMS.** A single REST call per run to
 `https://api.twilio.com/2010-04-01/Accounts/<AccountSid>/Messages.json`
-(Basic auth `AccountSid:AuthToken`, form fields `From`, `To`, `Body`) with
-the same one-line summary as the webhook `text`, prefixed `Projection5000:`.
-Each event is one SMS at Twilio's per-segment price, so a chatty fleet on a
-short repeat interval costs real money: leave the repeat at four hours or
-raise it, and prefer the webhook for the noisy kinds.
+(Basic auth `AccountSid:AuthToken`, form fields `From`, `To`, `Body`).
+`Body` is the subject line followed by the digest, cut at 600 characters
+(four GSM segments), so a big fleet failing at once ends mid-list: read the
+rest on `/alerts`. Each run with news is one SMS at Twilio's per-segment
+price, so a chatty fleet on a short repeat interval costs real money: leave
+the repeat at four hours or raise it, and prefer the webhook for the noisy
+kinds.
 
-**Alerts page** (`/alerts`, any signed-in role). Open alerts first, newest on
-top, each with device, kind, opened, the detail and when it was last
-notified; below them the alerts closed in the last seven days with their
-duration. Rows link to the device on the Devices page. The nav badge on the
-dashboard shows the open count and links here; `0` shows no badge. Alerts
-are read-only: there is no acknowledge or mute, close the condition instead
-(and to silence a device permanently, delete it: its alerts are deleted with
-it). Closed rows older than 90 days are pruned by the nightly housekeeping.
+**Alerts page** (`/alerts`, any signed-in role, in the nav for everyone).
+Two tables. **Open**: newest first, columns Device (name plus `device_id`),
+Alert (the kind text as a badge), Opened, Open for and Last notified (or
+`never`). **Recently recovered**: the 100 most recently closed rows, same
+columns with Closed instead of Open for. Times are in the site timezone.
+There is no detail column and no link to the device: the detail (the last
+error text, the update message, last seen) is on the Devices page. The
+dashboard's "open alerts" card shows the count and links here (`all clear`
+at 0). Alerts are read-only: there is no acknowledge or mute, close the
+condition instead (and to silence a device permanently, delete it: its
+alerts are deleted with it). Closed rows are kept; nothing prunes them.
 
 **Operator steps** (once per site). Only the channels you want; each is
 independent.
@@ -912,7 +943,7 @@ What needs the real account: Cloudflare accepting the sender and the
 verified destinations, and Twilio delivering. Verify once after deploying:
 Settings, **Send test** on each channel, then unplug one Pi and wait up to
 `alert_offline_minutes` plus five minutes for the `offline` message, plug
-it back in and wait for the `recovered` one.
+it back in and wait for the `RECOVERED` one.
 
 ## G. Live camera without manual tunnel (cloud + player)
 
