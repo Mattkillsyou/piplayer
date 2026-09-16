@@ -6,6 +6,7 @@ import * as auth from "./auth.js";
 import * as db from "./db.js";
 import * as manifest from "./manifest.js";
 import * as media from "./media.js";
+import { installBaseUrl } from "./pages/devices.js";
 import { envInt, fail, HttpError, json, jsonObject, randomToken } from "./util.js";
 
 export const MAX_SYNC_ERROR_LEN = 200;
@@ -181,9 +182,32 @@ async function enroll(ctx) {
   return json({ device_id: deviceId, token: row.token, cms_url: ctx.url.origin });
 }
 
+// Operator endpoint for the flasher (tools/flasher): `Authorization: Bearer p5k_...` (Settings
+// page "My API tokens", editor+ user) -> the live enrollment key plus what the operator needs
+// to sanity-check the console. Audited as api_token_used at most once per hour per token.
+// wyze_configured is D's hook: true once Wyze credentials exist (the provision script then
+// passes --with-wyze); always false until D lands.
+async function operatorEnrollment(ctx) {
+  const op = await auth.operatorFromHeader(ctx);
+  if (auth.roleRank(op.role) < auth.roleRank("editor")) fail(401, "API token's user is not an editor or admin");
+  if (await auth.touchApiToken(ctx.env, op.token_id)) {
+    await audit.log(ctx, "api_token_used", "api_token", op.token_id, { name: op.token_name }, { id: op.id, username: op.username });
+  }
+  const settings = await ctx.settings();
+  return json({
+    console_url: installBaseUrl(ctx.env, ctx.url).base,
+    enrollment_key: settings.enrollment_key,
+    groups: await db.all(ctx.env, "SELECT id, name FROM device_groups ORDER BY name"),
+    playlists: await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name"),
+    timezone: settings.timezone,
+    wyze_configured: false,
+  });
+}
+
 export function register(router) {
   router.get("/api/health", () => json({ ok: true }));
   router.post("/api/enroll", enroll);
+  router.get("/api/operator/enrollment", operatorEnrollment);
   router.get("/api/sync/:device_id", sync);
   router.post("/api/screenshots/:device_id", uploadScreenshot);
   router.post("/api/camera/:device_id", uploadCamera);

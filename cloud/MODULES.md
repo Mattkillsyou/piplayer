@@ -155,6 +155,8 @@ same, so the SQL from web.py/api.py ports verbatim (`?` placeholders, `datetime(
 | `requireCsrf(ctx)` | header `X-CSRF-Token` or form field `csrf_token`; index.js already applies it to every non-`/api/` unsafe request, JSON and raw-body endpoints included (so fetch/PUT callers must send the header) |
 | `loginLockedFor(env, ip, username, max?, seconds?)` / `recordLoginFailure` / `clearLoginFailures` | D1 `login_failures`; 5 failures in 30 s → seconds remaining. `POST /api/enroll` reuses it with username `ENROLL_KEY` and `ENROLL_MAX_FAILURES` (10) / `ENROLL_LOCK_SECONDS` (60) |
 | `deviceFromHeader(ctx)` | `{id, device_id, name, playlist_id, group_id}` for `Authorization: Bearer <token>`; 401 `"Missing bearer token"` / `"Invalid device token"`. The path `device_id` must equal `row.device_id` else 403 — your check |
+| `operatorFromHeader(ctx)` | `{token_id, token_name, id, username, role}` for `Authorization: Bearer p5k_<32 urlsafe>` (api_tokens, looked up by SHA-256 hex, `timingSafeEqual` on the stored hash); 401 `"Missing bearer token"` / `"Invalid API token"`. Role is the caller's check (`GET /api/operator/enrollment` wants editor+) |
+| `newApiToken()` / `apiTokenHash(token)` / `touchApiToken(env, id)` | mint `p5k_` + 32 chars; SHA-256 hex; stamp `last_used_at` at most once per `API_TOKEN_USED_AUDIT_HOURS` (returns true when it did, so the caller audits `api_token_used` then) |
 | `requireSetupToken(ctx, token)` | 403 unless equal to `SETUP_TOKEN` |
 | `hasUsers(env)` | cached once true |
 | `housekeeping(env)` | expired sessions + throttle rows |
@@ -255,7 +257,18 @@ export function register(router) {
 | `screenshot_interval` | `PIPLAYER_SCREENSHOT_INTERVAL` (60) | manifest `screenshot_interval_seconds`, stale badge (`> 3 ×`) |
 | `camera_interval` | `PIPLAYER_CAMERA_INTERVAL` (10, min 5) | manifest `camera_interval_seconds`, camera snapshot stale badge (`> 3 ×`) |
 | `default_image_duration` | `PIPLAYER_DEFAULT_IMAGE_DURATION` (10) | effective duration of images |
-| `enrollment_key` | random 32-byte urlsafe token, generated on the first `loadSettings` (never from env) | `POST /api/enroll` (the flasher bakes it into cards); `/settings` shows it and `POST /settings/enrollment/rotate` replaces it (`db.generateEnrollmentKey`) |
+| `enrollment_key` | random 32-byte urlsafe token, generated on the first `loadSettings` (never from env) | `POST /api/enroll` (the flasher fetches it live through `GET /api/operator/enrollment` and writes it to each card); `/settings` shows it and `POST /settings/enrollment/rotate` replaces it (`db.generateEnrollmentKey`) |
+
+**Operator API tokens** (`api_tokens`, migration 0003): the admin's own tokens live in the
+"My API tokens" panel of `/settings`. `POST /settings/tokens` (`name`, 1-60 chars) mints
+`p5k_<32 urlsafe chars>`, stores only its SHA-256 hex and renders the page with the plaintext
+once (no redirect, so the secret never sits in a URL); `POST /settings/tokens/:id/revoke` deletes
+the caller's own token (404 for anyone else's). `GET /api/operator/enrollment` with
+`Authorization: Bearer p5k_...` (token owner must be editor or admin, else 401) answers
+`{console_url, enrollment_key, groups: [{id, name}], playlists: [{id, name}], timezone,
+wyze_configured}` (`wyze_configured` is always false until feature D lands). Audit:
+`api_token_created`, `api_token_revoked` (both carry the name, never the token) and
+`api_token_used` at most once per hour per token (`last_used_at`).
 
 Other limits stay env vars: `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB), `PIPLAYER_MAX_SCREENSHOT_BYTES`
 (5 MiB), `PIPLAYER_MAX_CAMERA_BYTES` (2 MiB), `PIPLAYER_AUDIT_RETENTION_DAYS` (365). Read them with `envInt(env, name, fallback)`.
@@ -276,7 +289,9 @@ CHECKs/FKs/indexes) plus:
 
 `migrations/0002_camera.sql` (schema_version 2) adds to `devices`: `last_camera_at TEXT`,
 `camera_error TEXT` (player's last camera capture error, NULL = healthy) and `camera_live_url TEXT`
-(validated https URL or NULL). The test harness applies every file in `migrations/` in order
+(validated https URL or NULL). `migrations/0003_automation.sql` (schema_version 3) adds
+`api_tokens(id, user_id → users ON DELETE CASCADE, name, token_hash UNIQUE, created_at, last_used_at)`.
+The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
 
 Foreign keys are enforced by D1. Add columns with a new `migrations/000N_*.sql`, never by editing 0001.

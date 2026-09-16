@@ -1,15 +1,17 @@
 // /settings (admin only, cloud-only page): site timezone, screenshot and camera intervals,
 // default image duration and the group/playlist new devices get on first enrollment, stored in
 // the settings table (db.loadSettings / saveSetting), plus the device enrollment key (shown
-// masked, rotatable; POST /api/enroll checks it).
+// masked, rotatable; POST /api/enroll checks it) and the admin's personal API tokens
+// (api_tokens; the flasher presents one on GET /api/operator/enrollment to fetch that key).
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
-import { esc, fail, floatField, intField, isValidTimeZone, localTime, nowUtc, redirect, str, zoneName } from "../util.js";
+import { esc, fail, floatField, idParam, intField, isValidTimeZone, localTime, nowUtc, redirect, str, zoneName } from "../util.js";
 import { alertBox, csrfInput, layout } from "./layout.js";
 
 export const MIN_SCREENSHOT_INTERVAL = 15;
 export const MIN_CAMERA_INTERVAL = 5;
+export const MAX_TOKEN_NAME = 60;
 
 function timeZoneOptions() {
   try {
@@ -24,19 +26,61 @@ function optionList(rows, selected) {
   return rows.map((r) => `<option value="${r.id}"${r.id === selected ? " selected" : ""}>${esc(r.name)}</option>`).join("\n          ");
 }
 
-async function settingsPage(ctx) {
-  auth.requireRole(ctx, "admin");
+// The admin's own tokens (never the hash) and the create form; `newToken` is the plaintext
+// of a token created by this very request, shown once and never again.
+async function tokensPanel(ctx, me, newToken, tz) {
+  const tokens = await db.all(ctx.env,
+    "SELECT id, name, created_at, last_used_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC, id DESC", me.id);
+  const rows = tokens.map((t) => `<tr>
+      <td class="name">${esc(t.name)}</td>
+      <td class="muted nowrap">${esc(localTime(t.created_at, tz))}</td>
+      <td class="muted nowrap">${t.last_used_at ? esc(localTime(t.last_used_at, tz)) : "never"}</td>
+      <td>
+        <form method="post" action="/settings/tokens/${t.id}/revoke" class="inline" data-confirm="Revoke the token ${esc(t.name)}? Flashers using it stop working.">
+          ${csrfInput(ctx)}
+          <button type="submit" class="danger small">Revoke</button>
+        </form>
+      </td>
+    </tr>`).join("\n    ");
+  return `<div class="panel">
+  <h2>My API tokens</h2>
+  <p class="muted small">Personal tokens for the flasher (<code>GET /api/operator/enrollment</code>, <code>Authorization: Bearer p5k_...</code>): it fetches the current enrollment key on every launch, so cards never carry a stale key. A token acts with your role; revoke it if the machine holding it is lost.</p>
+  ${newToken ? `<div class="alert ok" role="alert">New token (copy it now, it is not shown again):</div>
+  <div class="enrollment-key">
+    <label for="new-api-token" class="small">Token</label>
+    <input type="text" id="new-api-token" value="${esc(newToken)}" readonly spellcheck="false" autocomplete="off">
+  </div>` : ""}
+  <form method="post" action="/settings/tokens" class="inline">
+    ${csrfInput(ctx)}
+    <input type="text" name="name" placeholder="token name (e.g. office laptop)" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="Token name">
+    <button type="submit" class="primary small">Create token</button>
+  </form>
+  ${tokens.length ? `<div class="table-wrap">
+  <table class="data">
+    <thead><tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+    ${rows}
+    </tbody>
+  </table>
+  </div>` : ""}
+</div>`;
+}
+
+async function settingsPage(ctx, newToken = "") {
+  const me = auth.requireRole(ctx, "admin");
   const s = await ctx.settings();
   const groups = await db.all(ctx.env, "SELECT id, name FROM device_groups ORDER BY name");
   const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name");
   const saved = ctx.url.searchParams.get("saved") === "1";
   const rotated = ctx.url.searchParams.get("rotated") === "1";
+  const revoked = ctx.url.searchParams.get("revoked") === "1";
   const content = `<div class="page-head">
   <h1>Settings</h1>
   <span class="page-meta"><strong>site time ${esc(localTime(nowUtc(), s.timezone))}</strong><br>schedules, the audit log and every timestamp on these pages use this zone</span>
 </div>
 ${saved ? alertBox("Settings saved.", "ok") : ""}
 ${rotated ? alertBox("Enrollment key rotated. Cards flashed with the old key must be re-flashed.", "ok") : ""}
+${revoked ? alertBox("API token revoked.", "ok") : ""}
 
 <div class="panel">
   <h2>Site settings</h2>
@@ -80,7 +124,7 @@ ${rotated ? alertBox("Enrollment key rotated. Cards flashed with the old key mus
 
 <div class="panel">
   <h2>Device enrollment</h2>
-  <p class="muted small">The flasher bakes this key into every card; a Pi presents it on first boot (<code>POST /api/enroll</code>) and receives its own device token. Rotate it if a card is lost: cards flashed with the old key that have not booted yet stop working.</p>
+  <p class="muted small">The flasher fetches this key with an API token (below) and writes it to every card; a Pi presents it on first boot (<code>POST /api/enroll</code>) and receives its own device token. Rotate it if a card is lost: cards flashed with the old key that have not booted yet stop working.</p>
   <div class="enrollment-key">
     <label for="enrollment-key" class="small">Enrollment key</label>
     <input type="password" id="enrollment-key" value="${esc(s.enrollment_key)}" readonly spellcheck="false" autocomplete="off">
@@ -90,7 +134,9 @@ ${rotated ? alertBox("Enrollment key rotated. Cards flashed with the old key mus
     ${csrfInput(ctx)}
     <button type="submit" class="danger">Rotate key</button>
   </form>
-</div>`;
+</div>
+
+${await tokensPanel(ctx, me, newToken, s.timezone)}`;
   return layout(ctx, { title: "Settings", content });
 }
 
@@ -130,7 +176,32 @@ async function enrollmentRotate(ctx) {
   return redirect("/settings?rotated=1");
 }
 
+// Create a token and render the page with the plaintext once (no redirect: the secret must
+// not travel in a URL). Only the hash is stored; the audit row carries the name, never the token.
+async function tokenCreate(ctx) {
+  const me = auth.requireRole(ctx, "admin");
+  const name = str(await ctx.form(), "name").trim();
+  if (!name || [...name].length > MAX_TOKEN_NAME) fail(400, `name must be 1-${MAX_TOKEN_NAME} chars`);
+  const token = auth.newApiToken();
+  const id = (await db.run(ctx.env, "INSERT INTO api_tokens (user_id, name, token_hash) VALUES (?, ?, ?)",
+    me.id, name, await auth.apiTokenHash(token))).last_row_id;
+  await audit.log(ctx, "api_token_created", "api_token", id, { name });
+  return settingsPage(ctx, token);
+}
+
+async function tokenRevoke(ctx) {
+  const me = auth.requireRole(ctx, "admin");
+  const tokenId = idParam(ctx.params.token_id, "token_id");
+  const row = await db.first(ctx.env, "SELECT id, name FROM api_tokens WHERE id = ? AND user_id = ?", tokenId, me.id);
+  if (!row) fail(404, "token not found");
+  await db.run(ctx.env, "DELETE FROM api_tokens WHERE id = ?", tokenId);
+  await audit.log(ctx, "api_token_revoked", "api_token", tokenId, { name: row.name });
+  return redirect("/settings?revoked=1");
+}
+
 export function register(router) {
+  router.post("/settings/tokens", tokenCreate);
+  router.post("/settings/tokens/:token_id/revoke", tokenRevoke);
   router.get("/settings", settingsPage);
   router.post("/settings", settingsSave);
   router.post("/settings/enrollment/rotate", enrollmentRotate);

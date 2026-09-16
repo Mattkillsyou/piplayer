@@ -1,7 +1,7 @@
 // Passwords (PBKDF2-SHA256 via WebCrypto), sessions (D1 row + HMAC-signed cookie), CSRF,
 // roles, the failed-login throttle and device bearer auth. Port of cms/app/auth.py.
 import * as db from "./db.js";
-import { b64url, fail, fromB64url, HttpError, randomToken, redirect, utf8Len } from "./util.js";
+import { b64url, fail, fromB64url, HttpError, randomToken, redirect, sha256Hex, utf8Len } from "./util.js";
 
 export const SESSION_COOKIE = "piplayer_session";
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 14;
@@ -270,6 +270,45 @@ export async function deviceFromHeader(ctx) {
     "SELECT id, device_id, name, playlist_id, group_id FROM devices WHERE token = ?", token);
   if (!row) fail(401, "Invalid device token");
   return row;
+}
+
+// ---------------------------------------------------------------------------
+// Operator API tokens (api_tokens table; Settings page "My API tokens")
+// ---------------------------------------------------------------------------
+
+export const API_TOKEN_PREFIX = "p5k_";
+export const API_TOKEN_USED_AUDIT_HOURS = 1;
+
+// Mint a token: `p5k_` + 32 urlsafe chars (24 random bytes). Only its SHA-256 hex is stored.
+export function newApiToken() {
+  return API_TOKEN_PREFIX + randomToken(24);
+}
+
+export const apiTokenHash = (token) => sha256Hex(token);
+
+// {token_id, token_name, id, username, role} for `Authorization: Bearer p5k_...` or 401 JSON.
+// The lookup is by hash (constant-time compare on the stored hash); the role check is the
+// caller's (operator endpoints want editor+, a demoted viewer's token stops working).
+export async function operatorFromHeader(ctx) {
+  const authorization = ctx.request.headers.get("authorization") || "";
+  if (!authorization.toLowerCase().startsWith("bearer ")) fail(401, "Missing bearer token");
+  const token = authorization.slice(7).trim();
+  const hash = token.startsWith(API_TOKEN_PREFIX) && await apiTokenHash(token);
+  const row = hash && await db.first(ctx.env,
+    `SELECT t.id AS token_id, t.name AS token_name, t.token_hash, u.id, u.username, u.role
+       FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?`, hash);
+  if (!row || !timingSafeEqual(row.token_hash, hash)) fail(401, "Invalid API token");
+  delete row.token_hash;
+  return row;
+}
+
+// Stamp last_used_at at most once per hour; true when this call did (the caller audits then).
+export async function touchApiToken(env, tokenId) {
+  const r = await db.run(env,
+    `UPDATE api_tokens SET last_used_at = datetime('now')
+      WHERE id = ? AND (last_used_at IS NULL OR last_used_at <= datetime('now', ?))`,
+    tokenId, `-${API_TOKEN_USED_AUDIT_HOURS} hours`);
+  return r.changes > 0;
 }
 
 // 403 unless `supplied` equals the SETUP_TOKEN secret.

@@ -86,6 +86,8 @@ function table() {
     ["POST", `/users/${NOPE}/password`, { password: "pw123456" }, "form", AD(404)],
     ["POST", `/users/${NOPE}/delete`, {}, "form", AD(404)],
     ["POST", "/settings", { timezone: "Not/AZone", screenshot_interval: "60", default_image_duration: "10" }, "form", AD(400)],
+    ["POST", "/settings/tokens", { name: " " }, "form", AD(400)],
+    ["POST", `/settings/tokens/${NOPE}/revoke`, {}, "form", AD(404)],
     ["GET", `/setup?token=${SETUP_TOKEN}`, null, null, ALL(404)],
     ["POST", "/setup", { token: SETUP_TOKEN, username: "x", password: "pw123456", password2: "pw123456" }, "form", ALL(404)],
   ];
