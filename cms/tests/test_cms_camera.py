@@ -167,7 +167,7 @@ def test_camera_live_url_validation_and_audit(admin, client, make_client, tok):
     assert f'href="{ok}"' in html and "Show live" in html
 
     for bad in ("http://cam.example.com/", "javascript:alert(1)", "ftp://x/", "https://", "not a url",
-                "https://cam.example.com/a b", "https://cam.example.com/a\nb", "https://cam.example.com/\x07"):
+                "https://user:pw@cam.example.com/x", "https://user@cam.example.com/x", "https://cam.example.com/a b", "https://cam.example.com/a\nb", "https://cam.example.com/\x07"):
         r = post(admin, f"/devices/{dev['id']}/camera-url", {"camera_live_url": bad})
         assert r.status_code == 400, (bad, r.status_code, r.text[:200])
         assert _row(dev)["camera_live_url"] == ok, bad

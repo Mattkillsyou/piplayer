@@ -928,7 +928,7 @@ tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
   .device-card .device-thumb-empty { gap: 2px; padding: 4px; }
   .device-card .device-thumb-empty .empty-title { font-size: 8px; }
   .device-card .device-thumb-empty .empty-sub { display: none; }
-  .device-card-body { flex: 1 1 auto; min-width: 0; padding: 0; gap: 5px; }
+  .device-card-body { flex: 1 1 0; min-width: 0; padding: 0; gap: 5px; }
   .device-card-head { align-items: center; gap: 6px; }
   .device-card-title { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .device-card-id { font-size: var(--p5k-text-label-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

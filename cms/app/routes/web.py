@@ -191,7 +191,7 @@ def https_url_or_none(value) -> str | None:
         parts = urlsplit(v)
     except ValueError:
         return None
-    if parts.scheme != "https" or not parts.hostname:
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
         return None
     return v
 
