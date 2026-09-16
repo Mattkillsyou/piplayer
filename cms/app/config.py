@@ -66,7 +66,21 @@ AUDIT_RETENTION_DAYS = _env_int("PIPLAYER_AUDIT_RETENTION_DAYS", 0)
 
 # Remote updates (manifest "update" key; player/player/updater.py). The cloud console keeps
 # these in Settings; here they come from /etc/projector-cms/env.
-PLAYER_RELEASE = os.environ.get("PIPLAYER_PLAYER_RELEASE", "").strip() or "main"   # git tag, branch or sha
+# Same shape the cloud console enforces (cloud/src/db.js GIT_REF_RE): a bad ref would be served in
+# every manifest and make every update-player run fail on the Pi with "bad ref".
+GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
+
+
+def _env_ref(name: str, default: str) -> str:
+    """Git tag, branch or sha for update-player; a typo must not start a CMS that breaks every update."""
+    raw = os.environ.get(name, "").strip() or default
+    if not GIT_REF_RE.match(raw) or ".." in raw:
+        _log.error("%s must be a git tag, branch or sha (got %r); fix /etc/projector-cms/env and restart", name, raw)
+        sys.exit(1)
+    return raw
+
+
+PLAYER_RELEASE = _env_ref("PIPLAYER_PLAYER_RELEASE", "main")
 # off | nightly (truthy spellings count as nightly)
 AUTO_UPDATE = "nightly" if _env_bool("PIPLAYER_AUTO_UPDATE") or os.environ.get("PIPLAYER_AUTO_UPDATE", "").strip().lower() == "nightly" else "off"
 AUTO_UPDATE_WINDOW_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")

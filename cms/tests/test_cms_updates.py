@@ -2,6 +2,8 @@
 sync `update_status` report and the Devices page status/buttons."""
 import json
 
+import pytest
+
 from cms_helpers import assert_json_detail, create_device, create_user, login, one, post, query, sync
 
 UPDATE_COMMANDS = ("update-player", "update-os", "update-all")
@@ -47,6 +49,18 @@ def test_manifest_carries_update_settings(cms, admin, client, tok):
         assert not cms.config.AUTO_UPDATE_WINDOW_RE.match(bad), bad
 
 
+def test_player_release_env_is_validated_as_git_ref(cms, monkeypatch):
+    for good in ("main", "v1.4.0", "release/2026-09", "abc1234def"):
+        monkeypatch.setenv("PIPLAYER_PLAYER_RELEASE", good)
+        assert cms.config._env_ref("PIPLAYER_PLAYER_RELEASE", "main") == good
+    monkeypatch.setenv("PIPLAYER_PLAYER_RELEASE", "  ")
+    assert cms.config._env_ref("PIPLAYER_PLAYER_RELEASE", "main") == "main"
+    for bad in ("-rf", "a..b", "main branch", "v1;rm", "x" * 101):
+        monkeypatch.setenv("PIPLAYER_PLAYER_RELEASE", bad)
+        with pytest.raises(SystemExit):
+            cms.config._env_ref("PIPLAYER_PLAYER_RELEASE", "main")
+
+
 def test_sync_update_status_is_stored_and_shown(admin, client, tok):
     dev = create_device(admin, f"upd-st-{tok}", f"Upd St {tok}")
     cols = "SELECT last_update_at, last_update_ok, last_update_message, last_update_ref FROM devices WHERE id = ?"
@@ -67,6 +81,8 @@ def test_sync_update_status_is_stored_and_shown(admin, client, tok):
     html = admin.get("/devices").text
     assert "Update failed (v1.4.0)" in html and status["message"] in html
     assert "update-status" in html and 'class="alert error small update-status"' in html
+    dash = admin.get("/dashboard").text
+    assert "Update failed (v1.4.0)" in dash and status["message"] in dash
 
     # a plain sync (no update_status) leaves the last report alone
     sync(client, dev, player_status="playing")
@@ -82,6 +98,7 @@ def test_sync_update_status_is_stored_and_shown(admin, client, tok):
     html = admin.get("/devices").text
     assert "Update ok (main)" in html and 'class="alert ok small update-status"' in html
     assert status["message"] not in html
+    assert "update-status" not in admin.get("/dashboard").text   # the dashboard only flags failures
 
 
 def test_sync_update_status_malformed_is_ignored_and_long_values_capped(client, admin, tok):
@@ -115,14 +132,24 @@ def test_update_all_players_queues_one_command_per_device(admin, make_client, to
     for c in UPDATE_COMMANDS:
         assert f'value="{c}"' in html, c
 
+    # every device row without a pending update-player gets exactly one (other tests' devices included)
+    expected = one("SELECT COUNT(*) AS n FROM devices d WHERE NOT EXISTS (SELECT 1 FROM device_commands c "
+                   "WHERE c.device_id = d.id AND c.command = 'update-player' AND c.completed_at IS NULL)")["n"]
+    assert expected >= len(devs)
     r = post(admin, "/devices/update-all", {})
     assert r.status_code == 303 and r.headers["location"] == "/devices"
     for d in devs:
         assert _pending(d["id"]) == before[d["id"]] + ["update-player"]
-    # every device row got exactly one (other tests' devices included)
-    total = one("SELECT COUNT(*) AS n FROM devices")["n"]
     row = one("SELECT details FROM audit_log WHERE action = 'device_update_all' ORDER BY id DESC LIMIT 1")
-    assert json.loads(row["details"]) == {"command": "update-player", "devices": total}
+    assert json.loads(row["details"]) == {"command": "update-player", "devices": expected}
+
+    # posting again while the command is still pending does not queue a duplicate
+    r = post(admin, "/devices/update-all", {})
+    assert r.status_code == 303
+    for d in devs:
+        assert _pending(d["id"]) == before[d["id"]] + ["update-player"]
+    row = one("SELECT details FROM audit_log WHERE action = 'device_update_all' ORDER BY id DESC LIMIT 1")
+    assert json.loads(row["details"]) == {"command": "update-player", "devices": 0}
 
     r = post(admin, "/devices/update-all", {"command": "update-os"})
     assert r.status_code == 303

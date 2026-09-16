@@ -98,6 +98,9 @@
       {% if d.last_error %}
       <div class="alert error small" title="Reported by the player on its last sync">Sync problem: {{ d.last_error }}</div>
       {% endif %}
+      {% if d.last_update_at and not d.last_update_ok %}
+      <div class="alert error small update-status" title="Reported by the player after its last update-player run">Update failed{% if d.last_update_ref %} ({{ d.last_update_ref }}){% endif %} · {{ d.last_update_at | local }}{% if d.last_update_message %}: {{ d.last_update_message }}{% endif %}</div>
+      {% endif %}
       {% if user.role != 'viewer' %}
       <div class="tile-actions">
         <form method="post" action="/devices/{{ d.id }}/command" class="inline">

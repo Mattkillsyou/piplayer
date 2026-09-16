@@ -254,6 +254,7 @@ def dashboard(request: Request, user=Depends(auth.require_user)):
                    d.current_position, d.current_filename, d.player_status,
                    d.last_screenshot_at, d.last_error,
                    d.last_camera_at, d.camera_error, d.camera_live_url,
+                   d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
                    p.name AS playlist_name, g.name AS group_name
             FROM devices d
             LEFT JOIN playlists p ON p.id = d.playlist_id
@@ -1046,9 +1047,13 @@ def devices_update_all(request: Request, command: str = Form("update-player"), u
     if command not in ("update-player", "update-os", "update-all"):
         raise HTTPException(400, "unknown command")
     with db.cursor() as cur:
+        # skip devices that already have this command pending (same guard as the cloud console)
         cur.execute(
-            "INSERT INTO device_commands (device_id, command, issued_by) SELECT id, ?, ? FROM devices",
-            (command, user["id"]),
+            "INSERT INTO device_commands (device_id, command, issued_by) "
+            "SELECT d.id, ?, ? FROM devices d "
+            "WHERE NOT EXISTS (SELECT 1 FROM device_commands c "
+            "                  WHERE c.device_id = d.id AND c.command = ? AND c.completed_at IS NULL)",
+            (command, user["id"], command),
         )
         count = cur.rowcount
     audit.log(request, user, "device_update_all", "device", None, {"command": command, "devices": count})
