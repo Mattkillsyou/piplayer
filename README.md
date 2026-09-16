@@ -338,6 +338,20 @@ new default is written next to it as `mpv.conf.dist` so you can diff and
 merge. For a fleet, update the master image instead
 ([docs/make-master-image.md](docs/make-master-image.md)).
 
+### Updating players from the console
+
+Players installed with this release (or upgraded once by hand as above) can
+be updated remotely: per device via the `update-player`, `update-os` and
+`update-all` buttons in the Recent commands area, or for the fleet with
+**Update all players** on the Devices page header. The git ref the players
+fetch comes from the `player_release` setting (default `main`); a nightly
+window (`auto_update`, `auto_update_window`) lets the fleet update itself.
+The Pi keeps the previous code in `/opt/piplayer/player.prev` and rolls back
+on its own if the new daemon will not start; the outcome shows on the
+Devices page and in `/var/lib/projector-player/update-status.json`. Details,
+the Python console's env vars and the logs to read are in
+[docs/automation.md](docs/automation.md#c-remote-updates-player-software-and-os-packages-player--cloud--cms).
+
 ### Rotating a leaked device token
 
 1. Devices page → expand **Token / install** for the device → **New token**.
