@@ -26,6 +26,7 @@ NOSNIFF = {"X-Content-Type-Options": "nosniff"}
 JPEG_MAGIC = b"\xff\xd8\xff"
 MAX_COMMAND_DELIVERIES = 5
 MAX_SYNC_ERROR_LEN = 200
+MAX_UPDATE_REF_LEN = 100
 
 
 def _device_from_header(authorization: str | None = Header(None)) -> dict:
@@ -187,6 +188,8 @@ def _manifest_for_device(device: dict, request: Request, now: dt.datetime | None
         "commands": commands,
         "screenshot_interval_seconds": config.SCREENSHOT_INTERVAL_SECONDS,
         "camera_interval_seconds": config.CAMERA_INTERVAL_SECONDS,
+        # Remote updates (player/player/updater.py): git ref to install, off|nightly, local HH:MM-HH:MM.
+        "update": {"release": config.PLAYER_RELEASE, "auto": config.AUTO_UPDATE, "window": config.AUTO_UPDATE_WINDOW},
         # Local wall-clock with UTC offset, e.g. 2026-09-14T15:03:07-07:00 (schedules use this clock).
         "server_time": now.astimezone().isoformat(timespec="seconds"),
     }
@@ -265,6 +268,7 @@ def sync(
     player_version: str | None = Query(None),
     sync_error: str | None = Query(None),
     camera_error: str | None = Query(None),
+    update_status: str | None = Query(None),
 ):
     if device["device_id"] != device_id:
         raise HTTPException(status_code=403, detail="Token does not match device id")
@@ -296,8 +300,50 @@ def sync(
                 device["id"],
             ),
         )
+        status = _parse_update_status(update_status)
+        if status:
+            cur.execute(
+                """UPDATE devices SET last_update_at = COALESCE(?, datetime('now')), last_update_ok = ?,
+                                      last_update_message = ?, last_update_ref = ?
+                   WHERE id = ?""",
+                (status["finished"], status["ok"], status["message"], status["ref"], device["id"]),
+            )
+    if status:
+        audit.log(request, None, "device_update_reported", "device", device["id"],
+                  {"device_id": device["device_id"], "ref": status["ref"], "ok": bool(status["ok"]),
+                   "message": status["message"]})
 
     return _manifest_for_device(device, request)
+
+
+def _parse_update_status(raw: str | None) -> dict | None:
+    """update_status = the JSON of /var/lib/projector-player/update-status.json
+    ({ref, started, finished, ok, message, previous_version}) that the daemon reports on its first
+    sync after update-player.sh / update-os.sh restarted it. Absent = nothing new; anything that is
+    not a JSON object is dropped (the manifest must still be served). `finished` (the Pi's clock,
+    ISO 8601) becomes last_update_at when parseable, else the report time."""
+    if not raw:
+        return None
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        log.warning("ignoring malformed update_status %r", raw[:80])
+        return None
+    finished = None
+    try:
+        finished = dt.datetime.fromisoformat(str(body.get("finished") or ""))
+    except ValueError:
+        pass
+    if finished is not None:
+        finished = (finished.astimezone(dt.timezone.utc) if finished.tzinfo else finished).strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "ok": 1 if body.get("ok") in (True, 1) else 0,
+        "message": str(body.get("message") or "").strip()[:MAX_SYNC_ERROR_LEN] or None,
+        "ref": str(body.get("ref") or "").strip()[:MAX_UPDATE_REF_LEN] or None,
+        "finished": finished,
+    }
 
 
 @router.post("/commands/{command_id}/result")

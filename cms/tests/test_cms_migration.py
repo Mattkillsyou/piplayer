@@ -100,6 +100,9 @@ def test_init_schema_upgrades_a_pre_fix_database_in_place(cms, client, monkeypat
     conn.executescript(OLD_SCHEMA)
     conn.execute("INSERT INTO devices (device_id, name, token) VALUES (?, ?, ?)", (f"old-pi-{tok}", "Old Pi", OLD_TOKEN))
     conn.execute("INSERT INTO device_commands (device_id, command) VALUES (1, 'force-sync')")
+    # a deleted row bumps sqlite_sequence past MAX(id): the rebuild must keep the counter
+    conn.execute("INSERT INTO device_commands (device_id, command, completed_at) VALUES (1, 'reboot', 'x')")
+    conn.execute("DELETE FROM device_commands WHERE id = 2")
     conn.execute("INSERT INTO audit_log (action) VALUES ('old-row')")
     conn.commit()
     assert "delivery_count" not in _columns(conn, "device_commands")
@@ -119,8 +122,9 @@ def test_init_schema_upgrades_a_pre_fix_database_in_place(cms, client, monkeypat
     monkeypatch.setattr(cms.db.sqlite3, "connect", spy_connect)
     cms.db.init_schema()
     altered = [s for s in statements if s.lstrip().upper().startswith(("ALTER", "DROP INDEX"))]
-    # delivery_count, last_error, last_camera_at, camera_error, camera_live_url + the index swap
-    assert len(altered) == 6, altered
+    # delivery_count, last_error, last_camera_at, camera_error, camera_live_url, 4x last_update_*,
+    # the audit index swap, and the device_commands rename + its index drop (CHECK rebuild)
+    assert len(altered) == 12, altered
 
     conn = sqlite3.connect(old_db)
     assert "delivery_count" in _columns(conn, "device_commands")
@@ -131,6 +135,16 @@ def test_init_schema_upgrades_a_pre_fix_database_in_place(cms, client, monkeypat
     assert "id DESC" in idx
     # existing rows got the declared default, not NULL
     assert conn.execute("SELECT delivery_count FROM device_commands").fetchone()[0] == 0
+    # device_commands was rebuilt (rename-copy-drop) so its CHECK accepts the update commands;
+    # rows, ids and the AUTOINCREMENT counter survive, the old table is gone
+    assert conn.execute("SELECT id, command FROM device_commands").fetchall() == [(1, "force-sync")]
+    assert conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'device_commands'").fetchone()[0] == 2
+    assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'device_commands_old'").fetchone() is None
+    assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'idx_device_commands_pending'").fetchone()
+    conn.execute("INSERT INTO device_commands (device_id, command) VALUES (1, 'update-all')")
+    assert conn.execute("SELECT id FROM device_commands WHERE command = 'update-all'").fetchone()[0] == 3
+    conn.execute("DELETE FROM device_commands WHERE id = 3")
+    conn.commit()
     after_first = _schema_sql(conn)
     conn.close()
 
@@ -149,4 +163,11 @@ def test_init_schema_upgrades_a_pre_fix_database_in_place(cms, client, monkeypat
     conn = sqlite3.connect(old_db)
     assert conn.execute("SELECT delivery_count FROM device_commands").fetchone()[0] == 1
     assert conn.execute("SELECT last_error FROM devices").fetchone()[0] == "x"
+    conn.close()
+    # ...and the migrated devices row takes an update report
+    r = client.get(f"/api/sync/old-pi-{tok}", headers=bearer(OLD_TOKEN),
+                   params={"update_status": '{"ref": "v2", "ok": true, "message": "already at abc"}'})
+    assert r.status_code == 200
+    conn = sqlite3.connect(old_db)
+    assert conn.execute("SELECT last_update_ok, last_update_ref FROM devices").fetchone() == (1, "v2")
     conn.close()

@@ -6,7 +6,29 @@ from typing import Iterator
 from . import config
 
 
-SCHEMA = """
+# Remote commands the console may queue (also the CHECK on device_commands.command).
+# SQLite cannot alter a CHECK: extending this list needs the rename-copy-drop in
+# init_schema (_rebuild_device_commands), keyed on the newest value.
+COMMANDS = ("reboot", "force-sync", "restart-mpv", "update-player", "update-os", "update-all")
+_COMMAND_CHECK = ", ".join(f"'{c}'" for c in COMMANDS)
+
+# Kept out of SCHEMA so _rebuild_device_commands can run them as single statements
+# (executescript would COMMIT the half-done rename first).
+DEVICE_COMMANDS_TABLE = f"""CREATE TABLE IF NOT EXISTS device_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    command TEXT NOT NULL CHECK (command IN ({_COMMAND_CHECK})),
+    issued_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+    delivered_at TEXT,
+    completed_at TEXT,
+    result TEXT,
+    delivery_count INTEGER NOT NULL DEFAULT 0            -- times handed to the player; capped, see api._pending_commands
+)"""
+DEVICE_COMMANDS_INDEX = """CREATE INDEX IF NOT EXISTS idx_device_commands_pending
+    ON device_commands(device_id, completed_at)"""
+
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
@@ -72,6 +94,10 @@ CREATE TABLE IF NOT EXISTS devices (
     last_camera_at TEXT,                                 -- camera snapshot (camera_<device_id>.jpg) timestamp
     camera_error TEXT,                                   -- player's last camera capture error, NULL = healthy
     camera_live_url TEXT,                                -- validated https URL or NULL (Devices page)
+    last_update_at TEXT,                                 -- when the player last reported an update-player run
+    last_update_ok INTEGER,                              -- 1 ok / 0 failed (sync update_status)
+    last_update_message TEXT,
+    last_update_ref TEXT,                                -- git ref that run installed
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -92,20 +118,9 @@ CREATE TABLE IF NOT EXISTS device_schedules (
 CREATE INDEX IF NOT EXISTS idx_device_schedules_device
     ON device_schedules(device_id, priority DESC);
 
-CREATE TABLE IF NOT EXISTS device_commands (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-    command TEXT NOT NULL CHECK (command IN ('reboot', 'force-sync', 'restart-mpv')),
-    issued_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    issued_at TEXT NOT NULL DEFAULT (datetime('now')),
-    delivered_at TEXT,
-    completed_at TEXT,
-    result TEXT,
-    delivery_count INTEGER NOT NULL DEFAULT 0            -- times handed to the player; capped, see api._pending_commands
-);
+{DEVICE_COMMANDS_TABLE};
 
-CREATE INDEX IF NOT EXISTS idx_device_commands_pending
-    ON device_commands(device_id, completed_at);
+{DEVICE_COMMANDS_INDEX};
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,6 +153,10 @@ MIGRATIONS = [
     ("devices", "last_camera_at", "TEXT"),
     ("devices", "camera_error", "TEXT"),
     ("devices", "camera_live_url", "TEXT"),
+    ("devices", "last_update_at", "TEXT"),
+    ("devices", "last_update_ok", "INTEGER"),
+    ("devices", "last_update_message", "TEXT"),
+    ("devices", "last_update_ref", "TEXT"),
 ]
 
 
@@ -173,6 +192,24 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(c["name"] == column for c in cols)
 
 
+def _rebuild_device_commands(conn: sqlite3.Connection) -> None:
+    """Rename-copy-drop so the CHECK on device_commands.command accepts COMMANDS.
+
+    Keeps rows, ids and the AUTOINCREMENT counter (a re-used id would look like a
+    repeat to the player). Nothing references device_commands, so the rename is safe
+    with foreign keys on."""
+    cols = ", ".join(c["name"] for c in conn.execute("PRAGMA table_info(device_commands)").fetchall())
+    conn.execute("ALTER TABLE device_commands RENAME TO device_commands_old")
+    conn.execute("DROP INDEX IF EXISTS idx_device_commands_pending")   # moved with the table
+    conn.execute(DEVICE_COMMANDS_TABLE)
+    conn.execute(DEVICE_COMMANDS_INDEX)
+    conn.execute(f"INSERT INTO device_commands ({cols}) SELECT {cols} FROM device_commands_old")
+    conn.execute("DELETE FROM sqlite_sequence WHERE name = 'device_commands'")
+    conn.execute("""INSERT INTO sqlite_sequence (name, seq)
+                    SELECT 'device_commands', seq FROM sqlite_sequence WHERE name = 'device_commands_old'""")
+    conn.execute("DROP TABLE device_commands_old")
+
+
 def init_schema() -> None:
     config.ensure_dirs()
     conn = connect()
@@ -190,6 +227,9 @@ def init_schema() -> None:
                            SET completed_at = datetime('now'), result = 'closed at upgrade (no result)'
                            WHERE completed_at IS NULL AND delivered_at IS NOT NULL"""
                     )
+        cmds = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'device_commands'").fetchone()
+        if f"'{COMMANDS[-1]}'" not in (cmds["sql"] or ""):
+            _rebuild_device_commands(conn)
         # The original index was on created_at only; replace it so same-second rows order by id.
         idx = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'idx_audit_log_created'").fetchone()
         if idx and "id DESC" not in (idx["sql"] or ""):

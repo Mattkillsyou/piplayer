@@ -37,6 +37,19 @@
 </div>
 
 <div class="panel">
+  <h2>Remote updates</h2>
+  <p class="muted small">
+    Set in <code>/etc/projector-cms/env</code> (restart the CMS to apply). Devices get these in every
+    manifest; "Update player" on the Devices page installs the release below.
+  </p>
+  <div class="facts">
+    <div><span class="label">player release</span><span class="value"><code>{{ update.release }}</code><br><span class="muted small">PIPLAYER_PLAYER_RELEASE (tag, branch or sha)</span></span></div>
+    <div><span class="label">auto update</span><span class="value">{{ update.auto }}<br><span class="muted small">PIPLAYER_AUTO_UPDATE (off | nightly)</span></span></div>
+    <div><span class="label">update window</span><span class="value">{{ update.window }}<br><span class="muted small">PIPLAYER_AUTO_UPDATE_WINDOW (HH:MM-HH:MM, Pi local time)</span></span></div>
+  </div>
+</div>
+
+<div class="panel">
   <h2>Enrollment key</h2>
   <p class="muted small">
     Baked into the flasher so a freshly flashed Pi registers itself on first boot (no login needed).

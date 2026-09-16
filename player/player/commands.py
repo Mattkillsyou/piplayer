@@ -8,7 +8,7 @@ from typing import Callable
 
 import requests
 
-from . import __version__
+from . import __version__, updater
 from .config import PlayerConfig
 from .mpv_client import MpvClient
 
@@ -122,7 +122,10 @@ def execute_commands(
     mpv: MpvClient,
     commands: list[dict],
     force_resync: Callable[[], None],
+    update: dict | None = None,
 ) -> None:
+    """`update` is the manifest's optional update block ({release, auto, window}):
+    the update-* commands take their git ref from it."""
     executed = load_executed_ids(cfg)
     for cmd in commands:
         if not isinstance(cmd, dict):
@@ -139,14 +142,21 @@ def execute_commands(
             continue
         log.info("executing command id=%s action=%s", cid, action)
 
-        if action in ("reboot", "restart-mpv"):
+        if action in ("reboot", "restart-mpv") or action in updater.COMMANDS:
             # Record + report BEFORE acting: the action may kill this process (or
             # the network) before a report could land, and a lost report would
-            # otherwise re-trigger the action on the next sync.
+            # otherwise re-trigger the action on the next sync. (update-player
+            # restarts the daemon last; the outcome comes back via update_status.)
             _remember_executed(cfg, executed, cid, issued_at)
-            _report_result(cfg, cid, "executing reboot" if action == "reboot" else "executing mpv restart")
+            _report_result(cfg, cid, {"reboot": "executing reboot", "restart-mpv": "executing mpv restart"}
+                           .get(action, f"executing {action}"))
             try:
-                result = _run_reboot() if action == "reboot" else _run_restart_mpv()
+                if action == "reboot":
+                    result = _run_reboot()
+                elif action == "restart-mpv":
+                    result = _run_restart_mpv()
+                else:
+                    result = updater.run_command(action, update)
             except Exception as e:
                 log.exception("command %s failed", cid)
                 result = f"exception: {e!r}"[:300]

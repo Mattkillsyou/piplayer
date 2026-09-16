@@ -588,3 +588,83 @@ def test_manifest_camera_interval_updates_the_capture_cadence(cfg, cms, mpv, cli
     cms.manifest["camera_interval_seconds"] = "bogus"    # a bad field is logged, not fatal
     assert run_cycle(cfg, client, fresh_state(cfg), camera=cam) is not None
     assert cam.interval == 5
+
+
+# ---------------------------------------------------------- remote updates ---
+
+def test_update_status_is_sent_once_then_marked_reported(cfg, cms, mpv, client):
+    from player import updater
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    assert "update_status" not in cms.sync_calls[-1]
+
+    updater.status_path(cfg).write_text(json.dumps({
+        "ref": "v6.0", "started": "2026-09-14T03:05:00Z", "finished": "2026-09-14T03:07:30Z",
+        "ok": True, "message": "updated abc -> def", "previous_version": "abc"}))
+    run_cycle(cfg, client, state)
+    assert json.loads(cms.sync_calls[-1]["update_status"])["ref"] == "v6.0"
+    run_cycle(cfg, client, state)
+    assert "update_status" not in cms.sync_calls[-1]
+
+
+def test_update_status_is_kept_until_the_console_takes_it(cfg, cms, mpv, client):
+    from player import updater
+    updater.status_path(cfg).write_text(json.dumps({"ref": "main", "ok": False, "message": "rolled back"}))
+    state = fresh_state(cfg)
+    cms.unreachable = True
+    run_cycle(cfg, client, state)
+    cms.unreachable = False
+    run_cycle(cfg, client, state)
+    assert json.loads(cms.sync_calls[-1]["update_status"])["message"] == "rolled back"
+
+
+def test_update_os_reboots_after_reporting(cfg, cms, mpv, client, monkeypatch):
+    from player import updater
+    reboots = []
+    monkeypatch.setattr(daemon, "_run_reboot", lambda: reboots.append(1) or "reboot issued")
+    updater.status_path(cfg).write_text(json.dumps({
+        "ref": "os", "ok": True, "message": "3 upgraded; reboot required", "reboot_required": True}))
+    state = fresh_state(cfg)
+    cms.unreachable = True
+    run_cycle(cfg, client, state)
+    assert reboots == []                          # not before the console has the status
+    cms.unreachable = False
+    run_cycle(cfg, client, state)
+    assert reboots == [1]
+    assert cms.sync_calls[-1]["update_status"]
+    run_cycle(cfg, client, state)                 # (the reboot did not happen here) nothing re-sent, no second reboot
+    assert reboots == [1] and "update_status" not in cms.sync_calls[-1]
+
+
+def test_commands_get_the_manifest_release_ref(cfg, cms, mpv, client, monkeypatch):
+    from player import commands as commands_mod
+    seen = []
+    monkeypatch.setattr(commands_mod.updater, "run_command", lambda action, update: seen.append((action, update)) or "started")
+    cms.manifest["update"] = {"release": "v6.0", "auto": "off", "window": "03:00-05:00"}
+    cms.manifest["commands"] = [{"id": 30, "command": "update-player"}]
+    run_cycle(cfg, client, fresh_state(cfg))
+    assert seen == [("update-player", {"release": "v6.0", "auto": "off", "window": "03:00-05:00"})]
+
+
+def test_nightly_auto_update_is_driven_by_the_manifest(cfg, cms, mpv, client, monkeypatch):
+    from player import updater
+    ran = []
+    monkeypatch.setattr(updater, "run_update_player", lambda ref, then_os=False: ran.append(ref) or "started")
+    monkeypatch.setattr(updater, "datetime", _FrozenDatetime)
+    cms.manifest["update"] = {"release": "v6.0", "auto": "nightly", "window": "03:00-05:00"}
+    state = fresh_state(cfg)
+    _FrozenDatetime.frozen = _FrozenDatetime(2026, 9, 14, 12, 0)
+    run_cycle(cfg, client, state)
+    assert ran == []
+    _FrozenDatetime.frozen = _FrozenDatetime(2026, 9, 15, 3, 30)
+    run_cycle(cfg, client, state)
+    run_cycle(cfg, client, state)
+    assert ran == ["v6.0"]
+
+
+class _FrozenDatetime(daemon.datetime):
+    frozen = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.frozen.astimezone(tz) if tz else cls.frozen

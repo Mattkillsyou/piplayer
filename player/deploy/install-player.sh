@@ -12,6 +12,13 @@
 # The API id/key come from the Wyze developer portal. Without the WYZE_* vars
 # the credentials file /etc/projector-player/wyze.env is left for the operator
 # or the flasher to fill in (keys: WYZE_EMAIL, WYZE_PASSWORD, API_ID, API_KEY).
+# Upgrade the code in place (deploy/update-player.sh runs this from a fresh
+# checkout; also fine by hand after a git pull). With an existing config.toml
+# the DEVICE_* vars are not needed and config, wyze.env and data are kept;
+# nothing is restarted, the caller does that:
+#   sudo bash deploy/install-player.sh --upgrade && sudo systemctl restart projector-player.service
+# /opt/piplayer/player/RELEASE gets the checkout's sha (PIPLAYER_RELEASE_SHA or
+# git rev-parse) so update-player.sh can tell "already at <sha>".
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -26,12 +33,14 @@ USER_NAME="projector"
 
 WITH_WYZE=0
 UNINSTALL=0
+UPGRADE=0
 for arg in "$@"; do
     case "${arg}" in
         --uninstall) UNINSTALL=1 ;;
         --with-wyze) WITH_WYZE=1 ;;
+        --upgrade) UPGRADE=1 ;;
         *)
-            echo "Unknown argument: ${arg} (supported: --uninstall, --with-wyze)" >&2
+            echo "Unknown argument: ${arg} (supported: --uninstall, --with-wyze, --upgrade)" >&2
             exit 1
             ;;
     esac
@@ -45,7 +54,9 @@ if [[ "${UNINSTALL}" == 1 ]]; then
     if [[ -f /etc/systemd/system/projector-wyze-bridge.service ]]; then
         systemctl disable --now projector-wyze-bridge.service 2>/dev/null || true
     fi
-    rm -f /etc/systemd/system/projector-player.service /etc/systemd/system/projector-mpv.service         /etc/systemd/system/projector-wyze-bridge.service
+    systemctl disable --now projector-player-postcheck.timer 2>/dev/null || true
+    rm -f /etc/systemd/system/projector-player.service /etc/systemd/system/projector-mpv.service         /etc/systemd/system/projector-wyze-bridge.service \
+        /etc/systemd/system/projector-player-postcheck.service /etc/systemd/system/projector-player-postcheck.timer
     systemctl daemon-reload
     systemctl reset-failed projector-player.service projector-mpv.service 2>/dev/null || true
     systemctl reset-failed projector-wyze-bridge.service 2>/dev/null || true
@@ -62,7 +73,7 @@ if [[ "${UNINSTALL}" == 1 ]]; then
     systemctl start getty@tty1.service || true
 
     echo "==> Removing player files (${INSTALL_DIR}, ${DATA_DIR}, ${ETC_DIR})"
-    rm -rf "${INSTALL_DIR}" "${DATA_DIR}" "${ETC_DIR}" /tmp/projector-mpv.sock
+    rm -rf "${INSTALL_DIR}" "${INSTALL_DIR}.prev" /opt/piplayer/src-* "${DATA_DIR}" "${ETC_DIR}" /tmp/projector-mpv.sock
     # /opt/piplayer/cms (a co-located controller) is intentionally left in place.
     rmdir /opt/piplayer 2>/dev/null || true
 
@@ -74,9 +85,15 @@ if [[ "${UNINSTALL}" == 1 ]]; then
     exit 0
 fi
 
-: "${DEVICE_ID:?DEVICE_ID env var is required}"
-: "${DEVICE_TOKEN:?DEVICE_TOKEN env var is required}"
-: "${CMS_URL:?CMS_URL env var is required}"
+# --upgrade with a config.toml in place keeps it and needs no DEVICE_* vars
+KEEP_CONFIG=0
+if [[ "${UPGRADE}" == 1 && -f "${ETC_DIR}/config.toml" ]]; then
+    KEEP_CONFIG=1
+else
+    : "${DEVICE_ID:?DEVICE_ID env var is required}"
+    : "${DEVICE_TOKEN:?DEVICE_TOKEN env var is required}"
+    : "${CMS_URL:?CMS_URL env var is required}"
+fi
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -128,6 +145,18 @@ python3 -m venv "${INSTALL_DIR}/.venv"
 chown -R root:root "${INSTALL_DIR}"
 chmod -R a+rX "${INSTALL_DIR}"
 
+echo "==> Installing the update scripts and RELEASE"
+# deploy/ is excluded from the rsync above; the daemon runs these two via sudo
+mkdir -p "${INSTALL_DIR}/deploy"
+cp "${SRC_DIR}/deploy/update-player.sh" "${SRC_DIR}/deploy/update-os.sh" "${INSTALL_DIR}/deploy/"
+chmod 755 "${INSTALL_DIR}/deploy/update-player.sh" "${INSTALL_DIR}/deploy/update-os.sh"
+RELEASE_SHA="${PIPLAYER_RELEASE_SHA:-$(git -C "${SRC_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)}"
+echo "${RELEASE_SHA}" > "${INSTALL_DIR}/RELEASE"
+chmod 644 "${INSTALL_DIR}/RELEASE"
+
+if [[ "${KEEP_CONFIG}" == 1 ]]; then
+    echo "==> Keeping ${ETC_DIR}/config.toml (upgrade)"
+else
 echo "==> Writing config file at ${ETC_DIR}/config.toml"
 # Keys the installer does not own (poll_interval_seconds, verify_tls, ...)
 # are carried over from an existing file so a re-run keeps per-Pi tuning.
@@ -157,15 +186,22 @@ cat > "${ETC_DIR}/env" <<EOF
 PIPLAYER_CONFIG=${ETC_DIR}/config.toml
 EOF
 chmod 644 "${ETC_DIR}/env"
+fi
 
-echo "==> Granting sudoers rights for reboot + mpv restart"
+echo "==> Granting sudoers rights for reboot, mpv/player restart and the update scripts"
 cat > /etc/sudoers.d/projector-player <<'EOF'
-# Allow the projector daemon to reboot the Pi and restart mpv on demand
-# (issued from the CMS via the device_commands queue).
+# Allow the projector daemon to reboot the Pi, restart mpv / itself and run
+# the update scripts on demand (issued from the CMS via the device_commands queue).
 projector ALL=(ALL) NOPASSWD: /sbin/reboot
 projector ALL=(ALL) NOPASSWD: /usr/sbin/reboot
 projector ALL=(ALL) NOPASSWD: /bin/systemctl restart projector-mpv.service
 projector ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart projector-mpv.service
+projector ALL=(ALL) NOPASSWD: /bin/systemctl restart projector-player.service
+projector ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart projector-player.service
+projector ALL=(ALL) NOPASSWD: /opt/piplayer/player/deploy/update-player.sh *
+projector ALL=(ALL) NOPASSWD: /usr/bin/bash /opt/piplayer/player/deploy/update-player.sh *
+projector ALL=(ALL) NOPASSWD: /opt/piplayer/player/deploy/update-os.sh
+projector ALL=(ALL) NOPASSWD: /usr/bin/bash /opt/piplayer/player/deploy/update-os.sh
 EOF
 chmod 440 /etc/sudoers.d/projector-player
 visudo -c -f /etc/sudoers.d/projector-player
@@ -211,6 +247,26 @@ cp "${SRC_DIR}/deploy/projector-player.service" /etc/systemd/system/projector-pl
 if [[ "${WITH_WYZE}" == 1 ]]; then
     cp "${SRC_DIR}/deploy/projector-wyze-bridge.service" /etc/systemd/system/projector-wyze-bridge.service
 fi
+# Post-update check: update-player.sh arms the timer right before it restarts
+# the player; 2 min later the service rolls back to /opt/piplayer/player.prev
+# when the new daemon is not running or keeps restarting. Not enabled at boot.
+cat > /etc/systemd/system/projector-player-postcheck.service <<'EOF'
+[Unit]
+Description=PiPlayer post-update check (roll back to player.prev if the daemon keeps failing)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/piplayer/player/deploy/update-player.sh --postcheck
+EOF
+cat > /etc/systemd/system/projector-player-postcheck.timer <<'EOF'
+[Unit]
+Description=Run the PiPlayer post-update check 2 min after an update
+
+[Timer]
+OnActiveSec=2min
+AccuracySec=10s
+RemainAfterElapse=no
+EOF
 systemctl daemon-reload
 systemctl enable projector-mpv.service projector-player.service
 if [[ "${WITH_WYZE}" == 1 ]]; then
@@ -220,6 +276,13 @@ fi
 echo "==> Disabling getty on tty1 (mpv will own the display)"
 systemctl disable getty@tty1.service || true
 systemctl stop getty@tty1.service || true
+
+if [[ "${UPGRADE}" == 1 ]]; then
+    echo ""
+    echo "==> Upgraded to ${RELEASE_SHA}. Nothing was restarted; run:"
+    echo "      sudo systemctl restart projector-player.service"
+    exit 0
+fi
 
 echo "==> Starting services"
 if [[ "${WITH_WYZE}" == 1 ]]; then

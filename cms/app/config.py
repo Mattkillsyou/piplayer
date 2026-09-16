@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -62,6 +63,25 @@ DEFAULT_IMAGE_DURATION = _env_float("PIPLAYER_DEFAULT_IMAGE_DURATION", 10)
 # Audit rows older than this are pruned at startup; 0 (default) keeps everything, so an
 # in-place upgrade never deletes history the operator did not choose to drop.
 AUDIT_RETENTION_DAYS = _env_int("PIPLAYER_AUDIT_RETENTION_DAYS", 0)
+
+# Remote updates (manifest "update" key; player/player/updater.py). The cloud console keeps
+# these in Settings; here they come from /etc/projector-cms/env.
+PLAYER_RELEASE = os.environ.get("PIPLAYER_PLAYER_RELEASE", "").strip() or "main"   # git tag, branch or sha
+# off | nightly (truthy spellings count as nightly)
+AUTO_UPDATE = "nightly" if _env_bool("PIPLAYER_AUTO_UPDATE") or os.environ.get("PIPLAYER_AUTO_UPDATE", "").strip().lower() == "nightly" else "off"
+AUTO_UPDATE_WINDOW_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _env_window(name: str, default: str) -> str:
+    """'HH:MM-HH:MM' local wall-clock window for nightly updates; a typo must not start a broken CMS."""
+    raw = os.environ.get(name, "").strip() or default
+    if not AUTO_UPDATE_WINDOW_RE.match(raw):
+        _log.error("%s must look like 03:00-05:00 (got %r); fix /etc/projector-cms/env and restart", name, raw)
+        sys.exit(1)
+    return raw
+
+
+AUTO_UPDATE_WINDOW = _env_window("PIPLAYER_AUTO_UPDATE_WINDOW", "03:00-05:00")
 
 
 def media_type_for_ext(ext: str) -> str | None:

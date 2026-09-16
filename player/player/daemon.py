@@ -3,13 +3,14 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import requests
 
-from . import __version__
+from . import __version__, updater
 from .camera import CameraCapture
-from .commands import execute_commands
+from .commands import _run_reboot, execute_commands
 from .config import load as load_config, PlayerConfig
 from .mpv_client import MpvClient
 from .screenshots import ScreenshotScheduler, capture_and_upload
@@ -119,6 +120,7 @@ class PlayerState:
     failure_text: str = ""
     last_contact: float | None = None    # monotonic time of the last successful sync
     storage_full: bool = False           # a download hit ENOSPC during the last sync
+    last_auto_update: datetime | None = None   # when this daemon last started a nightly update-player
 
 
 def _age_text(since: float | None) -> str:
@@ -273,6 +275,9 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
         status = {"player_status": "idle"}      # a status screen is not content
     if camera is not None:
         status["camera_error"] = camera.error   # "" clears the console's last error
+    pending_update = updater.pending_status(cfg)     # outcome of the last update-*.sh run, reported once
+    if pending_update is not None:
+        status["update_status"] = pending_update.param
     manifest = None
     on_progress = None
     if screens is not None:
@@ -305,6 +310,11 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
         state.last_failure, state.failure_text = None, ""
         state.last_contact = time.monotonic()
         state.storage_full = "no space left" in state.last_sync_error
+        if pending_update is not None:
+            updater.mark_reported(cfg, pending_update)
+            if pending_update.reboot:
+                log.info("update-os left reboot-required; status reported, rebooting: %s", _run_reboot())
+                return manifest
         if verify_all:
             state.last_full_verify = time.monotonic()
             state.force_verify = False
@@ -357,12 +367,13 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
         # Execute any pending commands from the server
         commands = manifest.get("commands") or []
         if commands and not _stop_requested():
-            execute_commands(cfg, mpv, commands, _force_sync)
+            execute_commands(cfg, mpv, commands, _force_sync, update=manifest.get("update"))
             if any(isinstance(c, dict) and c.get("command") == "restart-mpv" for c in commands):
                 # the new mpv instance starts idle: re-push now rather than
                 # leaving the screen black until the next poll
                 mpv.wait_for_socket(max_wait_s=10.0, should_stop=_stop_requested)
                 _reconcile_mpv(cfg, mpv, state, screens)
+        updater.maybe_auto_update(cfg, manifest.get("update"), state)
     except Exception:
         log.exception("unexpected error after sync")
     return manifest

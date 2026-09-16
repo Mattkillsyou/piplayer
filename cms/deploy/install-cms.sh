@@ -80,6 +80,11 @@ $(env_line PIPLAYER_PUBLIC_BASE_URL https://your.public.url)
 # PIPLAYER_MAX_UPLOAD_BYTES=5368709120
 # Seconds an image stays on screen when no override is set.
 # PIPLAYER_DEFAULT_IMAGE_DURATION=10
+# Remote updates ("Update player" on the Devices page, nightly auto-update on the Pi):
+# git ref to install (tag, branch or sha), off|nightly, and the local HH:MM-HH:MM window.
+# PIPLAYER_PLAYER_RELEASE=main
+# PIPLAYER_AUTO_UPDATE=off
+# PIPLAYER_AUTO_UPDATE_WINDOW=03:00-05:00
 # NOTE: systemd EnvironmentFile= has no trailing-comment support, so every
 # uncommented line must contain nothing but NAME=value.
 EOF

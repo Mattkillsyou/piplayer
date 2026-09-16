@@ -8,7 +8,7 @@ from typing import Callable
 
 import requests
 
-from . import __version__
+from . import __version__, updater
 from .config import PlayerConfig
 
 log = logging.getLogger("piplayer.sync")
@@ -112,9 +112,9 @@ def fetch_manifest(cfg: PlayerConfig, status: dict | None = None, sync_error: st
         "Authorization": f"Bearer {cfg.device_token}",
         "User-Agent": f"piplayer/{__version__}",
     }
-    params: dict[str, str] = {"player_version": __version__}
+    params: dict[str, str] = {"player_version": updater.player_version()}
     if status:
-        for k in ("current_position", "current_filename", "player_status", "camera_error"):
+        for k in ("current_position", "current_filename", "player_status", "camera_error", "update_status"):
             v = status.get(k)
             if v is not None:
                 params[k] = str(v)

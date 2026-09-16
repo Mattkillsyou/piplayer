@@ -893,6 +893,7 @@ def devices_page(request: Request, user=Depends(auth.require_user)):
                       d.player_version, d.current_position, d.current_filename, d.player_status,
                       d.last_screenshot_at, d.last_error,
                       d.last_camera_at, d.camera_error, d.camera_live_url,
+                      d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
                       p.id AS playlist_id, p.name AS playlist_name,
                       g.id AS group_id, g.name AS group_name
                FROM devices d
@@ -1026,7 +1027,7 @@ def devices_delete(device_id: int, request: Request, user=Depends(require_editor
 def devices_send_command(
     device_id: int, request: Request, command: str = Form(...), user=Depends(require_editor),
 ):
-    if command not in ("reboot", "force-sync", "restart-mpv"):
+    if command not in db.COMMANDS:
         raise HTTPException(400, "unknown command")
     with db.cursor() as cur:
         _require_row(cur, "devices", device_id, "Device")
@@ -1036,6 +1037,21 @@ def devices_send_command(
         )
         new_id = cur.lastrowid
     audit.log(request, user, "device_send_command", "device", device_id, {"command": command, "command_id": new_id})
+    return RedirectResponse("/devices", status_code=303)
+
+
+@router.post("/devices/update-all")
+def devices_update_all(request: Request, command: str = Form("update-player"), user=Depends(require_editor)):
+    """Fleet action ("Update all players"): queue one update command for every device."""
+    if command not in ("update-player", "update-os", "update-all"):
+        raise HTTPException(400, "unknown command")
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO device_commands (device_id, command, issued_by) SELECT id, ?, ? FROM devices",
+            (command, user["id"]),
+        )
+        count = cur.rowcount
+    audit.log(request, user, "device_update_all", "device", None, {"command": command, "devices": count})
     return RedirectResponse("/devices", status_code=303)
 
 
@@ -1290,7 +1306,10 @@ def settings_page(request: Request, user=Depends(require_admin)):
         defaults = db.enroll_defaults(cur)
     return _render(request, "settings.html", enrollment_key=db.enrollment_key(),
                    playlists=[dict(r) for r in playlists], groups=[dict(r) for r in groups],
-                   saved=request.query_params.get("saved") == "1", **defaults)
+                   saved=request.query_params.get("saved") == "1",
+                   update={"release": config.PLAYER_RELEASE, "auto": config.AUTO_UPDATE,
+                           "window": config.AUTO_UPDATE_WINDOW},
+                   **defaults)
 
 
 @router.post("/settings")
