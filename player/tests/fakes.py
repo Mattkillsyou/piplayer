@@ -301,9 +301,11 @@ class FakeCms:
         import player.sync as sync_mod
         import player.commands as cmd_mod
         import player.screenshots as shot_mod
+        import player.camera as camera_mod
         monkeypatch.setattr(sync_mod.requests, "get", self.get)
         monkeypatch.setattr(cmd_mod.requests, "post", self.post)
         monkeypatch.setattr(shot_mod.requests, "post", self.post)
+        monkeypatch.setattr(camera_mod.requests, "post", self.post)
 
     def item(self, name: str, media_type="video", duration=None, position=None) -> dict:
         data = self.files[name]

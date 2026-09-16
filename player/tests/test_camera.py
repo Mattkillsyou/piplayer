@@ -26,7 +26,6 @@ def cam_cfg(cfg):
 def cms(monkeypatch):
     c = FakeCms()
     c.install(monkeypatch)
-    monkeypatch.setattr(camera_mod.requests, "post", c.post)
     monkeypatch.setattr(daemon, "capture_and_upload", lambda cfg, mpv: True)
     return c
 

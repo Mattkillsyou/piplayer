@@ -7,7 +7,8 @@
 #   sudo bash deploy/install-player.sh --uninstall
 # Optional room camera via a Wyze Cam (installs Docker and the unofficial
 # mrlt8/wyze-bridge container as projector-wyze-bridge.service):
-#   WYZE_EMAIL=.. WYZE_PASSWORD=.. WYZE_API_ID=.. WYZE_API_KEY=.. WYZE_CAMERA="Lobby Cam" #     DEVICE_ID=... sudo -E bash deploy/install-player.sh --with-wyze
+#   DEVICE_ID=... DEVICE_TOKEN=... CMS_URL=... \
+#   WYZE_EMAIL=.. WYZE_PASSWORD=.. WYZE_API_ID=.. WYZE_API_KEY=.. WYZE_CAMERA="Lobby Cam" sudo -E bash deploy/install-player.sh --with-wyze
 # The API id/key come from the Wyze developer portal. Without the WYZE_* vars
 # the credentials file /etc/projector-player/wyze.env is left for the operator
 # or the flasher to fill in (keys: WYZE_EMAIL, WYZE_PASSWORD, API_ID, API_KEY).
