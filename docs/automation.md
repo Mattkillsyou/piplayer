@@ -683,7 +683,236 @@ rolling the mode out to the fleet.
 
 ## F. Alerts (cloud only)
 
-Coming in this branch.
+**What it does.** The cloud console watches the fleet for you. Every five
+minutes a cron job in the worker checks each device against a fixed list of
+conditions (offline, mpv down, no recent screenshot, a reported error, a
+failed update) and sends a message when a problem appears and again when it
+goes away, by email, by a webhook (Slack, Discord, ntfy or anything that
+accepts a JSON POST) and/or by SMS through Twilio. An `/alerts` page lists
+what is open now and what cleared recently, and the dashboard shows a count
+badge while anything is open. Cloud only: the Python console has no cron and
+no outbound mail, so on a LAN-only site keep an eye on the dashboard tiles.
+
+**Conditions.** Each is evaluated per device on every run; a device can
+have several open at once.
+
+| Kind | Opens when | Closes when |
+|---|---|---|
+| `offline` | `last_seen` is older than **Offline after** (`alert_offline_minutes`, default 10) | the device syncs again |
+| `mpv-down` | the last sync reported `player_status = mpv-down` | any other status is reported |
+| `screenshot-stale` | the device is online but its last screenshot upload is older than 3 × the site's screenshot interval (Settings) | a screenshot arrives |
+| `sync-error` | `last_error` is set (the "Sync problem" line on the Devices page) | the player reports a clean sync |
+| `update-failed` | the last remote update reported `ok = 0` (section C) | the next update reports ok |
+| `camera-error` | `camera_error` is set (section D) | it clears |
+| `projector-error` | `projector_error` is set (section E) | it clears |
+
+`screenshot-stale` is skipped while a device is offline: the `offline`
+alert already covers it, and a device that has never uploaded a screenshot
+(no `last_screenshot_at`) is not stale, just new. Devices that have never
+synced at all (`last_seen` empty, the row created by enrollment seconds ago)
+are skipped by `offline` too.
+
+**Dedupe, recovery and reminders.** Alerts live in a D1 table
+`alerts(id, device_id, kind, opened_at, closed_at, notified_at)`. There is
+at most one open row per (device, kind): a condition that stays true from
+one run to the next does nothing; when it turns false the row's `closed_at`
+is set and a "recovered" message goes out; when it turns true again a new
+row opens. While a row stays open, the console re-sends the message once
+every **Repeat while open** (`alert_repeat_minutes`, default 240, so four
+hours; 0 turns reminders off) so a projector that has been dark since Friday
+is still mentioned on Monday. Both settings are site-wide. A run sends one
+message per alert event, never a digest; five projectors going offline
+together is five messages. Every send (or failed send) is audited
+(`alert_notified`, `alert_notify_failed` with the channel and the error), so
+`/audit` answers "did the SMS go?".
+
+**Cron.** `wrangler.toml` `[triggers]` now carries two schedules,
+`"0 3 * * *"` (the existing daily housekeeping) and `"*/5 * * * *"`; the
+worker's `scheduled()` dispatches on `event.cron`, so the alert evaluator
+runs every five minutes and housekeeping still runs once a night. 8,640
+extra invocations a month, well inside the free plan. In local development
+run `npx wrangler dev --test-scheduled` and hit
+`http://localhost:8787/__scheduled?cron=*/5+*+*+*+*` to force a run.
+
+**Settings** (Settings page, admin, "Alerts" section):
+
+| Setting | Stored as | Meaning |
+|---|---|---|
+| Offline after | setting `alert_offline_minutes` | minutes without a sync before `offline` opens; default 10, range 1-1440 |
+| Repeat while open | setting `alert_repeat_minutes` | minutes between reminders for an alert that is still open; default 240, range 0-10080; 0 = open and recovered only |
+| Email to | setting `alert_email` | comma-separated recipients; every one must be a verified Email Routing destination (below); empty = channel off |
+| Webhook URL | setting `alert_webhook_url` | an `https://` URL that accepts a JSON POST; empty = channel off |
+| Twilio Account SID | secret `twilio_account_sid` | `AC...` from the Twilio console |
+| Twilio Auth Token | secret `twilio_auth_token` | the account's auth token (or an API key secret) |
+| Twilio From | secret `twilio_from` | the Twilio number in E.164 (`+441234567890`) or a Messaging Service SID (`MG...`) |
+| Twilio To | secret `twilio_to` | the phone to text, E.164; one number |
+
+The four Twilio values sit in the same encrypted `secrets` table as the Wyze
+account (section D: AES-GCM under a key derived from `SESSION_SECRET`,
+shown only as **set** / **not set**, replaced by re-entering, all four lost
+if `SESSION_SECRET` is rotated). SMS is off until all four are set. Each
+channel has a **Send test** button next to it that sends an `alert.test`
+message through that channel alone and shows the provider's answer on the
+page (the Email Routing "destination not verified" error and Twilio's
+`21608` "unverified number" on a trial account both show up here, so test
+before you need it). Tests are audited (`alert_test_sent`).
+
+**Email.** Sent through the Cloudflare `send_email` binding declared in
+`wrangler.toml` as `[[send_email]] name = "ALERT_MAIL"`, from
+`alerts@photogen5000.com`, subject
+`[Projection5000] <device name>: <kind>` (or `... recovered`), plain text
+body with the device, the kind, when it opened, the detail (last seen, the
+error text) and a link to the device on the Devices page. The binding has
+two hard rules that shape the operator steps: the sender must be an address
+on a zone with Email Routing enabled, and every recipient must be a
+**verified destination address** of that zone's Email Routing. Sending to an
+unverified address throws; the console reports it as a failed send and moves
+on to the next channel. There is no per-message cost and no daily cap worth
+worrying about at fleet-alert volumes.
+
+**Webhook.** One `POST` per alert event, `Content-Type: application/json`,
+a 10 s timeout, no retry (the reminder covers a missed one). Body:
+
+```json
+{
+  "event": "alert.opened",
+  "site": "https://projectors.photogen5000.com",
+  "alert": {
+    "id": 42,
+    "kind": "offline",
+    "device_id": "pi-lobby",
+    "device_name": "Lobby projector",
+    "opened_at": "2026-09-16T09:41:00Z",
+    "closed_at": null,
+    "detail": "last seen 14 min ago"
+  },
+  "text": "Lobby projector: offline (last seen 14 min ago)",
+  "content": "Lobby projector: offline (last seen 14 min ago)"
+}
+```
+
+`event` is `alert.opened`, `alert.reminder`, `alert.closed` (then
+`closed_at` is set and the text ends in `recovered`) or `alert.test` (then
+`alert` is a sample). The one-line summary is repeated under `text` and
+`content` so a Slack incoming webhook and a Discord webhook URL both render
+it with no transformation; ntfy shows the raw body when you post to a topic
+URL, so put a filter in front (or a tiny worker) if you want only the summary
+there. Anything else (Home Assistant, n8n, a Zapier catch hook) reads
+`alert`. The URL must be `https://` (saving an `http://` URL is rejected with
+400); the console never follows redirects and treats any non-2xx as a failed
+send.
+
+**SMS.** A single REST call per event to
+`https://api.twilio.com/2010-04-01/Accounts/<AccountSid>/Messages.json`
+(Basic auth `AccountSid:AuthToken`, form fields `From`, `To`, `Body`) with
+the same one-line summary as the webhook `text`, prefixed `Projection5000:`.
+Each event is one SMS at Twilio's per-segment price, so a chatty fleet on a
+short repeat interval costs real money: leave the repeat at four hours or
+raise it, and prefer the webhook for the noisy kinds.
+
+**Alerts page** (`/alerts`, any signed-in role). Open alerts first, newest on
+top, each with device, kind, opened, the detail and when it was last
+notified; below them the alerts closed in the last seven days with their
+duration. Rows link to the device on the Devices page. The nav badge on the
+dashboard shows the open count and links here; `0` shows no badge. Alerts
+are read-only: there is no acknowledge or mute, close the condition instead
+(and to silence a device permanently, delete it: its alerts are deleted with
+it). Closed rows older than 90 days are pruned by the nightly housekeeping.
+
+**Operator steps** (once per site). Only the channels you want; each is
+independent.
+
+*Email (Cloudflare Email Routing):*
+
+1. Check whether `photogen5000.com` already receives mail somewhere (Google
+   Workspace, Fastmail, the registrar). Enabling Email Routing replaces the
+   zone's MX records with Cloudflare's, so an existing mailbox on the bare
+   domain would stop receiving. If it does, either put the alert sender on a
+   subdomain zone you control or route that mailbox through Email Routing
+   too (it forwards to any verified address). The sender must be on a zone
+   with Email Routing on.
+2. Cloudflare dashboard, pick the account, **Websites**, `photogen5000.com`,
+   left menu **Email**, **Email Routing**. Click **Get started** (or
+   **Enable Email Routing** if the overview shows it disabled). The wizard
+   asks for a first custom address and a destination; you can skip the
+   address and add the destination in the next step. On the last screen
+   click **Add records and enable** so Cloudflare writes the MX and SPF TXT
+   records for you. The overview should then read "Email Routing is enabled"
+   with the DNS records listed as configured; if it shows missing records,
+   open the **Settings** tab and click **Add records automatically**.
+3. Still under **Email Routing**, open the **Destination addresses** tab,
+   click **Add destination address**, enter each operator email that should
+   receive alerts, **Send verification email**. Open the mail Cloudflare
+   sends and click **Verify email address**; the tab now shows the address
+   as **Verified**. Repeat for every recipient. Unverified addresses are
+   silently the reason a test send fails.
+4. Optional but polite: **Routing rules** tab, **Create address**, custom
+   address `alerts`, action **Send to an email**, destination one of the
+   verified addresses. Replies to an alert then land in someone's inbox
+   instead of bouncing. Alerts send fine without this rule.
+5. Cloud console, Settings, "Alerts": enter the verified addresses in
+   **Email to**, Save, then **Send test** next to it. The test mail arrives
+   from `alerts@photogen5000.com` within a few seconds; check spam the first
+   time and mark it as not spam.
+6. Deploying the worker with the `[[send_email]]` block is what creates the
+   binding; the dashboard shows it under the worker's **Settings**,
+   **Bindings** as "Send email" once deployed. Nothing else is needed on the
+   worker side: no API token, no secret.
+
+*Webhook:*
+
+1. Slack: create an Incoming Webhook for the channel (Slack app settings,
+   **Incoming Webhooks**, **Add New Webhook to Workspace**) and copy the
+   `https://hooks.slack.com/services/...` URL. Discord: channel settings,
+   **Integrations**, **Webhooks**, **New Webhook**, **Copy Webhook URL**.
+   ntfy: pick a topic name and use `https://ntfy.sh/<topic>` (or your own
+   server). Anything else that takes a JSON POST works the same way.
+2. Settings, "Alerts", **Webhook URL**, Save, **Send test**. The test message
+   should appear in the channel within a second or two.
+
+*SMS (Twilio):*
+
+1. Twilio console, **Account Info** on the home page: copy the **Account
+   SID** and the **Auth Token**. Buy or pick a number under **Phone Numbers**
+   that can send SMS to your country and note it in E.164.
+2. Sender registration: a US number needs A2P 10DLC or toll-free
+   verification before it will deliver to US phones; in the UK and most of
+   Europe a bought mobile number works as is. A **trial** account can only
+   text numbers listed under **Verified Caller IDs** and prefixes every
+   message with the trial notice; upgrade the account for a real fleet.
+3. Settings, "Alerts": enter the SID, Auth Token, From and To, Save (the
+   four show as **set**), **Send test**. Twilio's error text is shown on the
+   page if the send fails; `21608` means the To number is not verified on a
+   trial account, `21211` a malformed To, `21606` a From number the account
+   does not own.
+
+*Tuning:*
+
+- The player syncs every 30 s by default, so **Offline after** at 10 min
+  means many missed cycles plus slack; set it higher for sites on flaky
+  links, and remember the 5-minute cron adds up to five minutes of latency
+  to every open and close.
+- **Repeat while open** at 0 is right for a channel that already tracks
+  open items (a Slack thread, ntfy's list); leave it at 240 for email and
+  SMS where a message scrolls away.
+
+**Python console.** `cms/` does not evaluate conditions or send anything;
+the dashboard tiles and the `last_error` / `camera_error` / `projector_error`
+lines on the Devices page are the equivalent for a LAN-only site.
+
+**Not covered by the automated tests.** The cloud tests run the evaluator
+against a seeded database with a fixed clock (each condition opening,
+staying open without a duplicate, closing with a recovery, the reminder at
+`alert_repeat_minutes`, the offline / stale interaction), check the three
+channel payloads with `fetch` and the mail binding replaced by fakes (the
+webhook JSON above, the Twilio form body and auth header, the mail
+envelope), the settings validation (400 on an `http://` webhook, on
+non-integer minutes) and the `/alerts` page render and dashboard badge.
+What needs the real account: Cloudflare accepting the sender and the
+verified destinations, and Twilio delivering. Verify once after deploying:
+Settings, **Send test** on each channel, then unplug one Pi and wait up to
+`alert_offline_minutes` plus five minutes for the `offline` message, plug
+it back in and wait for the `recovered` one.
 
 ## G. Live camera without manual tunnel (cloud + player)
 
