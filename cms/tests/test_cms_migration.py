@@ -123,8 +123,9 @@ def test_init_schema_upgrades_a_pre_fix_database_in_place(cms, client, monkeypat
     cms.db.init_schema()
     altered = [s for s in statements if s.lstrip().upper().startswith(("ALTER", "DROP INDEX"))]
     # delivery_count, last_error, last_camera_at, camera_error, camera_live_url, 4x last_update_*,
-    # the audit index swap, and the device_commands rename + its index drop (CHECK rebuild)
-    assert len(altered) == 12, altered
+    # 6x projector_* / broadlink_host (E), the audit index swap, and the device_commands rename +
+    # its index drop (CHECK rebuild)
+    assert len(altered) == 18, altered
 
     conn = sqlite3.connect(old_db)
     assert "delivery_count" in _columns(conn, "device_commands")
@@ -144,6 +145,13 @@ def test_init_schema_upgrades_a_pre_fix_database_in_place(cms, client, monkeypat
     conn.execute("INSERT INTO device_commands (device_id, command) VALUES (1, 'update-all')")
     assert conn.execute("SELECT id FROM device_commands WHERE command = 'update-all'").fetchone()[0] == 3
     conn.execute("DELETE FROM device_commands WHERE id = 3")
+    # ...and the projector commands (E), including the ir-learn:<name> family
+    for c in ("projector-on", "projector-off", "ir-learn:power_on"):
+        conn.execute("INSERT INTO device_commands (device_id, command) VALUES (1, ?)", (c,))
+    conn.execute("DELETE FROM device_commands WHERE id > 3")
+    for col in ("projector_control", "projector_ir_codes", "broadlink_host", "projector_power_mode",
+                "projector_power_state", "projector_error"):
+        assert col in _columns(conn, "devices"), col
     conn.commit()
     after_first = _schema_sql(conn)
     conn.close()

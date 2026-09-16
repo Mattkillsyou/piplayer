@@ -594,6 +594,13 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
 .status-offline .lamp { background: var(--p5k-lamp-off); }
 .status-stale { border: var(--p5k-status-stale-edge); color: var(--p5k-body); }
 .status-stale .lamp { background: var(--p5k-soft); }
+/* projector power state lamp (Devices page Projector block) */
+.status-projector-on { border: var(--p5k-status-ok-edge); background: var(--p5k-status-ok-fill); color: var(--p5k-phosphor); }
+.status-projector-on .lamp { background: var(--p5k-phosphor); box-shadow: var(--p5k-glow-lamp); }
+.status-projector-off { border: var(--p5k-status-offline-edge); color: var(--p5k-muted); }
+.status-projector-off .lamp { background: var(--p5k-lamp-off); }
+.status-projector-unknown { border: var(--p5k-status-idle-edge); color: var(--p5k-soft); }
+.ir-codes { align-items: center; }
 
 /* -------------------------------------------------------------- buttons --- */
 button, .button {

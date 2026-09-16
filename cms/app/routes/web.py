@@ -17,7 +17,7 @@ from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.concurrency import run_in_threadpool
 
 from .. import audit, auth, config, db, ffprobe, schedules
-from .api import DEVICE_ID_RE, DEVICE_ID_RULE, resolve_active_playlist_id
+from .api import DEVICE_ID_RE, DEVICE_ID_RULE, ir_codes, resolve_active_playlist_id
 
 
 log = logging.getLogger("piplayer.web")
@@ -39,6 +39,8 @@ require_admin = auth.require_role("admin")
 OFFLINE_AFTER_SECONDS = 180
 LAMP_STATES = ("playing", "paused", "idle", "mpv-down")
 MAX_CAMERA_URL_LEN = 2048
+# Broadlink RM4 address: an IPv4/IPv6 literal or a hostname (no scheme, port or path).
+BROADLINK_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$")
 DASHBOARD_AUDIT_TAIL = 8
 
 
@@ -895,6 +897,8 @@ def devices_page(request: Request, user=Depends(auth.require_user)):
                       d.last_screenshot_at, d.last_error,
                       d.last_camera_at, d.camera_error, d.camera_live_url,
                       d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
+                      d.projector_control, d.projector_power_mode, d.projector_power_state,
+                      d.projector_error, d.broadlink_host, d.projector_ir_codes,
                       p.id AS playlist_id, p.name AS playlist_name,
                       g.id AS group_id, g.name AS group_name
                FROM devices d
@@ -919,6 +923,9 @@ def devices_page(request: Request, user=Depends(auth.require_user)):
                    FROM device_commands WHERE device_id = ? ORDER BY id DESC LIMIT 5""",
                 (dd["id"],),
             ).fetchall()]
+            dd["projector_codes"] = ir_codes(dd.pop("projector_ir_codes"))   # the packets stay out of the page
+            dd["ir_learning"] = {c["command"][len("ir-learn:"):] for c in dd["recent_commands"]
+                                 if c["command"].startswith("ir-learn:") and not c["completed_at"]}
             device_list.append(dd)
 
     base_url = config.PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
@@ -930,6 +937,11 @@ def devices_page(request: Request, user=Depends(auth.require_user)):
         public_base_url=config.PUBLIC_BASE_URL,
         install_base_url=base_url,
         can_edit=can_edit,
+        projector_controls=db.PROJECTOR_CONTROLS,
+        projector_modes=db.PROJECTOR_MODES,
+        ir_code_names=db.IR_CODE_NAMES,
+        projector_lead=config.PROJECTOR_LEAD_MINUTES,
+        projector_idle=config.PROJECTOR_IDLE_MINUTES,
     )
 
 
@@ -1001,6 +1013,32 @@ def devices_set_camera_url(device_id: int, request: Request, camera_live_url: st
     return RedirectResponse("/devices", status_code=303)
 
 
+@router.post("/devices/{device_id}/projector")
+def devices_set_projector(device_id: int, request: Request, projector_control: str = Form("none"),
+                          projector_power_mode: str = Form("manual"), broadlink_host: str = Form(""),
+                          user=Depends(require_editor)):
+    """Projector block on the Devices page: how the Pi switches the projector (none | broadlink |
+    cec), whether it follows the schedule (auto) or only the On/Off buttons (manual), and the RM4
+    address (empty = discover on the LAN). Learned IR codes are untouched."""
+    if projector_control not in db.PROJECTOR_CONTROLS:
+        raise HTTPException(400, "projector_control must be one of none, broadlink, cec")
+    if projector_power_mode not in db.PROJECTOR_MODES:
+        raise HTTPException(400, "projector_power_mode must be manual or auto")
+    host = broadlink_host.strip() or None
+    if host and not BROADLINK_HOST_RE.match(host):
+        raise HTTPException(400, "broadlink_host must be a hostname or IP address")
+    values = {"projector_control": projector_control, "projector_power_mode": projector_power_mode,
+              "broadlink_host": host}
+    with db.cursor() as cur:
+        _require_row(cur, "devices", device_id, "Device")
+        cur.execute(
+            "UPDATE devices SET projector_control = ?, projector_power_mode = ?, broadlink_host = ? WHERE id = ?",
+            (projector_control, projector_power_mode, host, device_id),
+        )
+    audit.log(request, user, "device_set_projector", "device", device_id, values)
+    return RedirectResponse("/devices", status_code=303)
+
+
 @router.post("/devices/{device_id}/regen-token")
 def devices_regen_token(device_id: int, request: Request, user=Depends(require_editor)):
     token = db.new_token()
@@ -1028,7 +1066,8 @@ def devices_delete(device_id: int, request: Request, user=Depends(require_editor
 def devices_send_command(
     device_id: int, request: Request, command: str = Form(...), user=Depends(require_editor),
 ):
-    if command not in db.COMMANDS:
+    # ir-learn:<name> (E): the Pi's RM4 listens 30 s for the remote; only the known code names.
+    if command not in db.COMMANDS and command not in {f"ir-learn:{n}" for n in db.IR_CODE_NAMES}:
         raise HTTPException(400, "unknown command")
     with db.cursor() as cur:
         _require_row(cur, "devices", device_id, "Device")
@@ -1314,6 +1353,7 @@ def settings_page(request: Request, user=Depends(require_admin)):
                    saved=request.query_params.get("saved") == "1",
                    update={"release": config.PLAYER_RELEASE, "auto": config.AUTO_UPDATE,
                            "window": config.AUTO_UPDATE_WINDOW},
+                   projector={"lead": config.PROJECTOR_LEAD_MINUTES, "idle": config.PROJECTOR_IDLE_MINUTES},
                    **defaults)
 
 

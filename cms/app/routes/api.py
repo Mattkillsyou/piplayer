@@ -1,3 +1,4 @@
+import base64
 import datetime as dt
 import hashlib
 import json
@@ -27,6 +28,9 @@ JPEG_MAGIC = b"\xff\xd8\xff"
 MAX_COMMAND_DELIVERIES = 5
 MAX_SYNC_ERROR_LEN = 200
 MAX_UPDATE_REF_LEN = 100
+PROJECTOR_STATES = ("on", "off", "unknown")
+# A Broadlink packet is 16 bytes of header + the pulses; the player reports it as base64.
+IR_CODE_RE = re.compile(r"^[A-Za-z0-9+/]{20,4000}={0,2}$")
 
 
 def _device_from_header(authorization: str | None = Header(None)) -> dict:
@@ -66,6 +70,61 @@ def resolve_active_playlist_id(device: dict, now: dt.datetime, cur=None) -> tupl
         if grow and grow["playlist_id"]:
             return grow["playlist_id"], "group-default"
     return None, None
+
+
+def ir_codes(raw) -> dict[str, str]:
+    """The stored projector_ir_codes JSON as {name: base64} with only the known names; {} for
+    NULL / junk (a hand-edited row must never break a sync or the Devices page)."""
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {n: parsed[n] for n in db.IR_CODE_NAMES if isinstance(parsed.get(n), str) and parsed[n]}
+
+
+def projector_want(device: dict, now: dt.datetime, cur,
+                   lead_minutes: int | None = None, idle_minutes: int | None = None) -> str:
+    """"on" | "off" for a device's projector in auto mode: on while a playlist is served, from
+    lead_minutes before the next schedule rule starts, and until nothing has been served for
+    idle_minutes; off otherwise. Same clock and rules as the manifest's playlist."""
+    lead = config.PROJECTOR_LEAD_MINUTES if lead_minutes is None else lead_minutes
+    idle = config.PROJECTOR_IDLE_MINUTES if idle_minutes is None else idle_minutes
+    if resolve_active_playlist_id(device, now, cur)[0]:
+        return "on"
+    rows = cur.execute(
+        """SELECT id, playlist_id, name, priority, start_time, end_time, days_of_week, start_date, end_date
+           FROM device_schedules WHERE device_id = ?""",
+        (device["id"],),
+    ).fetchall()
+    upcoming = schedules.next_start([dict(r) for r in rows], now)
+    if upcoming and upcoming[1] - now.replace(second=0, microsecond=0, tzinfo=None) <= dt.timedelta(minutes=lead):
+        return "on"
+    # ponytail: one pick_active per idle minute (default 10) rather than a "last end" solver
+    for back in range(1, idle + 1):
+        if resolve_active_playlist_id(device, now - dt.timedelta(minutes=back), cur)[0]:
+            return "on"
+    return "off"
+
+
+def _projector_block(device: dict, now: dt.datetime) -> dict | None:
+    """Manifest `projector` key (player/player/projector.py), None when the device has no
+    projector control (absence = feature off). `want` is what auto mode follows; manual mode only
+    acts on the projector-on / projector-off commands."""
+    control = device.get("projector_control")
+    if not control or control == "none":
+        return None
+    with db.cursor() as cur:
+        want = projector_want(device, now, cur)
+    mode = device.get("projector_power_mode")
+    return {
+        "control": control,
+        "mode": mode if mode in db.PROJECTOR_MODES else "manual",
+        "want": want,
+        "codes": ir_codes(device.get("projector_ir_codes")),
+        "broadlink_host": device.get("broadlink_host") or None,
+    }
 
 
 def _pending_commands(device_id: int) -> list[dict]:
@@ -190,6 +249,9 @@ def _manifest_for_device(device: dict, request: Request, now: dt.datetime | None
         "camera_interval_seconds": config.CAMERA_INTERVAL_SECONDS,
         # Remote updates (player/player/updater.py): git ref to install, off|nightly, local HH:MM-HH:MM.
         "update": {"release": config.PLAYER_RELEASE, "auto": config.AUTO_UPDATE, "window": config.AUTO_UPDATE_WINDOW},
+        # Projector power: null when the device has no projector control; otherwise {control, mode,
+        # want, codes, broadlink_host} (auto mode follows `want`, see projector_want).
+        "projector": _projector_block(device, now),
         # Local wall-clock with UTC offset, e.g. 2026-09-14T15:03:07-07:00 (schedules use this clock).
         "server_time": now.astimezone().isoformat(timespec="seconds"),
     }
@@ -269,6 +331,8 @@ def sync(
     sync_error: str | None = Query(None),
     camera_error: str | None = Query(None),
     update_status: str | None = Query(None),
+    projector_state: str | None = Query(None),
+    projector_error: str | None = Query(None),
 ):
     if device["device_id"] != device_id:
         raise HTTPException(status_code=403, detail="Token does not match device id")
@@ -277,6 +341,10 @@ def sync(
     last_error = (sync_error or "").strip()[:MAX_SYNC_ERROR_LEN] or None
     # camera_error works the same way for the player's last camera capture.
     cam_error = (camera_error or "").strip()[:MAX_SYNC_ERROR_LEN] or None
+    # projector_state (on | off | unknown) is kept when the player does not send one (no
+    # projector control); projector_error clears like camera_error.
+    proj_state = projector_state if projector_state in PROJECTOR_STATES else None
+    proj_error = (projector_error or "").strip()[:MAX_SYNC_ERROR_LEN] or None
     with db.cursor() as cur:
         cur.execute(
             """UPDATE devices SET
@@ -287,7 +355,9 @@ def sync(
                   player_status = ?,
                   player_version = COALESCE(?, player_version),
                   last_error = ?,
-                  camera_error = ?
+                  camera_error = ?,
+                  projector_power_state = COALESCE(?, projector_power_state),
+                  projector_error = ?
                WHERE id = ?""",
             (
                 request.client.host if request.client else None,
@@ -297,6 +367,8 @@ def sync(
                 player_version,
                 last_error,
                 cam_error,
+                proj_state,
+                proj_error,
                 device["id"],
             ),
         )
@@ -359,24 +431,65 @@ async def report_command_result(
     if not isinstance(body, dict):
         raise HTTPException(400, "body must be a JSON object")
     result = str(body.get("result", ""))[:1000]
+    learned = None
 
     def _store():
+        nonlocal learned
         with db.cursor() as cur:
             row = cur.execute(
-                "SELECT id, device_id FROM device_commands WHERE id = ?",
+                "SELECT id, device_id, command FROM device_commands WHERE id = ?",
                 (command_id,),
             ).fetchone()
             if not row:
                 raise HTTPException(404, "command not found")
             if row["device_id"] != device["id"]:
                 raise HTTPException(403, "command belongs to another device")
+            learned = _store_learned_code(cur, device["id"], row["command"], body)
             cur.execute(
                 "UPDATE device_commands SET completed_at = datetime('now'), result = ? WHERE id = ?",
-                (result, command_id),
+                (f"learned {learned}" if learned else result, command_id),
             )
 
     await run_in_threadpool(_store)
+    if learned:
+        audit.log(request, None, "device_ir_code_learned", "device", device["id"],
+                  {"device_id": device["device_id"], "name": learned})
     return {"ok": True}
+
+
+def _learned_code(body: dict) -> str | None:
+    """The base64 packet in an ir-learn result: `code`, a JSON result {"learned", "code"} (what
+    player/player/projector.py sends) or a bare base64 `result`. A failure text never matches."""
+    raw = body.get("result")
+    nested = None
+    if isinstance(raw, str) and raw.lstrip().startswith("{"):
+        try:
+            nested = json.loads(raw).get("code")
+        except (ValueError, AttributeError):
+            nested = None
+    for v in (body.get("code"), nested, raw):
+        if isinstance(v, str) and IR_CODE_RE.match(v.strip()):
+            try:
+                base64.b64decode(v.strip(), validate=True)
+            except ValueError:
+                continue
+            return v.strip()
+    return None
+
+
+def _store_learned_code(cur, device_row_id: int, command: str, body: dict) -> str | None:
+    """ir-learn:<name>: file the learned packet under <name> in projector_ir_codes (only the
+    known names; a timeout / failure result leaves the stored codes alone). Returns the name."""
+    if not command.startswith("ir-learn:"):
+        return None
+    name = command[len("ir-learn:"):]
+    code = _learned_code(body) if name in db.IR_CODE_NAMES else None
+    if not code:
+        return None
+    row = cur.execute("SELECT projector_ir_codes FROM devices WHERE id = ?", (device_row_id,)).fetchone()
+    codes = {**ir_codes(row["projector_ir_codes"] if row else None), name: code}
+    cur.execute("UPDATE devices SET projector_ir_codes = ? WHERE id = ?", (json.dumps(codes), device_row_id))
+    return name
 
 
 async def _receive_jpeg(request: Request, target: Path, max_bytes: int, what: str) -> int:

@@ -50,6 +50,19 @@
 </div>
 
 <div class="panel">
+  <h2>Projector power</h2>
+  <p class="muted small">
+    Set in <code>/etc/projector-cms/env</code> (restart the CMS to apply). Per-device control, mode and
+    learned IR codes live on the Devices page; in auto mode the manifest tells the Pi when the projector
+    should be on.
+  </p>
+  <div class="facts">
+    <div><span class="label">lead time</span><span class="value">{{ projector.lead }} min<br><span class="muted small">PIPLAYER_PROJECTOR_LEAD_MINUTES: switch on this long before a schedule rule starts</span></span></div>
+    <div><span class="label">idle-off delay</span><span class="value">{{ projector.idle }} min<br><span class="muted small">PIPLAYER_PROJECTOR_IDLE_MINUTES: switch off once nothing has played for this long</span></span></div>
+  </div>
+</div>
+
+<div class="panel">
   <h2>Enrollment key</h2>
   <p class="muted small">
     Baked into the flasher so a freshly flashed Pi registers itself on first boot (no login needed).

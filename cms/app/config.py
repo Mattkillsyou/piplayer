@@ -97,6 +97,12 @@ def _env_window(name: str, default: str) -> str:
 
 AUTO_UPDATE_WINDOW = _env_window("PIPLAYER_AUTO_UPDATE_WINDOW", "03:00-05:00")
 
+# Projector power (manifest "projector" key; player/player/projector.py). In auto mode the manifest
+# says want=on from this many minutes before a schedule rule starts until nothing has played for
+# the idle delay, off otherwise. Same defaults as the cloud console's Settings; 0-1440.
+PROJECTOR_LEAD_MINUTES = min(1440, max(0, _env_int("PIPLAYER_PROJECTOR_LEAD_MINUTES", 3)))
+PROJECTOR_IDLE_MINUTES = min(1440, max(0, _env_int("PIPLAYER_PROJECTOR_IDLE_MINUTES", 10)))
+
 
 def media_type_for_ext(ext: str) -> str | None:
     ext = ext.lower()

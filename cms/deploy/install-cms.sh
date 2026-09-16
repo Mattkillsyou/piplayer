@@ -85,6 +85,10 @@ $(env_line PIPLAYER_PUBLIC_BASE_URL https://your.public.url)
 # PIPLAYER_PLAYER_RELEASE=main
 # PIPLAYER_AUTO_UPDATE=off
 # PIPLAYER_AUTO_UPDATE_WINDOW=03:00-05:00
+# Projector power (Devices page Projector block, auto mode): minutes before a schedule
+# rule starts to switch the projector on, and idle minutes before switching it off.
+# PIPLAYER_PROJECTOR_LEAD_MINUTES=3
+# PIPLAYER_PROJECTOR_IDLE_MINUTES=10
 # NOTE: systemd EnvironmentFile= has no trailing-comment support, so every
 # uncommented line must contain nothing but NAME=value.
 EOF

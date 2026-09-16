@@ -227,7 +227,9 @@ def authenticate_device(authorization: str | None) -> dict:
     token = authorization.split(" ", 1)[1].strip()
     with db.cursor() as cur:
         row = cur.execute(
-            "SELECT id, device_id, name, playlist_id, group_id FROM devices WHERE token = ?",
+            """SELECT id, device_id, name, playlist_id, group_id,
+                      projector_control, projector_power_mode, projector_ir_codes, broadlink_host
+               FROM devices WHERE token = ?""",
             (token,),
         ).fetchone()
     if not row:

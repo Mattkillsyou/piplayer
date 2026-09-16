@@ -141,6 +141,71 @@
         </div>
       </details>
 
+      <details class="projector-block">
+        <summary>Projector
+          {% if d.projector_control and d.projector_control != 'none' %} · {{ d.projector_control }} · {{ d.projector_power_mode or 'manual' }}
+          · <span class="status status-projector-{{ d.projector_power_state or 'unknown' }}"><span class="lamp"></span>{{ d.projector_power_state or 'unknown' }}</span>{% endif %}
+        </summary>
+        <div class="token-block">
+          <form method="post" action="/devices/{{ d.id }}/projector" class="row">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label>control
+              <select name="projector_control"{% if not can_edit %} disabled{% endif %}>
+                {% for c in projector_controls %}
+                <option value="{{ c }}" {% if c == (d.projector_control or 'none') %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>mode
+              <select name="projector_power_mode"{% if not can_edit %} disabled{% endif %}>
+                {% for m in projector_modes %}
+                <option value="{{ m }}" {% if m == (d.projector_power_mode or 'manual') %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>RM4 host
+              <input type="text" name="broadlink_host" value="{{ d.broadlink_host or '' }}" placeholder="discover on LAN" maxlength="253"{% if not can_edit %} disabled{% endif %}>
+            </label>
+            <button type="submit" class="small"{% if not can_edit %} disabled{% endif %}>Save</button>
+          </form>
+          <p class="help small">broadlink: IR packets learned from the projector's remote via an RM4 mini. cec: HDMI-CEC (cec-ctl). auto: the Pi switches the projector on {{ projector_lead }} min before a schedule starts and off after {{ projector_idle }} idle minutes; manual: only the buttons below.</p>
+          {% if d.projector_error %}
+          <div class="alert warn small" title="Reported by the player on its last sync">Projector: {{ d.projector_error }}</div>
+          {% endif %}
+          {% if d.projector_control and d.projector_control != 'none' %}
+          <div class="action-buttons">
+            {% if can_edit %}
+            <form method="post" action="/devices/{{ d.id }}/command" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="command" value="projector-on">
+              <button type="submit" class="small primary" title="Switch the projector on now">Projector on</button>
+            </form>
+            <form method="post" action="/devices/{{ d.id }}/command" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="command" value="projector-off">
+              <button type="submit" class="small" title="Switch the projector off now">Projector off</button>
+            </form>
+            {% endif %}
+          </div>
+          {% endif %}
+          {% if d.projector_control == 'broadlink' %}
+          <div class="action-buttons ir-codes">
+            {% for n in ir_code_names %}
+            <span class="badge {% if n in d.projector_codes %}badge-active{% else %}badge-muted{% endif %}" title="{% if n in d.projector_codes %}learned{% else %}not learned yet{% endif %}">{{ n }}</span>
+            {% if can_edit %}
+            <form method="post" action="/devices/{{ d.id }}/command" class="inline" data-confirm="Learn {{ n }} on {{ d.name }}? After the Pi picks up the command, point the projector remote at the RM4 and press the button within 30 s.">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="command" value="ir-learn:{{ n }}">
+              <button type="submit" class="small" title="RM4 listens 30 s for the remote"{% if n in d.ir_learning %} disabled{% endif %}>{% if n in d.ir_learning %}Learning…{% else %}Learn {{ n | replace('_', ' ') }}{% endif %}</button>
+            </form>
+            {% endif %}
+            {% endfor %}
+          </div>
+          {% if d.ir_learning %}<p class="help small">Learn queued: once the Pi picks it up, press the remote button at the RM4 within 30 s.</p>{% endif %}
+          {% endif %}
+        </div>
+      </details>
+
       {% if d.recent_commands %}
       <details>
         <summary>Recent commands ({{ d.recent_commands | length }})</summary>

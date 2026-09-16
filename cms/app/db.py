@@ -9,7 +9,13 @@ from . import config
 # Remote commands the console may queue (also the CHECK on device_commands.command).
 # SQLite cannot alter a CHECK: extending this list needs the rename-copy-drop in
 # init_schema (_rebuild_device_commands), keyed on the newest value.
-COMMANDS = ("reboot", "force-sync", "restart-mpv", "update-player", "update-os", "update-all")
+COMMANDS = ("reboot", "force-sync", "restart-mpv", "update-player", "update-os", "update-all",
+            "projector-on", "projector-off")
+# E: "ir-learn:<name>" is also admitted (CHECK ... OR command LIKE 'ir-learn:%'); the player answers
+# with the learned Broadlink packet (base64) and api.report_command_result files it under <name>.
+IR_CODE_NAMES = ("power_on", "power_off", "input_hdmi1")
+PROJECTOR_CONTROLS = ("none", "broadlink", "cec")
+PROJECTOR_MODES = ("manual", "auto")
 _COMMAND_CHECK = ", ".join(f"'{c}'" for c in COMMANDS)
 
 # Kept out of SCHEMA so _rebuild_device_commands can run them as single statements
@@ -17,7 +23,7 @@ _COMMAND_CHECK = ", ".join(f"'{c}'" for c in COMMANDS)
 DEVICE_COMMANDS_TABLE = f"""CREATE TABLE IF NOT EXISTS device_commands (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-    command TEXT NOT NULL CHECK (command IN ({_COMMAND_CHECK})),
+    command TEXT NOT NULL CHECK (command IN ({_COMMAND_CHECK}) OR command LIKE 'ir-learn:%'),
     issued_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     issued_at TEXT NOT NULL DEFAULT (datetime('now')),
     delivered_at TEXT,
@@ -98,6 +104,12 @@ CREATE TABLE IF NOT EXISTS devices (
     last_update_ok INTEGER,                              -- 1 ok / 0 failed (sync update_status)
     last_update_message TEXT,
     last_update_ref TEXT,                                -- git ref that run installed
+    projector_control TEXT,                              -- none|broadlink|cec (NULL = none)
+    projector_ir_codes TEXT,                             -- JSON name -> base64 Broadlink packet (IR_CODE_NAMES)
+    broadlink_host TEXT,                                 -- RM4 address; NULL = discover on the LAN
+    projector_power_mode TEXT,                           -- manual|auto (NULL = manual)
+    projector_power_state TEXT,                          -- on|off|unknown as last reported by the player
+    projector_error TEXT,                                -- player's last projector control error, NULL = healthy
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -157,6 +169,12 @@ MIGRATIONS = [
     ("devices", "last_update_ok", "INTEGER"),
     ("devices", "last_update_message", "TEXT"),
     ("devices", "last_update_ref", "TEXT"),
+    ("devices", "projector_control", "TEXT"),
+    ("devices", "projector_ir_codes", "TEXT"),
+    ("devices", "broadlink_host", "TEXT"),
+    ("devices", "projector_power_mode", "TEXT"),
+    ("devices", "projector_power_state", "TEXT"),
+    ("devices", "projector_error", "TEXT"),
 ]
 
 
