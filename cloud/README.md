@@ -13,19 +13,20 @@ Plain ES-module JavaScript, no framework, no runtime dependencies. Dev dependenc
 
 ```
 wrangler.toml          bindings: DB (D1 piplayer-cloud-db), MEDIA (R2 piplayer-cloud-media),
-                       ASSETS (public/, run_worker_first), [vars] PIPLAYER_*, cron 0 3 * * *,
+                       ASSETS (public/, run_worker_first), ALERT_MAIL (send_email), [vars]
+                       PIPLAYER_*, crons 0 3 * * * (housekeeping) + */5 * * * * (alerts),
                        custom domain route
 migrations/            D1 schema (0001_init.sql = cms/app/db.py + settings, sessions,
                        login_failures, uploads, meta); add 000N_*.sql, never edit old ones
 src/index.js           fetch + scheduled entry, session/CSRF/first-run gate, error mapping
 src/router.js, util.js, db.js, auth.js, audit.js
-src/api.js, media.js, manifest.js, schedules.js, uploads.js
+src/api.js, media.js, manifest.js, schedules.js, uploads.js, alerts.js (evaluator + channels)
 src/pages/*.js         server-rendered pages (layout.js = base.html)
 public/                style.css + sortable.min.js (verbatim from the CMS), app.js, upload.js, sha256.js
 test/                  vitest inside workerd (unit + integration, every route x role)
 e2e/                   Python black-box suites against `wrangler dev` (run_e2e.py,
-                       run_upload_e2e.py, run_operator_e2e.py, run_player_e2e.py — the last one
-                       drives the real player)
+                       run_upload_e2e.py, run_operator_e2e.py, run_player_e2e.py — that one
+                       drives the real player — and run_alerts_e2e.py)
 scripts/deploy.md      deployment runbook;  scripts/backup.md  D1 + R2 backups
 MODULES.md             module contracts for contributors
 ```
@@ -50,7 +51,10 @@ dev servers never share a database.
 
 Cron locally: `npx wrangler dev --test-scheduled ...` then
 `curl "http://127.0.0.1:8787/__scheduled?cron=0+3+*+*+*"` runs the housekeeping (audit
-retention, uploads older than 24 h aborted, expired sessions and throttle rows dropped).
+retention, uploads older than 24 h aborted, expired sessions and throttle rows dropped);
+`cron=*/5+*+*+*+*` runs one alert evaluation (`src/alerts.js`). The `ALERT_MAIL` send_email
+binding is simulated locally (nothing leaves the machine); in production it needs Email
+Routing on photogen5000.com, see `docs/automation.md` section F.
 
 Note: because `wrangler.toml` declares the custom-domain route, `wrangler dev` presents
 requests to the worker with the host `projectors.photogen5000.com` (that is wrangler's route
@@ -71,7 +75,7 @@ the schema is missing. Tests apply the migrations automatically (`test/apply-mig
 
 ```sh
 npm test          # vitest run — every test/*.test.js inside workerd with local D1/R2
-npm run e2e       # the three e2e scripts below in turn, each against a wrangler dev it starts and stops itself
+npm run e2e       # the e2e scripts below in turn, each against a wrangler dev it starts and stops itself
 ```
 
 `npm test` covers units (schedules, hash, csrf, pbkdf2, validation, sha256.js) and integration
@@ -79,7 +83,7 @@ npm run e2e       # the three e2e scripts below in turn, each against a wrangler
 chunked uploads, screenshots, command cap, setup flow, settings/timezone effects, XSS escaping
 and session security in `test/security.test.js`).
 
-The e2e directory holds three Python scripts (`cms/.venv` python with `requests`; `ffmpeg` on
+The e2e directory holds five Python scripts (`cms/.venv` python with `requests`; `ffmpeg` on
 PATH for test media). Each starts `npx wrangler dev --local` on its own port, applies migrations,
 waits for `/api/health`, runs, and always kills the dev server:
 
@@ -91,6 +95,8 @@ python e2e/run_upload_e2e.py --port 8790 --persist-to <dir>   # 12 MiB upload th
 python e2e/run_operator_e2e.py --port 8789 --persist-to <dir> # operator API tokens: Settings/Users create + revoke,
                                                              # bearer GET /api/operator/enrollment, audit throttle
 python e2e/run_player_e2e.py --port 8788 --persist-to <dir>   # the REAL player/player daemon with a fake mpv
+python e2e/run_alerts_e2e.py --port 9100 --persist-to <dir>   # alerts: settings, */5 cron opens/closes, pages,
+                                                             # Send test banners, Twilio secrets (wrangler --test-scheduled)
 ```
 
 `run_e2e.py` prints a PASS/FAIL table and exits non-zero on any failure; a 501 answer is
@@ -226,6 +232,10 @@ Devices page. Regenerating a token on the Devices page invalidates the old one a
   `/redoc` are 404.
 - **Housekeeping** (`[triggers] crons = ["0 3 * * *"]`): audit rows older than
   `PIPLAYER_AUDIT_RETENTION_DAYS` (365), abandoned uploads, expired sessions, throttle rows.
+- **Alerts** (`*/5 * * * *`, `src/alerts.js`): offline / mpv-down / stale screenshot / sync,
+  update, camera and projector errors per device; one row per (device, kind) while it holds,
+  notified on open, on recovery and every `alert_repeat_minutes` while open, through email
+  (`ALERT_MAIL`), a JSON webhook and Twilio SMS as set on `/settings`; `/alerts` lists them.
 
 ## Backups
 

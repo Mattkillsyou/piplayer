@@ -52,8 +52,10 @@ vitest-pool-workers 0.22 accepts (a later date makes `npm test` fail to boot).
    main.py's IntegrityError handler); anything else → `console.error` + 500
    `{"detail":"internal server error"}`.
 
-`scheduled` (cron `0 3 * * *`): calls `housekeeping(env)` of every module that exports one, each
-in its own try/catch. Locally: `wrangler dev --test-scheduled` then `GET /__scheduled?cron=0+3+*+*+*`.
+`scheduled` dispatches on `event.cron`: `*/5 * * * *` (`alerts.CRON`) runs `alerts.evaluate(env)`
+in a try/catch; `0 3 * * *` calls `housekeeping(env)` of every module that exports one, each in its
+own try/catch. Locally: `wrangler dev --test-scheduled` then `GET /__scheduled?cron=0+3+*+*+*`
+(or `cron=*/5+*+*+*+*`). The entry module may only export handlers: keep constants elsewhere.
 
 ## ctx
 
@@ -267,6 +269,10 @@ export function register(router) {
 | `auto_update_window` | `PIPLAYER_AUTO_UPDATE_WINDOW` (`03:00-05:00`); `HH:MM-HH:MM` site time, may wrap midnight (`db.UPDATE_WINDOW_RE`) | manifest `update.window` |
 | `wyze_camera_pattern` | `{device_name}` (`db.isCameraPattern`: 1-100 printable chars; `{device_name}` / `{device_id}` substituted) | the Wyze camera name a device gets unless it overrides it (`pages/devices.wyzeCameraName`) |
 | `camera_config_version` | 0; `db.bumpCameraConfigVersion` (+1) on any Wyze / pattern / per-device camera-source change | manifest `camera_config_version`: the player refetches `GET /api/camera-config` when it differs from the one it applied |
+| `alert_offline_minutes` | 10 (`db.isAlertOfflineMinutes`: integer 1-1440; never below the Devices page's 180 s) | `alerts.conditions`: a device whose last sync is older is `offline` |
+| `alert_repeat_minutes` | 240 (`db.isAlertRepeatMinutes`: integer 0-10080; 0 = never) | an alert still open this long after its last notification is sent again |
+| `alert_email` | `''` (`db.parseEmails`: one or more addresses, comma-separated; the row is deleted when empty) | email channel destinations (`ALERT_MAIL` binding, sender `alerts.EMAIL_FROM`) |
+| `alert_webhook_url` | `''` (`db.isWebhookUrl`: absolute https, no credentials, <= 2048) | webhook channel |
 | `projector_lead_minutes` / `projector_idle_minutes` | 3 / 10 (`db.isProjectorMinutes`: integer 0-1440; a junk row reads as the default) | manifest `projector.want` (`manifest.projector_want`): on from `lead` minutes before the next schedule rule starts, off once nothing has been active for `idle` minutes. Stored (and audited) only when the form posts them |
 
 **Remote updates (feature C).** `pages/devices.COMMANDS` gains `update-player`, `update-os`,
@@ -355,6 +361,41 @@ Devices row "Camera" `<details>` gains `POST /devices/:id/camera-source` (editor
 wyze: {email, password, api_id, api_key, camera}}`; wyze without an account and rtsp without a
 URL both fall back to none. Audited `camera_config_fetched` at most once a day per device
 (`devices.camera_config_audited_at`).
+
+## Alerts (feature F, `alerts.js`, table `alerts`, migration 0003)
+
+`alerts(id, device_id -> devices ON DELETE CASCADE, kind, opened_at, closed_at, notified_at)`:
+one open row (`closed_at NULL`) per (device, kind). `conditions(deviceRow, settings, now)` returns
+the active kinds (`alerts.KINDS`): `offline` (last_seen_at older than `alert_offline_minutes`,
+never below `OFFLINE_AFTER_SECONDS`; a device that never synced has none; while offline no other
+kind is evaluated, so those alerts neither open nor close), `mpv-down` (player_status),
+`screenshot-stale` (last_screenshot_at set and > 3 x screenshot_interval), `sync-error`
+(last_error), `update-failed` (last_update_ok = 0), `camera-error`, `projector-error`.
+`evaluate(env, now)` (the `*/5` cron; `now` is injectable for tests) opens a row + audits
+`alert_opened` (target device_id, `{kind}`), closes + audits `alert_closed` when the condition
+clears, and re-stamps `notified_at` when `alert_repeat_minutes` (> 0) have passed; then one
+`digest(events)` (`{subject, text}`: ALERT / RECOVERED / STILL OPEN lines) goes to every configured
+channel (`configured(env, settings)`), returning `{opened, closed, repeated, sent, errors}`. A
+channel failure is `console.error`ed and audited `alert_notify_failed` (target the channel,
+`{error}`), never retried: `notified_at` is stamped before sending.
+
+Channels (`send(env, settings, channel, msg)` -> null or an error string, never throws):
+`email` = the `ALERT_MAIL` send_email binding (`wrangler.toml [[send_email]]`; `rawEmail()` builds
+the RFC 5322 text, one `EmailMessage` per address; "not configured" when the binding is absent,
+which the Settings page shows as a badge), `webhook` = `POST` JSON `{site, title, text, content,
+message}` (`webhookPayload`; Slack / Discord / ntfy read one of those), `sms` = Twilio
+`POST /2010-04-01/Accounts/{sid}/Messages.json` with basic auth and `From`/`To`/`Body` (`smsBody`,
+<= 600 chars); the four `alerts.TWILIO_NAMES` live in `secrets`. Both HTTP channels use
+`AbortSignal.timeout(10 s)`. `sendTest(env, settings, channel, username)` is the "Send test"
+button.
+
+Pages: `/settings` panel "Alerts": `POST /settings/alerts` (admin; thresholds, addresses, URL;
+Twilio password inputs replace when filled / keep when empty; audit `alert_settings_update` with
+credentials as `"set"`), `POST /settings/alerts/twilio/clear`, `POST /settings/alerts/test`
+(`channel` in `alerts.CHANNELS`, 400 otherwise; redirects `?tested=<channel>` or
+`?test_error=<channel>: <why>`; audit `alert_test_sent`). `/alerts` (`pages/alerts.js`, any role)
+lists the open rows and the last 100 recovered; the dashboard's fourth card links there with the
+open count (`alerts.openCount`); "Alerts" sits in the nav for every role.
 
 ## Camera feed (room camera on the Pi)
 

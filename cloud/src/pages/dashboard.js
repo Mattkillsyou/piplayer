@@ -1,4 +1,5 @@
 // Port of web.dashboard + dashboard.html: stat tiles, the monitor wall and the audit tail.
+import * as alerts from "../alerts.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, localTime, nowUtc, zoneName } from "../util.js";
@@ -73,6 +74,7 @@ async function dashboard(ctx) {
   const auditTail = await db.all(env,
     `SELECT username, action, target_type, target_id, ip, created_at
        FROM audit_log ORDER BY created_at DESC, id DESC LIMIT ?`, DASHBOARD_AUDIT_TAIL);
+  const openAlerts = await alerts.openCount(env);
   const faultCount = devices.filter(isFault).length;
   const playingCount = devices.filter((d) => d.lamp === "playing").length;
   const n = devices.length;
@@ -98,6 +100,11 @@ async function dashboard(ctx) {
     <span class="card-value">${n}</span>
     <span class="card-sub">${playingCount} playing · ${faultCount} fault${faultCount === 1 ? "" : "s"}</span>
   </div>
+  <a class="card" href="/alerts" id="alerts-card">
+    <span class="card-label">open alerts</span>
+    <span class="card-value">${openAlerts}</span>
+    <span class="card-sub">${openAlerts ? `<span class="badge badge-stale">${openAlerts} open</span>` : "all clear"} · checked every 5 min</span>
+  </a>
 </div>
 
 <div class="section-head">

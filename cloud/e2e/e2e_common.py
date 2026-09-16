@@ -75,8 +75,9 @@ def migrate(persist):
     wrangler(persist, "d1", "migrations", "apply", DB_NAME)
 
 
-def start_dev(port, persist, log_name="wrangler-dev.log"):
-    """Start `wrangler dev --local` on `port`, wait for /api/health. Returns (proc, base, log)."""
+def start_dev(port, persist, log_name="wrangler-dev.log", extra_args=()):
+    """Start `wrangler dev --local` on `port`, wait for /api/health. Returns (proc, base, log).
+    `extra_args` are appended to the wrangler command (e.g. --test-scheduled for GET /__scheduled)."""
     # --local-upstream: without it wrangler dev rewrites every request URL/Host to the
     # custom domain from wrangler.toml, so manifest media urls would point at production.
     cmd = [NPX, "wrangler", "dev", "--local", "--port", str(port), "--ip", "127.0.0.1",
@@ -84,7 +85,7 @@ def start_dev(port, persist, log_name="wrangler-dev.log"):
            "--var", "SESSION_SECRET:" + SESSION_SECRET, "--var", "SETUP_TOKEN:" + SETUP_TOKEN,
            # plain http: without this the session cookie is Secure and requests drops it
            "--var", "PIPLAYER_INSECURE_COOKIES:1",
-           "--persist-to", persist]
+           "--persist-to", persist, *extra_args]
     log = open(os.path.join(persist, log_name), "w")
     proc = subprocess.Popen(cmd, cwd=CLOUD, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     base = "http://127.0.0.1:%d" % port

@@ -5,7 +5,10 @@
 // masked, rotatable; POST /api/enroll checks it) and the admin's personal API tokens
 // (api_tokens; the flasher presents one on GET /api/operator/enrollment to fetch that key),
 // and the Wyze account for camera zero-config (encrypted in `secrets`, shown only as set /
-// not set; every player fetches it through GET /api/camera-config).
+// not set; every player fetches it through GET /api/camera-config), and the alert channels
+// (offline / repeat minutes, email addresses, webhook URL, Twilio SMS in `secrets`; each with
+// a Send test button; alerts.js).
+import * as alerts from "../alerts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
@@ -124,6 +127,60 @@ async function wyzePanel(ctx, s) {
 </div>`;
 }
 
+// Alert channels: thresholds, addresses, webhook, Twilio (password inputs: filled replaces,
+// empty keeps, like the Wyze panel) and one Send test button per channel.
+const TWILIO_FIELDS = [["twilio_account_sid", "Twilio account SID"], ["twilio_auth_token", "Twilio auth token"],
+  ["twilio_from", "From number (E.164)"], ["twilio_to", "To number (E.164)"]];
+
+async function alertsPanel(ctx, s) {
+  const have = await secrets.names(ctx.env);
+  const c = await alerts.configured(ctx.env, s);
+  const badge = (on, text = on ? "configured" : "not configured") => `<span class="badge ${on ? "badge-active" : "badge-muted"}">${text}</span>`;
+  const setBadge = (n) => `<span class="badge ${have.has(n) ? "badge-active" : "badge-muted"}" title="Twilio credential">${have.has(n) ? "set" : "not set"}</span>`;
+  const testForm = (channel, enabled) => `<form method="post" action="/settings/alerts/test" class="inline">
+      ${csrfInput(ctx)}
+      <input type="hidden" name="channel" value="${channel}">
+      <button type="submit" class="small"${enabled ? "" : " disabled"}>Send test ${channel}</button>
+    </form>`;
+  return `<div class="panel">
+  <h2>Alerts</h2>
+  <p class="muted small">Every 5 minutes the console checks each device for: ${alerts.KINDS.map((k) => `<code>${k}</code>`).join(", ")}. An alert opens once per device and condition, is sent again while it stays open (repeat interval), and a recovery message follows when it clears. <a href="/alerts">Open and recent alerts</a>.</p>
+  <form method="post" action="/settings/alerts">
+    ${csrfInput(ctx)}
+    <div class="form-grid">
+      <label>Offline after (minutes without a sync)
+        <input type="number" name="alert_offline_minutes" value="${esc(s.alert_offline_minutes)}" min="1" max="1440" step="1" required>
+      </label>
+      <label>Repeat while open (minutes, 0 = never)
+        <input type="number" name="alert_repeat_minutes" value="${esc(s.alert_repeat_minutes)}" min="0" max="10080" step="1" required>
+      </label>
+      <label>Email ${badge(c.email)}${c.email && !c.email_binding ? ' <span class="badge badge-stale">mail binding missing</span>' : ""}
+        <input type="text" name="alert_email" value="${esc(s.alert_email)}" placeholder="you@example.net, team@example.net" maxlength="1000" autocomplete="off">
+      </label>
+      <label>Webhook URL ${badge(c.webhook)}
+        <input type="url" name="alert_webhook_url" value="${esc(s.alert_webhook_url)}" placeholder="https://hooks.slack.com/services/..." maxlength="2048" autocomplete="off" spellcheck="false">
+      </label>
+      ${TWILIO_FIELDS.map(([n, label]) => `<label>${label} ${setBadge(n)}
+        <input type="password" name="${n}" value="" placeholder="${have.has(n) ? "leave empty to keep" : "not set"}" autocomplete="off" spellcheck="false" maxlength="200">
+      </label>`).join("\n      ")}
+    </div>
+    <p class="help small">Email is sent from <code>${esc(alerts.EMAIL_FROM)}</code> through Cloudflare Email Routing (each destination must be verified there; comma-separate several). The webhook gets a JSON POST with <code>title</code>, <code>text</code>, <code>content</code> and <code>message</code>, so a Slack, Discord or ntfy URL works as is. SMS ${badge(c.sms)}: Twilio credentials are stored encrypted and never shown again.</p>
+    <div class="row">
+      <button type="submit" class="primary">Save alert settings</button>
+    </div>
+  </form>
+  <div class="row">
+    ${testForm("email", c.email)}
+    ${testForm("webhook", c.webhook)}
+    ${testForm("sms", c.sms)}
+    ${alerts.TWILIO_NAMES.some((n) => have.has(n)) ? `<form method="post" action="/settings/alerts/twilio/clear" class="inline" data-confirm="Clear the Twilio credentials? SMS alerts stop.">
+      ${csrfInput(ctx)}
+      <button type="submit" class="danger small">Clear Twilio</button>
+    </form>` : ""}
+  </div>
+</div>`;
+}
+
 async function settingsPage(ctx, newToken = "") {
   const me = auth.requireRole(ctx, "admin");
   const s = await ctx.settings();
@@ -132,6 +189,8 @@ async function settingsPage(ctx, newToken = "") {
   const saved = ctx.url.searchParams.get("saved") === "1";
   const rotated = ctx.url.searchParams.get("rotated") === "1";
   const revoked = ctx.url.searchParams.get("revoked") === "1";
+  const tested = ctx.url.searchParams.get("tested") || "";
+  const testError = ctx.url.searchParams.get("test_error") || "";
   const content = `<div class="page-head">
   <h1>Settings</h1>
   <span class="page-meta"><strong>site time ${esc(localTime(nowUtc(), s.timezone))}</strong><br>schedules, the audit log and every timestamp on these pages use this zone</span>
@@ -139,6 +198,8 @@ async function settingsPage(ctx, newToken = "") {
 ${saved ? alertBox("Settings saved.", "ok") : ""}
 ${rotated ? alertBox("Enrollment key rotated. Cards flashed with the old key must be re-flashed.", "ok") : ""}
 ${revoked ? alertBox("API token revoked.", "ok") : ""}
+${tested ? alertBox(`Test ${tested} alert sent.`, "ok") : ""}
+${testError ? alertBox(`Test alert failed: ${testError}`) : ""}
 
 <div class="panel">
   <h2>Site settings</h2>
@@ -220,6 +281,8 @@ ${revoked ? alertBox("API token revoked.", "ok") : ""}
 </div>
 
 ${await wyzePanel(ctx, s)}
+
+${await alertsPanel(ctx, s)}
 
 ${await tokensPanel(ctx, me, newToken, s.timezone)}`;
   return layout(ctx, { title: "Settings", content });
@@ -306,6 +369,58 @@ async function wyzeClear(ctx) {
   return redirect("/settings?saved=1");
 }
 
+// Thresholds, addresses and webhook go to `settings` (an empty address / URL turns that
+// channel off); filled Twilio fields replace the secret, empty keep it. The audit row never
+// carries a credential.
+async function alertsSave(ctx) {
+  auth.requireRole(ctx, "admin");
+  const form = await ctx.form();
+  const offline = intField(str(form, "alert_offline_minutes"), "alert_offline_minutes");
+  if (!db.isAlertOfflineMinutes(offline)) fail(400, "alert_offline_minutes must be a whole number of minutes, 1-1440");
+  const repeat = intField(str(form, "alert_repeat_minutes"), "alert_repeat_minutes");
+  if (!db.isAlertRepeatMinutes(repeat)) fail(400, "alert_repeat_minutes must be a whole number of minutes, 0-10080");
+  const email = str(form, "alert_email").trim();
+  if (email && !db.parseEmails(email)) fail(400, "alert_email must be one or more email addresses, comma-separated");
+  const webhook = str(form, "alert_webhook_url").trim();
+  if (webhook && !db.isWebhookUrl(webhook)) fail(400, "alert_webhook_url must be an absolute https:// URL");
+  const twilio = {};
+  for (const [name] of TWILIO_FIELDS) {
+    const v = str(form, name).trim();
+    if (!v) continue;
+    if (v.length > 200 || /[\x00-\x1f\x7f]/.test(v)) fail(400, `${name} must be at most 200 printable chars`);
+    twilio[name] = v;
+  }
+  const values = { alert_offline_minutes: offline, alert_repeat_minutes: repeat, alert_email: email, alert_webhook_url: webhook };
+  await db.batch(ctx.env, Object.entries(values).map(([k, v]) => (v === ""
+    ? ["DELETE FROM settings WHERE key = ?", k]
+    : ["INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", k, String(v)])));
+  const details = { ...values };
+  for (const [name, v] of Object.entries(twilio)) {
+    await secrets.set(ctx.env, name, v);
+    details[name] = "set";
+  }
+  await audit.log(ctx, "alert_settings_update", "settings", "alerts", details);
+  return redirect("/settings?saved=1");
+}
+
+async function twilioClear(ctx) {
+  auth.requireRole(ctx, "admin");
+  for (const name of alerts.TWILIO_NAMES) await secrets.set(ctx.env, name, "");
+  await audit.log(ctx, "alert_settings_update", "settings", "alerts", { twilio: "cleared" });
+  return redirect("/settings?saved=1");
+}
+
+// One test message through one channel; the outcome comes back as a banner (never a 500).
+async function alertsTest(ctx) {
+  const me = auth.requireRole(ctx, "admin");
+  const channel = str(await ctx.form(), "channel").trim();
+  if (!alerts.CHANNELS.includes(channel)) fail(400, `channel must be one of ${alerts.CHANNELS.join(", ")}`);
+  const error = await alerts.sendTest(ctx.env, await ctx.settings(), channel, me.username);
+  await audit.log(ctx, "alert_test_sent", "settings", channel, error ? { error: error.slice(0, 200) } : null);
+  if (error) return redirect(`/settings?test_error=${encodeURIComponent(`${channel}: ${error.slice(0, 200)}`)}`);
+  return redirect(`/settings?tested=${channel}`);
+}
+
 async function enrollmentRotate(ctx) {
   auth.requireRole(ctx, "admin");
   await db.generateEnrollmentKey(ctx.env);
@@ -343,4 +458,7 @@ export function register(router) {
   router.post("/settings/enrollment/rotate", enrollmentRotate);
   router.post("/settings/wyze", wyzeSave);
   router.post("/settings/wyze/clear", wyzeClear);
+  router.post("/settings/alerts", alertsSave);
+  router.post("/settings/alerts/twilio/clear", twilioClear);
+  router.post("/settings/alerts/test", alertsTest);
 }

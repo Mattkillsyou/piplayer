@@ -1,6 +1,7 @@
 // Worker entry: builds the router from every module, resolves the session + CSRF for web
 // requests, dispatches, and turns thrown HttpError / Response / constraint errors into the
 // contract-10 status codes. Any other exception is a JSON 500 (logged), never a stack trace.
+import * as alerts from "./alerts.js";
 import * as api from "./api.js";
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
@@ -9,6 +10,7 @@ import * as manifest from "./manifest.js";
 import * as media from "./media.js";
 import * as schedules from "./schedules.js";
 import * as uploads from "./uploads.js";
+import * as alertsPage from "./pages/alerts.js";
 import * as auditPage from "./pages/audit.js";
 import * as dashboard from "./pages/dashboard.js";
 import * as devices from "./pages/devices.js";
@@ -24,7 +26,7 @@ import { isApiPath, Router } from "./router.js";
 import { fail, HttpError, json, redirect } from "./util.js";
 
 const MODULES = [
-  login, setup, dashboard, library, playlists, devices, schedule, groups, auditPage, users, settings,
+  login, setup, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings,
   api, media, manifest, schedules, uploads, auth, audit,
 ];
 
@@ -124,8 +126,17 @@ export default {
     }
   },
 
-  // Daily cron (wrangler.toml [triggers]): every module's housekeeping(env) in turn.
+  // wrangler.toml [triggers]: the */5 cron evaluates alerts; the daily one runs every
+  // module's housekeeping(env) in turn.
   async scheduled(event, env, exec) {
+    if (event.cron === alerts.CRON) {
+      try {
+        await alerts.evaluate(env);
+      } catch (e) {
+        console.error("alert evaluation failed:", e && e.stack || e);
+      }
+      return;
+    }
     for (const m of MODULES) {
       if (!m.housekeeping) continue;
       try {

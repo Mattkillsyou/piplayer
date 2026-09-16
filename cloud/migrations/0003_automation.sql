@@ -77,4 +77,19 @@ ALTER TABLE devices ADD COLUMN projector_power_state TEXT;
 ALTER TABLE devices ADD COLUMN projector_error TEXT;
 -- E: settings keys projector_lead_minutes / projector_idle_minutes live in `settings`.
 
+-- F (alerts): one row per (device, kind) while the condition holds (closed_at NULL = open);
+-- alerts.evaluate (the */5 cron) opens, closes and re-notifies them. notified_at is when the
+-- channels were last told (open, repeat after alert_repeat_minutes, recovered). Settings keys
+-- alert_offline_minutes / alert_repeat_minutes / alert_email / alert_webhook_url live in
+-- `settings`; the Twilio credentials in `secrets`.
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at TEXT,
+    notified_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_open ON alerts(closed_at, device_id, kind);
+
 INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3');

@@ -31,8 +31,15 @@ PIPLAYER_AUDIT_RETENTION_DAYS = "365"
 # Optional: PIPLAYER_PUBLIC_BASE_URL = "https://cms.example.com" fixes the CMS_URL printed in the
 # Devices install snippet (default: the origin the browser is using).
 
+# Alerts (src/alerts.js): outbound email through Email Routing on photogen5000.com. Sender
+# alerts@photogen5000.com; every destination address must be verified in the Cloudflare
+# dashboard (Email > Email Routing > Destination addresses). The code tolerates the binding
+# being absent (wrangler dev / tests): the email channel then reports "not configured".
+[[send_email]]
+name = "ALERT_MAIL"
+
 [triggers]
-crons = ["0 3 * * *"]
+crons = ["0 3 * * *", "*/5 * * * *"]   # daily housekeeping; alerts.evaluate every 5 min (index.js scheduled)
 
 # Secrets (wrangler secret put): SESSION_SECRET, SETUP_TOKEN.
 # Local dev gets throwaway values from the `dev` script via --var.

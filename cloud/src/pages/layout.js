@@ -11,6 +11,7 @@ const NAV = [
   ["/playlists", "Playlists"],
   ["/devices", "Devices"],
   ["/groups", "Groups"],
+  ["/alerts", "Alerts"],
   ["/audit", "Audit"],
   ["/users", "Users", null, "admin"],
   ["/settings", "Settings", null, "admin"],

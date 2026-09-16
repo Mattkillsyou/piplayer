@@ -4,8 +4,9 @@
 import * as db from "./db.js";
 import { envInt } from "./util.js";
 
+// null for a cron-driven ctx (alerts.evaluate) that has no request.
 export function clientIp(ctx) {
-  return ctx.request.headers.get("cf-connecting-ip") || null;
+  return ctx.request ? ctx.request.headers.get("cf-connecting-ip") || null : null;
 }
 
 // json.dumps() with Python's default separators and ensure_ascii, so the Details column reads

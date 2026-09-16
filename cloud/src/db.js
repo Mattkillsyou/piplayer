@@ -49,7 +49,8 @@ export async function assertMigrated(env) {
 
 export const SETTING_KEYS = ["timezone", "screenshot_interval", "camera_interval", "default_image_duration", "enrollment_key",
   "enroll_group_id", "enroll_playlist_id", "player_release", "auto_update", "auto_update_window",
-  "wyze_camera_pattern", "camera_config_version", "projector_lead_minutes", "projector_idle_minutes"];
+  "wyze_camera_pattern", "camera_config_version", "projector_lead_minutes", "projector_idle_minutes",
+  "alert_offline_minutes", "alert_repeat_minutes", "alert_email", "alert_webhook_url"];
 
 // Remote updates (manifest `update` block). player_release is a git ref the Pi checks out
 // (tag, branch or sha): starts with an alphanumeric so it can never read as a shell/git option,
@@ -70,6 +71,30 @@ export const PROJECTOR_IDLE_MINUTES = 10;
 export const MAX_PROJECTOR_MINUTES = 1440;
 export const isProjectorMinutes = (v) => Number.isInteger(v) && v >= 0 && v <= MAX_PROJECTOR_MINUTES;
 
+// Alerts (alerts.js, the */5 cron): a device is "offline" after this many minutes without a
+// sync; an alert still open after alert_repeat_minutes since its last notification is sent
+// again (0 = notify once on open and once on recovery). alert_email holds one or more
+// addresses (comma-separated); alert_webhook_url an absolute https URL (Slack / Discord / ntfy).
+export const ALERT_OFFLINE_MINUTES = 10;
+export const ALERT_REPEAT_MINUTES = 240;
+export const isAlertOfflineMinutes = (v) => Number.isInteger(v) && v >= 1 && v <= 1440;
+export const isAlertRepeatMinutes = (v) => Number.isInteger(v) && v >= 0 && v <= 10080;
+const EMAIL_RE = /^[^\s@,<>"']+@[^\s@,<>"']+\.[^\s@,<>"']+$/;
+// "a@x.com, b@y.org" -> ["a@x.com", "b@y.org"]; null when any entry is not an address.
+export function parseEmails(v) {
+  const list = String(v || "").split(",").map((e) => e.trim()).filter(Boolean);
+  return list.length && list.every((e) => e.length <= 254 && EMAIL_RE.test(e)) ? list : null;
+}
+export function isWebhookUrl(v) {
+  if (typeof v !== "string" || !v || v.length > 2048) return false;
+  try {
+    const u = new URL(v);
+    return u.protocol === "https:" && !!u.hostname && !u.username && !u.password;
+  } catch {
+    return false;
+  }
+}
+
 export function defaultSettings(env) {
   return {
     timezone: "UTC",
@@ -86,6 +111,10 @@ export function defaultSettings(env) {
     camera_config_version: 0, // bumped by bumpCameraConfigVersion on any camera / Wyze change; manifest key
     projector_lead_minutes: PROJECTOR_LEAD_MINUTES,
     projector_idle_minutes: PROJECTOR_IDLE_MINUTES,
+    alert_offline_minutes: ALERT_OFFLINE_MINUTES,
+    alert_repeat_minutes: ALERT_REPEAT_MINUTES,
+    alert_email: "", // comma-separated destination addresses; "" = email channel off
+    alert_webhook_url: "", // "" = webhook channel off
   };
 }
 
@@ -93,7 +122,9 @@ export function defaultSettings(env) {
 // (float seconds), enrollment_key (secret shared with the flasher; POST /api/enroll), enroll_group_id /
 // enroll_playlist_id (int or null), player_release (git ref), auto_update ('off' | 'nightly'),
 // auto_update_window ('HH:MM-HH:MM'), wyze_camera_pattern, camera_config_version (int),
-// projector_lead_minutes / projector_idle_minutes (int, 0-1440)}.
+// projector_lead_minutes / projector_idle_minutes (int, 0-1440), alert_offline_minutes (int, 1-1440),
+// alert_repeat_minutes (int, 0-10080), alert_email (comma-separated addresses or ''),
+// alert_webhook_url (https URL or '')}.
 export async function loadSettings(env) {
   const s = defaultSettings(env);
   for (const row of await all(env, "SELECT key, value FROM settings")) {
@@ -109,6 +140,10 @@ export async function loadSettings(env) {
     else if (row.key === "wyze_camera_pattern" && isCameraPattern(row.value)) s.wyze_camera_pattern = row.value;
     else if (row.key === "camera_config_version" && /^\d+$/.test(row.value)) s.camera_config_version = parseInt(row.value, 10);
     else if ((row.key === "projector_lead_minutes" || row.key === "projector_idle_minutes") && isProjectorMinutes(+row.value)) s[row.key] = +row.value;
+    else if (row.key === "alert_offline_minutes" && isAlertOfflineMinutes(+row.value)) s.alert_offline_minutes = +row.value;
+    else if (row.key === "alert_repeat_minutes" && isAlertRepeatMinutes(+row.value)) s.alert_repeat_minutes = +row.value;
+    else if (row.key === "alert_email" && parseEmails(row.value)) s.alert_email = row.value;
+    else if (row.key === "alert_webhook_url" && isWebhookUrl(row.value)) s.alert_webhook_url = row.value;
   }
   if (!s.enrollment_key) s.enrollment_key = await generateEnrollmentKey(env, false);
   return s;
