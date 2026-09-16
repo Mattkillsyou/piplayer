@@ -401,7 +401,7 @@ describe("projector", () => {
     expect(b).not.toContain("wants ");
     // broadlink + auto: On/Off, three Learn buttons, badges, the want hint; no default playlist -> off
     await query(`UPDATE devices SET projector_control = 'broadlink', projector_power_mode = 'auto', broadlink_host = 'rm4.lan',
-                   projector_ir_codes = '{"power_on":"JgBIAAABKZMTEhMSExITEhM3EzcTNxM3Ew=="}', projector_state = 'on', projector_error = 'send failed: <timeout>' WHERE id = ?`, dev.id);
+                   projector_ir_codes = '{"power_on":"JgBIAAABKZMTEhMSExITEhM3EzcTNxM3Ew=="}', projector_power_state = 'on', projector_error = 'send failed: <timeout>' WHERE id = ?`, dev.id);
     page = await (await r.editor.get("/devices")).text();
     b = block(page);
     expect(b).toContain("<summary>Projector · broadlink · auto · error</summary>");
@@ -419,7 +419,7 @@ describe("projector", () => {
     expect(b).toContain('<span class="badge badge-muted" title="Not learned yet">Input HDMI1</span>');
     expect(b).toContain("learn mode for 30 s");
     // a default playlist makes auto mode want it on; cec has no IR codes or Learn buttons; off state
-    await query("UPDATE devices SET projector_control = 'cec', playlist_id = ?, projector_state = 'off', projector_error = NULL WHERE id = ?", w.pid, dev.id);
+    await query("UPDATE devices SET projector_control = 'cec', playlist_id = ?, projector_power_state = 'off', projector_error = NULL WHERE id = ?", w.pid, dev.id);
     page = await (await r.editor.get("/devices")).text();
     b = block(page);
     expect(b).toContain("<summary>Projector · cec · auto</summary>");

@@ -240,7 +240,7 @@ export function updateStatus(d, tz) {
 const IR_CODE_LABELS = { power_on: "Power On", power_off: "Power Off", input_hdmi1: "Input HDMI1" };
 
 export function projectorState(d) {
-  const state = manifest.PROJECTOR_STATES.includes(d.projector_state) ? d.projector_state : "unknown";
+  const state = manifest.PROJECTOR_STATES.includes(d.projector_power_state) ? d.projector_power_state : "unknown";
   const cls = { on: "playing", off: "offline", unknown: "idle" }[state];
   return `<span class="status status-${cls} projector-state" title="Reported by the player on its last sync"><span class="lamp"></span>projector ${state}</span>`;
 }
@@ -451,7 +451,7 @@ async function devicesPage(ctx) {
             d.last_camera_at, d.camera_error, d.camera_live_url,
             d.camera_source, d.camera_rtsp_url, d.camera_wyze_name,
             d.projector_control, d.projector_ir_codes, d.broadlink_host, d.projector_power_mode,
-            d.projector_state, d.projector_error,
+            d.projector_power_state, d.projector_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
             p.id AS playlist_id, p.name AS playlist_name,
             g.id AS group_id, g.name AS group_name

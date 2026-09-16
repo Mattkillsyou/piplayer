@@ -149,8 +149,8 @@ def projector_probes(base, admin, persist, dev_row):
     r = requests.get(sync_url, headers=h, params={"projector_state": "off", "projector_error": "RM4 not found"})
     assert r.status_code == 200, r.text[:300]
     assert r.json()["projector"] == {"control": "broadlink", "mode": "auto", "want": "on", "codes": {}, "broadlink_host": "10.0.0.7"}, r.json()["projector"]
-    row = ec.d1_one(persist, "SELECT projector_state, projector_error FROM devices WHERE id = %d" % dev_row["id"])
-    assert row == {"projector_state": "off", "projector_error": "RM4 not found"}, row
+    row = ec.d1_one(persist, "SELECT projector_power_state, projector_error FROM devices WHERE id = %d" % dev_row["id"])
+    assert row == {"projector_power_state": "off", "projector_error": "RM4 not found"}, row
     page = admin.get("/devices").text
     assert "projector off</span>" in page and "Projector: RM4 not found" in page and ">wants on</span>" in page, "devices page misses the projector state"
     assert 'title="Not learned yet">Power On</span>' in page, "Power On badged as learned before any ir-learn"

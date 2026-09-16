@@ -66,7 +66,7 @@ async function sync(ctx) {
         player_version = COALESCE(?, player_version),
         last_error = ?,
         camera_error = ?,
-        projector_state = COALESCE(?, projector_state),
+        projector_power_state = COALESCE(?, projector_power_state),
         projector_error = ?
       WHERE id = ?`,
     ctx.ip,

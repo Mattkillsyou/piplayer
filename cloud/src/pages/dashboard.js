@@ -2,7 +2,7 @@
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, localTime, nowUtc, zoneName } from "../util.js";
-import { cameraScreen, decorateDevices, deviceScreen, isFault, statusLamp, updateStatus } from "./devices.js";
+import { cameraScreen, decorateDevices, deviceScreen, isFault, projectorState, statusLamp, updateStatus } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 
 const DASHBOARD_AUDIT_TAIL = 8;
@@ -28,6 +28,8 @@ function deviceCard(ctx, d, tz, canEdit) {
       <span class="device-meta">last seen ${d.last_seen_at ? `${esc(d.seen_age)} · ${esc(localTime(d.last_seen_at, tz))}` : "never"}</span>
       ${d.last_error ? `<div class="alert error small" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
       ${updateStatus(d, tz)}
+      ${d.projector_control && d.projector_control !== "none" ? `<div class="device-meta">${projectorState(d)}</div>` : ""}
+      ${d.projector_error ? `<div class="alert warn small" title="Reported by the player on its last sync">Projector: ${esc(d.projector_error)}</div>` : ""}
       ${canEdit ? `<div class="tile-actions">
         <form method="post" action="/devices/${d.id}/command" class="inline">
           ${csrfInput(ctx)}
@@ -61,6 +63,7 @@ async function dashboard(ctx) {
             d.current_position, d.current_filename, d.player_status,
             d.last_screenshot_at, d.last_error, d.last_camera_at, d.camera_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
+            d.projector_control, d.projector_power_state, d.projector_error,
             p.name AS playlist_name, g.name AS group_name
        FROM devices d
        LEFT JOIN playlists p ON p.id = d.playlist_id

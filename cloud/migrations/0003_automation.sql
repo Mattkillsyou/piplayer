@@ -73,7 +73,7 @@ ALTER TABLE devices ADD COLUMN projector_control TEXT NOT NULL DEFAULT 'none' CH
 ALTER TABLE devices ADD COLUMN projector_ir_codes TEXT;
 ALTER TABLE devices ADD COLUMN broadlink_host TEXT;
 ALTER TABLE devices ADD COLUMN projector_power_mode TEXT NOT NULL DEFAULT 'manual' CHECK (projector_power_mode IN ('manual', 'auto'));
-ALTER TABLE devices ADD COLUMN projector_state TEXT;
+ALTER TABLE devices ADD COLUMN projector_power_state TEXT;
 ALTER TABLE devices ADD COLUMN projector_error TEXT;
 -- E: settings keys projector_lead_minutes / projector_idle_minutes live in `settings`.
 

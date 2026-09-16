@@ -304,22 +304,22 @@ describe("screenshots", () => {
 // E: projector power. The player reports ?projector_state= / ?projector_error= on every sync
 // and returns an ir-learn:<name> packet in the command result; the console keeps the codes.
 describe("projector", () => {
-  const cols = () => one("SELECT projector_state, projector_error, projector_ir_codes FROM devices WHERE id = ?", ids.other.id);
+  const cols = () => one("SELECT projector_power_state, projector_error, projector_ir_codes FROM devices WHERE id = ?", ids.other.id);
   const CODE = "JgBIAAABKZMTEhMSExITEhM3EzcTNxM3ExITEhMSExITNxM3EzcTNxMSExITEhMSEzcTNxM3EzcTEhMSExITEhM3EzcTNxM3EwANBQ==";
   const CODE2 = CODE.replace("JgBI", "JgBJ");
 
   it("sync stores projector_state (kept when absent, junk ignored) and projector_error (cleared when empty)", async () => {
-    expect(await cols()).toEqual({ projector_state: null, projector_error: null, projector_ir_codes: null });
+    expect(await cols()).toEqual({ projector_power_state: null, projector_error: null, projector_ir_codes: null });
     expect((await sync(ids.other, { projector_state: "on", projector_error: " RM4 not found " })).status).toBe(200);
-    expect(await cols()).toMatchObject({ projector_state: "on", projector_error: "RM4 not found" });
+    expect(await cols()).toMatchObject({ projector_power_state: "on", projector_error: "RM4 not found" });
     await sync(ids.other, { player_status: "playing" });
-    expect(await cols()).toMatchObject({ projector_state: "on", projector_error: null });
+    expect(await cols()).toMatchObject({ projector_power_state: "on", projector_error: null });
     await sync(ids.other, { projector_state: "bogus", projector_error: "x".repeat(300) });
     const row = await cols();
-    expect(row.projector_state).toBe("on");
+    expect(row.projector_power_state).toBe("on");
     expect(row.projector_error.length).toBe(200);
     await sync(ids.other, { projector_state: "off" });
-    expect(await cols()).toMatchObject({ projector_state: "off", projector_error: null });
+    expect(await cols()).toMatchObject({ projector_power_state: "off", projector_error: null });
   });
 
   it("an ir-learn result stores the packet under its name; timeouts and unknown names are left alone; audited without the packet", async () => {

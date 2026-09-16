@@ -324,7 +324,7 @@ rebuilds `device_commands` (rename-copy-drop, rows and ids kept, index recreated
 for E: `projector_control TEXT NOT NULL DEFAULT 'none'` (CHECK none | broadlink | cec),
 `projector_ir_codes TEXT` (JSON `{power_on, power_off, input_hdmi1}` base64 packets or NULL),
 `broadlink_host TEXT`, `projector_power_mode TEXT NOT NULL DEFAULT 'manual'` (CHECK manual | auto),
-`projector_state TEXT`, `projector_error TEXT`.
+`projector_power_state TEXT`, `projector_error TEXT`.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
 
@@ -379,7 +379,7 @@ console holds the configuration, the learned codes and what the player last repo
 
 | where | what |
 |---|---|
-| Devices row "Projector" `<details>` (`pages/devices.projectorBlock`) | the state lamp (`projectorState(d)`: `.status.status-playing` on / `.status-offline` off / `.status-idle` unknown, from `projector_state`), "wants on/off" (`decorateDevices` sets `projector_want` from the same rows as the active playlist), `projector_error` as `.alert.warn.small`, the form below, then for a control other than none the `Projector on` / `Projector off` buttons (commands), and for `broadlink` a learned / not-learned badge per code (`manifest.IR_CODE_NAMES`) and one `Learn <name>` button each (`ir-learn:<name>`; the RM4 listens 30 s) |
+| Devices row "Projector" `<details>` (`pages/devices.projectorBlock`) | the state lamp (`projectorState(d)`: `.status.status-playing` on / `.status-offline` off / `.status-idle` unknown, from `projector_power_state`; the dashboard tiles show the same lamp when `projector_control` is not none, and the `projector_error` line whenever set), "wants on/off" (`decorateDevices` sets `projector_want` from the same rows as the active playlist), `projector_error` as `.alert.warn.small`, the form below, then for a control other than none the `Projector on` / `Projector off` buttons (commands), and for `broadlink` a learned / not-learned badge per code (`manifest.IR_CODE_NAMES`) and one `Learn <name>` button each (`ir-learn:<name>`; the RM4 listens 30 s) |
 | `POST /devices/:id/projector` (editor+) | `projector_control` (`manifest.PROJECTOR_CONTROLS`, empty = none), `projector_power_mode` (`PROJECTOR_MODES`, empty = manual), `broadlink_host` (`BROADLINK_HOST_RE`: hostname or IP literal, empty = discover on the LAN); never touches the codes; audit `device_set_projector` |
 | commands | `pages/devices.isCommand`: `COMMANDS` (now with `projector-on`, `projector-off`) or `ir-learn:<name>` with a known name; anything else is 400 "unknown command" |
 | `POST /api/commands/:id/result` for an `ir-learn:<name>` command (`api.storeLearnedCode`) | the base64 packet in `code`, in a JSON-string `result` `{"learned": name, "code": b64}` (what the player sends), or the whole `result` when it is base64 (`IR_CODE_RE`, 20-4000 chars), is stored under `name` in `devices.projector_ir_codes` (`manifest.ir_codes` reads it back, dropping unknown names and junk); a "timeout" result changes nothing; audit `device_ir_code_learned` (device_id, name, never the packet) |

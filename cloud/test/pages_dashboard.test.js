@@ -117,6 +117,23 @@ describe("dashboard", () => {
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 
+  it("tiles show the projector lamp only when a control is set, plus the reported error; no fault", async () => {
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    const dev = await device("proj-dev", "Proj dev", { last_seen_at: now, player_status: "playing" });
+    let page = await (await r.viewer.get("/dashboard")).text();
+    expect(page).not.toContain("projector-state");
+    await query("UPDATE devices SET projector_control = 'broadlink', projector_power_state = 'on', projector_error = 'send failed: <timeout>' WHERE id = ?", dev.id);
+    page = await (await r.viewer.get("/dashboard")).text();
+    expect(page).toContain('<span class="status status-playing projector-state" title="Reported by the player on its last sync"><span class="lamp"></span>projector on</span>');
+    expect(page).toContain('<div class="alert warn small" title="Reported by the player on its last sync">Projector: send failed: &lt;timeout&gt;</div>');
+    expect(page).toContain("1 playing · 3 faults");
+    await query("UPDATE devices SET projector_control = 'none', projector_error = NULL WHERE id = ?", dev.id);
+    page = await (await r.viewer.get("/dashboard")).text();
+    expect(page).not.toContain("projector-state");
+    expect(page).not.toContain("Projector:");
+    await query("DELETE FROM devices WHERE id = ?", dev.id);
+  });
+
   it("audit tail lists the last 8 entries, newest first, with local minute timestamps", async () => {
     await query("DELETE FROM audit_log");
     let page = await (await r.viewer.get("/dashboard")).text();
