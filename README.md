@@ -87,6 +87,7 @@ See [docs/adding-a-pi.md](docs/adding-a-pi.md) for the full walkthrough.
 
 - Hardware: [docs/hardware.md](docs/hardware.md) is the per-projector kit (parts, links, costs, the unbox-to-playing checklist).
 - Room camera: [docs/camera.md](docs/camera.md) covers RTSP and Wyze Cam snapshots on the console and the live view.
+- Automation: [docs/automation.md](docs/automation.md) covers auto-assign on enrollment, live enrollment keys for the flasher, remote updates, camera and projector zero-config, alerts and the automatic live-camera tunnel.
 
 On Windows the Projection5000 SD Flasher (`tools/flasher/README.md`) replaces
 the manual steps below: it writes the card and the Pi enrolls itself on first

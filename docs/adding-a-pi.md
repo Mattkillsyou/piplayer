@@ -21,7 +21,10 @@ You'll need:
 > `build.ps1`) and the Pi enrolls itself on first boot, creating the device
 > and fetching its token. Re-flashing a card with the same device id
 > re-enrolls the same device (same token, same playlist); rotate the key on the
-> Settings page if a flashed card is lost, then rebuild the exe. The manual
+> Settings page if a flashed card is lost, then rebuild the exe. If the
+> Settings page names a default group and playlist ("New devices join
+> group" / "New devices get playlist"), the device gets them on its first
+> enrollment only; see [automation.md](automation.md). The manual
 > path that follows still works.
 
 ## 1. Flash Raspberry Pi OS Lite (64-bit)
