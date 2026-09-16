@@ -82,7 +82,11 @@ and one build of the flasher serves every operator.
   tokens (any admin or editor; viewers cannot hold one). Both offer create
   (name it after the person or laptop that will hold it) and revoke, and show
   each token's creation and last-use times. A revoked token fails
-  immediately.
+  immediately. Routes: Settings page `POST /settings/tokens` (create, shown
+  once) and `POST /settings/tokens/<token_id>/revoke`; Users page
+  `POST /users/<user_id>/tokens` (create, shown once) and
+  `POST /users/<user_id>/tokens/<token_id>/revoke`; viewers cannot hold
+  tokens (400).
 - `GET /api/operator/enrollment` with `Authorization: Bearer p5k_<token>`
   returns `{console_url, enrollment_key, groups: [{id, name}],
   playlists: [{id, name}], timezone, wyze_configured}`. `wyze_configured` is

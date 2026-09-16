@@ -13,7 +13,7 @@ scaffold files (`index.js`, `router.js`, `util.js`, `db.js`, `auth.js`, `audit.j
 | unit/integration tests | `npm test` (vitest inside workerd; migrations applied automatically by `test/apply-migrations.js`) |
 | local D1 migration | `npm run migrate:local -- --persist-to <your scratch>/state` |
 | dev server | `npm run dev -- --port <your port> --persist-to <your scratch>/state` (later flags override the script's `--port 8787`; the script passes throwaway `SESSION_SECRET`/`SETUP_TOKEN` via `--var`) |
-| e2e | `python e2e/run_e2e.py --port <your port> --persist-to <dir>` (starts + migrates + kills wrangler dev itself; append your checks to `CHECKS`) |
+| e2e | `python e2e/run_e2e.py --port <your port> --persist-to <dir>` (starts + migrates + kills wrangler dev itself; append your checks to `CHECKS`); feature suites live beside it (`run_upload_e2e.py`, `run_operator_e2e.py`, `run_player_e2e.py`) |
 | deploy check | `npm run deploy:dry` (never plain `deploy` from a package) |
 
 **Ports / persist-to rule:** every agent runs `wrangler dev` on its own assigned port and with
@@ -263,7 +263,9 @@ export function register(router) {
 "My API tokens" panel of `/settings`. `POST /settings/tokens` (`name`, 1-60 chars) mints
 `p5k_<32 urlsafe chars>`, stores only its SHA-256 hex and renders the page with the plaintext
 once (no redirect, so the secret never sits in a URL); `POST /settings/tokens/:id/revoke` deletes
-the caller's own token (404 for anyone else's). `GET /api/operator/enrollment` with
+the caller's own token (404 for anyone else's). The Users page does the same for any admin or
+editor: `POST /users/:user_id/tokens` (400 for a viewer) and `POST /users/:user_id/tokens/:id/revoke`
+(404 unless the token belongs to that user). `GET /api/operator/enrollment` with
 `Authorization: Bearer p5k_...` (token owner must be editor or admin, else 401) answers
 `{console_url, enrollment_key, groups: [{id, name}], playlists: [{id, name}], timezone,
 wyze_configured}` (`wyze_configured` is always false until feature D lands). Audit:

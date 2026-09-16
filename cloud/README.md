@@ -24,7 +24,8 @@ src/pages/*.js         server-rendered pages (layout.js = base.html)
 public/                style.css + sortable.min.js (verbatim from the CMS), app.js, upload.js, sha256.js
 test/                  vitest inside workerd (unit + integration, every route x role)
 e2e/                   Python black-box suites against `wrangler dev` (run_e2e.py,
-                       run_upload_e2e.py, run_player_e2e.py — the last one drives the real player)
+                       run_upload_e2e.py, run_operator_e2e.py, run_player_e2e.py — the last one
+                       drives the real player)
 scripts/deploy.md      deployment runbook;  scripts/backup.md  D1 + R2 backups
 MODULES.md             module contracts for contributors
 ```
@@ -87,6 +88,8 @@ python e2e/run_e2e.py        --port 8787 --persist-to <dir>   # setup, CSRF, aut
                                                              # XSS, device API, media/Range, screenshots,
                                                              # commands, settings/timezone, audit, cookies/sessions
 python e2e/run_upload_e2e.py --port 8790 --persist-to <dir>   # 12 MiB upload through init/part/complete + resume
+python e2e/run_operator_e2e.py --port 8789 --persist-to <dir> # operator API tokens: Settings/Users create + revoke,
+                                                             # bearer GET /api/operator/enrollment, audit throttle
 python e2e/run_player_e2e.py --port 8788 --persist-to <dir>   # the REAL player/player daemon with a fake mpv
 ```
 
