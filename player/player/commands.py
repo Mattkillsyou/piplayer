@@ -11,6 +11,7 @@ import requests
 from . import __version__, updater
 from .config import PlayerConfig
 from .mpv_client import MpvClient
+from .projector import Projector
 
 log = logging.getLogger("piplayer.commands")
 
@@ -123,9 +124,12 @@ def execute_commands(
     commands: list[dict],
     force_resync: Callable[[], None],
     update: dict | None = None,
+    projector: Projector | None = None,
 ) -> None:
     """`update` is the manifest's optional update block ({release, auto, window}):
-    the update-* commands take their git ref from it."""
+    the update-* commands take their git ref from it. `projector` carries the
+    manifest's projector block (control, codes, host) for projector-on/off and
+    ir-learn:<name>; without one those commands fail."""
     executed = load_executed_ids(cfg)
     for cmd in commands:
         if not isinstance(cmd, dict):
@@ -169,6 +173,10 @@ def execute_commands(
             if action == "force-sync":
                 force_resync()
                 result = "queued resync"
+            elif projector is not None and action in ("projector-on", "projector-off"):
+                result = projector.power(action.rsplit("-", 1)[1])
+            elif projector is not None and isinstance(action, str) and action.startswith("ir-learn:"):
+                result = projector.learn(action[len("ir-learn:"):])   # blocks up to 30 s
             else:
                 result = f"unknown command: {action}"
         except Exception as e:

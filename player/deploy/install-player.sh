@@ -106,7 +106,8 @@ echo "==> Installing system dependencies"
 apt-get update
 # git and rsync are not part of Raspberry Pi OS Lite; both are needed here.
 # ffmpeg grabs the room-camera snapshots ([camera] in config.toml).
-apt-get install -y git rsync mpv ffmpeg python3 python3-venv python3-pip libgl1 libegl1
+# v4l-utils brings cec-ctl (projector power over HDMI-CEC).
+apt-get install -y git rsync mpv ffmpeg python3 python3-venv python3-pip libgl1 libegl1 v4l-utils
 
 echo "==> Creating user '${USER_NAME}'"
 if ! id -u "${USER_NAME}" >/dev/null 2>&1; then
