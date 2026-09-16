@@ -77,6 +77,59 @@ export function pick_playlist(device, scheduleRows, groupPlaylistId, now) {
   return [null, null];
 }
 
+// Projector power (Devices page "Projector" block; player/player/projector.py).
+export const PROJECTOR_CONTROLS = ["none", "broadlink", "cec"];
+export const PROJECTOR_MODES = ["manual", "auto"];
+export const PROJECTOR_STATES = ["on", "off", "unknown"];
+// The Broadlink packets a device can learn (ir-learn:<name> command -> projector_ir_codes JSON).
+export const IR_CODE_NAMES = ["power_on", "power_off", "input_hdmi1"];
+
+// The stored projector_ir_codes JSON as {name: base64} with only the known names, {} for
+// NULL / junk (a hand-edited row must never break a sync or the Devices page).
+export function ir_codes(raw) {
+  let parsed;
+  try {
+    parsed = raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+  const out = {};
+  if (parsed && typeof parsed === "object") {
+    for (const n of IR_CODE_NAMES) if (typeof parsed[n] === "string" && parsed[n]) out[n] = parsed[n];
+  }
+  return out;
+}
+
+// "on" | "off" for a device's projector in auto mode, from the same rows pick_playlist uses:
+// on while a playlist is active, from projector_lead_minutes before the next schedule rule
+// starts, and until nothing has been active for projector_idle_minutes; off otherwise.
+export function projector_want(device, scheduleRows, groupPlaylistId, now, settings) {
+  const lead = settings.projector_lead_minutes ?? db.PROJECTOR_LEAD_MINUTES;
+  const idle = settings.projector_idle_minutes ?? db.PROJECTOR_IDLE_MINUTES;
+  const activeAt = (w) => pick_playlist(device, scheduleRows, groupPlaylistId, w)[0] !== null;
+  if (activeAt(now)) return "on";
+  const upcoming = schedules.next_start(scheduleRows, now);
+  if (upcoming && (schedules.wallMs(upcoming[1]) - schedules.wallMs(now)) / 60000 <= lead) return "on";
+  // ponytail: one pick_playlist per idle minute (default 10) rather than a "last end" solver
+  for (let m = 1; m <= idle; m++) if (activeAt(schedules.wallFromMs(schedules.wallMs(now) - m * 60000))) return "on";
+  return "off";
+}
+
+// The manifest `projector` block, or null when the device has no projector control (absence =
+// feature off for the player). `want` is what auto mode follows; manual mode only acts on the
+// projector-on / projector-off commands.
+export function projector_block(device, want) {
+  const control = device.projector_control;
+  if (!control || control === "none") return null;
+  return {
+    control,
+    mode: PROJECTOR_MODES.includes(device.projector_power_mode) ? device.projector_power_mode : "manual",
+    want,
+    codes: ir_codes(device.projector_ir_codes),
+    broadlink_host: device.broadlink_host || null,
+  };
+}
+
 // Commands not yet completed, each handed out at most MAX_COMMAND_DELIVERIES times.
 // A command the player never reports on (lost result POST, crash) is closed as
 // undeliverable instead of being re-sent forever (a lost 'reboot' result must not
@@ -126,7 +179,17 @@ function wallIsoMinutes(timeZone, w) {
 // `baseUrl` is the request origin (https://host) the media URLs are built on.
 export async function manifest_for_device(env, device, baseUrl, settings, now = new Date()) {
   const wall = wallClock(settings.timezone, now);
-  const [activePlaylistId, source] = await resolve_active_playlist_id(env, device, wall);
+  const rows = await db.all(env,
+    `SELECT s.id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time,
+            s.days_of_week, s.start_date, s.end_date, p.name AS playlist_name
+       FROM device_schedules s LEFT JOIN playlists p ON p.id = s.playlist_id
+      WHERE s.device_id = ?`, device.id);
+  let groupPlaylistId = null;
+  if (device.group_id) {
+    const grow = await db.first(env, "SELECT playlist_id FROM device_groups WHERE id = ?", device.group_id);
+    groupPlaylistId = grow ? grow.playlist_id : null;
+  }
+  const [activePlaylistId, source] = pick_playlist(device, rows, groupPlaylistId, wall);
 
   let playlistBlock = null;
   if (activePlaylistId) {
@@ -166,11 +229,6 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
   // standby screen can say so.
   let nextRule = null;
   if (playlistBlock === null || !playlistBlock.items.length) {
-    const rows = await db.all(env,
-      `SELECT s.id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time,
-              s.days_of_week, s.start_date, s.end_date, p.name AS playlist_name
-         FROM device_schedules s LEFT JOIN playlists p ON p.id = s.playlist_id
-        WHERE s.device_id = ?`, device.id);
     const upcoming = schedules.next_start(rows, wall);
     if (upcoming) {
       const [rule, startsAt] = upcoming;
@@ -197,6 +255,9 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
     // Camera zero-config: bumped on any Wyze / camera-source change; the player refetches
     // GET /api/camera-config/<device_id> when it differs from the one it last applied.
     camera_config_version: settings.camera_config_version || 0,
+    // Projector power: null when the device has no projector control; otherwise {control, mode,
+    // want, codes, broadlink_host} (auto mode follows `want`, see projector_want).
+    projector: projector_block(device, projector_want(device, rows, groupPlaylistId, wall, settings)),
   };
 }
 
@@ -205,6 +266,7 @@ export const resolveActivePlaylistId = resolve_active_playlist_id;
 export const manifestForDevice = manifest_for_device;
 export const playlistHash = playlist_hash;
 export const pendingCommands = pending_commands;
+export const projectorWant = projector_want;
 export const manifestJson = manifest_json;
 
 export function register(router) {

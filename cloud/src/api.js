@@ -52,6 +52,10 @@ async function sync(ctx) {
   // camera_error works the same way for the player's last camera capture.
   const lastError = (q.get("sync_error") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
   const cameraError = (q.get("camera_error") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
+  // projector_state (on | off | unknown) is kept when the player does not send one (no
+  // projector control); projector_error clears like camera_error.
+  const projectorState = manifest.PROJECTOR_STATES.includes(q.get("projector_state")) ? q.get("projector_state") : null;
+  const projectorError = (q.get("projector_error") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
   await db.run(ctx.env,
     `UPDATE devices SET
         last_seen_at = datetime('now'),
@@ -61,7 +65,9 @@ async function sync(ctx) {
         player_status = ?,
         player_version = COALESCE(?, player_version),
         last_error = ?,
-        camera_error = ?
+        camera_error = ?,
+        projector_state = COALESCE(?, projector_state),
+        projector_error = ?
       WHERE id = ?`,
     ctx.ip,
     intQuery(q, "current_position"),
@@ -70,6 +76,8 @@ async function sync(ctx) {
     q.get("player_version"),
     lastError,
     cameraError,
+    projectorState,
+    projectorError,
     device.id);
 
   await storeUpdateStatus(ctx, device, q.get("update_status"));
@@ -112,12 +120,41 @@ async function reportCommandResult(ctx) {
   const body = await jsonObject(ctx.request);
   const result = (body.result === undefined ? "" : String(body.result)).slice(0, 1000);
 
-  const row = await db.first(ctx.env, "SELECT id, device_id FROM device_commands WHERE id = ?", commandId);
+  const row = await db.first(ctx.env, "SELECT id, device_id, command FROM device_commands WHERE id = ?", commandId);
   if (!row) fail(404, "command not found");
   if (row.device_id !== device.id) fail(403, "command belongs to another device");
   await db.run(ctx.env,
     "UPDATE device_commands SET completed_at = datetime('now'), result = ? WHERE id = ?", result, commandId);
+  await storeLearnedCode(ctx, device, row.command, body);
   return json({ ok: true });
+}
+
+// A Broadlink packet is 16 bytes of header + the pulses; the player reports it as base64.
+const IR_CODE_RE = /^[A-Za-z0-9+/]{20,4000}={0,2}$/;
+
+// ir-learn:<name>: the player reports the learned packet as base64, as the `result` string
+// '{"learned": <name>, "code": <b64>}' (player/player/projector.py), in a `code` field, or as
+// a bare base64 `result`; it is stored under that name in the device's projector_ir_codes JSON
+// and shown as a learned badge on the Devices page. Anything else (a "timeout" result) leaves
+// the stored codes alone. Audited without the packet.
+async function storeLearnedCode(ctx, device, command, body) {
+  if (!command.startsWith("ir-learn:")) return;
+  const name = command.slice("ir-learn:".length);
+  if (!manifest.IR_CODE_NAMES.includes(name)) return;
+  let nested = null;
+  if (typeof body.result === "string" && body.result.trimStart().startsWith("{")) {
+    try {
+      nested = JSON.parse(body.result).code;
+    } catch {
+      nested = null;
+    }
+  }
+  const code = [body.code, nested, body.result].find((v) => typeof v === "string" && IR_CODE_RE.test(v.trim()));
+  if (!code) return;
+  const row = await db.first(ctx.env, "SELECT projector_ir_codes FROM devices WHERE id = ?", device.id);
+  const codes = { ...manifest.ir_codes(row && row.projector_ir_codes), [name]: code.trim() };
+  await db.run(ctx.env, "UPDATE devices SET projector_ir_codes = ? WHERE id = ?", JSON.stringify(codes), device.id);
+  await audit.log(ctx, "device_ir_code_learned", "device", device.id, { device_id: device.device_id, name }, null);
 }
 
 // Multipart JPEG upload shared by /api/screenshots and /api/camera: `what` names the image in

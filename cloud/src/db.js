@@ -49,7 +49,7 @@ export async function assertMigrated(env) {
 
 export const SETTING_KEYS = ["timezone", "screenshot_interval", "camera_interval", "default_image_duration", "enrollment_key",
   "enroll_group_id", "enroll_playlist_id", "player_release", "auto_update", "auto_update_window",
-  "wyze_camera_pattern", "camera_config_version"];
+  "wyze_camera_pattern", "camera_config_version", "projector_lead_minutes", "projector_idle_minutes"];
 
 // Remote updates (manifest `update` block). player_release is a git ref the Pi checks out
 // (tag, branch or sha): starts with an alphanumeric so it can never read as a shell/git option,
@@ -62,6 +62,13 @@ export const AUTO_UPDATE_MODES = ["off", "nightly"];
 // ({device_name} / {device_id} are substituted); printable, at most 100 chars.
 export const DEFAULT_WYZE_CAMERA_PATTERN = "{device_name}";
 export const isCameraPattern = (v) => typeof v === "string" && v.length > 0 && v.length <= 100 && !/[\x00-\x1f\x7f]/.test(v);
+
+// Projector power (manifest `projector.want`, manifest.projector_want): switch on this many
+// minutes before a schedule rule starts, off once nothing has played for this many minutes.
+export const PROJECTOR_LEAD_MINUTES = 3;
+export const PROJECTOR_IDLE_MINUTES = 10;
+export const MAX_PROJECTOR_MINUTES = 1440;
+export const isProjectorMinutes = (v) => Number.isInteger(v) && v >= 0 && v <= MAX_PROJECTOR_MINUTES;
 
 export function defaultSettings(env) {
   return {
@@ -77,13 +84,16 @@ export function defaultSettings(env) {
     auto_update_window: UPDATE_WINDOW_RE.test(env.PIPLAYER_AUTO_UPDATE_WINDOW || "") ? env.PIPLAYER_AUTO_UPDATE_WINDOW : "03:00-05:00",
     wyze_camera_pattern: DEFAULT_WYZE_CAMERA_PATTERN,
     camera_config_version: 0, // bumped by bumpCameraConfigVersion on any camera / Wyze change; manifest key
+    projector_lead_minutes: PROJECTOR_LEAD_MINUTES,
+    projector_idle_minutes: PROJECTOR_IDLE_MINUTES,
   };
 }
 
 // {timezone, screenshot_interval (int seconds), camera_interval (int seconds), default_image_duration
 // (float seconds), enrollment_key (secret shared with the flasher; POST /api/enroll), enroll_group_id /
 // enroll_playlist_id (int or null), player_release (git ref), auto_update ('off' | 'nightly'),
-// auto_update_window ('HH:MM-HH:MM'), wyze_camera_pattern, camera_config_version (int)}.
+// auto_update_window ('HH:MM-HH:MM'), wyze_camera_pattern, camera_config_version (int),
+// projector_lead_minutes / projector_idle_minutes (int, 0-1440)}.
 export async function loadSettings(env) {
   const s = defaultSettings(env);
   for (const row of await all(env, "SELECT key, value FROM settings")) {
@@ -98,6 +108,7 @@ export async function loadSettings(env) {
     else if (row.key === "auto_update_window" && UPDATE_WINDOW_RE.test(row.value)) s.auto_update_window = row.value;
     else if (row.key === "wyze_camera_pattern" && isCameraPattern(row.value)) s.wyze_camera_pattern = row.value;
     else if (row.key === "camera_config_version" && /^\d+$/.test(row.value)) s.camera_config_version = parseInt(row.value, 10);
+    else if ((row.key === "projector_lead_minutes" || row.key === "projector_idle_minutes") && isProjectorMinutes(+row.value)) s[row.key] = +row.value;
   }
   if (!s.enrollment_key) s.enrollment_key = await generateEnrollmentKey(env, false);
   return s;

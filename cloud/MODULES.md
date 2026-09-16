@@ -267,6 +267,7 @@ export function register(router) {
 | `auto_update_window` | `PIPLAYER_AUTO_UPDATE_WINDOW` (`03:00-05:00`); `HH:MM-HH:MM` site time, may wrap midnight (`db.UPDATE_WINDOW_RE`) | manifest `update.window` |
 | `wyze_camera_pattern` | `{device_name}` (`db.isCameraPattern`: 1-100 printable chars; `{device_name}` / `{device_id}` substituted) | the Wyze camera name a device gets unless it overrides it (`pages/devices.wyzeCameraName`) |
 | `camera_config_version` | 0; `db.bumpCameraConfigVersion` (+1) on any Wyze / pattern / per-device camera-source change | manifest `camera_config_version`: the player refetches `GET /api/camera-config` when it differs from the one it applied |
+| `projector_lead_minutes` / `projector_idle_minutes` | 3 / 10 (`db.isProjectorMinutes`: integer 0-1440; a junk row reads as the default) | manifest `projector.want` (`manifest.projector_want`): on from `lead` minutes before the next schedule rule starts, off once nothing has been active for `idle` minutes. Stored (and audited) only when the form posts them |
 
 **Remote updates (feature C).** `pages/devices.COMMANDS` gains `update-player`, `update-os`,
 `update-all` (per-device buttons under Actions, each with a `data-confirm`); `POST /devices/update-all`
@@ -319,7 +320,11 @@ CHECKs/FKs/indexes) plus:
 rebuilds `device_commands` (rename-copy-drop, rows and ids kept, index recreated) so its CHECK admits
 `reboot`, `force-sync`, `restart-mpv`, `update-player`, `update-os`, `update-all`, `projector-on`,
 `projector-off` and `ir-learn:%` (E reuses this, never rebuild again), and adds to `devices`:
-`last_update_at TEXT`, `last_update_ok INTEGER`, `last_update_message TEXT`, `last_update_ref TEXT`.
+`last_update_at TEXT`, `last_update_ok INTEGER`, `last_update_message TEXT`, `last_update_ref TEXT`;
+for E: `projector_control TEXT NOT NULL DEFAULT 'none'` (CHECK none | broadlink | cec),
+`projector_ir_codes TEXT` (JSON `{power_on, power_off, input_hdmi1}` base64 packets or NULL),
+`broadlink_host TEXT`, `projector_power_mode TEXT NOT NULL DEFAULT 'manual'` (CHECK manual | auto),
+`projector_state TEXT`, `projector_error TEXT`.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
 
@@ -366,6 +371,20 @@ Mirrors the screenshot path end to end; the Pi side is `player/player/camera.py`
 | `POST /devices/:id/camera-url` (editor+) | form field `camera_live_url`: empty clears, else `liveUrl()` (absolute https, no credentials, <= 2048 chars) or 400; audit `device_set_camera_url` |
 | Devices row "Camera" `<details>` | the live URL form (disabled for viewers), and when the stored URL passes `liveUrl()` again: a "Live" new-tab link and a `Show live` button (`public/app.js` `data-live-frame`) that copies the iframe's `data-src` into `src` on first click; the iframe is `sandbox="allow-same-origin allow-scripts" referrerpolicy="no-referrer"` and starts `hidden`. A stored value that fails validation is never rendered |
 | delete device | removes `camera/<device_id>.jpg` alongside the screenshot |
+
+## Projector power (feature E)
+
+The Pi side is `player/player/projector.py` (Broadlink RM4 mini over IR, or HDMI-CEC); the
+console holds the configuration, the learned codes and what the player last reported.
+
+| where | what |
+|---|---|
+| Devices row "Projector" `<details>` (`pages/devices.projectorBlock`) | the state lamp (`projectorState(d)`: `.status.status-playing` on / `.status-offline` off / `.status-idle` unknown, from `projector_state`), "wants on/off" (`decorateDevices` sets `projector_want` from the same rows as the active playlist), `projector_error` as `.alert.warn.small`, the form below, then for a control other than none the `Projector on` / `Projector off` buttons (commands), and for `broadlink` a learned / not-learned badge per code (`manifest.IR_CODE_NAMES`) and one `Learn <name>` button each (`ir-learn:<name>`; the RM4 listens 30 s) |
+| `POST /devices/:id/projector` (editor+) | `projector_control` (`manifest.PROJECTOR_CONTROLS`, empty = none), `projector_power_mode` (`PROJECTOR_MODES`, empty = manual), `broadlink_host` (`BROADLINK_HOST_RE`: hostname or IP literal, empty = discover on the LAN); never touches the codes; audit `device_set_projector` |
+| commands | `pages/devices.isCommand`: `COMMANDS` (now with `projector-on`, `projector-off`) or `ir-learn:<name>` with a known name; anything else is 400 "unknown command" |
+| `POST /api/commands/:id/result` for an `ir-learn:<name>` command (`api.storeLearnedCode`) | the base64 packet in `code`, in a JSON-string `result` `{"learned": name, "code": b64}` (what the player sends), or the whole `result` when it is base64 (`IR_CODE_RE`, 20-4000 chars), is stored under `name` in `devices.projector_ir_codes` (`manifest.ir_codes` reads it back, dropping unknown names and junk); a "timeout" result changes nothing; audit `device_ir_code_learned` (device_id, name, never the packet) |
+| `GET /api/sync/:id?projector_state=&projector_error=` | `projector_state` on \| off \| unknown (`manifest.PROJECTOR_STATES`; absent or junk keeps the stored value, so a player without projector support never resets it); `projector_error` trimmed to 200, empty/absent -> NULL like `camera_error` |
+| manifest `projector` | `null` when `projector_control` is none (absence = feature off for the player), else `{control, mode, want: "on" \| "off", codes: {name: base64}, broadlink_host}` (`manifest.projector_block`); `want` = `projector_want(device, scheduleRows, groupPlaylistId, wall, settings)`: on while `pick_playlist` finds a playlist (device / group default included), from `projector_lead_minutes` before `schedules.next_start` starts, and while any of the last `projector_idle_minutes` minutes had a playlist; off otherwise. `auth.deviceFromHeader` selects the projector columns so the sync needs no extra statement; `manifest_for_device` reads the schedule rows once for the playlist, `next_rule` and `want` |
 
 ## Tests
 

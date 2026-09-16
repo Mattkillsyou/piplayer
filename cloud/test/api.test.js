@@ -300,3 +300,65 @@ describe("screenshots", () => {
     expect(r.status).toBe(401);
   });
 });
+
+// E: projector power. The player reports ?projector_state= / ?projector_error= on every sync
+// and returns an ir-learn:<name> packet in the command result; the console keeps the codes.
+describe("projector", () => {
+  const cols = () => one("SELECT projector_state, projector_error, projector_ir_codes FROM devices WHERE id = ?", ids.other.id);
+  const CODE = "JgBIAAABKZMTEhMSExITEhM3EzcTNxM3ExITEhMSExITNxM3EzcTNxMSExITEhMSEzcTNxM3EzcTEhMSExITEhM3EzcTNxM3EwANBQ==";
+  const CODE2 = CODE.replace("JgBI", "JgBJ");
+
+  it("sync stores projector_state (kept when absent, junk ignored) and projector_error (cleared when empty)", async () => {
+    expect(await cols()).toEqual({ projector_state: null, projector_error: null, projector_ir_codes: null });
+    expect((await sync(ids.other, { projector_state: "on", projector_error: " RM4 not found " })).status).toBe(200);
+    expect(await cols()).toMatchObject({ projector_state: "on", projector_error: "RM4 not found" });
+    await sync(ids.other, { player_status: "playing" });
+    expect(await cols()).toMatchObject({ projector_state: "on", projector_error: null });
+    await sync(ids.other, { projector_state: "bogus", projector_error: "x".repeat(300) });
+    const row = await cols();
+    expect(row.projector_state).toBe("on");
+    expect(row.projector_error.length).toBe(200);
+    await sync(ids.other, { projector_state: "off" });
+    expect(await cols()).toMatchObject({ projector_state: "off", projector_error: null });
+  });
+
+  it("an ir-learn result stores the packet under its name; timeouts and unknown names are left alone; audited without the packet", async () => {
+    let id = await issue(ids.other, "ir-learn:power_on");
+    expect((await postResult(ids.other, id, { result: "timeout: no code received" })).status).toBe(200);
+    expect((await cols()).projector_ir_codes).toBeNull();
+    id = await issue(ids.other, "ir-learn:power_on");
+    expect((await postResult(ids.other, id, { result: CODE })).status).toBe(200);
+    expect(JSON.parse((await cols()).projector_ir_codes)).toEqual({ power_on: CODE });
+    expect((await one("SELECT result FROM device_commands WHERE id = ?", id)).result).toBe(CODE);
+    // the player's own result shape (a JSON string with the code) and `code` alongside a human
+    // result work too; the other names are kept; a re-learn replaces
+    id = await issue(ids.other, "ir-learn:power_off");
+    await postResult(ids.other, id, { result: JSON.stringify({ learned: "power_off", code: CODE2 }) });
+    expect(JSON.parse((await cols()).projector_ir_codes)).toEqual({ power_on: CODE, power_off: CODE2 });
+    id = await issue(ids.other, "ir-learn:power_off");
+    await postResult(ids.other, id, { result: "learned 76 bytes", code: ` ${CODE2} ` });
+    expect(JSON.parse((await cols()).projector_ir_codes)).toEqual({ power_on: CODE, power_off: CODE2 });
+    id = await issue(ids.other, "ir-learn:power_on");
+    await postResult(ids.other, id, { result: JSON.stringify({ learned: "power_on", error: "nothing learned in 30 s" }) });
+    expect(JSON.parse((await cols()).projector_ir_codes)).toEqual({ power_on: CODE, power_off: CODE2 });
+    id = await issue(ids.other, "ir-learn:power_on");
+    await postResult(ids.other, id, { result: CODE.slice(0, 40) });
+    expect(JSON.parse((await cols()).projector_ir_codes)).toEqual({ power_on: CODE.slice(0, 40), power_off: CODE2 });
+    // a name the console does not know, or a non-learn command with a base64-looking result, changes nothing
+    id = await issue(ids.other, "ir-learn:volume_up");
+    await postResult(ids.other, id, { result: CODE });
+    id = await issue(ids.other, "projector-on");
+    await postResult(ids.other, id, { result: CODE });
+    expect(JSON.parse((await cols()).projector_ir_codes)).toEqual({ power_on: CODE.slice(0, 40), power_off: CODE2 });
+    const rows = await query("SELECT target_id, details FROM audit_log WHERE action = 'device_ir_code_learned' ORDER BY id");
+    expect(rows.map((r) => JSON.parse(r.details))).toEqual([
+      { device_id: "dev-2", name: "power_on" }, { device_id: "dev-2", name: "power_off" }, { device_id: "dev-2", name: "power_off" }, { device_id: "dev-2", name: "power_on" }]);
+    expect(rows.every((r) => !r.details.includes(CODE.slice(0, 20)))).toBe(true);
+    // the manifest carries the codes once the device has a projector control
+    await query("UPDATE devices SET projector_control = 'broadlink', broadlink_host = '10.0.0.9' WHERE id = ?", ids.other.id);
+    const m = await (await sync(ids.other)).json();
+    expect(m.projector).toEqual({ control: "broadlink", mode: "manual", want: "off", codes: { power_on: CODE.slice(0, 40), power_off: CODE2 }, broadlink_host: "10.0.0.9" });
+    await query("UPDATE devices SET projector_control = 'none', broadlink_host = NULL, projector_ir_codes = NULL WHERE id = ?", ids.other.id);
+    expect((await (await sync(ids.other)).json()).projector).toBeNull();
+  });
+});

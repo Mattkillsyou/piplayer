@@ -228,3 +228,49 @@ describe("settings", () => {
     expect(await settings()).toEqual([]);
   });
 });
+
+// E: projector lead / idle minutes (manifest projector.want for auto-mode devices).
+describe("projector power settings", () => {
+  it("shows the 3 / 10 defaults, validates, saves and audits only when posted, drives the manifest want", async () => {
+    await query("DELETE FROM settings");
+    let page = await (await r.admin.get("/settings")).text();
+    expect(page).toContain('name="projector_lead_minutes" value="3"');
+    expect(page).toContain('name="projector_idle_minutes" value="10"');
+    expect(await detail(await post(r.admin, "/settings", { ...GOOD, projector_lead_minutes: "x" }), 400)).toBe("projector_lead_minutes must be an integer");
+    expect(await detail(await post(r.admin, "/settings", { ...GOOD, projector_lead_minutes: "-1" }), 400)).toBe("projector_lead_minutes must be a whole number of minutes, 0-1440");
+    expect(await detail(await post(r.admin, "/settings", { ...GOOD, projector_idle_minutes: "1441" }), 400)).toBe("projector_idle_minutes must be a whole number of minutes, 0-1440");
+    expect((await settings()).filter((x) => x.key.startsWith("projector_"))).toEqual([]);
+    let res = await post(r.admin, "/settings", { ...GOOD, projector_lead_minutes: "15", projector_idle_minutes: "0" });
+    expect(res.status).toBe(303);
+    expect((await settings()).filter((x) => x.key.startsWith("projector_"))).toEqual([
+      { key: "projector_idle_minutes", value: "0" }, { key: "projector_lead_minutes", value: "15" }]);
+    expect(JSON.parse((await audits("settings_update"))[0].details)).toMatchObject({ projector_lead_minutes: 15, projector_idle_minutes: 0 });
+    page = await (await r.admin.get("/settings")).text();
+    expect(page).toContain('name="projector_lead_minutes" value="15"');
+    expect(page).toContain('name="projector_idle_minutes" value="0"');
+    // a save without the fields (older form) keeps them; the audit row does not mention them
+    res = await post(r.admin, "/settings", GOOD);
+    expect(res.status).toBe(303);
+    expect((await settings()).filter((x) => x.key.startsWith("projector_")).map((x) => x.value)).toEqual(["0", "15"]);
+    expect(JSON.parse((await audits("settings_update"))[0].details)).not.toHaveProperty("projector_lead_minutes");
+    // an auto-mode device with a rule starting in 10 min wants on with a 15 min lead (site zone: LA)
+    const dev = await device("proj-set", "Proj set", { projector_control: "cec", projector_power_mode: "auto" });
+    const start = new Date(Date.now() + 10 * 60000);
+    const fmt = new Intl.DateTimeFormat("en-GB", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    const hhmm = fmt.format(start);
+    const end = fmt.format(new Date(start.getTime() + 20 * 60000));
+    if (hhmm < end) { // not across midnight, where a wrap window would need a different assertion
+      await query("INSERT INTO device_schedules (device_id, playlist_id, name, priority, start_time, end_time) VALUES (?, ?, 'soon', 1, ?, ?)", dev.id, await playlist("Soon PL"), hhmm, end);
+      const sync = () => SELF.fetch(`http://piplayer.test/api/sync/${dev.device_id}`, { headers: { authorization: `Bearer ${dev.token}` } }).then((x) => x.json());
+      expect((await sync()).projector).toEqual({ control: "cec", mode: "auto", want: "on", codes: {}, broadlink_host: null });
+      await query("UPDATE settings SET value = '5' WHERE key = 'projector_lead_minutes'");
+      expect((await sync()).projector.want).toBe("off");
+      // a junk stored value falls back to the default (3)
+      await query("UPDATE settings SET value = 'soon' WHERE key = 'projector_lead_minutes'");
+      expect((await sync()).projector.want).toBe("off");
+      expect(await (await r.admin.get("/settings")).text()).toContain('name="projector_lead_minutes" value="3"');
+      await query("DELETE FROM device_schedules WHERE device_id = ?", dev.id);
+    }
+    await query("DELETE FROM settings");
+  });
+});

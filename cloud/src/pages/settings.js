@@ -189,6 +189,16 @@ ${revoked ? alertBox("API token revoked.", "ok") : ""}
       </label>
     </div>
     <p class="help small">"Update player" on the Devices page (and "Update all players") checks this release out on the Pi and reinstalls the player. With auto-update <code>nightly</code> every player does the same by itself inside the window, at most once a day, and skips when it is already on that release. Each Pi reports the outcome on its next sync (Devices page).</p>
+    <h3>Projector power</h3>
+    <div class="form-grid">
+      <label>Switch on before a schedule starts (minutes)
+        <input type="number" name="projector_lead_minutes" value="${esc(s.projector_lead_minutes)}" min="0" max="${db.MAX_PROJECTOR_MINUTES}" step="1" required>
+      </label>
+      <label>Switch off after playback ends (minutes)
+        <input type="number" name="projector_idle_minutes" value="${esc(s.projector_idle_minutes)}" min="0" max="${db.MAX_PROJECTOR_MINUTES}" step="1" required>
+      </label>
+    </div>
+    <p class="help small">For devices whose projector power mode is <code>auto</code> (Devices page): the player switches the projector on while a playlist is active or this many minutes before the next schedule rule starts, and off once nothing has played for the idle delay.</p>
     <div class="row">
       <button type="submit" class="primary">Save settings</button>
     </div>
@@ -246,6 +256,13 @@ async function settingsSave(ctx) {
   const values = { timezone, screenshot_interval: interval, camera_interval: camera, default_image_duration: duration,
     enroll_group_id: enrollGroup, enroll_playlist_id: enrollPlaylist,
     player_release: release, auto_update: autoUpdate, auto_update_window: window };
+  // Projector lead / idle minutes: stored (and audited) only when the form posts them.
+  for (const key of ["projector_lead_minutes", "projector_idle_minutes"]) {
+    if (!str(form, key).trim()) continue;
+    const v = intField(str(form, key), key);
+    if (!db.isProjectorMinutes(v)) fail(400, `${key} must be a whole number of minutes, 0-${db.MAX_PROJECTOR_MINUTES}`);
+    values[key] = v;
+  }
   // null (none) deletes the row so the settings table only holds what is set
   await db.batch(ctx.env, Object.entries(values).map(([k, v]) => (v === null
     ? ["DELETE FROM settings WHERE key = ?", k]

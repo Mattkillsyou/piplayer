@@ -12,7 +12,12 @@ import {
 } from "../util.js";
 import { alertBox, csrfInput, emptyState, layout } from "./layout.js";
 
-export const COMMANDS = ["reboot", "force-sync", "restart-mpv", "update-player", "update-os", "update-all"];
+export const COMMANDS = ["reboot", "force-sync", "restart-mpv", "update-player", "update-os", "update-all", "projector-on", "projector-off"];
+// Plus ir-learn:<name> for each manifest.IR_CODE_NAMES entry (the "Learn ..." buttons).
+export const isCommand = (c) => COMMANDS.includes(c) || (c.startsWith("ir-learn:") && manifest.IR_CODE_NAMES.includes(c.slice("ir-learn:".length)));
+export const MAX_BROADLINK_HOST = 253;
+// A hostname or IPv4/IPv6 literal for the RM4 (no scheme, no port, no spaces).
+export const BROADLINK_HOST_RE = /^[A-Za-z0-9._:-]{1,253}$/;
 // The fleet "Update all players" button queues one of these for every device (POST /devices/update-all).
 export const FLEET_COMMANDS = ["update-player", "update-os", "update-all"];
 const DEVICE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -44,6 +49,7 @@ export async function decorateDevices(env, rows, settings, now = new Date()) {
   const plName = new Map((await db.all(env, "SELECT id, name FROM playlists")).map((p) => [p.id, p.name]));
   for (const dd of rows) {
     const [pid, source] = manifest.pick_playlist(dd, byDevice.get(dd.id), groupPl.get(dd.group_id) ?? null, wall);
+    dd.projector_want = manifest.projector_want(dd, byDevice.get(dd.id), groupPl.get(dd.group_id) ?? null, wall, settings);
     dd.active_playlist_id = pid;
     dd.active_playlist_name = null;
     dd.active_source = null;
@@ -228,6 +234,65 @@ export function updateStatus(d, tz) {
     : `<div class="alert error update-status" title="Reported by the player after its last update">Update failed${ref} · ${when}${msg}</div>`;
 }
 
+// The Projector block: control / mode / RM4 host form, On / Off, the "Learn ..." buttons
+// (broadlink only; the player waits 30 s for the remote) with a learned / not learned badge
+// per code, the state lamp the player reported and its last error.
+const IR_CODE_LABELS = { power_on: "Power On", power_off: "Power Off", input_hdmi1: "Input HDMI1" };
+
+export function projectorState(d) {
+  const state = manifest.PROJECTOR_STATES.includes(d.projector_state) ? d.projector_state : "unknown";
+  const cls = { on: "playing", off: "offline", unknown: "idle" }[state];
+  return `<span class="status status-${cls} projector-state" title="Reported by the player on its last sync"><span class="lamp"></span>projector ${state}</span>`;
+}
+
+function projectorBlock(ctx, d, canEdit, dis) {
+  const control = d.projector_control || "none";
+  const codes = manifest.ir_codes(d.projector_ir_codes);
+  const badges = manifest.IR_CODE_NAMES.map((n) => (codes[n]
+    ? `<span class="badge badge-active" title="Learned">${esc(IR_CODE_LABELS[n])}</span>`
+    : `<span class="badge badge-muted" title="Not learned yet">${esc(IR_CODE_LABELS[n])}</span>`)).join("\n            ");
+  const learn = manifest.IR_CODE_NAMES.map((n) => commandForm(ctx, d, `ir-learn:${n}`, `Learn ${IR_CODE_LABELS[n]}`, "small",
+    "Puts the RM4 into learn mode for 30 s: point the projector remote at it and press the button")).join("\n            ");
+  return `<details class="projector-block">
+        <summary>Projector${control === "none" ? "" : ` · ${esc(control)} · ${esc(d.projector_power_mode || "manual")}`}${d.projector_error ? " · error" : ""}</summary>
+        <div class="token-block">
+          <div class="action-buttons">
+            ${projectorState(d)}
+            ${control === "none" ? "" : `<span class="muted small" title="What auto mode would do right now (schedule + Settings lead / idle minutes)">wants ${esc(d.projector_want)}</span>`}
+          </div>
+          ${d.projector_error ? `<div class="alert warn small" title="Reported by the player on its last sync">Projector: ${esc(d.projector_error)}</div>` : ""}
+          <form method="post" action="/devices/${d.id}/projector" class="row">
+            ${csrfInput(ctx)}
+            <label>Control
+              <select name="projector_control"${dis}>
+                ${manifest.PROJECTOR_CONTROLS.map((v) => `<option value="${v}"${v === control ? " selected" : ""}>${v}</option>`).join("\n                ")}
+              </select>
+            </label>
+            <label>Power mode
+              <select name="projector_power_mode"${dis}>
+                ${manifest.PROJECTOR_MODES.map((v) => `<option value="${v}"${v === (d.projector_power_mode || "manual") ? " selected" : ""}>${v}</option>`).join("\n                ")}
+              </select>
+            </label>
+            <label>Broadlink host (optional)
+              <input type="text" name="broadlink_host" value="${esc(d.broadlink_host || "")}" placeholder="discover on the LAN" maxlength="${MAX_BROADLINK_HOST}"${dis}>
+            </label>
+            <button type="submit" class="small"${dis}>Save</button>
+          </form>
+          <p class="help small">broadlink drives an RM4 mini over IR with the learned codes below; cec uses HDMI-CEC. In auto mode the player switches the projector on when a playlist is active or a schedule starts within the lead time, and off after the idle delay (<a href="/settings">Settings</a>).</p>
+          ${control === "none" || !canEdit ? "" : `<div class="action-buttons">
+            ${commandForm(ctx, d, "projector-on", "Projector on", "small primary", "Switch the projector on now")}
+            ${commandForm(ctx, d, "projector-off", "Projector off", "small", "Switch the projector off now")}
+          </div>`}
+          ${control === "broadlink" ? `<div class="action-buttons ir-codes">
+            ${badges}
+          </div>
+          ${canEdit ? `<div class="action-buttons">
+            ${learn}
+          </div>` : ""}` : ""}
+        </div>
+      </details>`;
+}
+
 function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
   return `<form method="post" action="/devices/${d.id}/command" class="inline"${extra}>
           ${csrfInput(ctx)}
@@ -324,6 +389,8 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
         </div>
       </details>
 
+      ${projectorBlock(ctx, d, canEdit, dis)}
+
       ${d.recent_commands.length ? `<details>
         <summary>Recent commands (${d.recent_commands.length})</summary>
         <ul class="command-list">
@@ -383,6 +450,8 @@ async function devicesPage(ctx) {
             d.last_screenshot_at, d.last_error,
             d.last_camera_at, d.camera_error, d.camera_live_url,
             d.camera_source, d.camera_rtsp_url, d.camera_wyze_name,
+            d.projector_control, d.projector_ir_codes, d.broadlink_host, d.projector_power_mode,
+            d.projector_state, d.projector_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
             p.id AS playlist_id, p.name AS playlist_name,
             g.id AS group_id, g.name AS group_name
@@ -509,7 +578,7 @@ async function devicesSendCommand(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const command = str(await ctx.form(), "command");
-  if (!COMMANDS.includes(command)) fail(400, "unknown command");
+  if (!isCommand(command)) fail(400, "unknown command");
   await requireRow(ctx.env, "devices", deviceId, "Device");
   const id = (await db.run(ctx.env,
     "INSERT INTO device_commands (device_id, command, issued_by) VALUES (?, ?, ?)", deviceId, command, user.id)).last_row_id;
@@ -599,8 +668,28 @@ async function devicesSetCameraSource(ctx) {
   return redirect("/devices");
 }
 
+// Projector block form: control none | broadlink | cec, power mode manual | auto, optional RM4
+// host. Learned codes are untouched (they come from ir-learn command results, api.js).
+async function devicesSetProjector(ctx) {
+  auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const form = await ctx.form();
+  const control = str(form, "projector_control").trim() || "none";
+  if (!manifest.PROJECTOR_CONTROLS.includes(control)) fail(400, `projector_control must be one of ${manifest.PROJECTOR_CONTROLS.join(", ")}`);
+  const mode = str(form, "projector_power_mode").trim() || "manual";
+  if (!manifest.PROJECTOR_MODES.includes(mode)) fail(400, `projector_power_mode must be one of ${manifest.PROJECTOR_MODES.join(", ")}`);
+  const host = str(form, "broadlink_host").trim() || null;
+  if (host !== null && !BROADLINK_HOST_RE.test(host)) fail(400, "broadlink_host must be a hostname or IP address");
+  await requireRow(ctx.env, "devices", deviceId, "Device");
+  await db.run(ctx.env, "UPDATE devices SET projector_control = ?, projector_power_mode = ?, broadlink_host = ? WHERE id = ?",
+    control, mode, host, deviceId);
+  await audit.log(ctx, "device_set_projector", "device", deviceId, { projector_control: control, projector_power_mode: mode, broadlink_host: host ?? undefined });
+  return redirect("/devices");
+}
+
 export function register(router) {
   router.get("/devices", devicesPage);
+  router.post("/devices/:device_id/projector", devicesSetProjector);
   router.post("/devices", devicesCreate);
   router.post("/devices/:device_id/assign", devicesAssign);
   router.post("/devices/:device_id/group", devicesSetGroup);

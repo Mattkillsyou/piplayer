@@ -63,4 +63,18 @@ ALTER TABLE devices ADD COLUMN camera_rtsp_url TEXT;
 ALTER TABLE devices ADD COLUMN camera_wyze_name TEXT;
 ALTER TABLE devices ADD COLUMN camera_config_audited_at TEXT;
 
+-- E (projector power): how the player switches the projector (none | broadlink RM4 mini IR |
+-- HDMI-CEC), the learned Broadlink packets as JSON {power_on, power_off, input_hdmi1} (base64,
+-- stored from ir-learn:<name> command results), an optional RM4 host (else LAN discovery),
+-- manual | auto power mode (auto follows the manifest's projector.want, computed from the
+-- schedule with the Settings lead / idle minutes) and what the player last reported through
+-- sync ?projector_state= / ?projector_error=.
+ALTER TABLE devices ADD COLUMN projector_control TEXT NOT NULL DEFAULT 'none' CHECK (projector_control IN ('none', 'broadlink', 'cec'));
+ALTER TABLE devices ADD COLUMN projector_ir_codes TEXT;
+ALTER TABLE devices ADD COLUMN broadlink_host TEXT;
+ALTER TABLE devices ADD COLUMN projector_power_mode TEXT NOT NULL DEFAULT 'manual' CHECK (projector_power_mode IN ('manual', 'auto'));
+ALTER TABLE devices ADD COLUMN projector_state TEXT;
+ALTER TABLE devices ADD COLUMN projector_error TEXT;
+-- E: settings keys projector_lead_minutes / projector_idle_minutes live in `settings`.
+
 INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3');

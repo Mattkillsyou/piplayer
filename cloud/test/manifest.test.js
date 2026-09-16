@@ -170,3 +170,76 @@ describe("resolve_active_playlist_id / manifest_for_device", () => {
     expect(m.playlist.items[2].effective_duration_seconds).toBe(4);
   });
 });
+
+// E: projector power. want = on while a playlist is active, from lead minutes before the next
+// rule starts, and until idle minutes after the last one ended; the manifest block is null
+// without a projector control.
+describe("projector_want / projector_block", () => {
+  const at = (h, mi, d = 15) => wallClock("UTC", new Date(Date.UTC(2026, 8, d, h, mi))); // 2026-09-15 is a Tuesday
+  const settings = { timezone: "UTC", projector_lead_minutes: 3, projector_idle_minutes: 10 };
+  const dev = { id: 1, playlist_id: null, group_id: null };
+  const want = (rows, w, s = settings, d = dev, gp = null) => manifest.projector_want(d, rows, gp, w, s);
+
+  it("follows the schedule with the lead and idle minutes from settings", () => {
+    const rules = [{ id: 1, playlist_id: 5, name: "show", priority: 1, start_time: "10:00", end_time: "11:00" }];
+    expect(want(rules, at(9, 0))).toBe("off");
+    expect(want(rules, at(9, 56))).toBe("off"); // 4 min before: too early
+    expect(want(rules, at(9, 57))).toBe("on"); // exactly lead minutes before
+    expect(want(rules, at(10, 0))).toBe("on");
+    expect(want(rules, at(10, 59))).toBe("on");
+    expect(want(rules, at(11, 0))).toBe("on"); // just ended: idle hold
+    expect(want(rules, at(11, 9))).toBe("on"); // 10 min after the last active minute (10:59)
+    expect(want(rules, at(11, 10))).toBe("off");
+    expect(want(rules, at(11, 30))).toBe("off");
+    // a rule tomorrow does not count today; the idle scan crosses midnight
+    const late = [{ id: 2, playlist_id: 5, name: "late", priority: 1, start_time: "23:30", end_time: "23:59" }];
+    expect(want(late, at(0, 5, 16))).toBe("on");
+    expect(want(late, at(0, 9, 16))).toBe("off");
+    expect(want(late, at(23, 26))).toBe("off");
+    expect(want(late, at(23, 27))).toBe("on");
+    // settings change the windows; missing settings fall back to the 3 / 10 defaults
+    expect(want(rules, at(9, 45), { ...settings, projector_lead_minutes: 15 })).toBe("on");
+    expect(want(rules, at(9, 45), { ...settings, projector_lead_minutes: 14 })).toBe("off");
+    expect(want(rules, at(11, 1), { ...settings, projector_idle_minutes: 0 })).toBe("off");
+    expect(want(rules, at(11, 0), { ...settings, projector_idle_minutes: 0 })).toBe("off");
+    expect(want(rules, at(9, 57), { timezone: "UTC" })).toBe("on");
+    expect(want(rules, at(11, 9), { timezone: "UTC" })).toBe("on");
+    expect(want(rules, at(11, 10), { timezone: "UTC" })).toBe("off");
+  });
+
+  it("a device or group default playlist keeps it on; no rules and no default is off", () => {
+    expect(want([], at(3, 0))).toBe("off");
+    expect(want([], at(3, 0), settings, { ...dev, playlist_id: 7 })).toBe("on");
+    expect(want([], at(3, 0), settings, { ...dev, group_id: 2 }, 9)).toBe("on");
+    // a schedule whose rule is unparsable never throws
+    expect(want([{ id: 3, playlist_id: 5, name: "bad", start_time: "junk" }], at(3, 0))).toBe("off");
+  });
+
+  it("projector_block: null without control, else control / mode / want / codes / host", () => {
+    expect(manifest.projector_block({ projector_control: "none" }, "on")).toBeNull();
+    expect(manifest.projector_block({}, "on")).toBeNull();
+    expect(manifest.projector_block({ projector_control: "cec", projector_power_mode: "auto" }, "off"))
+      .toEqual({ control: "cec", mode: "auto", want: "off", codes: {}, broadlink_host: null });
+    const codes = JSON.stringify({ power_on: "AAAA", power_off: "", junk: "x", input_hdmi1: 5 });
+    expect(manifest.projector_block({ projector_control: "broadlink", projector_power_mode: "bogus", projector_ir_codes: codes, broadlink_host: "10.0.0.9" }, "on"))
+      .toEqual({ control: "broadlink", mode: "manual", want: "on", codes: { power_on: "AAAA" }, broadlink_host: "10.0.0.9" });
+    expect(manifest.ir_codes("not json")).toEqual({});
+    expect(manifest.ir_codes("[1]")).toEqual({});
+    expect(manifest.ir_codes(null)).toEqual({});
+  });
+
+  it("manifest_for_device carries the block only for a device with a projector control", async () => {
+    const at = new Date(Date.UTC(2026, 8, 14, 12, 0, 7));
+    const row = (deviceId) => query("SELECT * FROM devices WHERE device_id = ?", deviceId).then((r) => r[0]);
+    let m = await manifest.manifest_for_device(env, await row("d3"), "https://cms.example", settings, at);
+    expect(m.projector).toBeNull();
+    await query("UPDATE devices SET projector_control = 'broadlink', projector_power_mode = 'auto', projector_ir_codes = '{\"power_on\":\"AAAA\"}' WHERE device_id = 'd3'");
+    m = await manifest.manifest_for_device(env, await row("d3"), "https://cms.example", settings, at);
+    expect(m.projector).toEqual({ control: "broadlink", mode: "auto", want: "off", codes: { power_on: "AAAA" }, broadlink_host: null });
+    // the device with a default playlist wants it on
+    await query("UPDATE devices SET projector_control = 'cec' WHERE device_id = 'd1'");
+    m = await manifest.manifest_for_device(env, await row("d1"), "https://cms.example", settings, at);
+    expect(m.projector).toEqual({ control: "cec", mode: "manual", want: "on", codes: {}, broadlink_host: null });
+    await query("UPDATE devices SET projector_control = 'none', projector_power_mode = 'manual', projector_ir_codes = NULL WHERE device_id IN ('d1', 'd3')");
+  });
+});

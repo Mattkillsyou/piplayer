@@ -267,7 +267,9 @@ export async function deviceFromHeader(ctx) {
   if (!authorization.toLowerCase().startsWith("bearer ")) fail(401, "Missing bearer token");
   const token = authorization.slice(7).trim();
   const row = token && await db.first(ctx.env,
-    "SELECT id, device_id, name, playlist_id, group_id FROM devices WHERE token = ?", token);
+    `SELECT id, device_id, name, playlist_id, group_id,
+            projector_control, projector_power_mode, projector_ir_codes, broadlink_host
+       FROM devices WHERE token = ?`, token);
   if (!row) fail(401, "Invalid device token");
   return row;
 }

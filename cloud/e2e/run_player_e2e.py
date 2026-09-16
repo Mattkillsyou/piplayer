@@ -22,6 +22,10 @@ What it asserts, in order:
      camera_error on the next sync and clears again; /devices and /dashboard show the snapshot.
   7. GET /api/camera-config/<id> (device bearer only): a per-device RTSP source set on the
      Devices page is served, bumps the manifest's camera_config_version, is never rendered back.
+  8. projector power (console side; the player's projector.py is exercised by player/tests):
+     the Devices page Projector form -> manifest `projector` block with the computed want, sync
+     ?projector_state= / ?projector_error= land in D1 and on the page, an ir-learn:<name>
+     result stores the packet under that name and shows a learned badge.
 """
 import argparse
 import hashlib
@@ -127,6 +131,42 @@ def camera_config_probes(base, admin, dev_row):
     assert admin.post("/devices/%d/camera-source" % dev_row["id"], {"camera_source": ""}).status_code == 303
     assert requests.get(url, headers=h).json() == {"source": "none", "version": v0 + 2}
     print("camera-config: bearer-only, rtsp source served + version %d -> %d, URL never rendered" % (v0, v0 + 2))
+
+
+IR_CODE = "JgBIAAABKZMTEhMSExITEhM3EzcTNxM3ExITEhMSExITNxM3EzcTNxMSExITEhMSEzcTNxM3EzcTEhMSExITEhM3EzcTNxM3EwANBQ=="
+
+
+def projector_probes(base, admin, persist, dev_row):
+    """The Devices page Projector form drives the manifest's `projector` block; the player's
+    projector_state / projector_error sync params land in D1 and on the page; an ir-learn
+    result is stored under its name and badged as learned. The device keeps its playlist, so
+    auto mode wants the projector on."""
+    h = {"Authorization": "Bearer " + dev_row["token"]}
+    sync_url = base + "/api/sync/" + DEVICE_ID
+    assert requests.get(sync_url, headers=h).json()["projector"] is None, "projector block present without a control"
+    r = admin.post("/devices/%d/projector" % dev_row["id"], {"projector_control": "broadlink", "projector_power_mode": "auto", "broadlink_host": "10.0.0.7"})
+    assert r.status_code == 303, (r.status_code, r.text[:300])
+    r = requests.get(sync_url, headers=h, params={"projector_state": "off", "projector_error": "RM4 not found"})
+    assert r.status_code == 200, r.text[:300]
+    assert r.json()["projector"] == {"control": "broadlink", "mode": "auto", "want": "on", "codes": {}, "broadlink_host": "10.0.0.7"}, r.json()["projector"]
+    row = ec.d1_one(persist, "SELECT projector_state, projector_error FROM devices WHERE id = %d" % dev_row["id"])
+    assert row == {"projector_state": "off", "projector_error": "RM4 not found"}, row
+    page = admin.get("/devices").text
+    assert "projector off</span>" in page and "Projector: RM4 not found" in page and ">wants on</span>" in page, "devices page misses the projector state"
+    assert 'title="Not learned yet">Power On</span>' in page, "Power On badged as learned before any ir-learn"
+    cmd_id = issue_command(admin, persist, dev_row, "ir-learn:power_on")
+    delivered = [c for c in requests.get(sync_url, headers=h, params={"projector_state": "off"}).json()["commands"] if c["id"] == cmd_id]
+    assert delivered and delivered[0]["command"] == "ir-learn:power_on", delivered
+    r = requests.post(base + "/api/commands/%d/result" % cmd_id, headers=h, json={"result": IR_CODE})
+    assert r.status_code == 200, r.text[:300]
+    assert requests.get(sync_url, headers=h).json()["projector"]["codes"] == {"power_on": IR_CODE}
+    row = ec.d1_one(persist, "SELECT projector_ir_codes, projector_error FROM devices WHERE id = %d" % dev_row["id"])
+    assert json.loads(row["projector_ir_codes"]) == {"power_on": IR_CODE} and row["projector_error"] is None, row
+    page = admin.get("/devices").text
+    assert 'title="Learned">Power On</span>' in page and 'title="Not learned yet">Power Off</span>' in page, "learned badge missing"
+    assert admin.post("/devices/%d/projector" % dev_row["id"], {"projector_control": "none"}).status_code == 303
+    assert requests.get(sync_url, headers=h).json()["projector"] is None
+    print("projector: form -> manifest block (want on), state/error stored + shown, ir-learn result stored + badged")
 
 
 def register_device(admin, persist, pid):
@@ -427,6 +467,7 @@ def run(base, persist, work, media, pid):
     # --- edge cases the golden verifier probes (the player never sends these) ------------
     parity_probes(base, dev_row["token"])
     camera_config_probes(base, admin, dev_row)
+    projector_probes(base, admin, persist, dev_row)
 
     # every status the player sends is visible to the browser too (page owned by P2; skip a stub)
     r = admin.get("/devices")

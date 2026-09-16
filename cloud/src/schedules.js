@@ -109,8 +109,8 @@ export function pick_active(schedules, now) {
 }
 
 // A wallClock-shaped object (no zone) for a naive local minute given as a UTC-epoch ms
-// value built with Date.UTC(year, month - 1, day, hour, minute).
-function wallFromMs(ms) {
+// value built with Date.UTC(year, month - 1, day, hour, minute) (wallMs below).
+export function wallFromMs(ms) {
   const d = new Date(ms);
   return {
     year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(),
@@ -122,9 +122,11 @@ function wallFromMs(ms) {
 // util.wallClock() object), as [rule, wallClockOfThatMinute], or null when nothing starts
 // within the horizon. A rule that already matches is not a future start; a rule a
 // higher-priority rule covers at that minute would not play, so it is skipped too.
+export const wallMs = (w) => Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute);
+
 export function next_start(rules, now, horizonDays = 7) {
   const list = Array.from(rules);
-  const baseMs = Date.UTC(now.year, now.month - 1, now.day, now.hour, now.minute);
+  const baseMs = wallMs(now);
   let best = null;
   for (const s of list) {
     let startMin;

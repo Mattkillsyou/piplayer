@@ -380,3 +380,98 @@ describe("remote updates", () => {
     await query("DELETE FROM device_commands");
   });
 });
+
+// E: the Projector block: control / mode / RM4 host form, On / Off and Learn buttons, learned
+// badges, the state lamp + error the player reported, and the commands they queue.
+describe("projector", () => {
+  it("renders the block per control, badges learned codes, shows state, error and what auto mode wants", async () => {
+    const dev = await device("proj-1", "Proj <one>");
+    let page = await (await r.editor.get("/devices")).text();
+    const block = (p) => {
+      const i = p.indexOf(`action="/devices/${dev.id}/projector"`);
+      return p.slice(p.lastIndexOf('<details class="projector-block">', i), p.indexOf("</details>", i));
+    };
+    let b = block(page);
+    expect(b).toContain("<summary>Projector</summary>");
+    expect(b).toContain('<span class="status status-idle projector-state" title="Reported by the player on its last sync"><span class="lamp"></span>projector unknown</span>');
+    expect(b).toContain('<option value="none" selected>none</option>');
+    expect(b).toContain('<option value="manual" selected>manual</option>');
+    expect(b).not.toContain("projector-on");
+    expect(b).not.toContain("ir-learn:");
+    expect(b).not.toContain("wants ");
+    // broadlink + auto: On/Off, three Learn buttons, badges, the want hint; no default playlist -> off
+    await query(`UPDATE devices SET projector_control = 'broadlink', projector_power_mode = 'auto', broadlink_host = 'rm4.lan',
+                   projector_ir_codes = '{"power_on":"JgBIAAABKZMTEhMSExITEhM3EzcTNxM3Ew=="}', projector_state = 'on', projector_error = 'send failed: <timeout>' WHERE id = ?`, dev.id);
+    page = await (await r.editor.get("/devices")).text();
+    b = block(page);
+    expect(b).toContain("<summary>Projector · broadlink · auto · error</summary>");
+    expect(b).toContain('<span class="status status-playing projector-state" title="Reported by the player on its last sync"><span class="lamp"></span>projector on</span>');
+    expect(b).toContain(">wants off</span>");
+    expect(b).toContain("Projector: send failed: &lt;timeout&gt;</div>");
+    expect(b).toContain('<option value="broadlink" selected>broadlink</option>');
+    expect(b).toContain('<option value="auto" selected>auto</option>');
+    expect(b).toContain('name="broadlink_host" value="rm4.lan"');
+    expect(b).toContain('<input type="hidden" name="command" value="projector-on">');
+    expect(b).toContain('<input type="hidden" name="command" value="projector-off">');
+    for (const n of ["power_on", "power_off", "input_hdmi1"]) expect(b).toContain(`<input type="hidden" name="command" value="ir-learn:${n}">`);
+    expect(b).toContain('<span class="badge badge-active" title="Learned">Power On</span>');
+    expect(b).toContain('<span class="badge badge-muted" title="Not learned yet">Power Off</span>');
+    expect(b).toContain('<span class="badge badge-muted" title="Not learned yet">Input HDMI1</span>');
+    expect(b).toContain("learn mode for 30 s");
+    // a default playlist makes auto mode want it on; cec has no IR codes or Learn buttons; off state
+    await query("UPDATE devices SET projector_control = 'cec', playlist_id = ?, projector_state = 'off', projector_error = NULL WHERE id = ?", w.pid, dev.id);
+    page = await (await r.editor.get("/devices")).text();
+    b = block(page);
+    expect(b).toContain("<summary>Projector · cec · auto</summary>");
+    expect(b).toContain(">wants on</span>");
+    expect(b).toContain("projector off</span>");
+    expect(b).toContain('value="projector-on"');
+    expect(b).not.toContain("ir-learn:");
+    expect(b).not.toContain("badge-muted");
+    // viewers see the state and the disabled form, no buttons
+    page = await (await r.viewer.get("/devices")).text();
+    b = block(page);
+    expect(b).toContain("projector off</span>");
+    expect(b).toContain('<select name="projector_control" disabled>');
+    expect(b).not.toContain('value="projector-on"');
+    await query("DELETE FROM devices WHERE id = ?", dev.id);
+  });
+
+  it("projector form: validates control / mode / host, saves, audits; editor+; 404 unknown device", async () => {
+    const dev = await device("proj-2", "Proj two");
+    const p = `/devices/${dev.id}/projector`;
+    await roleMatrix(r, "POST", p, { fields: { projector_control: "cec", projector_power_mode: "auto" } });
+    expect(await one("SELECT projector_control, projector_power_mode, broadlink_host FROM devices WHERE id = ?", dev.id))
+      .toEqual({ projector_control: "cec", projector_power_mode: "auto", broadlink_host: null });
+    expect(await detail(await post(r.editor, p, { projector_control: "zigbee" }), 400)).toBe("projector_control must be one of none, broadlink, cec");
+    expect(await detail(await post(r.editor, p, { projector_control: "cec", projector_power_mode: "sometimes" }), 400)).toBe("projector_power_mode must be one of manual, auto");
+    expect(await detail(await post(r.editor, p, { projector_control: "broadlink", broadlink_host: "http://rm4" }), 400)).toBe("broadlink_host must be a hostname or IP address");
+    expect(await detail(await post(r.editor, `/devices/${NOPE}/projector`, { projector_control: "cec" }), 404)).toBe("Device not found");
+    const res = await post(r.editor, p, { projector_control: "broadlink", projector_power_mode: "manual", broadlink_host: " 192.168.1.40 " });
+    expect(res.status).toBe(303);
+    expect(await one("SELECT projector_control, projector_power_mode, broadlink_host FROM devices WHERE id = ?", dev.id))
+      .toEqual({ projector_control: "broadlink", projector_power_mode: "manual", broadlink_host: "192.168.1.40" });
+    const [a] = await audits("device_set_projector");
+    expect(a).toMatchObject({ username: "ed", target_type: "device", target_id: String(dev.id) });
+    expect(JSON.parse(a.details)).toEqual({ projector_control: "broadlink", projector_power_mode: "manual", broadlink_host: "192.168.1.40" });
+    // empty fields fall back to none / manual and clear the host
+    expect((await post(r.editor, p, {})).status).toBe(303);
+    expect(await one("SELECT projector_control, projector_power_mode, broadlink_host FROM devices WHERE id = ?", dev.id))
+      .toEqual({ projector_control: "none", projector_power_mode: "manual", broadlink_host: null });
+    await query("DELETE FROM devices WHERE id = ?", dev.id);
+  });
+
+  it("command: projector-on / projector-off / ir-learn:<known name> are queued, other ir-learn names are 400", async () => {
+    const dev = await device("proj-3", "Proj three");
+    for (const command of ["projector-on", "projector-off", "ir-learn:power_on", "ir-learn:power_off", "ir-learn:input_hdmi1"]) {
+      expect((await post(r.editor, `/devices/${dev.id}/command`, { command })).status, command).toBe(303);
+    }
+    for (const command of ["ir-learn:volume_up", "ir-learn:", "ir-learn", "projector-toggle"]) {
+      expect(await detail(await post(r.editor, `/devices/${dev.id}/command`, { command }), 400)).toBe("unknown command");
+    }
+    const rows = await query("SELECT command FROM device_commands WHERE device_id = ? ORDER BY id", dev.id);
+    expect(rows.map((x) => x.command)).toEqual(["projector-on", "projector-off", "ir-learn:power_on", "ir-learn:power_off", "ir-learn:input_hdmi1"]);
+    await query("DELETE FROM device_commands WHERE device_id = ?", dev.id);
+    await query("DELETE FROM devices WHERE id = ?", dev.id);
+  });
+});
