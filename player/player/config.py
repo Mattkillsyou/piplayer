@@ -29,6 +29,26 @@ class PlayerConfig:
     mpv_socket: Path
     poll_interval_seconds: int
     verify_tls: bool
+    # [camera] table (see load()); source "none" disables the capture thread
+    camera_source: str = "none"
+    camera_rtsp_url: str = ""
+    camera_wyze_camera: str = ""
+    camera_snapshot_interval_seconds: int = 10
+    camera_live_url: str = ""
+
+
+CAMERA_SOURCES = ("none", "rtsp", "wyze")
+CAMERA_MIN_INTERVAL = 5
+# The mrlt8/wyze-bridge container (see deploy/projector-wyze-bridge.service)
+# serves each camera at rtsp://127.0.0.1:8554/<name>, the name lowercased with
+# spaces turned into dashes.
+WYZE_BRIDGE_RTSP = "rtsp://127.0.0.1:8554/{name}"
+
+# Test-only hooks read by camera.py (never set on a real Pi):
+#   PIPLAYER_CAMERA_FFMPEG         path to the ffmpeg binary (default "ffmpeg");
+#                                  a fake can be injected here by the e2e run.
+#   PIPLAYER_CAMERA_SNAPSHOT_FILE  when set, each capture reads this JPEG
+#                                  instead of running ffmpeg at all.
 
 
 def _env_or(default: str | None, *keys: str) -> str | None:
@@ -85,6 +105,29 @@ def load(path: Path = DEFAULT_CONFIG_PATH) -> PlayerConfig:
     verify_tls_raw = _env_or(str(data.get("verify_tls", True)), "PIPLAYER_VERIFY_TLS") or "true"
     verify_tls = verify_tls_raw.lower() not in ("0", "false", "no")
 
+    camera = data.get("camera") or {}
+    if not isinstance(camera, dict):
+        _fail("[camera] must be a table (a [camera] header followed by its keys)")
+    camera_source = str(_env_or(camera.get("source"), "PIPLAYER_CAMERA_SOURCE") or "none").lower()
+    camera_rtsp_url = str(_env_or(camera.get("rtsp_url"), "PIPLAYER_CAMERA_RTSP_URL") or "")
+    camera_wyze = str(_env_or(camera.get("wyze_camera"), "PIPLAYER_CAMERA_WYZE_CAMERA") or "")
+    camera_live_url = str(_env_or(camera.get("live_url"), "PIPLAYER_CAMERA_LIVE_URL") or "")
+    camera_interval_raw = _env_or(str(camera.get("snapshot_interval_seconds", "")),
+                                  "PIPLAYER_CAMERA_SNAPSHOT_INTERVAL") or "10"
+    try:
+        camera_interval = int(camera_interval_raw)
+    except ValueError:
+        _fail(f"[camera] snapshot_interval_seconds (or PIPLAYER_CAMERA_SNAPSHOT_INTERVAL) must be an "
+              f"integer, got {camera_interval_raw!r}")
+    if camera_source not in CAMERA_SOURCES:
+        _fail(f"[camera] source must be one of {', '.join(CAMERA_SOURCES)}, got {camera_source!r}")
+    if camera_source == "wyze":
+        if not camera_wyze:
+            _fail("[camera] source = 'wyze' needs wyze_camera (the camera name from the Wyze app)")
+        camera_rtsp_url = WYZE_BRIDGE_RTSP.format(name=camera_wyze.strip().lower().replace(" ", "-"))
+    elif camera_source == "rtsp" and not camera_rtsp_url:
+        _fail("[camera] source = 'rtsp' needs rtsp_url (e.g. rtsp://user:pass@192.168.1.20:554/stream1)")
+
     missing = [k for k, v in {"device_id": device_id, "device_token": device_token, "cms_url": cms_url}.items() if not v]
     if missing:
         _fail(f"missing required config: {missing}",
@@ -99,4 +142,9 @@ def load(path: Path = DEFAULT_CONFIG_PATH) -> PlayerConfig:
         mpv_socket=mpv_socket,
         poll_interval_seconds=max(5, poll),
         verify_tls=verify_tls,
+        camera_source=camera_source,
+        camera_rtsp_url=camera_rtsp_url,
+        camera_wyze_camera=camera_wyze,
+        camera_snapshot_interval_seconds=max(CAMERA_MIN_INTERVAL, camera_interval),
+        camera_live_url=camera_live_url,
     )

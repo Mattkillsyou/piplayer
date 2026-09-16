@@ -1,0 +1,29 @@
+[Unit]
+Description=Wyze camera RTSP bridge (community mrlt8/wyze-bridge container, unofficial)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Credentials (WYZE_EMAIL, WYZE_PASSWORD, API_ID, API_KEY) live in
+# /etc/projector-player/wyze.env (mode 600), written by install-player.sh
+# --with-wyze or by the flasher. The API key comes from the Wyze developer
+# portal. The bridge serves rtsp://127.0.0.1:8554/<camera-name> for the
+# player's snapshots and a web player on http://127.0.0.1:5000 (put a
+# Cloudflare Tunnel in front of it for the console's live view). Both ports
+# bind to localhost only; WB_AUTH is off so the console iframe can embed the
+# player, so protect the tunnel hostname with Cloudflare Access.
+ExecStartPre=-/usr/bin/docker rm -f projector-wyze-bridge
+ExecStartPre=-/usr/bin/docker pull mrlt8/wyze-bridge:latest
+ExecStart=/usr/bin/docker run --rm --name projector-wyze-bridge \
+    --env-file /etc/projector-player/wyze.env \
+    -e WB_AUTH=false \
+    -p 127.0.0.1:8554:8554 -p 127.0.0.1:5000:5000 \
+    mrlt8/wyze-bridge:latest
+ExecStop=/usr/bin/docker stop projector-wyze-bridge
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

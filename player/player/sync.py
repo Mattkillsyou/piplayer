@@ -114,7 +114,7 @@ def fetch_manifest(cfg: PlayerConfig, status: dict | None = None, sync_error: st
     }
     params: dict[str, str] = {"player_version": __version__}
     if status:
-        for k in ("current_position", "current_filename", "player_status"):
+        for k in ("current_position", "current_filename", "player_status", "camera_error"):
             v = status.get(k)
             if v is not None:
                 params[k] = str(v)

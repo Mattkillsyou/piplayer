@@ -8,6 +8,7 @@ from pathlib import Path
 import requests
 
 from . import __version__
+from .camera import CameraCapture
 from .commands import execute_commands
 from .config import load as load_config, PlayerConfig
 from .mpv_client import MpvClient
@@ -262,13 +263,16 @@ def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
 
 def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
               screenshot: ScreenshotScheduler | None = None,
-              screens: StatusScreens | None = None) -> dict | None:
+              screens: StatusScreens | None = None,
+              camera: CameraCapture | None = None) -> dict | None:
     """One iteration of the main loop: sync with the CMS (tolerating failure),
     then unconditionally reconcile mpv, then screenshots/commands if the sync
     succeeded. Returns the manifest fetched this cycle (None on failure)."""
     status = _gather_mpv_status(mpv, state.last_manifest)
     if screens is not None and screens.showing() and status.get("player_status") == "playing":
         status = {"player_status": "idle"}      # a status screen is not content
+    if camera is not None:
+        status["camera_error"] = camera.error   # "" clears the console's last error
     manifest = None
     on_progress = None
     if screens is not None:
@@ -342,6 +346,8 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
         # Server may have nudged our screenshot cadence
         if screenshot is not None and manifest.get("screenshot_interval_seconds"):
             screenshot.update_interval(int(manifest["screenshot_interval_seconds"]))
+        if camera is not None and manifest.get("camera_interval_seconds"):
+            camera.update_interval(int(manifest["camera_interval_seconds"]))
 
         # Take + upload screenshot if due
         if screenshot is not None and screenshot.due() and mpv.is_alive():
@@ -383,6 +389,10 @@ def main() -> int:
 
     screenshot = ScreenshotScheduler(interval_seconds=60)
     screens = StatusScreens(cfg, mpv, __version__)
+    camera = None
+    if cfg.camera_source != "none":
+        camera = CameraCapture(cfg)
+        camera.start()
     cleanup_stale_temp(cfg)
 
     state = PlayerState(
@@ -395,7 +405,7 @@ def main() -> int:
         screens.show(screens.state("boot"))
 
     while not _stop:
-        run_cycle(cfg, mpv, state, screenshot, screens)
+        run_cycle(cfg, mpv, state, screenshot, screens, camera)
 
         # Sleep, but break early if a force-sync command was queued
         for _ in range(state.backoff):
@@ -408,6 +418,8 @@ def main() -> int:
             _force_sync_now = False
             state.force_verify = True
 
+    if camera is not None:
+        camera.stop()
     log.info("piplayer stopped")
     return 0
 

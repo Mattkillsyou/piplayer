@@ -87,3 +87,61 @@ def test_wait_restores_default_signal_handlers(tmp_path, monkeypatch):
         config.load(tmp_path / "nope.toml")
     assert (config.signal.SIGTERM, config.signal.SIG_DFL) in calls
     assert (config.signal.SIGINT, config.signal.SIG_DFL) in calls
+
+
+# ----------------------------------------------------------------- [camera] ---
+
+CAMERA_ENV = ("PIPLAYER_CAMERA_SOURCE", "PIPLAYER_CAMERA_RTSP_URL", "PIPLAYER_CAMERA_WYZE_CAMERA",
+              "PIPLAYER_CAMERA_SNAPSHOT_INTERVAL", "PIPLAYER_CAMERA_LIVE_URL")
+
+
+@pytest.fixture(autouse=True)
+def no_camera_env(monkeypatch):
+    for k in CAMERA_ENV:
+        monkeypatch.delenv(k, raising=False)
+
+
+def _base(tmp_path, extra=""):
+    p = tmp_path / "config.toml"
+    p.write_text('device_id = "a"\ndevice_token = "t"\ncms_url = "http://x"\n' + extra)
+    return p
+
+
+def test_camera_defaults_to_none(tmp_path):
+    cfg = config.load(_base(tmp_path))
+    assert cfg.camera_source == "none" and cfg.camera_rtsp_url == ""
+    assert cfg.camera_snapshot_interval_seconds == 10
+
+
+def test_camera_rtsp_table_and_min_interval(tmp_path):
+    cfg = config.load(_base(tmp_path, '[camera]\nsource = "rtsp"\nrtsp_url = "rtsp://cam/1"\n'
+                                      'snapshot_interval_seconds = 2\nlive_url = "https://live.example"\n'))
+    assert cfg.camera_source == "rtsp" and cfg.camera_rtsp_url == "rtsp://cam/1"
+    assert cfg.camera_snapshot_interval_seconds == 5          # floor
+    assert cfg.camera_live_url == "https://live.example"
+
+
+def test_camera_wyze_derives_bridge_url(tmp_path):
+    cfg = config.load(_base(tmp_path, '[camera]\nsource = "wyze"\nwyze_camera = "Lobby Cam"\n'))
+    assert cfg.camera_rtsp_url == "rtsp://127.0.0.1:8554/lobby-cam"
+    assert cfg.camera_wyze_camera == "Lobby Cam"
+
+
+def test_camera_env_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("PIPLAYER_CAMERA_SOURCE", "rtsp")
+    monkeypatch.setenv("PIPLAYER_CAMERA_RTSP_URL", "rtsp://env/1")
+    monkeypatch.setenv("PIPLAYER_CAMERA_SNAPSHOT_INTERVAL", "42")
+    cfg = config.load(_base(tmp_path, '[camera]\nsource = "none"\n'))
+    assert (cfg.camera_source, cfg.camera_rtsp_url, cfg.camera_snapshot_interval_seconds) == ("rtsp", "rtsp://env/1", 42)
+
+
+@pytest.mark.parametrize("extra, text", [
+    ('[camera]\nsource = "usb"\n', "source must be one of"),
+    ('[camera]\nsource = "rtsp"\n', "needs rtsp_url"),
+    ('[camera]\nsource = "wyze"\n', "needs wyze_camera"),
+    ('[camera]\nsource = "rtsp"\nrtsp_url = "rtsp://x"\nsnapshot_interval_seconds = "soon"\n', "must be an integer"),
+])
+def test_camera_bad_values_report_and_exit(tmp_path, capsys, extra, text):
+    with pytest.raises(SystemExit):
+        config.load(_base(tmp_path, extra))
+    assert text in capsys.readouterr().err

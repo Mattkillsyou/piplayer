@@ -558,3 +558,33 @@ def test_syncing_screen_is_not_rendered_while_mpv_is_down(cfg, cms, mpv, client,
     mpv.restart()
     run_cycle(cfg, client, state, screens=screens)
     assert names(mpv) == ["a.mp4"]
+
+
+# ------------------------------------------------------------- room camera ---
+
+def test_camera_error_is_sent_only_when_a_camera_is_configured(cfg, cms, mpv, client):
+    from player.camera import CameraCapture
+    import dataclasses
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    assert "camera_error" not in cms.sync_calls[-1]
+
+    cam_cfg = dataclasses.replace(cfg, camera_source="rtsp", camera_rtsp_url="rtsp://cam/1")
+    cam = CameraCapture(cam_cfg)                 # not started: only the status plumbing is exercised
+    run_cycle(cam_cfg, client, state, camera=cam)
+    assert cms.sync_calls[-1]["camera_error"] == ""     # an empty value clears the console's last error
+    cam.error = "ffmpeg timed out after 15s"
+    run_cycle(cam_cfg, client, state, camera=cam)
+    assert cms.sync_calls[-1]["camera_error"] == "ffmpeg timed out after 15s"
+
+
+def test_manifest_camera_interval_updates_the_capture_cadence(cfg, cms, mpv, client):
+    from player.camera import CameraCapture
+    cam = CameraCapture(cfg)
+    assert cam.interval == 10
+    cms.manifest["camera_interval_seconds"] = 3          # below the floor
+    run_cycle(cfg, client, fresh_state(cfg), camera=cam)
+    assert cam.interval == 5
+    cms.manifest["camera_interval_seconds"] = "bogus"    # a bad field is logged, not fatal
+    assert run_cycle(cfg, client, fresh_state(cfg), camera=cam) is not None
+    assert cam.interval == 5
