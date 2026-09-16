@@ -132,15 +132,24 @@ async function uploadCamera(ctx) {
   return json({ ok: true, size_bytes: bytes.length });
 }
 
+// Settings enroll_group_id / enroll_playlist_id resolved against the live rows: a deleted
+// group or playlist counts as "none" (the settings row is not cleared on delete).
+async function enrollDefaults(env, settings) {
+  const live = async (table, id) => (id !== null && await db.first(env, `SELECT id FROM ${table} WHERE id = ?`, id)) ? id : null;
+  return { group_id: await live("device_groups", settings.enroll_group_id), playlist_id: await live("playlists", settings.enroll_playlist_id) };
+}
+
 // Zero-touch enrollment: a freshly flashed Pi trades the site's enrollment key for its device
 // token. Re-enrolling an existing device_id returns the existing token so a re-flashed card
-// keeps the console's view of that device. Throttled per ip like login; the token is never
-// logged or audited.
+// keeps the console's view of that device (group/playlist untouched; only a FIRST enrollment
+// applies the Settings defaults, and the audit row says which). Throttled per ip like login;
+// the token is never logged or audited.
 async function enroll(ctx) {
   const wait = await auth.loginLockedFor(ctx.env, ctx.ip, auth.ENROLL_KEY, auth.ENROLL_MAX_FAILURES, auth.ENROLL_LOCK_SECONDS);
   if (wait) throw new HttpError(429, `Too many failed attempts; try again in ${wait} s`, { "Retry-After": String(wait) });
   const body = await jsonObject(ctx.request);
-  const expected = (await ctx.settings()).enrollment_key;
+  const settings = await ctx.settings();
+  const expected = settings.enrollment_key;
   if (typeof body.key !== "string" || !auth.timingSafeEqual(body.key, expected)) {
     await auth.recordLoginFailure(ctx.env, ctx.ip, auth.ENROLL_KEY);
     fail(401, "invalid enrollment key");
@@ -154,9 +163,12 @@ async function enroll(ctx) {
   let row = await existing();
   if (!row) {
     const token = randomToken(32);
+    const { group_id, playlist_id } = await enrollDefaults(ctx.env, settings);
     try {
-      const id = (await db.run(ctx.env, "INSERT INTO devices (device_id, name, token) VALUES (?, ?, ?)", deviceId, name, token)).last_row_id;
-      await audit.log(ctx, "device_enrolled", "device", id, { device_id: deviceId, name }, null);
+      const id = (await db.run(ctx.env, "INSERT INTO devices (device_id, name, token, group_id, playlist_id) VALUES (?, ?, ?, ?, ?)",
+        deviceId, name, token, group_id, playlist_id)).last_row_id;
+      await audit.log(ctx, "device_enrolled", "device", id,
+        { device_id: deviceId, name, group_id: group_id ?? undefined, playlist_id: playlist_id ?? undefined }, null);
       return json({ device_id: deviceId, token, cms_url: ctx.url.origin });
     } catch (e) {
       if (!db.isConstraintError(e)) throw e;

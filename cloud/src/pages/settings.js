@@ -1,6 +1,7 @@
-// /settings (admin only, cloud-only page): site timezone, screenshot and camera intervals and
-// default image duration, stored in the settings table (db.loadSettings / saveSetting), plus the
-// device enrollment key (shown masked, rotatable; POST /api/enroll checks it).
+// /settings (admin only, cloud-only page): site timezone, screenshot and camera intervals,
+// default image duration and the group/playlist new devices get on first enrollment, stored in
+// the settings table (db.loadSettings / saveSetting), plus the device enrollment key (shown
+// masked, rotatable; POST /api/enroll checks it).
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
@@ -18,9 +19,16 @@ function timeZoneOptions() {
   }
 }
 
+// <option>s for a nullable-id select; a stored id whose row was deleted matches nothing = none.
+function optionList(rows, selected) {
+  return rows.map((r) => `<option value="${r.id}"${r.id === selected ? " selected" : ""}>${esc(r.name)}</option>`).join("\n          ");
+}
+
 async function settingsPage(ctx) {
   auth.requireRole(ctx, "admin");
   const s = await ctx.settings();
+  const groups = await db.all(ctx.env, "SELECT id, name FROM device_groups ORDER BY name");
+  const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name");
   const saved = ctx.url.searchParams.get("saved") === "1";
   const rotated = ctx.url.searchParams.get("rotated") === "1";
   const content = `<div class="page-head">
@@ -50,8 +58,20 @@ ${rotated ? alertBox("Enrollment key rotated. Cards flashed with the old key mus
       <label>Default image duration (seconds)
         <input type="number" name="default_image_duration" value="${esc(s.default_image_duration)}" min="0.5" max="86400" step="0.5" required>
       </label>
+      <label>New devices join group
+        <select name="enroll_group_id">
+          <option value="">— none —</option>
+          ${optionList(groups, s.enroll_group_id)}
+        </select>
+      </label>
+      <label>New devices get playlist
+        <select name="enroll_playlist_id">
+          <option value="">— none —</option>
+          ${optionList(playlists, s.enroll_playlist_id)}
+        </select>
+      </label>
     </div>
-    <p class="help small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot; the camera interval works the same way for room camera snapshots. The image duration applies to images without a per-item override.</p>
+    <p class="help small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot; the camera interval works the same way for room camera snapshots. The image duration applies to images without a per-item override. The group and playlist are applied when a device enrolls for the first time (<code>POST /api/enroll</code>); re-enrolling a known device keeps its current assignment.</p>
     <div class="row">
       <button type="submit" class="primary">Save settings</button>
     </div>
@@ -89,9 +109,16 @@ async function settingsSave(ctx) {
     "default_image_duration must be a positive number");
   if (duration === null) fail(400, "default_image_duration required");
   if (duration <= 0 || duration > 86400) fail(400, "default_image_duration must be a positive number of seconds (at most 86400)");
-  const values = { timezone, screenshot_interval: interval, camera_interval: camera, default_image_duration: duration };
-  await db.batch(ctx.env, Object.entries(values).map(([k, v]) =>
-    ["INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", k, String(v)]));
+  const enrollGroup = intField(str(form, "enroll_group_id"), "enroll_group_id");
+  if (enrollGroup !== null && !(await db.first(ctx.env, "SELECT id FROM device_groups WHERE id = ?", enrollGroup))) fail(400, "enroll_group_id: unknown group");
+  const enrollPlaylist = intField(str(form, "enroll_playlist_id"), "enroll_playlist_id");
+  if (enrollPlaylist !== null && !(await db.first(ctx.env, "SELECT id FROM playlists WHERE id = ?", enrollPlaylist))) fail(400, "enroll_playlist_id: unknown playlist");
+  const values = { timezone, screenshot_interval: interval, camera_interval: camera, default_image_duration: duration,
+    enroll_group_id: enrollGroup, enroll_playlist_id: enrollPlaylist };
+  // null (none) deletes the row so the settings table only holds what is set
+  await db.batch(ctx.env, Object.entries(values).map(([k, v]) => (v === null
+    ? ["DELETE FROM settings WHERE key = ?", k]
+    : ["INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", k, String(v)])));
   await audit.log(ctx, "settings_update", "settings", null, values);
   return redirect("/settings?saved=1");
 }

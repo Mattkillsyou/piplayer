@@ -47,7 +47,8 @@ export async function assertMigrated(env) {
 // Settings (/settings page). Stored as strings in `settings`; env vars are the defaults.
 // ---------------------------------------------------------------------------
 
-export const SETTING_KEYS = ["timezone", "screenshot_interval", "camera_interval", "default_image_duration", "enrollment_key"];
+export const SETTING_KEYS = ["timezone", "screenshot_interval", "camera_interval", "default_image_duration", "enrollment_key",
+  "enroll_group_id", "enroll_playlist_id"];
 
 export function defaultSettings(env) {
   return {
@@ -56,11 +57,14 @@ export function defaultSettings(env) {
     camera_interval: envInt(env, "PIPLAYER_CAMERA_INTERVAL", 10),
     default_image_duration: envFloat(env, "PIPLAYER_DEFAULT_IMAGE_DURATION", 10),
     enrollment_key: "", // generated on first read (loadSettings), never from env
+    enroll_group_id: null, // group / playlist applied to a device on its FIRST enrollment (api.enroll);
+    enroll_playlist_id: null, // null = none; a deleted row is treated as none at enrollment time
   };
 }
 
 // {timezone, screenshot_interval (int seconds), camera_interval (int seconds), default_image_duration
-// (float seconds), enrollment_key (secret shared with the flasher; POST /api/enroll)}.
+// (float seconds), enrollment_key (secret shared with the flasher; POST /api/enroll), enroll_group_id /
+// enroll_playlist_id (int or null)}.
 export async function loadSettings(env) {
   const s = defaultSettings(env);
   for (const row of await all(env, "SELECT key, value FROM settings")) {
@@ -69,6 +73,7 @@ export async function loadSettings(env) {
     else if (row.key === "camera_interval" && Number.isFinite(+row.value)) s.camera_interval = parseInt(row.value, 10);
     else if (row.key === "default_image_duration" && Number.isFinite(+row.value)) s.default_image_duration = parseFloat(row.value);
     else if (row.key === "enrollment_key" && row.value) s.enrollment_key = row.value;
+    else if ((row.key === "enroll_group_id" || row.key === "enroll_playlist_id") && /^\d+$/.test(row.value)) s[row.key] = parseInt(row.value, 10);
   }
   if (!s.enrollment_key) s.enrollment_key = await generateEnrollmentKey(env, false);
   return s;

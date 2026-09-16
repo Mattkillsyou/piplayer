@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import * as auth from "../src/auth.js";
 import * as db from "../src/db.js";
 import { BASE, query, setupAdmin } from "./helpers.js";
-import { audits, detail } from "./pages_common.js";
+import { audits, detail, group, playlist } from "./pages_common.js";
 
 let key;
 
@@ -14,7 +14,11 @@ const enroll = (body, headers = {}) => SELF.fetch(`${BASE}/api/enroll`, {
   method: "POST", body: typeof body === "string" ? body : JSON.stringify(body),
   headers: { "content-type": "application/json", ...headers },
 });
-const dev = (deviceId) => query("SELECT id, device_id, name, token FROM devices WHERE device_id = ?", deviceId).then((r) => r[0] ?? null);
+const dev = (deviceId) => query("SELECT id, device_id, name, token, group_id, playlist_id FROM devices WHERE device_id = ?", deviceId).then((r) => r[0] ?? null);
+const setDefaults = (gid, pid) => env.DB.batch([
+  env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('enroll_group_id', ?)").bind(gid === null ? "" : String(gid)),
+  env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('enroll_playlist_id', ?)").bind(pid === null ? "" : String(pid)),
+]);
 const clear = (ip = null) => auth.clearLoginFailures(env, ip, auth.ENROLL_KEY);
 
 beforeAll(async () => {
@@ -126,6 +130,51 @@ describe("POST /api/enroll", () => {
     await query("UPDATE login_failures SET at = at - 61 WHERE username = ?", auth.ENROLL_KEY);
     expect((await enroll({ key, device_id: "t-1", name: "x" }, ip)).status).toBe(200);
     await clear("203.0.113.9");
+  });
+
+  it("applies the Settings group/playlist on first enrollment only; deleted rows count as none", async () => {
+    await query("DELETE FROM audit_log WHERE action LIKE 'device_%enrolled'");
+    const gid = await group("Enroll group");
+    const pid = await playlist("Enroll playlist");
+    try {
+      // nothing configured (the default): no assignment
+      expect((await enroll({ key, device_id: "auto-0", name: "x" })).status).toBe(200);
+      expect(await dev("auto-0")).toMatchObject({ group_id: null, playlist_id: null });
+
+      await setDefaults(gid, pid);
+      expect((await enroll({ key, device_id: "auto-1", name: "Auto" })).status).toBe(200);
+      const row = await dev("auto-1");
+      expect(row).toMatchObject({ group_id: gid, playlist_id: pid });
+      const [a] = await audits("device_enrolled");
+      expect(a.details).toBe(`{"device_id": "auto-1", "name": "Auto", "group_id": ${gid}, "playlist_id": ${pid}}`);
+
+      // re-enroll keeps whatever the device has now, even when the defaults changed
+      await query("UPDATE devices SET group_id = NULL WHERE id = ?", row.id);
+      await setDefaults(null, pid);
+      expect((await enroll({ key, device_id: "auto-1", name: "Auto 2" })).status).toBe(200);
+      expect(await dev("auto-1")).toMatchObject({ name: "Auto 2", group_id: null, playlist_id: pid });
+      expect((await audits("device_reenrolled"))[0].details).toBe('{"device_id": "auto-1", "name": "Auto 2"}');
+      // and the earlier device enrolled before any defaults is untouched by a re-enroll too
+      expect((await enroll({ key, device_id: "auto-0", name: "x" })).status).toBe(200);
+      expect(await dev("auto-0")).toMatchObject({ group_id: null, playlist_id: null });
+
+      // only the playlist is set
+      expect((await enroll({ key, device_id: "auto-2", name: "x" })).status).toBe(200);
+      expect(await dev("auto-2")).toMatchObject({ group_id: null, playlist_id: pid });
+      expect((await audits("device_enrolled"))[0].details).toBe(`{"device_id": "auto-2", "name": "x", "playlist_id": ${pid}}`);
+
+      // dangling ids (rows deleted, settings not cleared) are ignored
+      await setDefaults(gid, pid);
+      await query("DELETE FROM device_groups WHERE id = ?", gid);
+      await query("DELETE FROM playlists WHERE id = ?", pid);
+      expect((await enroll({ key, device_id: "auto-3", name: "x" })).status).toBe(200);
+      expect(await dev("auto-3")).toMatchObject({ group_id: null, playlist_id: null });
+      expect((await audits("device_enrolled"))[0].details).toBe('{"device_id": "auto-3", "name": "x"}');
+    } finally {
+      await query("DELETE FROM settings WHERE key LIKE 'enroll_%_id'");
+      await query("DELETE FROM device_groups WHERE id = ?", gid);
+      await query("DELETE FROM playlists WHERE id = ?", pid);
+    }
   });
 
   it("a rotated key invalidates the old one", async () => {

@@ -39,7 +39,8 @@ describe("migration 0002", () => {
   it("adds the three camera columns and bumps schema_version", async () => {
     const cols = (await query("PRAGMA table_info(devices)")).map((c) => c.name);
     expect(cols).toEqual(expect.arrayContaining(["last_camera_at", "camera_error", "camera_live_url"]));
-    expect((await one("SELECT value FROM meta WHERE key = 'schema_version'")).value).toBe("2");
+    // 0003_automation.sql bumps it further; this only checks 0002 ran
+    expect(Number((await one("SELECT value FROM meta WHERE key = 'schema_version'")).value)).toBeGreaterThanOrEqual(2);
   });
 });
 

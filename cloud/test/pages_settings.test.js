@@ -3,7 +3,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { query } from "./helpers.js";
-import { audits, detail, device, post, roleMatrix, roles } from "./pages_common.js";
+import { audits, detail, device, group, playlist, post, roleMatrix, roles } from "./pages_common.js";
 
 let r;
 const GOOD = { timezone: "America/Los_Angeles", screenshot_interval: "120", camera_interval: "20", default_image_duration: "7.5" };
@@ -76,7 +76,8 @@ describe("settings", () => {
     ]);
     const [a] = await audits("settings_update");
     expect(a.username).toBe("admin");
-    expect(JSON.parse(a.details)).toEqual({ timezone: "Europe/Berlin", screenshot_interval: 120, camera_interval: 20, default_image_duration: 7.5 });
+    expect(JSON.parse(a.details)).toEqual({ timezone: "Europe/Berlin", screenshot_interval: 120, camera_interval: 20, default_image_duration: 7.5,
+      enroll_group_id: null, enroll_playlist_id: null });
     const page = await (await r.admin.get("/settings?saved=1")).text();
     expect(page).toContain("Settings saved.");
     expect(page).toContain('name="timezone" value="Europe/Berlin"');
@@ -102,6 +103,48 @@ describe("settings", () => {
     expect(await (await r.admin.get("/devices")).text()).not.toContain(">stale<");
     await query("UPDATE devices SET last_screenshot_at = datetime('now', '-400 seconds') WHERE id = ?", dev.id);
     expect(await (await r.admin.get("/devices")).text()).toContain(">stale<");
+    await query("DELETE FROM settings");
+  });
+
+  it("enrollment defaults: selects list groups/playlists, unknown ids are 400, none deletes the row, deleted rows show as none", async () => {
+    await query("DELETE FROM settings");
+    const gid = await group("Lobby screens");
+    const pid = await playlist("Welcome loop");
+    let page = await (await r.admin.get("/settings")).text();
+    expect(page).toContain('<select name="enroll_group_id">');
+    expect(page).toContain('<select name="enroll_playlist_id">');
+    expect(page).toContain(`<option value="${gid}">Lobby screens</option>`);
+    expect(page).toContain(`<option value="${pid}">Welcome loop</option>`);
+
+    for (const [fields, msg] of [
+      [{ ...GOOD, enroll_group_id: "999999" }, "enroll_group_id: unknown group"],
+      [{ ...GOOD, enroll_group_id: "abc" }, "enroll_group_id must be an integer"],
+      [{ ...GOOD, enroll_playlist_id: "999999" }, "enroll_playlist_id: unknown playlist"],
+      [{ ...GOOD, enroll_playlist_id: "1.5" }, "enroll_playlist_id must be an integer"],
+    ]) {
+      expect(await detail(await post(r.admin, "/settings", fields), 400), JSON.stringify(fields)).toContain(msg);
+    }
+    expect(await settings()).toEqual([]);
+
+    expect((await post(r.admin, "/settings", { ...GOOD, enroll_group_id: String(gid), enroll_playlist_id: String(pid) })).status).toBe(303);
+    expect((await settings()).filter((x) => x.key.startsWith("enroll_"))).toEqual([
+      { key: "enroll_group_id", value: String(gid) }, { key: "enroll_playlist_id", value: String(pid) },
+    ]);
+    const [a] = await audits("settings_update");
+    expect(JSON.parse(a.details)).toMatchObject({ enroll_group_id: gid, enroll_playlist_id: pid });
+    page = await (await r.admin.get("/settings")).text();
+    expect(page).toContain(`<option value="${gid}" selected>Lobby screens</option>`);
+    expect(page).toContain(`<option value="${pid}" selected>Welcome loop</option>`);
+
+    // the playlist is deleted: its setting row stays but nothing is selected (= none)
+    await query("DELETE FROM playlists WHERE id = ?", pid);
+    page = await (await r.admin.get("/settings")).text();
+    expect(page).toContain(`<option value="${gid}" selected>`);
+    expect(page).not.toContain("Welcome loop");
+    // saving with none removes the rows
+    expect((await post(r.admin, "/settings", { ...GOOD, enroll_group_id: "", enroll_playlist_id: "" })).status).toBe(303);
+    expect((await settings()).filter((x) => x.key.startsWith("enroll_"))).toEqual([]);
+    await query("DELETE FROM device_groups WHERE id = ?", gid);
     await query("DELETE FROM settings");
   });
 
