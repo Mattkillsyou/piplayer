@@ -174,7 +174,7 @@ Settings. Each issue is audited.
 |---|---|---|
 | Player release | `player_release` | git ref: tag, branch or commit sha; default `main` |
 | Auto-update | `auto_update` | `off` (default) or `nightly` |
-| Auto-update window | `auto_update_window` | `HH:MM-HH:MM` in the console timezone; default `03:00-05:00` |
+| Auto-update window | `auto_update_window` | `HH:MM-HH:MM` on the Pi's local clock; default `03:00-05:00` |
 
 The manifest gains an optional `update: {release, auto, window}` key. A player
 that never sees it (older console, or the Python console without the env vars
@@ -219,10 +219,11 @@ update and sends it to the console as the `update_status` query parameter of
 its next sync. The console stores it in the device row's `last_update_at`,
 `last_update_ok`, `last_update_message` and `last_update_ref` columns.
 
-**Rollback.** The script arms a post-check (a systemd timer two minutes
-after the restart, backed by `OnFailure` on the service). If the new daemon
-fails to import or has exited within 60 s of starting three times, the
-post-check moves `/opt/piplayer/player.prev` back into place, restarts the
+**Rollback.** The script arms a post-check (`projector-player-postcheck.timer`,
+armed by the script right before it restarts the service; it fires two minutes
+later and runs `update-player.sh --postcheck`). If the service is then not
+active (a daemon that cannot import hits systemd's start limit) or has been
+auto-restarted three or more times, the post-check moves `/opt/piplayer/player.prev` back into place, restarts the
 service and writes a failed status with the reason, so the Devices page shows
 the rollback and the Pi keeps playing on the previous code. The console does
 nothing on its own: it only records what the Pi reports. To roll back by
@@ -237,13 +238,16 @@ the result first and then reboots. Expect a few minutes of downtime on a slow
 card; issue it inside the quiet window or use `auto_update`.
 
 **Auto mode.** With `auto_update = nightly` the daemon checks on every sync:
-if the local time is inside `auto_update_window`, and the last update attempt
+if the Pi's local time is inside `auto_update_window`, and the last update attempt
 (from `update-status.json`) started more than 20 hours ago, it runs
 `update-player` with the manifest's `update.release`, exactly as if the
 console had queued the command. The 20 h guard is what stops it re-running
 every poll for the length of the window; with the ref unchanged the run is
 the "already at <sha>" no-op anyway. Auto mode never runs `update-os`;
-queue that yourself or with **Update all players**.
+queue that yourself or with **Update all players**. The window is evaluated
+on the Pi's own clock, not the console's: the flasher sets the Pi timezone to
+the console timezone (`timedatectl set-timezone` in `firstrun.sh`), so keep
+the two in step, or change it on the Pi with `sudo timedatectl set-timezone`.
 
 **What the console shows.** The Devices page shows `player_version` with the
 short sha from `RELEASE` appended, and an update status per device: ok or
