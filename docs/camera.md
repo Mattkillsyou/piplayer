@@ -74,6 +74,13 @@ on Wyze's app API, and a Wyze-side change can break it until the container is
 updated (`sudo systemctl restart projector-wyze-bridge.service` pulls the
 latest image). If that is not acceptable, use an RTSP camera (Option A).
 
+> **Cloud console:** you do not need to put credentials on each Pi. Enter
+> the Wyze account once on the Settings page and each player fetches its own
+> camera configuration; see [automation.md](automation.md) section D. The
+> steps below are the manual path (Python console, or a Pi set up by hand),
+> and on players installed from this branch the credentials file lives at
+> `/var/lib/projector-player/wyze.env` rather than under `/etc`.
+
 ### Wyze API key
 
 The bridge needs an API key in addition to your Wyze email and password.

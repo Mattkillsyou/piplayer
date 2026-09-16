@@ -90,9 +90,8 @@ and one build of the flasher serves every operator.
 - `GET /api/operator/enrollment` with `Authorization: Bearer p5k_<token>`
   returns `{console_url, enrollment_key, groups: [{id, name}],
   playlists: [{id, name}], timezone, wyze_configured}`. `wyze_configured` is
-  always `false` until feature D lands; it then turns `true` once Wyze
-  credentials exist, so the flasher's provision script can pass
-  `--with-wyze`. The endpoint is read-only, answers only tokens whose user
+  `true` once the four Wyze secrets of section D are set, so the flasher's
+  provision script passes `--with-wyze`; `false` otherwise. The endpoint is read-only, answers only tokens whose user
   is an admin or editor, and returns 401 for anything else: a missing or
   malformed header, an unknown or revoked token, or a viewer's token. The
   token's `last_used_at` is refreshed and an `api_token_used` audit entry is
@@ -312,8 +311,156 @@ minutes later), then `update-os`, before using **Update all players**.
 
 ## D. Camera zero-config (cloud + player)
 
-Coming in this branch. Cloud-only; on a Python console the camera is
-configured by hand as described in [camera.md](camera.md).
+**What it does.** The Wyze account that all the room cameras hang off is
+entered once, on the cloud console's Settings page, and every player fetches
+its own camera configuration from the console instead of having credentials
+typed into `wyze.env` on each Pi. A freshly enrolled device whose Wyze camera
+is named after the device starts sending snapshots on its first boot with no
+one touching the Pi. RTSP cameras get the same treatment: the stream URL is
+set per device on the Devices page and travels to the Pi the same way. Cloud
+only; on a Python console the camera is configured by hand as described in
+[camera.md](camera.md).
+
+**Settings** (Settings page, admin, "Wyze account" section):
+
+| Setting | Stored as | Meaning |
+|---|---|---|
+| Wyze email | secret `wyze_email` | The account the cameras are paired with (or shared to). |
+| Wyze password | secret `wyze_password` | Its password. |
+| API key id | secret `wyze_api_id` | The **API ID** from the Wyze developer portal. |
+| API key | secret `wyze_api_key` | The **API key** from the same portal (shown once there). |
+| Camera name pattern | setting `wyze_camera_pattern` | How a device's Wyze camera is named in the Wyze app; default `{device_name}`. |
+
+The four secrets live in a D1 table `secrets(name, value)`. Each value is
+encrypted with AES-GCM under a key derived (HKDF, info `p5k-secrets`) from
+the worker's existing `SESSION_SECRET`, so nothing readable sits in the
+database and no new worker secret is needed. The console never renders a
+stored value back: each field shows only **set** or **not set**, and a
+Replace form overwrites it. There is no "reveal". Rotating `SESSION_SECRET`
+makes the stored values undecryptable: re-enter the four Wyze fields
+afterwards (the page shows them as not set once decryption fails).
+
+**Camera name pattern.** `{device_name}` is replaced with the device's name
+as shown on the Devices page; `{device_id}` is the device id. With the
+default pattern, a device called `Lobby projector` expects a Wyze camera
+called `Lobby projector`. The player turns that into the bridge's stream name
+the same way as before (lowercased, spaces to dashes: `lobby-projector`), so
+name cameras in the Wyze app to match the console, or set the name per
+device instead.
+
+**Per-device override** (Devices page, existing Camera block, editor and
+above):
+
+| Field | Values |
+|---|---|
+| Camera source | `default`, `none`, `wyze` or `rtsp` |
+| RTSP URL | required when the source is `rtsp`; the stream URL with any camera credentials inside, as in camera.md Option A |
+| Wyze camera name | used when the source is `wyze`; empty means "apply the pattern" |
+
+`default` follows the site: `wyze` with the pattern-derived name once the
+four Wyze secrets are set, `none` until then. Set `none` on a device that
+has no camera so its bridge stays down; set `rtsp` for a non-Wyze camera.
+Changes are audited (`device_set_camera`).
+
+**Device API.** `GET /api/camera-config/<device_id>` with the device's bearer
+token returns either `{source: "none"}` or
+
+```json
+{"source": "wyze", "rtsp_url": "", "wyze": {"email": "...", "password": "...",
+ "api_id": "...", "api_key": "...", "camera": "Lobby projector"}}
+```
+
+(for `rtsp` the `wyze` object is absent and `rtsp_url` is filled). This is
+the only route that ever sends the Wyze credentials anywhere, and only to a
+device that authenticates as itself; it answers 401 to anything else. A
+`camera_config_fetched` audit entry is written at most once per device per
+day, so the log shows which Pis picked the configuration up without filling
+on every boot.
+
+The manifest gains an optional integer `camera_config_version`. The console
+bumps it whenever anything that feeds the endpoint changes: a Wyze secret,
+the pattern, a device's source, URL or camera name, or the device's own name
+(because the pattern depends on it).
+
+**What the Pi does.** On daemon start, and on any sync where the manifest's
+`camera_config_version` differs from the one stored in
+`/var/lib/projector-player/`, the player calls the endpoint and applies the
+answer without restarting itself:
+
+1. Writes `/var/lib/projector-player/wyze.env` (mode 600, owned by
+   `projector`): `WYZE_EMAIL`, `WYZE_PASSWORD`, `API_ID`, `API_KEY`. The
+   bridge unit now reads its `--env-file` from there rather than from
+   `/etc/projector-player/wyze.env`, which the daemon (running as
+   `projector`) could not write. An older `/etc/projector-player/wyze.env`
+   is ignored once the unit has been updated by the installer.
+2. Runs `sudo -n systemctl restart projector-wyze-bridge.service` (allowed
+   by the sudoers drop-in `/etc/sudoers.d/projector-player`) when the source
+   is `wyze`, so the bridge logs in with the new credentials; with `none` or
+   `rtsp` the bridge is left alone.
+3. Swaps its in-memory `[camera]` configuration: the capture thread is
+   restarted with the new source, URL or derived stream name, and the
+   version is stored so the next sync is a no-op.
+
+The `[camera]` table in `/etc/projector-player/config.toml` is now only a
+fallback for a console that does not send `camera_config_version` (an older
+console, or the Python console); the fetched configuration wins whenever the
+manifest carries the key. A player that never sees the key behaves exactly as
+before. If the fetch fails (console unreachable, 401), the player keeps its
+current camera configuration and retries on the next sync that still shows a
+different version; the failure surfaces as `camera_error` on the Devices
+page like any other camera problem.
+
+**Installer and flasher.** `install-player.sh --with-wyze` still installs
+Docker and `projector-wyze-bridge.service`, but no longer needs the `WYZE_*`
+variables: the unit tolerates a missing env file, stays enabled, and is
+started by the daemon once it has fetched credentials. The flasher's
+provision script passes `--with-wyze` automatically when
+`GET /api/operator/enrollment` reports `wyze_configured: true` (section B),
+which it does once the four Wyze secrets are set. So the order for a new
+site is: enter the Wyze account on the Settings page first, then flash. Cards
+flashed before the account was entered come up without Docker; run
+`sudo bash deploy/install-player.sh --with-wyze --upgrade` on those Pis once
+(or re-flash). Players installed before this feature need the same one-off
+`--upgrade` to get the moved env-file path, the extra sudoers line and the
+fetch logic.
+
+**Operator steps** (once per site):
+
+1. Create or pick the Wyze account the cameras are paired with. An account
+   without two-factor auth, with the cameras shared to it, is the simplest;
+   the bridge cannot complete a 2FA login on its own (camera.md, "Wyze API
+   key").
+2. Sign in at <https://developer-api-console.wyze.com/> with that account
+   and create an API key. Copy the **API ID** and the **API key** now; the
+   key is shown once and expires after a year, so put a reminder in your
+   calendar: when it lapses every bridge stops logging in and the Devices
+   page shows `Connection refused` camera errors across the fleet. Replace
+   the key on the Settings page and every Pi picks it up on its next sync.
+3. Cloud console, Settings, "Wyze account": enter email, password, API ID
+   and API key, and leave the pattern at `{device_name}` unless your cameras
+   are named some other way. Save. The section now shows four **set**
+   badges and `wyze_configured` turns `true` for the flasher.
+4. In the Wyze app, name each camera exactly as its device is named on the
+   Devices page (or set the name per device in the Camera block).
+5. Flash the cards. The provision script installs the bridge, the daemon
+   fetches the configuration on its first sync, and the snapshot appears on
+   the device tile within a minute or two of the bridge logging in.
+
+**Python console.** `cms/` has no secrets store and does not serve
+`/api/camera-config`: configure the camera on each Pi by hand
+([camera.md](camera.md)), writing `wyze.env` to
+`/var/lib/projector-player/wyze.env` on players installed from this branch.
+
+**Not covered by the automated tests.** The cloud tests cover the
+encryption round trip, the endpoint's bearer gate, the daily audit cap and
+the version bump on each kind of change; the player tests cover the fetch
+and apply path with a fake console, fake `systemctl` and a temporary data
+directory. What needs a Pi: the bridge actually logging in with the fetched
+credentials and the RTSP stream name matching the pattern. Verify on one
+device: set the account, watch `journalctl -u projector-player.service -f`
+for the fetch on the next sync, then `journalctl -u
+projector-wyze-bridge.service -n 50` for the login and the camera name, then
+the snapshot on the tile.
 
 ## E. Projector power (player + cloud + cms)
 
