@@ -310,12 +310,15 @@ chars), user_code (6 chars from `BCDFGHJKLMNPQRSTVWXZ23456789`, no vowels or 0/O
 verification_url (<base>/authorize, `installBaseUrl`), expires_in: 600, interval: 3}`; only the
 SHA-256 hex of `device_code` is stored, with the hostname and the caller's IP. More than 20 codes from
 one IP within an hour → 429. `GET /authorize` (editor+, no nav item: the flasher opens
-`verification_url?code=<user_code>`) shows the code form (`?code=` prefilled; case and the display
+`verification_url?code=<user_code>`; an anonymous visitor with a `?code=` is sent to
+`/login?next=/authorize?code=...` and lands back here after signing in, `login.js` accepts only a
+same-origin path as `next`) shows the code form (`?code=` prefilled; case and the display
 hyphen `XXXX-XX` do not matter) or, for a live pending code, "Sign in the SD Flasher on <hostname>?"
 with Approve / Deny. `POST /authorize` (CSRF; fields `code`, `action` = approve | deny; any other
 action → 303 back to the GET) approve calls `issueApiToken` for the signed-in user with the name
 `SD Flasher on <hostname>` (audit `api_token_created` details `{name, source: "device-code"}`) and
-parks the plaintext in `token_plain_until_claimed`; deny sets `denied`; an unknown, answered or
+parks the plaintext in `token_plain_until_claimed`; deny sets `denied` and audits
+`device_code_denied` `{hostname}`; an unknown, answered or
 expired code re-renders the form with an error (400). `POST /api/operator/device-token`
 `{device_code}` → 428 `{status: "pending"}` | 200 `{token, username}` exactly once (the row is
 deleted; a concurrent poll loses on the DELETE's row count) | 410 `{status: "expired" | "denied"}`

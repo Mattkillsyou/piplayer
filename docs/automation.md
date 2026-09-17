@@ -104,7 +104,7 @@ scripts and for anything that is not the flasher.
   code when the link did not carry one; case and the hyphen do not matter).
   Approve creates an `api_tokens` row named `SD Flasher on <hostname>` for
   the signed-in user and audits `api_token_created` with `source:
-  "device-code"`; deny refuses it. `POST /api/operator/device-token`
+  "device-code"`; deny refuses it and audits `device_code_denied`. `POST /api/operator/device-token`
   `{device_code}` answers 428 `{status: "pending"}` until then, then 200
   `{token, username}` exactly once (the code is deleted), or 410
   `{status: "expired"}` / `{status: "denied"}`. Codes expire 10 minutes
@@ -150,8 +150,9 @@ paste-a-device-token path still bypasses enrollment. See
 **Operator steps** (once per operator, on each PC that flashes cards):
 
 1. Start the flasher and click **Sign in**. The browser opens the console's
-   `/authorize` page with the code filled in (sign in to the console first if
-   asked; any editor or admin account works).
+   `/authorize` page with the code filled in (if the console asks you to sign
+   in first, do so; it returns to the code afterwards. Any editor or admin
+   account works).
 2. Check that the page names your PC ("Sign in the SD Flasher on
    <hostname>?") and click **Approve**. The flasher picks the token up by
    itself within a few seconds and shows "Signed in as <username>".

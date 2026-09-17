@@ -6,7 +6,7 @@ import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as auth from "../src/auth.js";
 import * as dc from "../src/device_codes.js";
-import { BASE, query } from "./helpers.js";
+import { BASE, Client, query } from "./helpers.js";
 import { audits, detail, post, roleMatrix, roles } from "./pages_common.js";
 
 let r;
@@ -107,6 +107,28 @@ describe("/authorize", () => {
     expect((await authorize(r.editor, d.user_code, "approve")).status).toBe(400);
   });
 
+  it("anonymous with a code: /login keeps the code in next= and lands back on /authorize", async () => {
+    const d = await start();
+    const anon = new Client();
+    const res = await anon.get(`/authorize?code=${d.user_code}`);
+    const next = `/authorize?code=${d.user_code}`;
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/login?next=${encodeURIComponent(next)}`]);
+    const form = await (await anon.get(res.headers.get("location"))).text();
+    expect(form).toContain(`name="next" value="${next}"`);
+    const csrf_token = await anon.csrf(res.headers.get("location"));
+    const login = await anon.post("/login", { username: "ed", password: "editor-pass", csrf_token, next });
+    expect([login.status, login.headers.get("location")]).toEqual([303, next]);
+    expect(await (await anon.get(next)).text()).toContain("Sign in the SD Flasher on matts-laptop?");
+    // an off-site or scheme-relative next is dropped
+    for (const bad of ["https://evil.example/x", "//evil.example/x", "/\\evil.example"]) {
+      const c = new Client();
+      const t = await c.csrf(`/login?next=${encodeURIComponent(bad)}`);
+      expect(await (await c.get(`/login?next=${encodeURIComponent(bad)}`)).text()).not.toContain('name="next"');
+      const l = await c.post("/login", { username: "ed", password: "editor-pass", csrf_token: t, next: bad });
+      expect(l.headers.get("location")).toBe("/dashboard");
+    }
+  });
+
   it("wrong code: the form comes back with an error, nothing minted", async () => {
     const before = (await tokens()).length;
     const page = await (await r.admin.get("/authorize?code=ZZZZ-ZZ")).text();
@@ -124,11 +146,13 @@ describe("/authorize", () => {
     expect(cont.headers.get("location")).toBe(`/authorize?code=${d.user_code}`);
   });
 
-  it("deny: the flasher gets 410 denied, no token", async () => {
+  it("deny: the flasher gets 410 denied, no token, audited", async () => {
+    await query("DELETE FROM audit_log WHERE action = 'device_code_denied'");
     const d = await start("other-pc");
     const res = await authorize(r.admin, d.user_code, "deny");
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("Denied.");
+    expect((await audits("device_code_denied"))[0]).toMatchObject({ username: "admin", details: '{"hostname": "other-pc"}' });
     const got = await poll(d.device_code);
     expect(got.status).toBe(410);
     expect(await got.json()).toEqual({ status: "denied" });

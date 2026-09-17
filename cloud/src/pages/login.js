@@ -27,7 +27,13 @@ export function authBrand() {
     <hr class="rule">`;
 }
 
-function loginPage(ctx, error, status = 200, locked = false) {
+// Where to land after login (?next= on GET, the hidden next field on POST): a same-origin path
+// only, so the flasher's /authorize?code=... link survives the sign-in; anything else is dropped.
+function nextPath(v) {
+  return typeof v === "string" && /^\/(?![\/\\])/.test(v) ? v : "";
+}
+
+function loginPage(ctx, error, status = 200, locked = false, next = "") {
   const alert = !error ? "" : locked
     ? `<div class="alert warn" role="alert">TERMINAL LOCKED: ${esc(error)} · <a href="/login">retry</a></div>`
     : `<div class="alert error" role="alert">ACCESS DENIED: ${esc(error)}</div>`;
@@ -37,6 +43,7 @@ function loginPage(ctx, error, status = 200, locked = false) {
     ${alert}
     <form method="post" action="/login">
       ${csrfInput(ctx)}
+      ${next ? `<input type="hidden" name="next" value="${esc(next)}">` : ""}
       <label>Username
         <input type="text" name="username" autocomplete="username" autofocus required${dis}>
       </label>
@@ -54,10 +61,11 @@ async function loginSubmit(ctx) {
   const form = await ctx.form();
   const username = str(form, "username").trim();
   const password = str(form, "password");
+  const next = nextPath(str(form, "next"));
   const ip = audit.clientIp(ctx);
   const wait = await auth.loginLockedFor(ctx.env, ip, username);
-  if (wait) return loginPage(ctx, `Too many failed attempts; try again in ${wait} s`, 429, true);
-  if (utf8Len(password) > auth.MAX_PASSWORD_BYTES) return loginPage(ctx, auth.PASSWORD_TOO_LONG_MSG, 400);
+  if (wait) return loginPage(ctx, `Too many failed attempts; try again in ${wait} s`, 429, true, next);
+  if (utf8Len(password) > auth.MAX_PASSWORD_BYTES) return loginPage(ctx, auth.PASSWORD_TOO_LONG_MSG, 400, false, next);
   const row = await db.first(ctx.env,
     "SELECT id, username, password_hash, role FROM users WHERE username = ?", username);
   if (!row) await auth.burnPasswordCheck(password);
@@ -68,12 +76,12 @@ async function loginSubmit(ctx) {
     console.warn(`login failed for user=${safeUser} ip=${ip}`);
     await audit.log(ctx, "login_failed", "user", null, { username }, null);
     await auth.recordLoginFailure(ctx.env, ip, username);
-    return loginPage(ctx, "Invalid username or password");
+    return loginPage(ctx, "Invalid username or password", 200, false, next);
   }
   await auth.clearLoginFailures(ctx.env, ip, username);
   await auth.rotateSession(ctx, row.id);
   await audit.log(ctx, "login", null, null, null, { id: row.id, username: row.username });
-  return redirect("/dashboard");
+  return redirect(next || "/dashboard");
 }
 
 async function logout(ctx) {
@@ -84,7 +92,8 @@ async function logout(ctx) {
 
 export function register(router) {
   router.get("/", (ctx) => redirect(ctx.user ? "/dashboard" : "/login"));
-  router.get("/login", (ctx) => loginPage(ctx, ctx.url.searchParams.get("expired") ? "Your session expired; please sign in again" : null));
+  router.get("/login", (ctx) => loginPage(ctx, ctx.url.searchParams.get("expired") ? "Your session expired; please sign in again" : null,
+    200, false, nextPath(ctx.url.searchParams.get("next"))));
   router.post("/login", loginSubmit);
   router.post("/logout", logout);
 }

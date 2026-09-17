@@ -11,6 +11,7 @@
 // token waits in token_plain_until_claimed until the flasher collects it. Codes expire
 // EXPIRES_IN seconds after creation; rows are kept an hour for the per-IP rate limit, then
 // pruned (housekeeping, and on every new code) together with any token nobody claimed.
+import * as audit from "./audit.js";
 import * as auth from "./auth.js";
 import * as db from "./db.js";
 import { installBaseUrl } from "./pages/devices.js";
@@ -168,8 +169,10 @@ ${panel}`;
 }
 
 async function authorizePage(ctx) {
-  auth.requireRole(ctx, "editor");
   const code = normalizeUserCode(ctx.url.searchParams.get("code"));
+  // The flasher's link lands here before the operator has signed in: keep the code across /login.
+  if (!ctx.user && code) throw redirect(`/login?next=${encodeURIComponent(`/authorize?code=${code}`)}`);
+  auth.requireRole(ctx, "editor");
   if (!code) return page(ctx, codeForm(ctx, "", ""));
   const row = await pending(ctx.env, code);
   return page(ctx, row ? confirmPanel(ctx, row) : codeForm(ctx, code, BAD_CODE));
@@ -185,6 +188,7 @@ async function authorizeSubmit(ctx) {
   if (!row) return page(ctx, codeForm(ctx, code, BAD_CODE), 400);
   if (action === "deny") {
     await db.run(ctx.env, "UPDATE device_codes SET denied = 1 WHERE device_code_hash = ?", row.device_code_hash);
+    await audit.log(ctx, "device_code_denied", null, null, { hostname: row.hostname });
     return page(ctx, alertBox("Denied. The SD Flasher will report that the sign-in was refused.", "warn"));
   }
   const { id, token } = await auth.issueApiToken(ctx, me.id, TOKEN_NAME_PREFIX + row.hostname, { source: "device-code" });
