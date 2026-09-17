@@ -764,6 +764,12 @@ def _flash_stubs(monkeypatch, tmp_path, calls):
         def flush(self):
             self.f.flush()
 
+        def commit_head(self):
+            # A plain file target has nothing deferred; the real PhysicalDrive lands the partition
+            # table here, after the body was verified.
+            calls.append("commit")
+            return 0
+
         def refresh_partitions(self):
             calls.append("refresh")
 
@@ -782,7 +788,7 @@ def test_run_flash_end_to_end_with_stubs(monkeypatch, tmp_path):
     img.write_bytes(bytes(range(256)) * 8)
     v = dict(FULL, image_path=str(img), disk_info=dict(DISK, size=1 << 20))
     flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
-    assert calls == ["check", "clear", "lock", "refresh", "find", "eject"]
+    assert calls == ["check", "clear", "lock", "commit", "refresh", "find", "eject"]
     assert card.read_bytes() == bytes(range(256)) * 8
     firstrun = (boot / "firstrun.sh").read_bytes()
     assert firstrun.startswith(b"#!/bin/bash\n")
@@ -978,7 +984,7 @@ def test_run_flash_bundled_end_to_end(monkeypatch, tmp_path):
                         lambda *a, **k: pytest.fail("network touched in bundled mode"))
     v = dict(FULL, image_mode="bundled", image_path="", disk_info=dict(DISK, size=1 << 20))
     flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
-    assert calls == ["check", "clear", "lock", "refresh", "find", "eject"]
+    assert calls == ["check", "clear", "lock", "commit", "refresh", "find", "eject"]
     assert card.read_bytes() == bytes(range(256)) * 8
     text = "\n".join(lines)
     assert "Writing raspios-lite-arm64-test.img.xz to disk 2" in text

@@ -316,6 +316,27 @@ class PhysicalDrive:
         if not _k32.FlushFileBuffers(self.handle):
             raise _winerr("FlushFileBuffers")
 
+    deferred_head: bytes = b""
+
+    def commit_head(self) -> int:
+        """Write the deferred first bytes (partition table) and read them straight back.
+
+        Once this lands Windows will mount the new partitions and start writing its own
+        files into the boot partition, so the body must already be verified by now."""
+        head = self.deferred_head
+        if not head:
+            return 0
+        self.seek(0)
+        self.write(head)
+        self.flush()
+        self.seek(0)
+        back = self.read(len(head))
+        if back != head:
+            raise DiskError("read-back verification failed on the partition table: the card did not "
+                            "store what was written (worn or counterfeit card?)")
+        self.deferred_head = b""
+        return len(head)
+
     def refresh_partitions(self) -> None:
         # Tell the disk class driver to re-read the partition table we just wrote.
         if _ioctl(self.handle, IOCTL_DISK_UPDATE_PROPERTIES) is None:
@@ -545,10 +566,9 @@ def write_image(src, target, progress_cb=None, cancel_event=None, chunk: int = C
             if progress_cb:
                 progress_cb(written, total, total)
         if held:
-            out.flush()
-            out.seek(0)
-            out.write(b"".join(held))
-            out.seek(written)
+            # Not written yet: the caller verifies the body first, then commit_head() lands the
+            # partition table and checks it, all before Windows can mount anything.
+            out.deferred_head = b"".join(held)
         out.flush()
     finally:
         if own:
@@ -559,8 +579,10 @@ def write_image(src, target, progress_cb=None, cancel_event=None, chunk: int = C
     return written
 
 
-def verify_image(src, target, progress_cb=None, cancel_event=None, nbytes: int = 0) -> bool:
-    """Read target back and compare it with the whole image (or its first nbytes). Raises Cancelled."""
+def verify_image(src, target, progress_cb=None, cancel_event=None, nbytes: int = 0, skip: int = 0) -> bool:
+    """Read target back and compare it with the whole image (or its first nbytes). Raises Cancelled.
+
+    skip: bytes at the start that are not compared (the deferred partition table, see write_image)."""
     inp, own = _open_target(target, "rb")
     try:
         inp.seek(0)
@@ -581,7 +603,8 @@ def verify_image(src, target, progress_cb=None, cancel_event=None, nbytes: int =
                 if not piece:
                     break
                 buf += piece
-            if buf[:len(data)] != data:
+            off = max(0, min(len(data), skip - checked))
+            if buf[off:len(data)] != data[off:]:
                 return False
             buf = buf[len(data):]
             checked += len(data)

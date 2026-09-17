@@ -372,22 +372,51 @@ class _RecordingDrive(windisk.PhysicalDrive):
     def seek(self, offset, whence=0):
         self.pos = offset
 
+    def read(self, n):
+        out = bytes(self.buf[self.pos:self.pos + n])
+        self.pos += len(out)
+        return out
+
     def flush(self):
         pass
 
 
-def test_write_image_to_physical_drive_writes_first_mib_last(image, tmp_path):
-    """Windows mounts the new partitions as soon as the partition table lands and then refuses raw
-    writes inside them (error 5), so the first MiB must be the last thing written."""
+def test_write_image_to_physical_drive_defers_the_first_mib(image, tmp_path):
+    """Windows mounts the new partitions as soon as the partition table lands, then refuses raw
+    writes inside them (error 5) and starts writing its own files there. So the first MiB is
+    held back, the body is verified while the card is still blank, and commit_head() lands and
+    checks the table last."""
     data, xz, _ = image
     drive = _RecordingDrive(IMG_SIZE + 4096)
     written = windisk.write_image(str(xz), drive, chunk=256 * 1024)
-    assert bytes(drive.buf[:len(data)]) == data
     assert written == len(data) + (512 - IMG_SIZE % 512)
-    first_region_writes = [w for w in drive.writes if w[0] < windisk.DEFER_FIRST_BYTES]
-    assert first_region_writes == [(0, windisk.DEFER_FIRST_BYTES)], drive.writes[:3]
+    assert all(w[0] >= windisk.DEFER_FIRST_BYTES for w in drive.writes), drive.writes[:3]
+    assert drive.deferred_head == data[:windisk.DEFER_FIRST_BYTES]
+    assert bytes(drive.buf[:windisk.DEFER_FIRST_BYTES]) == b"\0" * windisk.DEFER_FIRST_BYTES
+    # body verifies with the blank head skipped, and fails without the skip
+    assert windisk.verify_image(str(xz), drive, skip=windisk.DEFER_FIRST_BYTES)
+    assert not windisk.verify_image(str(xz), drive)
+    assert drive.commit_head() == windisk.DEFER_FIRST_BYTES
     assert drive.writes[-1] == (0, windisk.DEFER_FIRST_BYTES)
-    assert all(w[0] >= windisk.DEFER_FIRST_BYTES for w in drive.writes[:-1])
+    assert bytes(drive.buf[:len(data)]) == data
+    assert drive.deferred_head == b""
+    assert windisk.verify_image(str(xz), drive)
+
+
+def test_commit_head_detects_a_card_that_drops_the_table(image):
+    data, xz, _ = image
+    drive = _RecordingDrive(IMG_SIZE + 4096)
+    windisk.write_image(str(xz), drive, chunk=256 * 1024)
+    real_write = drive.write
+
+    def lossy_write(chunk):
+        n = real_write(chunk)
+        drive.buf[0:16] = b"\xff" * 16  # the card "forgets" the first sectors
+        return n
+
+    drive.write = lossy_write
+    with pytest.raises(windisk.DiskError, match="partition table"):
+        drive.commit_head()
 
 
 def test_write_image_to_file_is_sequential(image, tmp_path):

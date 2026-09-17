@@ -1005,15 +1005,18 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
             written = windisk.write_image(image, drive, on_write, cancel, limit=d["size"],
                                           sector=d.get("sector") or windisk.SECTOR, expected_sha256=sha256)
             drive.flush()
-            drive.refresh_partitions()
+            # The partition table is still blank, so Windows cannot mount (and scribble on) anything
+            # while the card is read back. It is written and checked last by commit_head().
             log(f"Wrote {written / 1e6:.0f} MB. Reading the whole card back to verify ...")
 
             def on_verify(checked, consumed, total):
                 progress(consumed * 100 / total if total else 0, f"verified {checked / 1e6:.0f} MB")
 
-            if not windisk.verify_image(image, drive, on_verify, cancel):
+            if not windisk.verify_image(image, drive, on_verify, cancel, skip=windisk.DEFER_FIRST_BYTES):
                 raise windisk.DiskError("read-back verification failed: the card did not store what was written "
                                         "(worn or counterfeit card?)")
+            drive.commit_head()
+            drive.refresh_partitions()
     except windisk.Cancelled:
         raise windisk.Cancelled("The card is NOT usable; flash it again.")
     progress(100, "written and verified")
