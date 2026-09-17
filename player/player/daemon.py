@@ -8,7 +8,7 @@ from pathlib import Path
 
 import requests
 
-from . import __version__, camera_config, updater
+from . import __version__, camera_config, tunnel, updater
 from .camera import CameraCapture
 from .commands import _run_reboot, execute_commands
 from .config import load as load_config, PlayerConfig
@@ -365,6 +365,7 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
             camera.update_interval(int(manifest["camera_interval_seconds"]))
         if camera is not None:
             camera_config.maybe_apply(cfg, manifest, camera, state)
+        tunnel.maybe_apply(cfg, manifest)
 
         # Take + upload screenshot if due
         if screenshot is not None and screenshot.due() and mpv.is_alive():

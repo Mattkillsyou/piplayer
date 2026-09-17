@@ -55,10 +55,9 @@ def render_wyze_env(wyze: dict) -> str:
     return "".join(f"{line}={str(wyze.get(key) or '').strip()}\n" for line, key in WYZE_ENV_KEYS)
 
 
-def write_wyze_env(cfg: PlayerConfig, wyze: dict) -> bool:
-    """Write wyze.env (0600) when its content changed; True when it did."""
-    p = wyze_env_path(cfg)
-    text = render_wyze_env(wyze)
+def write_private(p, text: str) -> bool:
+    """Write a 0600 file atomically when its content changed; True when it did.
+    Shared with tunnel.py (tunnel.token)."""
     try:
         if p.is_file() and p.read_text() == text:
             return False
@@ -71,6 +70,11 @@ def write_wyze_env(cfg: PlayerConfig, wyze: dict) -> bool:
     os.chmod(tmp, 0o600)
     tmp.replace(p)
     return True
+
+
+def write_wyze_env(cfg: PlayerConfig, wyze: dict) -> bool:
+    """Write wyze.env (0600) when its content changed; True when it did."""
+    return write_private(wyze_env_path(cfg), render_wyze_env(wyze))
 
 
 def restart_bridge() -> str:

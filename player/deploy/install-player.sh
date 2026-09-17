@@ -20,6 +20,10 @@
 #   sudo bash deploy/install-player.sh --upgrade && sudo systemctl restart projector-player.service
 # /opt/piplayer/player/RELEASE gets the checkout's sha (PIPLAYER_RELEASE_SHA or
 # git rev-parse) so update-player.sh can tell "already at <sha>".
+# cloudflared (Cloudflare Tunnel client) is always installed, from the
+# Cloudflare apt repo or the GitHub .deb, as projector-cloudflared.service: it
+# stays skipped until the daemon writes /var/lib/projector-player/tunnel.token
+# from the console's manifest (live camera view without a hand-made tunnel).
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -31,6 +35,8 @@ INSTALL_DIR="/opt/piplayer/player"
 DATA_DIR="/var/lib/projector-player"
 ETC_DIR="/etc/projector-player"
 USER_NAME="projector"
+CLOUDFLARED_KEYRING="/usr/share/keyrings/cloudflare-main.gpg"
+CLOUDFLARED_LIST="/etc/apt/sources.list.d/cloudflared.list"
 
 WITH_WYZE=0
 UNINSTALL=0
@@ -56,11 +62,14 @@ if [[ "${UNINSTALL}" == 1 ]]; then
         systemctl disable --now projector-wyze-bridge.service 2>/dev/null || true
     fi
     systemctl disable --now projector-player-postcheck.timer 2>/dev/null || true
+    systemctl disable --now projector-cloudflared.service 2>/dev/null || true
+    rm -f /etc/systemd/system/projector-cloudflared.service
     rm -f /etc/systemd/system/projector-player.service /etc/systemd/system/projector-mpv.service         /etc/systemd/system/projector-wyze-bridge.service \
         /etc/systemd/system/projector-player-postcheck.service /etc/systemd/system/projector-player-postcheck.timer
     systemctl daemon-reload
     systemctl reset-failed projector-player.service projector-mpv.service 2>/dev/null || true
-    systemctl reset-failed projector-wyze-bridge.service 2>/dev/null || true
+    systemctl reset-failed projector-wyze-bridge.service projector-cloudflared.service 2>/dev/null || true
+    # cloudflared itself is left installed, like Docker.
     if command -v docker >/dev/null 2>&1; then
         docker rm -f projector-wyze-bridge >/dev/null 2>&1 || true
         # Docker itself is left installed.
@@ -194,11 +203,12 @@ EOF
 chmod 644 "${ETC_DIR}/env"
 fi
 
-echo "==> Granting sudoers rights for reboot, mpv/player/wyze-bridge restart and the update scripts"
+echo "==> Granting sudoers rights for reboot, mpv/player/wyze-bridge/cloudflared restart and the update scripts"
 cat > /etc/sudoers.d/projector-player <<'EOF'
 # Allow the projector daemon to reboot the Pi, restart mpv / itself / the Wyze
-# bridge (after writing new credentials) and run the update scripts on demand
-# (issued from the CMS via the device_commands queue).
+# bridge (after writing new credentials) / cloudflared (after writing a new
+# tunnel token) and run the update scripts on demand (issued from the CMS via
+# the device_commands queue).
 projector ALL=(ALL) NOPASSWD: /sbin/reboot
 projector ALL=(ALL) NOPASSWD: /usr/sbin/reboot
 projector ALL=(ALL) NOPASSWD: /bin/systemctl restart projector-mpv.service
@@ -207,6 +217,8 @@ projector ALL=(ALL) NOPASSWD: /bin/systemctl restart projector-player.service
 projector ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart projector-player.service
 projector ALL=(ALL) NOPASSWD: /bin/systemctl restart projector-wyze-bridge.service
 projector ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart projector-wyze-bridge.service
+projector ALL=(ALL) NOPASSWD: /bin/systemctl restart projector-cloudflared.service
+projector ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart projector-cloudflared.service
 projector ALL=(ALL) NOPASSWD: /opt/piplayer/player/deploy/update-player.sh *
 projector ALL=(ALL) NOPASSWD: /usr/bin/bash /opt/piplayer/player/deploy/update-player.sh *
 projector ALL=(ALL) NOPASSWD: /opt/piplayer/player/deploy/update-os.sh
@@ -217,6 +229,33 @@ visudo -c -f /etc/sudoers.d/projector-player
 # Smoke-test that the daemon will actually be allowed to use them
 if ! sudo -n -u "${USER_NAME}" sudo -n -l /bin/systemctl restart projector-mpv.service >/dev/null 2>&1; then
     echo "WARNING: sudo rule check failed for user ${USER_NAME}; remote reboot/restart-mpv may not work" >&2
+fi
+
+echo "==> Installing cloudflared (Cloudflare Tunnel client for the console's live camera view)"
+if command -v cloudflared >/dev/null 2>&1; then
+    echo "    cloudflared already installed ($(cloudflared --version 2>/dev/null | head -n 1))"
+else
+    # The Cloudflare apt repo first (so apt upgrades keep it current), the .deb
+    # from GitHub releases as fallback. Nothing runs until tunnel.token exists.
+    CLOUDFLARED_OK=0
+    if curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o "${CLOUDFLARED_KEYRING}"; then
+        echo "deb [signed-by=${CLOUDFLARED_KEYRING}] https://pkg.cloudflare.com/cloudflared any main" > "${CLOUDFLARED_LIST}"
+        if apt-get update && apt-get install -y cloudflared; then
+            CLOUDFLARED_OK=1
+        fi
+    fi
+    if [[ "${CLOUDFLARED_OK}" == 1 ]]; then
+        echo "    cloudflared installed from pkg.cloudflare.com"
+    else
+        echo "    Cloudflare apt repo failed; installing the .deb from GitHub releases"
+        rm -f "${CLOUDFLARED_LIST}" "${CLOUDFLARED_KEYRING}"
+        CLOUDFLARED_DEB="$(mktemp --suffix=.deb)"
+        if ! { curl -fsSL -o "${CLOUDFLARED_DEB}" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$(dpkg --print-architecture).deb"                 && dpkg -i "${CLOUDFLARED_DEB}"; }; then
+            # optional feature: an upgrade must not die over it
+            echo "WARNING: cloudflared could not be installed; the console's live camera view needs it (re-run the installer later)" >&2
+        fi
+        rm -f "${CLOUDFLARED_DEB}"
+    fi
 fi
 
 if [[ "${WITH_WYZE}" == 1 ]]; then
@@ -255,6 +294,7 @@ fi
 echo "==> Installing systemd units"
 cp "${SRC_DIR}/deploy/projector-mpv.service" /etc/systemd/system/projector-mpv.service
 cp "${SRC_DIR}/deploy/projector-player.service" /etc/systemd/system/projector-player.service
+cp "${SRC_DIR}/deploy/projector-cloudflared.service" /etc/systemd/system/projector-cloudflared.service
 if [[ "${WITH_WYZE}" == 1 ]]; then
     cp "${SRC_DIR}/deploy/projector-wyze-bridge.service" /etc/systemd/system/projector-wyze-bridge.service
 fi
@@ -279,7 +319,7 @@ AccuracySec=10s
 RemainAfterElapse=no
 EOF
 systemctl daemon-reload
-systemctl enable projector-mpv.service projector-player.service
+systemctl enable projector-mpv.service projector-player.service projector-cloudflared.service
 if [[ "${WITH_WYZE}" == 1 ]]; then
     systemctl enable projector-wyze-bridge.service
 fi
@@ -300,6 +340,8 @@ if [[ "${WITH_WYZE}" == 1 ]]; then
     systemctl restart projector-wyze-bridge.service
     echo "    Wyze bridge (unofficial mrlt8/wyze-bridge): journalctl -u projector-wyze-bridge.service -f"
 fi
+# skipped (not failed) until the daemon writes the tunnel token
+systemctl restart projector-cloudflared.service || true
 systemctl restart projector-mpv.service
 sleep 1
 systemctl restart projector-player.service

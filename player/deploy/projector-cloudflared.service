@@ -1,0 +1,25 @@
+[Unit]
+Description=Cloudflare Tunnel for the live camera view (remotely managed, token from the console)
+After=network-online.target
+Wants=network-online.target
+# No token yet (the console has not created this device's tunnel, or it is
+# a Python console): the unit is skipped, not failed; the player daemon
+# writes the file from the manifest's `tunnel.token` (tunnel.py) and
+# restarts this unit (sudoers allows it).
+ConditionPathExists=/var/lib/projector-player/tunnel.token
+
+[Service]
+Type=simple
+User=projector
+Group=projector
+# The token (mode 600, owned by projector) names the tunnel; its ingress
+# (<device>-cam.photogen5000.com -> http://127.0.0.1:5000, the Wyze bridge
+# web player, catch-all 404) and the Cloudflare Access policy in front of it
+# are configured by the console through the Cloudflare API. The token goes in
+# through the environment (TUNNEL_TOKEN), not argv, so it is not in `ps`.
+ExecStart=/bin/sh -c 'TUNNEL_TOKEN="$(cat /var/lib/projector-player/tunnel.token)" exec /usr/bin/cloudflared --no-autoupdate tunnel run'
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
