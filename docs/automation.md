@@ -999,8 +999,8 @@ every `<device_id>-cam` is a valid hostname label.
 
 The Access policy's email list comes from the Settings page: **Email to**
 (`alert_email`, section F) doubles as the operator list. If it is empty the
-console falls back to the admin users' usernames, provided every one of
-them is an email address; if neither gives a list, tunnel creation stops
+console falls back to the admin users' usernames, using those usernames
+that are email addresses; if neither gives a list, tunnel creation stops
 with a message asking you to fill in **Email to** first, and nothing is
 created (the hostname must never go up without a policy in front of it,
 because the bridge player has no login of its own). The policy is rewritten
