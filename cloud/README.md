@@ -26,7 +26,7 @@ public/                style.css + sortable.min.js (verbatim from the CMS), app.
 test/                  vitest inside workerd (unit + integration, every route x role)
 e2e/                   Python black-box suites against `wrangler dev` (run_e2e.py,
                        run_upload_e2e.py, run_operator_e2e.py, run_player_e2e.py — that one
-                       drives the real player — and run_alerts_e2e.py)
+                       drives the real player — run_alerts_e2e.py and run_tunnel_e2e.py)
 scripts/deploy.md      deployment runbook;  scripts/backup.md  D1 + R2 backups
 MODULES.md             module contracts for contributors
 ```
@@ -83,7 +83,7 @@ npm run e2e       # the e2e scripts below in turn, each against a wrangler dev i
 chunked uploads, screenshots, command cap, setup flow, settings/timezone effects, XSS escaping
 and session security in `test/security.test.js`).
 
-The e2e directory holds five Python scripts (`cms/.venv` python with `requests`; `ffmpeg` on
+The e2e directory holds six Python scripts (`cms/.venv` python with `requests`; `ffmpeg` on
 PATH for test media). Each starts `npx wrangler dev --local` on its own port, applies migrations,
 waits for `/api/health`, runs, and always kills the dev server:
 
@@ -97,6 +97,9 @@ python e2e/run_operator_e2e.py --port 8789 --persist-to <dir> # operator API tok
 python e2e/run_player_e2e.py --port 8788 --persist-to <dir>   # the REAL player/player daemon with a fake mpv
 python e2e/run_alerts_e2e.py --port 9100 --persist-to <dir>   # alerts: settings, */5 cron opens/closes, pages,
                                                              # Send test banners, Twilio secrets (wrangler --test-scheduled)
+python e2e/run_tunnel_e2e.py --port 9120 --persist-to <dir>   # auto camera tunnel against an in-process fake Cloudflare
+                                                             # API on port+1 (CF_API_BASE var): enrollment / Create tunnel,
+                                                             # idempotent recreate, manifest tunnel block, refusal banners
 ```
 
 `run_e2e.py` prints a PASS/FAIL table and exits non-zero on any failure; a 501 answer is

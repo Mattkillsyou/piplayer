@@ -98,6 +98,17 @@ describe("cloudflare client", () => {
     expect(cloudflare.hostnameFor({ ...CF, CF_ZONE_NAME: "example.org" }, "lobby")).toBe("lobby-cam.example.org");
   });
 
+  it("CF_API_BASE points the client at a local fake (e2e); production uses api.cloudflare.com", async () => {
+    const fake = fakeCloudflare();
+    const seen = [];
+    const orig = globalThis.fetch;
+    vi.stubGlobal("fetch", (url, init) => { seen.push(String(url)); return orig(url, init); });
+    await cloudflare.tunnelToken(CF, "tun-x");
+    await cloudflare.tunnelToken({ ...CF, CF_API_BASE: "http://127.0.0.1:9121/client/v4" }, "tun-x");
+    expect(seen).toEqual([`${API}/accounts/acct1/cfd_tunnel/tun-x/token`, "http://127.0.0.1:9121/client/v4/accounts/acct1/cfd_tunnel/tun-x/token"]);
+    expect(fake.calls.length).toBe(2);
+  });
+
   it("provision from scratch: tunnel, ingress, proxied CNAME, Access app + policy, each with the bearer", async () => {
     const fake = fakeCloudflare();
     expect(await cloudflare.provision(CF, "lobby", EMAILS)).toEqual({ tunnel_id: "tun-1", hostname: "lobby-cam.photogen5000.com" });

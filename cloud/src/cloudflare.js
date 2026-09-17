@@ -12,7 +12,7 @@
 import * as audit from "./audit.js";
 import * as db from "./db.js";
 
-export const API = "https://api.cloudflare.com/client/v4";
+export const API = "https://api.cloudflare.com/client/v4"; // CF_API_BASE var overrides (local e2e fake only)
 export const ZONE_NAME = "photogen5000.com"; // CF_ZONE_NAME var overrides (must match CF_ZONE_ID)
 export const INGRESS_SERVICE = "http://127.0.0.1:5000";
 export const POLICY_NAME = "p5k operators";
@@ -28,7 +28,7 @@ export const hostnameFor = (env, deviceId) => `${deviceId}-cam.${zoneName(env)}`
 // One API call; the `result` on success, else an Error carrying Cloudflare's messages (or the
 // HTTP status) so the Devices page banner / audit row can say why.
 async function call(env, method, path, body) {
-  const res = await fetch(API + path, {
+  const res = await fetch((env.CF_API_BASE || API) + path, {
     method,
     headers: { authorization: `Bearer ${env.CF_API_TOKEN}`, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),

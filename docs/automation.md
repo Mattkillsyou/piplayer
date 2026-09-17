@@ -1025,9 +1025,10 @@ Cloudflare API and puts it in that device's manifest as
 
 The manifest is only ever served to the device's own bearer token, so the
 tunnel token goes to the Pi it belongs to and nowhere else; it is never
-rendered in the console and never written to the audit log. A device
-without a tunnel simply has no `tunnel` key, and so does one whose token
-fetch failed (Cloudflare API down or the token revoked): the Pi keeps the
+rendered in the console and never written to the audit log. The key is
+on every sync: a device without a tunnel gets `"tunnel": null`, and so does
+one whose token fetch failed (Cloudflare API down or the token revoked) or
+a console without the three secrets; null = feature off, the Pi keeps the
 token it already has. Creation is audited against the device as
 `device_tunnel_created` (details: `device_id`, `tunnel_id`, `hostname`,
 the number of emails in the policy) and a failed creation as
@@ -1131,7 +1132,12 @@ tunnel with no connector is harmless and free.
 client against a fake `fetch` (request shapes for tunnel, configuration,
 DNS and Access; reuse of objects that already exist; a Cloudflare error
 surfacing as the audited message; the manifest carrying `tunnel` only for
-the device's own bearer). The player tests cover the token file (contents,
+the device's own bearer), and `cloud/e2e/run_tunnel_e2e.py` runs the same
+flow end to end through `wrangler dev` against an in-process fake of the
+Cloudflare API (the `CF_API_BASE` var points the worker at it): enrollment
+with and without an operator email, **Create** / **Recreate tunnel**, the
+manifest block per bearer, a refusal mid-way and the retry. The player
+tests cover the token file (contents,
 mode 600), the restart through a fake `systemctl` and the no-op on an
 unchanged token. What needs the real account: the API token's permissions
 actually sufficing (a missing one shows up in the device's
