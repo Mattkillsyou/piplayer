@@ -1,9 +1,11 @@
 # Build tools/flasher/dist/Projection5000-SD-Flasher.exe with PyInstaller.
 # Usage (from any directory):  powershell -ExecutionPolicy Bypass -File tools\flasher\build.ps1 [-ConsoleUrl <url>] [-Key <key>]
-# Set $env:FLASHER_PYTHON to pick the interpreter (default: python on PATH, must be 3.11+ with tkinter).
-# -ConsoleUrl (or FLASHER_CONSOLE_URL) prefills the console URL. No key is baked in: the flasher fetches the
-# enrollment key from the console with the operator's API token. -Key (or FLASHER_ENROLL_KEY) bakes one
-# anyway for offline builds.
+# Set $env:FLASHER_PYTHON to pick the interpreter (default: python on PATH, must be 3.11+ with tkinter; no
+# third-party package is needed, the SSH key is generated in pure Python).
+# -ConsoleUrl (or FLASHER_CONSOLE_URL) bakes the console the exe talks to (shown as a fixed header, never a
+# field; without it the product default https://projectors.photogen5000.com applies). No key is baked in: the
+# operator signs in through the browser and the flasher fetches the enrollment key at flash time. -Key (or
+# FLASHER_ENROLL_KEY) bakes one anyway for offline builds (LAN-only cms sites); the UI never mentions it.
 param(
     [string]$ConsoleUrl = $env:FLASHER_CONSOLE_URL,
     [string]$Key = $env:FLASHER_ENROLL_KEY
@@ -43,8 +45,8 @@ try {
 $info = Join-Path $stage 'build_info.txt'
 [IO.File]::WriteAllText($info, "built $(Get-Date -Format s) from commit $commit with $(& $python --version)")
 
-# Console defaults baked into the exe (optional): -ConsoleUrl becomes console.json and prefills the form;
-# -Key adds an enrollment key for offline builds (otherwise the flasher fetches it with the operator token).
+# Console defaults baked into the exe (optional): -ConsoleUrl becomes console.json (the fixed header);
+# -Key adds an enrollment key for offline builds (otherwise the flasher fetches it after the browser sign-in).
 $consoleJson = Join-Path $stage 'console.json'
 Remove-Item -Force $consoleJson -ErrorAction SilentlyContinue
 $consoleData = @()

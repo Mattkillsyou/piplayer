@@ -21,6 +21,8 @@ ENROLL_KEY_RE = re.compile(r"[A-Za-z0-9_-]+={0,2}")
 MAX_NAME_LEN = 120
 TIMEZONE_RE = re.compile(r"UTC|[A-Za-z_]+(/[A-Za-z0-9_+-]+){1,2}")
 KEYMAP_RE = re.compile(r"[a-z]{2,8}")
+# One authorized_keys line as sshkey.public_line() writes it (type, base64 blob, optional comment).
+SSH_PUBKEY_RE = re.compile(r"ssh-ed25519 [A-Za-z0-9+/]+=* ?[^\s]*")
 HEX64_RE = re.compile(r"[0-9a-fA-F]{64}")
 # imager_custom set_wlan parses these positionally; an SSID equal to one of them is taken as a flag.
 WLAN_FLAGS = {"-h", "--hidden", "-p", "--plain"}
@@ -49,6 +51,9 @@ DEFAULTS = {
     "wifi_country": "US",
     "timezone": "America/Los_Angeles",
     "keymap": "us",
+    "ssh_pubkey": "",  # set: key-only SSH (authorized_keys + PasswordAuthentication no)
+    "static_ip": "",  # "192.168.1.50/24"; empty: DHCP
+    "gateway": "",  # required with static_ip; also the DNS server
 }
 
 
@@ -151,7 +156,28 @@ def validate_cfg(cfg: dict) -> list:
         problems.append("Timezone must look like Area/City (e.g. Europe/London) or UTC.")
     if not KEYMAP_RE.fullmatch(c.get("keymap") or ""):
         problems.append("Keyboard layout must be 2-8 lowercase letters (e.g. us, gb, de).")
+    if c.get("ssh_pubkey") and not SSH_PUBKEY_RE.fullmatch(c["ssh_pubkey"]):
+        problems.append("SSH public key must be one ssh-ed25519 line.")
+    problems.extend(static_ip_problems(c.get("static_ip") or "", c.get("gateway") or ""))
     return problems
+
+
+def static_ip_problems(static_ip: str, gateway: str) -> list:
+    """Empty static_ip means DHCP (gateway ignored); otherwise IPv4/prefix plus a gateway in that network."""
+    if not static_ip:
+        return []
+    try:
+        iface = ipaddress.IPv4Interface(static_ip)
+        if iface.network.prefixlen > 30 or iface.ip in (iface.network.network_address, iface.network.broadcast_address):
+            raise ValueError
+    except ValueError:
+        return ["Static IP must be an IPv4 address with a prefix (e.g. 192.168.1.50/24)."]
+    try:
+        if ipaddress.IPv4Address(gateway) not in iface.network:
+            raise ValueError
+    except ValueError:
+        return [f"Gateway must be an IPv4 address in {iface.network} (e.g. {iface.network.network_address + 1})."]
+    return []
 
 
 def _cfg(cfg: dict) -> dict:
@@ -225,10 +251,21 @@ def render_firstrun(cfg: dict) -> str:
         lines += [
             "# ssh",
             'if [ -x "$IMAGER" ]; then run "$IMAGER" enable_ssh; else run systemctl enable ssh; fi',
-            "",
         ]
-    if not c["ethernet_only"]:
-        lines += _wifi_lines(c)
+        if c["ssh_pubkey"]:
+            lines += [
+                "# key-only login: the flasher's public key, password authentication off",
+                f'HOME_DIR=$(getent passwd {user} | cut -d: -f6); [ -n "$HOME_DIR" ] || HOME_DIR=/home/{c["username"]}',
+                f'run install -d -m 0700 -o {user} -g {user} "$HOME_DIR/.ssh"',
+                f'printf "%s\\n" {q(c["ssh_pubkey"])} >"$HOME_DIR/.ssh/authorized_keys"',
+                f'run chown {user}:{user} "$HOME_DIR/.ssh/authorized_keys"',
+                'run chmod 0600 "$HOME_DIR/.ssh/authorized_keys"',
+                "mkdir -p /etc/ssh/sshd_config.d",
+                'printf "%s\\n" "PasswordAuthentication no" "KbdInteractiveAuthentication no" '
+                ">/etc/ssh/sshd_config.d/projection5000.conf",
+            ]
+        lines.append("")
+    lines += _wired_lines(c) if c["ethernet_only"] else _wifi_lines(c)
     lines += [
         "# locale",
         'if [ -x "$IMAGER" ]; then',
@@ -270,6 +307,20 @@ def render_firstrun(cfg: dict) -> str:
     return "\n".join(lines)
 
 
+def _ipv4_lines(c: dict) -> list:
+    """NetworkManager keyfile [ipv4]/[ipv6] sections: DHCP, or the static address with the gateway as DNS."""
+    if not c["static_ip"]:
+        return ["[ipv4]", "method=auto", "", "[ipv6]", "method=auto"]
+    return ["[ipv4]", "method=manual", f"address1={c['static_ip']},{c['gateway']}", f"dns={c['gateway']};", "",
+            "[ipv6]", "method=auto"]
+
+
+def _keyfile_lines(name: str, nm: list) -> list:
+    path = f"/etc/NetworkManager/system-connections/{name}.nmconnection"
+    return ["mkdir -p /etc/NetworkManager/system-connections", f"cat >{path} <<'NMEOF'", *nm, "NMEOF",
+            f"chmod 0600 {path}"]
+
+
 def _wifi_lines(c: dict) -> list:
     q = shlex.quote
     hidden_flag = "-h " if c["wifi_hidden"] else ""
@@ -287,22 +338,31 @@ def _wifi_lines(c: dict) -> list:
         nm.append("hidden=true")
     if psk:
         nm += ["", "[wifi-security]", "key-mgmt=wpa-psk", f"psk={psk}"]
-    nm += ["", "[ipv4]", "method=auto", "", "[ipv6]", "method=auto"]
+    nm += ["", *_ipv4_lines(c)]
+    keyfile = [
+        *_keyfile_lines("preconfigured", nm),
+        "rfkill unblock wifi",
+        f"run raspi-config nonint do_wifi_country {q(c['wifi_country'])}",
+    ]
+    if c["static_ip"]:  # imager_custom set_wlan only knows DHCP: always write the keyfile
+        return ["# wifi (static IP)", *keyfile, ""]
     return [
         "# wifi",
         'if [ -x "$IMAGER" ]; then',
         f'  run "$IMAGER" set_wlan {hidden_flag}{q(c["ssid"])} {q(psk)} {q(c["wifi_country"])}',
         "else",
-        "  mkdir -p /etc/NetworkManager/system-connections",
-        "  cat >/etc/NetworkManager/system-connections/preconfigured.nmconnection <<'NMEOF'",
-        *nm,
-        "NMEOF",
-        "  chmod 0600 /etc/NetworkManager/system-connections/preconfigured.nmconnection",
-        "  rfkill unblock wifi",
-        f"  run raspi-config nonint do_wifi_country {q(c['wifi_country'])}",
+        *keyfile,
         "fi",
         "",
     ]
+
+
+def _wired_lines(c: dict) -> list:
+    """Ethernet: nothing to do for DHCP; a static address needs its own keyfile."""
+    if not c["static_ip"]:
+        return []
+    nm = ["[connection]", "id=wired-static", "type=ethernet", "", *_ipv4_lines(c)]
+    return ["# ethernet (static IP)", *_keyfile_lines("wired-static", nm), ""]
 
 
 def render_provision(cfg: dict) -> str:
@@ -423,4 +483,7 @@ def sample_config() -> dict:
         "console_url": "https://projectors.photogen5000.com",
         "enrollment_key": "sample-enrollment-key_0123456789",
         "token": "",
+        "ssh_pubkey": "",
+        "static_ip": "",
+        "gateway": "",
     }

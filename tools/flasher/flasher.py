@@ -1,5 +1,8 @@
 """Projection5000 SD Flasher: write Raspberry Pi OS Lite to a card and pre-configure the Pi.
 
+One screen: the console is fixed (baked in by build.ps1), Sign in happens in the browser, and only what changes
+per Pi is asked (name, Wi-Fi, card). Everything else is automatic or under Advanced.
+
 Run: python flasher.py            (relaunches itself elevated if needed)
      python flasher.py --selfcheck (prints the generated first-boot scripts, exits 0)
      python flasher.py --dry-run   (no admin needed; Flash stops before touching the card)
@@ -11,30 +14,48 @@ import json
 import os
 import queue
 import secrets
+import socket
 import sys
 import tarfile
 import threading
 import time
 import tkinter as tk
 import traceback
+import urllib.parse
+import webbrowser
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import bundle
 import console
 import firstboot
 import imagefetch
+import sshkey
 import windisk
+import winlocale
 
 APP_TITLE = "Projection5000 SD Flasher"
-# Persisted between runs (%LOCALAPPDATA%). Never the enrollment key or a token: the key is fetched from the console
-# on every launch with the operator token, which lives DPAPI-protected in the operator config (%APPDATA%).
-SETTINGS_KEYS = ("name", "device_id", "console_url", "ssid", "wifi_country", "wifi_hidden", "ethernet_only",
-                 "username", "ssh", "timezone", "keymap", "image_mode", "image_path")
+# Persisted between runs (%LOCALAPPDATA%). Never a secret: the enrollment key is fetched from the console at flash
+# time with the operator token, which lives DPAPI-protected in the operator config (%APPDATA%).
+SETTINGS_KEYS = ("name", "ssid", "wifi_country", "wifi_hidden", "timezone", "keymap", "image_mode", "image_path",
+                 "static_ip", "gateway")
 # Entry fields whose value is taken verbatim (everything else is stripped of surrounding whitespace).
-UNSTRIPPED = ("password", "wifi_password")
+UNSTRIPPED = ("wifi_password",)
 CONSOLE_JSON = "console.json"  # {"console_url": ..., "enrollment_key": ...}, written by build.ps1 (key optional)
 DEFAULT_CONSOLE_URL = "https://projectors.photogen5000.com"
+# The Pi's login: one fixed user, SSH by key only (the flasher's key, see sshkey.py). The OS still needs a
+# password to create the user: a random one per flash that is never shown or saved (sudo needs none on Pi OS).
+PI_USERNAME = "projector-admin"
+# validate_cfg problems -> (form field, plain words; None keeps the rule's own text). Unlisted problems go under
+# the Flash button.
+PLAIN_WORDS = [("Device name", "name", "Give the Pi a name."),
+               ("device_id", "name", "The name needs at least one letter or digit."),
+               ("Wi-Fi SSID", "ssid", None),
+               ("Wi-Fi password", "wifi_password", "Wi-Fi password must be 8-63 characters."),
+               ("Enrollment key", "signin", "Sign in first."),
+               ("Wi-Fi country", "adv", None), ("Timezone", "adv", None), ("Keyboard", "adv", None),
+               ("Static IP", "adv", None), ("Gateway", "adv", None), ("Device token", "adv", None),
+               ("SSH public key", "adv", None)]
 COUNTRIES = ["US", "GB", "CA", "AU", "NZ", "DE", "FR", "ES", "IT", "NL", "SE", "NO", "DK", "FI", "IE", "JP", "MX", "BR"]
 TIMEZONES = ["America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York", "America/Phoenix",
              "America/Anchorage", "Pacific/Honolulu", "America/Toronto", "America/Vancouver", "America/Mexico_City",
@@ -108,7 +129,7 @@ def save_settings(values: dict) -> None:
         pass
 
 
-# ---------------------------------------------------------------- operator config (console URL + API token)
+# ---------------------------------------------------------------- operator config (sign-in token)
 
 def operator_config_path() -> Path:
     base = os.environ.get("APPDATA") or str(Path.home())
@@ -148,17 +169,18 @@ def _dpapi_ctypes(data: bytes, protect: bool) -> bytes:
 
 
 def load_operator_config() -> dict:
-    """{"console_url", "token"} from %APPDATA%\\Projection5000\\flasher.json; empty strings when absent or unreadable
-    (a DPAPI blob from another account or a damaged file simply means the operator is asked again)."""
-    out = {"console_url": "", "token": ""}
+    """{"console_url", "token", "username"} from %APPDATA%\\Projection5000\\flasher.json; empty strings when absent
+    or unreadable (a DPAPI blob from another account or a damaged file simply means: sign in again)."""
+    out = {"console_url": "", "token": "", "username": ""}
     try:
         d = json.loads(operator_config_path().read_text("utf-8"))
     except (OSError, ValueError):
         return out
     if not isinstance(d, dict):
         return out
-    if isinstance(d.get("console_url"), str):
-        out["console_url"] = d["console_url"].strip()
+    for k in ("console_url", "username"):
+        if isinstance(d.get(k), str):
+            out[k] = d[k].strip()
     tok = d.get("token")
     if isinstance(tok, str) and tok:
         if d.get("token_dpapi"):
@@ -170,9 +192,10 @@ def load_operator_config() -> dict:
     return out
 
 
-def save_operator_config(console_url: str, token: str) -> str:
+def save_operator_config(console_url: str, token: str, username: str = "") -> str:
     """Write the operator config, DPAPI-protecting the token. Returns a warning ('' when protected)."""
-    d = {"console_url": console_url.strip().rstrip("/"), "token": token.strip(), "token_dpapi": False}
+    d = {"console_url": console_url.strip().rstrip("/"), "token": token.strip(), "token_dpapi": False,
+         "username": username.strip()}
     warning = ""
     try:
         d["token"] = base64.b64encode(_dpapi(d["token"].encode("utf-8"), protect=True)).decode("ascii")
@@ -183,6 +206,11 @@ def save_operator_config(console_url: str, token: str) -> str:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(d, indent=2), "utf-8")
     return warning
+
+
+def clear_operator_config() -> None:
+    """Sign out: forget the token (the console keeps the api_tokens row until it is revoked there)."""
+    operator_config_path().unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------- player files for the card
@@ -260,12 +288,17 @@ def write_console_json(path, console_url: str, enrollment_key: str = "") -> None
 
 
 def console_summary() -> str:
-    """One line for --selfcheck: what this build will prefill."""
+    """One line for --selfcheck: what this build talks to."""
     c = console_defaults()
     if not c["console_url"]:
-        return "console: none (the operator enters the console URL and API token on first run)"
+        return f"console: none baked in (the default {DEFAULT_CONSOLE_URL} is used; build.ps1 -ConsoleUrl sets one)"
     key = "set" if c["enrollment_key"] else "fetched with the operator token"
     return f"console: {c['console_url']} (enrollment key: {key})"
+
+
+def console_url() -> str:
+    """The console this build talks to: baked in by build.ps1, else the product default. Never a form field."""
+    return console_defaults()["console_url"] or DEFAULT_CONSOLE_URL
 
 
 # ---------------------------------------------------------------- GUI
@@ -274,28 +307,33 @@ class App:
     def __init__(self, root: tk.Tk, dry_run: bool = False):
         self.root = root
         root.title(APP_TITLE)
-        root.minsize(720, 560)
+        root.minsize(700, 540)
         self.dry_run_default = dry_run
         self.cancel = threading.Event()
         self.worker = None
         self.q = queue.Queue()
         self.disks = []
         self.v = {}  # tk variables by key
+        self.err = {}  # inline error labels by field
+        self.console_url = console_url()
+        self.baked_key = console_defaults()["enrollment_key"]
+        self.op = {"token": "", "username": ""}  # the sign-in (operator token), never a widget
+        self._password = secrets.token_urlsafe(24)  # the Pi user's password: random, never shown, fresh per flash
+        self._signin_cancel = threading.Event()
         self._build()
         self._apply_settings(load_settings())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._fit_to_screen()
         self._pump()
         self.refresh_disks()
-        # The operator config wins over the remembered URL; with a token the key is fetched on every launch.
+        self.log(f"Console {self.console_url}.")
         op = load_operator_config()
-        if op["console_url"]:
-            self.v["console_url"].set(op["console_url"])
-        self.v["operator_token"].set(op["token"])
-        if op["token"]:
-            self.fetch_key()
+        if op["token"] and op["console_url"] in ("", self.console_url):
+            self.op = {"token": op["token"], "username": op["username"]}
+            self._show_signed_in()
+            self.check_token()
         else:
-            root.after(0, self.first_run)
+            self._show_sign_in("")
 
     # ----- form
     def _var(self, key, default="", kind=tk.StringVar):
@@ -308,129 +346,70 @@ class App:
         e.grid(row=row, column=1, sticky="we", padx=4, pady=2)
         return e
 
+    def _err(self, parent, row, field, column=1, columnspan=2):
+        """An inline error line under a field (empty and collapsed until validate() fills it)."""
+        lbl = ttk.Label(parent, text="", foreground="#b00020", wraplength=520, justify="left")
+        lbl.grid(row=row, column=column, columnspan=columnspan, sticky="w", padx=4)
+        lbl.grid_remove()
+        self.err[field] = lbl
+        return lbl
+
     def _build(self):
         outer = ttk.Frame(self.root, padding=8)
         outer.pack(fill="both", expand=True)
+
+        # 1. header: the console is fixed; sign in or the signed-in user.
+        header = ttk.Frame(outer)
+        header.pack(fill="x", pady=(0, 6))
+        header.columnconfigure(1, weight=1)
+        ttk.Label(header, text=f"Console: {urllib.parse.urlsplit(self.console_url).netloc}",
+                  font=("", 10, "bold")).grid(row=0, column=0, sticky="w", padx=4)
+        self.signin_label = ttk.Label(header, text="")
+        self.signin_label.grid(row=0, column=1, sticky="e", padx=4)
+        self.signin_btn = ttk.Button(header, text="Sign in", command=self.sign_in)
+        self.signin_btn.grid(row=0, column=2, sticky="e", padx=4)
+        self._err(header, 1, "signin")
+
+        # 2-4. what changes per Pi.
         form = ttk.Frame(outer)
         form.pack(fill="x")
-        form.columnconfigure(0, weight=1)
         form.columnconfigure(1, weight=1)
-
-        dev = ttk.LabelFrame(form, text="Device", padding=6)
-        dev.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
-        dev.columnconfigure(1, weight=1)
-        self._entry(dev, 0, "Device name", "name")
-        self._entry(dev, 1, "device_id (hostname)", "device_id")
+        self._entry(form, 0, "Device name", "name")
+        self.id_label = ttk.Label(form, text="", foreground="grey")
+        self.id_label.grid(row=1, column=1, sticky="w", padx=4)
+        self._err(form, 2, "name")
         self.v["name"].trace_add("write", self._derive_id)
-        self._id_manual = False
-        self.v["device_id"].trace_add("write", self._id_edited)
-
-        con = ttk.LabelFrame(form, text="Console", padding=6)
-        con.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-        con.columnconfigure(1, weight=1)
-        self.baked = console_defaults()
-        self._entry(con, 0, "Console URL", "console_url", self.baked["console_url"] or DEFAULT_CONSOLE_URL)
-        # Row 2 is created before row 1 on purpose: the key's "Show" stays the first one in the frame.
-        key = self._entry(con, 2, "Enrollment key", "enrollment_key", self.baked["enrollment_key"], show="*")
-        self._var("show_key", False, tk.BooleanVar)
-        ttk.Checkbutton(con, text="Show", variable=self.v["show_key"],
-                        command=lambda: key.configure(show="" if self.v["show_key"].get() else "*")
-                        ).grid(row=2, column=2, padx=2)
-        tok = self._entry(con, 1, "Operator API token", "operator_token", show="*")
-        # Console reported wyze_configured: the installer runs with --with-wyze. Never saved; the answer of the
-        # last successful fetch only, so a changed URL/token or a failed fetch drops it until the next answer.
-        self.v["with_wyze"] = tk.BooleanVar(value=False)
-        for k in ("console_url", "operator_token"):
-            self.v[k].trace_add("write", lambda *a: self.v["with_wyze"].set(False))
-        self._var("show_token", False, tk.BooleanVar)
-        ttk.Checkbutton(con, text="Show", variable=self.v["show_token"],
-                        command=lambda: tok.configure(show="" if self.v["show_token"].get() else "*")
-                        ).grid(row=1, column=2, padx=2)
-        self.console_status = ttk.Label(con, text="(the key is fetched from the console with the token; "
-                                                  "the Pi enrolls itself on first boot)")
-        self.console_status.grid(row=3, column=0, columnspan=3, sticky="w", padx=4)
-        btns = ttk.Frame(con)
-        btns.grid(row=4, column=0, columnspan=3, sticky="w")
-        ttk.Button(btns, text="Connect", command=self.connect).pack(side="left", padx=4, pady=2)
-        ttk.Button(btns, text="Test connection", command=self.test_connection).pack(side="left", padx=4, pady=2)
-        ttk.Checkbutton(con, text="Advanced: I already have a device token",
-                        variable=self._var("advanced", False, tk.BooleanVar), command=self._toggle_advanced
-                        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=4)
-        self.advanced = ttk.Frame(con)
-        self.advanced.grid(row=6, column=0, columnspan=3, sticky="we")
-        self.advanced.columnconfigure(1, weight=1)
-        self._entry(self.advanced, 0, "Device token", "token")
-        self.advanced.grid_remove()  # collapsed until the box is ticked
-
-        wifi = ttk.LabelFrame(form, text="Wi-Fi", padding=6)
-        wifi.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
-        wifi.columnconfigure(1, weight=1)
-        self._entry(wifi, 0, "SSID", "ssid")
-        pw = self._entry(wifi, 1, "Password", "wifi_password", show="*")
+        self._entry(form, 3, "Wi-Fi network", "ssid")
+        ttk.Label(form, text="leave blank for a wired Pi", foreground="grey").grid(row=3, column=2, sticky="w", padx=4)
+        self._err(form, 4, "ssid")
+        pw = self._entry(form, 5, "Wi-Fi password", "wifi_password", show="*")
         self._var("show_wifi", False, tk.BooleanVar)
-        ttk.Checkbutton(wifi, text="Show", variable=self.v["show_wifi"],
+        ttk.Checkbutton(form, text="Show", variable=self.v["show_wifi"],
                         command=lambda: pw.configure(show="" if self.v["show_wifi"].get() else "*")
-                        ).grid(row=1, column=2, padx=2)
-        ttk.Label(wifi, text="Country").grid(row=2, column=0, sticky="w", padx=4, pady=2)
-        ttk.Combobox(wifi, textvariable=self._var("wifi_country", "US"), values=COUNTRIES, width=8
-                     ).grid(row=2, column=1, sticky="w", padx=4, pady=2)
-        ttk.Checkbutton(wifi, text="Hidden network", variable=self._var("wifi_hidden", False, tk.BooleanVar)
-                        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=4)
-        ttk.Checkbutton(wifi, text="Ethernet only (no Wi-Fi)", variable=self._var("ethernet_only", False, tk.BooleanVar)
-                        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=4)
+                        ).grid(row=5, column=2, sticky="w", padx=4)
+        self._err(form, 6, "wifi_password")
+        ttk.Label(form, text="SD card").grid(row=7, column=0, sticky="w", padx=4, pady=2)
+        self.disk_box = ttk.Combobox(form, textvariable=self._var("disk"), state="readonly")
+        self.disk_box.grid(row=7, column=1, sticky="we", padx=4, pady=2)
+        ttk.Button(form, text="Refresh", command=self.refresh_disks).grid(row=7, column=2, sticky="w", padx=4)
+        self._err(form, 8, "disk")
 
-        pi = ttk.LabelFrame(form, text="Pi login", padding=6)
-        pi.grid(row=1, column=1, sticky="nsew", padx=4, pady=4)
-        pi.columnconfigure(1, weight=1)
-        self._entry(pi, 0, "Username", "username", "pi")
-        self._generated_password = secrets.token_urlsafe(12)
-        self._entry(pi, 1, "Password", "password", self._generated_password)
-        ttk.Label(pi, text="(shown in the log after the flash; not saved anywhere else)").grid(
-            row=2, column=1, sticky="w", padx=4)
-        ttk.Checkbutton(pi, text="Enable SSH", variable=self._var("ssh", True, tk.BooleanVar)
-                        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=4)
-        ttk.Label(pi, text="Timezone").grid(row=4, column=0, sticky="w", padx=4, pady=2)
-        ttk.Combobox(pi, textvariable=self._var("timezone", "America/Los_Angeles"), values=TIMEZONES
-                     ).grid(row=4, column=1, sticky="we", padx=4, pady=2)
-        self._entry(pi, 5, "Keyboard layout", "keymap", "us", width=8)
-
-        img = ttk.LabelFrame(form, text="Image", padding=6)
-        img.grid(row=2, column=0, sticky="nsew", padx=4, pady=4)
-        img.columnconfigure(1, weight=1)
-        self.bundled = bundle.find_bundle()
-        self._var("image_mode", "bundled" if self.bundled else "latest")
-        if self.bundled:
-            ttk.Radiobutton(img, text=f"Bundled: {self.bundled.name} ({windisk.human_size(self.bundled.length)})",
-                            variable=self.v["image_mode"], value="bundled").grid(row=0, column=0, columnspan=3,
-                                                                                 sticky="w")
-        ttk.Radiobutton(img, text="Raspberry Pi OS Lite (64-bit), latest (downloaded and cached)",
-                        variable=self.v["image_mode"], value="latest").grid(row=1, column=0, columnspan=3, sticky="w")
-        ttk.Radiobutton(img, text="Local image file (.img or .img.xz)", variable=self.v["image_mode"],
-                        value="local").grid(row=2, column=0, columnspan=3, sticky="w")
-        ttk.Entry(img, textvariable=self._var("image_path")).grid(row=3, column=0, columnspan=2, sticky="we", padx=4)
-        ttk.Button(img, text="Browse...", command=self.browse_image).grid(row=3, column=2, padx=4)
-
-        tgt = ttk.LabelFrame(form, text="Target SD card", padding=6)
-        tgt.grid(row=2, column=1, sticky="nsew", padx=4, pady=4)
-        tgt.columnconfigure(0, weight=1)
-        self.disk_box = ttk.Combobox(tgt, textvariable=self._var("disk"), state="readonly")
-        self.disk_box.grid(row=0, column=0, sticky="we", padx=4, pady=2)
-        ttk.Button(tgt, text="Refresh", command=self.refresh_disks).grid(row=0, column=1, padx=4)
-        ttk.Label(tgt, text="Everything on the selected card will be erased.").grid(row=1, column=0, columnspan=2,
-                                                                                    sticky="w", padx=4)
-
+        # 5. Flash, progress, log.
         buttons = ttk.Frame(outer)
-        buttons.pack(fill="x", pady=4)
-        self.flash_btn = ttk.Button(buttons, text="Flash", command=self.on_flash)
-        self.flash_btn.pack(side="left", padx=4)
-        self.cancel_btn = ttk.Button(buttons, text="Cancel", command=self.on_cancel, state="disabled")
-        self.cancel_btn.pack(side="left", padx=4)
-        ttk.Checkbutton(buttons, text="Dry run (validate + resolve image, do not write)",
-                        variable=self._var("dry_run", self.dry_run_default, tk.BooleanVar)).pack(side="left", padx=4)
+        buttons.pack(fill="x", pady=6)
+        style = ttk.Style(self.root)
+        style.configure("Flash.TButton", font=("", 11, "bold"), padding=(24, 6))
+        buttons.columnconfigure(2, weight=1)
+        self.flash_btn = ttk.Button(buttons, text="Flash", command=self.on_flash, style="Flash.TButton")
+        self.flash_btn.grid(row=0, column=0, padx=4)
+        self.cancel_btn = ttk.Button(buttons, text="Cancel", command=self.on_cancel)
+        self.cancel_btn.grid(row=0, column=1, padx=4)
+        self.cancel_btn.grid_remove()  # shown while a flash runs
         self.progress = ttk.Progressbar(buttons, maximum=100)
-        self.progress.pack(side="left", fill="x", expand=True, padx=8)
+        self.progress.grid(row=0, column=2, sticky="we", padx=8)
         self.status = ttk.Label(buttons, text="")
-        self.status.pack(side="left", padx=4)
+        self.status.grid(row=0, column=3, padx=4)
+        self._err(buttons, 1, "flash", column=0, columnspan=4)
 
         logf = ttk.Frame(outer)
         logf.pack(fill="both", expand=True, pady=4)
@@ -440,100 +419,186 @@ class App:
         sb.pack(side="right", fill="y")
         self.log_text.pack(side="left", fill="both", expand=True)
 
+        # Advanced: one collapsed disclosure holding everything else.
+        self.adv_btn = ttk.Button(outer, text="Advanced", command=self._toggle_advanced)
+        self.adv_btn.pack(anchor="w", pady=(4, 0))
+        self.advanced = ttk.Frame(outer, padding=(12, 4, 4, 4))
+        self._build_advanced(self.advanced)
+
+    def _build_advanced(self, adv):
+        adv.columnconfigure(1, weight=1)
+        self._err(adv, 0, "adv", column=0, columnspan=3)
+
+        ttk.Label(adv, text="Image").grid(row=1, column=0, sticky="nw", padx=4, pady=2)
+        img = ttk.Frame(adv)
+        img.grid(row=1, column=1, columnspan=2, sticky="we")
+        img.columnconfigure(0, weight=1)
+        self.bundled = bundle.find_bundle()
+        self._var("image_mode", "bundled" if self.bundled else "latest")
+        if self.bundled:
+            ttk.Radiobutton(img, text=f"Bundled: {self.bundled.name} ({windisk.human_size(self.bundled.length)})",
+                            variable=self.v["image_mode"], value="bundled").grid(row=0, column=0, columnspan=2,
+                                                                                 sticky="w")
+        ttk.Radiobutton(img, text="Latest Raspberry Pi OS Lite (64-bit), downloaded and cached",
+                        variable=self.v["image_mode"], value="latest").grid(row=1, column=0, columnspan=2, sticky="w")
+        ttk.Radiobutton(img, text="Local image file (.img or .img.xz)", variable=self.v["image_mode"],
+                        value="local").grid(row=2, column=0, columnspan=2, sticky="w")
+        ttk.Entry(img, textvariable=self._var("image_path")).grid(row=3, column=0, sticky="we", padx=4)
+        ttk.Button(img, text="Browse...", command=self.browse_image).grid(row=3, column=1, padx=4)
+
+        ttk.Label(adv, text="Timezone").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+        ttk.Combobox(adv, textvariable=self._var("timezone", winlocale.timezone()), values=TIMEZONES
+                     ).grid(row=2, column=1, sticky="we", padx=4, pady=2)
+        self._entry(adv, 3, "Keyboard layout", "keymap", winlocale.keymap(), width=8)
+        ttk.Label(adv, text="Wi-Fi country").grid(row=4, column=0, sticky="w", padx=4, pady=2)
+        ttk.Combobox(adv, textvariable=self._var("wifi_country", winlocale.country(firstboot.ISO3166)),
+                     values=COUNTRIES, width=8).grid(row=4, column=1, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(adv, text="Hidden Wi-Fi network", variable=self._var("wifi_hidden", False, tk.BooleanVar)
+                        ).grid(row=5, column=1, sticky="w", padx=4)
+        self._entry(adv, 6, "Static IP", "static_ip", width=20)
+        ttk.Label(adv, text="e.g. 192.168.1.50/24; blank for DHCP", foreground="grey").grid(row=6, column=2, sticky="w")
+        self._entry(adv, 7, "Gateway", "gateway", width=20)
+        ttk.Label(adv, text="also used as the DNS server", foreground="grey").grid(row=7, column=2, sticky="w")
+        self._entry(adv, 8, "Existing device token", "token")
+        ttk.Label(adv, text="from the Devices page; skips enrollment", foreground="grey").grid(row=8, column=2,
+                                                                                               sticky="w")
+        ttk.Label(adv, text="SSH key").grid(row=9, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(adv, text=str(sshkey.private_path())).grid(row=9, column=1, sticky="w", padx=4)
+        ttk.Button(adv, text="Copy public key", command=self.copy_public_key).grid(row=9, column=2, sticky="w", padx=4)
+        row10 = ttk.Frame(adv)
+        row10.grid(row=10, column=1, columnspan=2, sticky="w")
+        self.signout_btn = ttk.Button(row10, text="Sign out", command=self.sign_out)
+        self.signout_btn.pack(side="left", padx=4, pady=4)
+        ttk.Checkbutton(row10, text="Dry run (validate and resolve the image, do not write)",
+                        variable=self._var("dry_run", self.dry_run_default, tk.BooleanVar)).pack(side="left", padx=8)
+        ttk.Label(adv, text=f"Build: {build_info()}", foreground="grey", wraplength=520, justify="left"
+                  ).grid(row=11, column=1, columnspan=2, sticky="w", padx=4)
+
     def _fit_to_screen(self):
         # Never taller than the screen minus the taskbar and title bar, so the log stays visible.
         self.root.update_idletasks()
-        w = max(self.root.winfo_reqwidth(), 720)
-        h = min(max(self.root.winfo_reqheight(), 560), self.root.winfo_screenheight() - 120)
+        w = max(self.root.winfo_reqwidth(), 700)
+        h = min(max(self.root.winfo_reqheight(), 540), self.root.winfo_screenheight() - 120)
         self.root.geometry(f"{w}x{h}")
 
     def _derive_id(self, *_):
-        if not self._id_manual:
-            self._setting_id = True
-            self.v["device_id"].set(firstboot.derive_device_id(self.v["name"].get()))
-            self._setting_id = False
+        dev = firstboot.derive_device_id(self.v["name"].get())
+        self.id_label.configure(text=f"device id (hostname): {dev}" if dev else "")
 
-    def _id_edited(self, *_):
-        if not getattr(self, "_setting_id", False):
-            self._id_manual = bool(self.v["device_id"].get())
+    def device_id(self) -> str:
+        return firstboot.derive_device_id(self.v["name"].get())
 
     def _toggle_advanced(self):
-        if self.v["advanced"].get():
-            self.advanced.grid()
+        if self.advanced.winfo_manager():
+            self.advanced.pack_forget()
         else:
-            self.advanced.grid_remove()
+            self.advanced.pack(fill="x", after=self.adv_btn)
 
-    def test_connection(self):
-        """GET /api/health on the console URL in the form (never enrolls, never sends the key)."""
-        url = self.values()["console_url"]
-        problem = firstboot.console_url_problem(url)
-        if problem:
-            self.log(f"Console test: {problem}")
+    def copy_public_key(self):
+        try:
+            line = sshkey.ensure_keypair(self.log)
+        except OSError as e:
+            self.log(f"SSH key: {e}")
             return
-        self.log(f"Testing {url} ...")
+        self.root.clipboard_clear()
+        self.root.clipboard_append(line)
+        self.log("Public key copied to the clipboard (paste it into authorized_keys on any other machine).")
+
+    # ----- sign in (device-code flow: the browser approves, this thread polls)
+    def _show_sign_in(self, note: str):
+        self.signin_label.configure(text=note)
+        self.signin_btn.configure(state="normal")
+        self.signin_btn.grid()
+        self.signout_btn.configure(state="disabled")
+
+    def _show_signed_in(self):
+        self.signin_btn.grid_remove()
+        self.signin_label.configure(text=f"Signed in as {self.op['username'] or 'operator'}")
+        self.signout_btn.configure(state="normal")
+        self._show_error("signin", "")
+
+    def sign_in(self):
+        self.signin_btn.configure(state="disabled")
+        self.signin_label.configure(text="Contacting the console ...")
+        self._signin_cancel = threading.Event()
+        threading.Thread(target=self._sign_in_work, args=(self._signin_cancel,), daemon=True).start()
+
+    def _sign_in_work(self, cancel: threading.Event):
+        url = self.console_url
+        try:
+            r = console.request_device_code(url, socket.gethostname())
+        except console.ConsoleError as e:
+            msg = f"Sign in failed: {e}"
+            self.post(lambda: self._sign_in_failed(msg))
+            return
+        link = f"{r['verification_url']}?code={urllib.parse.quote(r['user_code'])}"
+        try:
+            opened = webbrowser.open(link)
+        except Exception:
+            opened = False
+        self.post(lambda: self._show_code(r["user_code"], link, opened))
+        deadline = time.monotonic() + r["expires_in"]
+        while time.monotonic() < deadline and not cancel.is_set():
+            time.sleep(r["interval"])
+            try:
+                tok = console.poll_device_token(url, r["device_code"])
+            except console.Pending:
+                continue
+            except console.ConsoleError as e:
+                msg = f"Sign in failed: {e}"
+                self.post(lambda: self._sign_in_failed(msg))
+                return
+            self.post(lambda: self._signed_in(url, tok))
+            return
+        if not cancel.is_set():
+            self.post(lambda: self._sign_in_failed("Sign in timed out (10 minutes): click Sign in again."))
+
+    def _show_code(self, code: str, link: str, opened: bool):
+        self.signin_label.configure(text=f"Approve in your browser (code {code})")
+        if opened:
+            self.log(f"Browser opened at {link}: approve the sign-in there (code {code}).")
+        else:
+            self.log(f"Could not open a browser. Open {link} yourself and type the code {code}.")
+
+    def _sign_in_failed(self, msg: str):
+        self.log(msg)
+        self._show_sign_in(msg if len(msg) < 60 else "Sign in failed (see the log)")
+
+    def _signed_in(self, url: str, tok: dict):
+        warning = save_operator_config(url, tok["token"], tok["username"])
+        if warning:
+            self.log(warning)
+        self.op = {"token": tok["token"], "username": tok["username"]}
+        self._show_signed_in()
+        self.log(f"Signed in as {tok['username'] or 'operator'}.")
+
+    def check_token(self):
+        """A stored token is checked against GET /api/operator/enrollment; 401 means sign in again."""
+        url, token = self.console_url, self.op["token"]
 
         def work():
             try:
-                console.check_health(url)
-                msg = f"Console at {url} answers /api/health: ok."
+                console.fetch_enrollment(url, token)
             except console.ConsoleError as e:
-                msg = f"Console test FAILED: {e}"
+                if e.code == 401:
+                    self.post(lambda: (clear_operator_config(), self.op.update(token="", username=""),
+                                       self._show_sign_in("Session expired: sign in again"),
+                                       self.log("The stored sign-in was rejected by the console: sign in again.")))
+                else:
+                    msg = f"Console check failed ({e}); the stored sign-in is kept."
+                    self.post(lambda: self.log(msg))
+                return
+            msg = f"Signed in as {self.op['username'] or 'operator'} (checked with the console)."
             self.post(lambda: self.log(msg))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def first_run(self):
-        """No operator token yet: ask for the console URL and an API token. Cancel leaves the manual key entry."""
-        url = simpledialog.askstring(APP_TITLE, "Console URL:", initialvalue=self.values()["console_url"],
-                                     parent=self.root)
-        token = url and simpledialog.askstring(
-            APP_TITLE, "Operator API token (console Settings page, \"My API tokens\"):", show="*", parent=self.root)
-        if not url or not token:
-            self.log("No operator API token: click Connect after entering one, or paste an enrollment key.")
-            return
-        self.v["console_url"].set(url)
-        self.v["operator_token"].set(token)
-        self.connect()
-
-    def connect(self):
-        """Save the console URL + operator token (%APPDATA%, DPAPI-protected) and fetch the enrollment key."""
-        v = self.values()
-        problem = firstboot.console_url_problem(v["console_url"]) or (
-            "" if v["operator_token"] else "Operator API token is required (console Settings page).")
-        if problem:
-            messagebox.showerror(APP_TITLE, problem)
-            return
-        warning = save_operator_config(v["console_url"], v["operator_token"])
-        if warning:
-            self.log(warning)
-        self.fetch_key()
-
-    def fetch_key(self):
-        """GET /api/operator/enrollment with the operator token; the answer fills the enrollment key field."""
-        v = self.values()
-        self.console_status.configure(text=f"Fetching the enrollment key from {v['console_url']} ...")
-
-        def work():
-            try:
-                r = console.fetch_enrollment(v["console_url"], v["operator_token"])
-            except console.ConsoleError as e:
-                msg = f"Enrollment key fetch FAILED: {e}"
-                self.post(lambda: (self.v["with_wyze"].set(False), self.log(msg), self.console_status.configure(text=msg)))
-                return
-            self.post(lambda: self._apply_enrollment(r))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _apply_enrollment(self, r: dict):
-        self.v["enrollment_key"].set(r["enrollment_key"])
-        groups = ", ".join(g["name"] for g in r["groups"]) or "none"
-        playlists = ", ".join(p["name"] for p in r["playlists"]) or "none"
-        self.console_status.configure(text=f"Console {r['console_url']}: enrollment key fetched "
-                                           f"({len(r['groups'])} groups, {len(r['playlists'])} playlists).")
-        self.log(f"Console {r['console_url']}: enrollment key fetched. Groups: {groups}. Playlists: {playlists}.")
-        self.v["with_wyze"].set(bool(r.get("wyze_configured")))
-        self.log("Wyze bridge: will be installed (console has a Wyze account; installer runs with --with-wyze)."
-                 if self.v["with_wyze"].get() else "Wyze bridge: not configured on the console (installer runs without it).")
+    def sign_out(self):
+        self._signin_cancel.set()
+        clear_operator_config()
+        self.op = {"token": "", "username": ""}
+        self._show_sign_in("")
+        self.log("Signed out. Revoke the token on the console's Settings page too if this PC changes hands.")
 
     def _apply_settings(self, s: dict):
         for k in SETTINGS_KEYS:
@@ -542,18 +607,25 @@ class App:
                     self.v[k].set(s[k])
                 except tk.TclError:
                     pass
-        self._id_manual = bool(s.get("device_id")) and s.get("device_id") != firstboot.derive_device_id(s.get("name", ""))
         if self.v["image_mode"].get() == "bundled" and not self.bundled:  # saved by an exe that had one
             self.v["image_mode"].set("latest")
 
     def values(self) -> dict:
-        """Form values; text fields are stripped (pasted spaces and newlines otherwise reach the card)."""
+        """Form values; text fields are stripped (pasted spaces and newlines otherwise reach the card).
+        Plus what is not a widget: the derived device id, the fixed Pi login, the baked key, the sign-in token."""
         out = {}
         for k, var in self.v.items():
             val = var.get()
             if isinstance(val, str) and k not in UNSTRIPPED:
                 val = val.strip()
             out[k] = val
+        out["device_id"] = firstboot.derive_device_id(out["name"])
+        out["username"] = PI_USERNAME
+        out["password"] = self._password
+        out["console_url"] = self.console_url
+        out["enrollment_key"] = self.baked_key
+        out["operator_token"] = self.op["token"]
+        out["ssh_pubkey"] = ""  # filled by validate() (the key is created on first use)
         return out
 
     # ----- actions
@@ -645,6 +717,7 @@ class App:
             while self.worker.is_alive() and time.monotonic() < deadline:
                 self.root.update()
                 time.sleep(0.05)
+        self._signin_cancel.set()
         save_settings(self.values())
         self.root.destroy()
 
@@ -652,35 +725,69 @@ class App:
         self.cancel.set()
         self.log("Cancelling...")
 
-    def validate(self) -> dict:
+    def _show_error(self, field: str, text: str):
+        lbl = self.err[field]
+        lbl.configure(text=text)
+        if text:
+            lbl.grid()
+        else:
+            lbl.grid_remove()
+
+    def errors(self) -> dict:
+        """Inline validation: {field: plain words}. The rules are firstboot.validate_cfg, worded for the form."""
         v = self.values()
-        problems = []
-        if v["advanced"] and not v["token"]:
-            problems.append("Device token is required (or untick the Advanced box to enroll with the key).")
-        # The same rules the card scripts enforce (enrollment key unless a token bypasses enrollment).
-        problems += firstboot.validate_cfg(card_cfg(v))
+        problems = {}
+        if not v["name"]:
+            problems["name"] = "Give the Pi a name."
+        if not v["ssid"] and v["wifi_password"]:
+            problems["ssid"] = "Enter the Wi-Fi network name (or clear the password for a wired Pi)."
+        cfg = card_cfg(v)
+        if not cfg["enrollment_key"] and not cfg["token"]:
+            if not v["operator_token"]:
+                problems["signin"] = "Sign in first."
+            cfg["enrollment_key"] = "fetched-at-flash-time-with-the-token"  # the other rules still apply
+        try:
+            cfg["ssh_pubkey"] = sshkey.ensure_keypair(self.log)
+        except OSError as e:
+            problems["flash"] = f"Could not create the SSH key: {e}"
+        for p in firstboot.validate_cfg(cfg):
+            for prefix, field, words in PLAIN_WORDS:
+                if p.startswith(prefix):
+                    problems.setdefault(field, words or p)
+                    break
+            else:
+                problems.setdefault("flash", p)
         if v["image_mode"] == "local":
             if not Path(v["image_path"]).is_file():
-                problems.append("Local image file not found.")
+                problems.setdefault("adv", "Local image file not found.")
             else:
                 try:
                     windisk.check_image_magic(v["image_path"])
                 except windisk.DiskError as e:
-                    problems.append(str(e))
+                    problems.setdefault("adv", str(e))
         disk = self.selected_disk()
         if not v["dry_run"]:  # a dry run never touches the card, so none is needed
             if not is_admin():
-                problems.append("Restart as administrator to write a card (dry run works without).")
+                problems.setdefault("flash", "Restart as administrator to write a card (dry run works without).")
             if disk is None:
-                problems.append("Select a target SD card.")
+                problems["disk"] = "Choose the SD card to write."
             elif disk["size"] == 0:
-                problems.append("The selected reader has no card inserted.")
+                problems["disk"] = "The selected reader has no card inserted."
             elif disk["size"] > windisk.MAX_CARD_BYTES:
-                problems.append(f"Refusing to write a disk larger than {windisk.human_size(windisk.MAX_CARD_BYTES)}.")
+                problems["disk"] = f"Refusing to write a disk larger than {windisk.human_size(windisk.MAX_CARD_BYTES)}."
+        return problems
+
+    def validate(self) -> dict:
+        problems = self.errors()
+        for field in self.err:
+            self._show_error(field, problems.get(field, ""))
+        if problems.get("adv") and not self.advanced.winfo_manager():
+            self._toggle_advanced()
         if problems:
-            messagebox.showerror(APP_TITLE, "\n".join(problems))
             return None
-        v["disk_info"] = disk
+        v = self.values()
+        v["ssh_pubkey"] = sshkey.ensure_keypair()
+        v["disk_info"] = self.selected_disk()
         return v
 
     def on_flash(self):
@@ -693,31 +800,24 @@ class App:
             try:
                 self._show_disks(windisk.list_disks(), None)
             except Exception as e:
-                messagebox.showerror(APP_TITLE, f"Disk scan failed: {e}")
+                self._show_error("disk", f"Disk scan failed: {e}")
                 return
             d = self.selected_disk()
             if d is None or (d["number"], d["unique_id"]) != (chosen["number"], chosen["unique_id"]):
-                messagebox.showerror(APP_TITLE, "The target disk changed since it was selected. "
-                                     "Check the target list and click Flash again.")
+                self._show_error("disk", "The card changed since it was chosen. Check the list and click Flash again.")
                 return
             v = self.validate()  # size checks against the fresh scan
             if not v:
                 return
             d = v["disk_info"]
-            image = {"bundled": f"bundled {self.bundled.name}" if self.bundled else "bundled (missing)",
-                     "latest": "latest Raspberry Pi OS Lite"}.get(v["image_mode"], v["image_path"])
-            if not messagebox.askyesno(APP_TITLE, f"Flash {v['name']} ({v['device_id']}) to:\n\n{d['label']}\n\n"
-                                       f"Image: {image}\nConsole: {v['console_url']} ({console_mode(v)})\n\n"
-                                       "Everything on that card will be erased. Continue?", default=messagebox.NO):
-                return
-            if not messagebox.askokcancel(APP_TITLE, f"FINAL CONFIRMATION\n\nDisk {d['number']}: {d['name']}\n"
-                                          f"Size: {windisk.human_size(d['size'])}\n\nAll data on this disk will be "
-                                          "destroyed.", icon="warning", default=messagebox.CANCEL):
+            if not messagebox.askyesno(APP_TITLE, f"Flash {v['name']} ({v['device_id']}) to\n\n{d['label']}\n"
+                                       f"({windisk.human_size(d['size'])})\n\nEverything on that card will be erased. "
+                                       "Continue?", icon="warning", default=messagebox.NO):
                 return
         save_settings(v)
         self.cancel.clear()
         self.flash_btn.configure(state="disabled")
-        self.cancel_btn.configure(state="normal")
+        self.cancel_btn.grid()
         self.set_progress(0, "")
         self.worker = threading.Thread(target=self._run_flash, args=(v,), daemon=True)
         self.worker.start()
@@ -728,7 +828,9 @@ class App:
         try:
             run_flash(v, log, lambda pct, text: self.post(lambda: self.set_progress(pct, text)), self.cancel,
                       dry_run=v["dry_run"])
-            log("Done.")
+            if not v["dry_run"]:
+                done = DONE_TEXT + f"\n\nDevice id: {v['device_id']}"
+                self.post(lambda: messagebox.showinfo(APP_TITLE, done))
         except (windisk.Cancelled, imagefetch.Cancelled) as e:
             log(f"Cancelled. {e}".rstrip())
         except Exception as e:
@@ -740,42 +842,60 @@ class App:
 
     def _finished(self):
         self.flash_btn.configure(state="normal")
-        self.cancel_btn.configure(state="disabled")
+        self.cancel_btn.grid_remove()
         self.status.configure(text="")
-        if self.v["password"].get() == self._generated_password:
-            # A fresh random password per flash; the one just used is in the log.
-            self._generated_password = secrets.token_urlsafe(12)
-            self.v["password"].set(self._generated_password)
+        self._password = secrets.token_urlsafe(24)  # never reuse a Pi password across cards
 
 
 # ---------------------------------------------------------------- flash sequence (no widgets here)
 
+DONE_TEXT = ("Done. Put the card in the Pi and power it on. It appears on the Devices page within a few minutes.")
+
+
 def card_cfg(v: dict) -> dict:
-    cfg = {k: v[k] for k in ("device_id", "name", "username", "password", "ssh", "ssid", "wifi_password",
-                              "wifi_hidden", "ethernet_only", "timezone", "keymap", "enrollment_key")}
+    """The firstboot config for the form values (validate_cfg's input)."""
+    cfg = {k: v[k] for k in ("device_id", "name", "username", "password", "ssid", "wifi_password", "wifi_hidden",
+                              "timezone", "keymap", "enrollment_key", "static_ip", "gateway")}
+    cfg["ssh"] = True
+    cfg["ssh_pubkey"] = v.get("ssh_pubkey") or ""
+    cfg["ethernet_only"] = not v["ssid"]  # blank Wi-Fi fields: a wired Pi
     cfg["wifi_country"] = v["wifi_country"].strip().upper()
     cfg["console_url"] = v["console_url"].strip().rstrip("/")
-    # The token field only counts while the Advanced box is ticked (a collapsed leftover must not bypass enrollment).
-    cfg["token"] = v["token"].strip() if v.get("advanced") else ""
+    cfg["token"] = v["token"].strip()  # Advanced: an existing device token bypasses enrollment
     cfg["with_wyze"] = bool(v.get("with_wyze"))
     return cfg
 
 
-def console_mode(v: dict) -> str:
-    return "device token given, no enrollment" if card_cfg(v)["token"] else "enrolls itself on first boot"
+def console_mode(cfg: dict) -> str:
+    return "device token given, no enrollment" if cfg["token"] else "enrolls itself on first boot"
+
+
+def fetch_key(cfg: dict, operator_token: str, log) -> None:
+    """No baked key and no device token: fetch the console's enrollment key with the sign-in token. The key is
+    never shown; the answer also says whether the console has a Wyze account (installer --with-wyze)."""
+    if cfg["enrollment_key"] or cfg["token"]:
+        return
+    if not operator_token:
+        raise ValueError("Sign in first.")
+    r = console.fetch_enrollment(cfg["console_url"], operator_token)
+    cfg["enrollment_key"] = r["enrollment_key"]
+    cfg["with_wyze"] = r["wyze_configured"]
+    log("Enrollment key: ok. " + ("Wyze bridge: will be installed (the console has a Wyze account)."
+                                  if cfg["with_wyze"] else "Wyze bridge: not configured on the console."))
 
 
 def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = False):
-    """The flash sequence. Never contacts the console (the Pi enrolls itself on first boot);
-    dry_run stops after image resolution, before any disk access."""
+    """The flash sequence. Contacts the console only for the enrollment key (the Pi enrolls itself on first
+    boot); dry_run stops after image resolution, before any disk access."""
     d = v["disk_info"]
     cfg = card_cfg(v)
+    fetch_key(cfg, v.get("operator_token") or "", log)
     problems = firstboot.validate_cfg(cfg)
     if problems:  # checked before anything is written
         raise ValueError(" ".join(problems))
 
     # 1. first-boot files
-    log(f"Console {cfg['console_url']}: {console_mode(v)}.")
+    log(f"Console {cfg['console_url']}: {console_mode(cfg)}.")
     firstrun = firstboot.render_firstrun(cfg)
     provision = firstboot.render_provision(cfg)
     archive = player_archive()
@@ -853,16 +973,19 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     # 8. summary
     log("")
     log("SUMMARY")
-    log(f"  Device: {v['name'].strip()} ({v['device_id']}), hostname {v['device_id']}")
-    log("  Network: Ethernet only" if v["ethernet_only"] else f"  Wi-Fi: {v['ssid']} ({cfg['wifi_country']})")
-    log(f"  Pi user: {v['username']}   password: {v['password']}   SSH: {'on' if v['ssh'] else 'off'}")
-    log("  Record the password now: it is not saved anywhere else.")
-    log(f"  Console: {cfg['console_url']} ({console_mode(v)})")
+    log(f"  Device: {cfg['name'].strip()} ({cfg['device_id']}), hostname {cfg['device_id']}")
+    net = "Ethernet" if cfg["ethernet_only"] else f"Wi-Fi {cfg['ssid']} ({cfg['wifi_country']})"
+    log(f"  Network: {net}" + (f", static IP {cfg['static_ip']} via {cfg['gateway']}" if cfg["static_ip"] else ", DHCP"))
+    log(f"  Login: ssh {cfg['username']}@{cfg['device_id']}.local with the key {sshkey.private_path()} "
+        "(password login is off)" if cfg["ssh_pubkey"] else f"  Login: {cfg['username']} (no SSH key on the card)")
+    log(f"  Console: {cfg['console_url']} ({console_mode(cfg)})")
     log(f"  Image: {windisk.source_name(image)}" + (" (bundled in this exe)" if v["image_mode"] == "bundled" else ""))
-    log("  Insert the card into the Pi and power on. It enrolls itself and appears on the console's Devices page")
-    log("  within about 5 minutes on first boot (it needs internet access for apt and pip). Progress is logged on")
-    log("  the Pi in /var/log/projection5000-provision.log; firstrun.log and firstrun.ok appear on the boot partition.")
+    log("  The Pi needs internet access on its first boot (apt and pip). Progress is logged on the Pi in")
+    log("  /var/log/projection5000-provision.log; firstrun.log and firstrun.ok appear on the boot partition.")
     log("  A card that never booted still carries the enrollment key: keep it safe or rotate the key on the console.")
+    log("")
+    log(DONE_TEXT)
+    log(f"Device id: {cfg['device_id']}")
 
 
 def obtain_image(v: dict, log, progress, cancel, dry_run: bool = False) -> tuple:
@@ -940,6 +1063,8 @@ def selfcheck() -> int:
         f"player archive: {len(archive)} bytes, {len(names)} entries",
         f"bundled image: {b.name} {b.length} bytes sha256 {b.sha256} (trailer ok)" if b else "bundled image: none",
         console_summary(),
+        f"defaults from Windows: timezone {winlocale.timezone()}, keymap {winlocale.keymap()}, "
+        f"country {winlocale.country(firstboot.ISO3166)}, ssh key {sshkey.private_path()}",
         "=== firstrun.sh ===", firstboot.render_firstrun(cfg),
         "=== projection5000-provision.sh ===", firstboot.render_provision(cfg),
         "=== cmdline.txt ===", firstboot.patch_cmdline("console=tty1 root=PARTUUID=x rootfstype=ext4 rootwait\n"),

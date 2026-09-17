@@ -1,5 +1,6 @@
-"""console.enroll / check_health against a stub /api/enroll server, plus one integration test against the
-real Python CMS (cms/) on a free port that is skipped until that CMS answers /api/enroll."""
+"""console.enroll / check_health / fetch_enrollment and the device-code sign-in against a stub console (the
+request/response shapes from the flasher spec), plus one integration test against the real Python CMS (cms/)
+on a free port that is skipped until that CMS answers /api/enroll."""
 import http.server
 import json
 import os
@@ -30,10 +31,22 @@ def _free_port() -> int:
 
 
 class StubConsole(http.server.BaseHTTPRequestHandler):
-    """The /api/enroll contract shared by the cloud and Python consoles."""
+    """The /api/enroll contract shared by the cloud and Python consoles, /api/operator/enrollment, and the
+    device-code sign-in (POST device-code, POST device-token: 428 pending / 200 once / 410 gone)."""
     devices = {}
     calls = []
     wyze_configured = False
+    # sign-in: the code is approved once `polls` reaches approve_after (None: never), or denied outright
+    approve_after = 1
+    deny = False
+    polls = 0
+    claimed = False
+    interval = 1
+
+    @classmethod
+    def reset(cls):
+        cls.devices, cls.calls, cls.polls, cls.claimed = {}, [], 0, False
+        cls.approve_after, cls.deny, cls.wyze_configured, cls.interval = 1, False, False, 1
 
     def log_message(self, *a):
         pass
@@ -62,6 +75,21 @@ class StubConsole(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         self.calls.append((self.path, body))
+        if self.path == "/api/operator/device-code":
+            base = f"http://127.0.0.1:{self.server.server_port}"
+            return self._json(200, {"device_code": "dc-" + "x" * 40, "user_code": "BCDF-GH",
+                                    "verification_url": base + "/authorize", "expires_in": 600,
+                                    "interval": self.interval})
+        if self.path == "/api/operator/device-token":
+            if body.get("device_code") != "dc-" + "x" * 40 or self.claimed:
+                return self._json(410, {"detail": "unknown or expired code", "status": "gone"})
+            if self.deny:
+                return self._json(410, {"detail": "denied", "status": "denied"})
+            StubConsole.polls += 1
+            if self.approve_after is None or self.polls < self.approve_after:
+                return self._json(428, {"status": "pending"})
+            StubConsole.claimed = True  # one shot
+            return self._json(200, {"token": OPERATOR_TOKEN, "username": "matt"})
         if self.path != "/api/enroll":
             return self._json(404, {"detail": "Not Found"})
         if body.get("key") != KEY:
@@ -82,7 +110,7 @@ def _serve(handler_cls):
 
 @pytest.fixture
 def stub():
-    StubConsole.devices, StubConsole.calls = {}, []
+    StubConsole.reset()
     srv, base = _serve(StubConsole)
     try:
         yield base
@@ -131,6 +159,64 @@ def test_fetch_enrollment(stub):
     assert not any(path == "/api/enroll" for path, _ in StubConsole.calls)  # the fetch never enrolls
     with pytest.raises(console.ConsoleError, match="is this a Projection5000 console"):
         console.fetch_enrollment(stub + "/notaconsole", OPERATOR_TOKEN)
+
+
+def test_device_code_sign_in_flow(stub):
+    r = console.request_device_code(stub + "/", "MYPC")
+    assert r["user_code"] == "BCDF-GH" and r["verification_url"] == stub + "/authorize"
+    assert r["expires_in"] == 600 and r["interval"] == 1
+    assert StubConsole.calls[-1] == ("/api/operator/device-code", {"hostname": "MYPC"})
+    StubConsole.approve_after = 3
+    for _ in range(2):  # not approved yet: 428 is Pending (a ConsoleError with code 428)
+        with pytest.raises(console.Pending) as e:
+            console.poll_device_token(stub, r["device_code"])
+        assert e.value.code == 428 and isinstance(e.value, console.ConsoleError)
+    assert console.poll_device_token(stub, r["device_code"]) == {"token": OPERATOR_TOKEN, "username": "matt"}
+    # One shot: the same code is gone afterwards (410), which is a plain ConsoleError.
+    with pytest.raises(console.ConsoleError, match="expired") as e:
+        console.poll_device_token(stub, r["device_code"])
+    assert e.value.code == 410 and not isinstance(e.value, console.Pending)
+    with pytest.raises(console.ConsoleError, match="unknown or expired"):
+        console.poll_device_token(stub, "dc-wrong")
+    # Denied in the browser.
+    StubConsole.claimed, StubConsole.deny = False, True
+    with pytest.raises(console.ConsoleError, match="denied"):
+        console.poll_device_token(stub, r["device_code"])
+    # The token the flow yields is accepted by /api/operator/enrollment.
+    assert console.fetch_enrollment(stub, OPERATOR_TOKEN)["enrollment_key"] == KEY
+
+
+def test_device_code_tolerates_a_sparse_or_odd_answer(monkeypatch):
+    class Sparse(http.server.BaseHTTPRequestHandler):
+        body = {"device_code": "d", "user_code": "u", "verification_url": "http://x/authorize"}
+
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            raw = json.dumps(self.body).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    srv, base = _serve(Sparse)
+    try:
+        r = console.request_device_code(base, "pc")
+        assert r["expires_in"] == 600 and r["interval"] == 3  # spec defaults when the answer omits them
+        Sparse.body = {"device_code": "d", "user_code": "u", "verification_url": "http://x", "interval": 0}
+        assert console.request_device_code(base, "pc")["interval"] >= 1  # never a busy loop
+        Sparse.body = {"user_code": "u"}
+        with pytest.raises(console.ConsoleError, match="no device_code"):
+            console.request_device_code(base, "pc")
+        Sparse.body = {"username": "x"}
+        with pytest.raises(console.ConsoleError, match="no token"):
+            console.poll_device_token(base, "d")
+        Sparse.body = {"token": " tok "}
+        assert console.poll_device_token(base, "d") == {"token": "tok", "username": ""}
+    finally:
+        srv.shutdown()
 
 
 def test_fetch_enrollment_tolerates_a_sparse_answer(monkeypatch):

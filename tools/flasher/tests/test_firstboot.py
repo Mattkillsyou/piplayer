@@ -92,6 +92,78 @@ def test_firstrun_ethernet_only_and_hidden_and_no_ssh():
     assert "hidden=true" in s
 
 
+PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIUL3nG/VzzJ6wyH+UdpX4KRzETi9LJnhz6FuBwRr0U5 projection5000-flasher@pc"
+
+
+def test_firstrun_key_only_ssh():
+    """With ssh_pubkey the card installs authorized_keys for the user and turns password login off."""
+    s = firstboot.render_firstrun(cfg(username="projector-admin", ssh_pubkey=PUBKEY))
+    assert 'run "$IMAGER" enable_ssh' in s
+    assert ('HOME_DIR=$(getent passwd projector-admin | cut -d: -f6); [ -n "$HOME_DIR" ] || '
+            "HOME_DIR=/home/projector-admin") in s
+    assert 'run install -d -m 0700 -o projector-admin -g projector-admin "$HOME_DIR/.ssh"' in s
+    assert f'printf "%s\\n" {shlex.quote(PUBKEY)} >"$HOME_DIR/.ssh/authorized_keys"' in s
+    assert 'run chown projector-admin:projector-admin "$HOME_DIR/.ssh/authorized_keys"' in s
+    assert 'run chmod 0600 "$HOME_DIR/.ssh/authorized_keys"' in s
+    assert ('printf "%s\\n" "PasswordAuthentication no" "KbdInteractiveAuthentication no" '
+            ">/etc/ssh/sshd_config.d/projection5000.conf") in s
+    assert s.index("# user") < s.index("# key-only login") < s.index("# wifi")
+    # Without a key: the previous behaviour (password login), nothing about sshd_config.d.
+    plain = firstboot.render_firstrun(cfg())
+    assert "authorized_keys" not in plain and "sshd_config.d" not in plain
+    assert "authorized_keys" not in firstboot.render_firstrun(cfg(ssh=False, ssh_pubkey=PUBKEY))
+    # Only one ssh-ed25519 line is accepted.
+    for bad in ("ssh-rsa AAAAB3 x", "ssh-ed25519", PUBKEY + "\nssh-ed25519 AAAA", "ssh-ed25519 AAAA'; rm -rf / '"):
+        assert any("SSH public key" in p or "line breaks" in p for p in firstboot.validate_cfg(cfg(ssh_pubkey=bad))), bad
+    assert firstboot.validate_cfg(cfg(ssh_pubkey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIUL3nG")) == []  # no comment
+
+
+def test_static_ip_rendering():
+    static = dict(static_ip="192.168.1.50/24", gateway="192.168.1.1")
+    s = firstboot.render_firstrun(cfg(**static))
+    # Wi-Fi with a static address: always the keyfile (imager_custom set_wlan only does DHCP), country still set.
+    assert "set_wlan" not in s and "# wifi (static IP)" in s
+    assert "[ipv4]\nmethod=manual\naddress1=192.168.1.50/24,192.168.1.1\ndns=192.168.1.1;\n\n[ipv6]\nmethod=auto\nNMEOF" in s
+    assert "cat >/etc/NetworkManager/system-connections/preconfigured.nmconnection <<'NMEOF'" in s
+    assert "chmod 0600 /etc/NetworkManager/system-connections/preconfigured.nmconnection" in s
+    assert "rfkill unblock wifi" in s and "run raspi-config nonint do_wifi_country US" in s
+    assert "ssid=Venue WiFi" in s and "psk=" in s
+    # Ethernet with a static address: its own keyfile.
+    e = firstboot.render_firstrun(cfg(ethernet_only=True, ssid="", **static))
+    assert "# ethernet (static IP)" in e and "type=ethernet" in e and "id=wired-static" in e
+    assert "cat >/etc/NetworkManager/system-connections/wired-static.nmconnection <<'NMEOF'" in e
+    assert "address1=192.168.1.50/24,192.168.1.1" in e and "wifi" not in e.split("# ethernet")[1].split("# locale")[0]
+    # DHCP (the default): unchanged, no ethernet block at all.
+    d = firstboot.render_firstrun(cfg(ethernet_only=True, ssid=""))
+    assert "nmconnection" not in d and "method=manual" not in d
+    assert "method=auto" in firstboot.render_firstrun(cfg()) and "method=manual" not in firstboot.render_firstrun(cfg())
+
+
+@pytest.mark.parametrize("static_ip,gateway,fragment", [
+    ("192.168.1.50", "192.168.1.1", "Static IP"),  # no prefix
+    ("192.168.1.0/24", "192.168.1.1", "Static IP"),  # network address
+    ("192.168.1.255/24", "192.168.1.1", "Static IP"),  # broadcast
+    ("192.168.1.50/32", "192.168.1.1", "Static IP"),
+    ("192.168.1.300/24", "192.168.1.1", "Static IP"),
+    ("fe80::1/64", "fe80::2", "Static IP"),
+    ("192.168.1.50/24", "", "Gateway"),
+    ("192.168.1.50/24", "10.0.0.1", "Gateway"),
+    ("192.168.1.50/24", "gateway", "Gateway"),
+    ("192.168.1.50/24", "192.168.1.1\n", "line breaks"),
+])
+def test_static_ip_rejects(static_ip, gateway, fragment):
+    problems = firstboot.validate_cfg(cfg(static_ip=static_ip, gateway=gateway))
+    assert any(fragment in p for p in problems), problems
+
+
+@pytest.mark.parametrize("static_ip,gateway", [
+    ("192.168.1.50/24", "192.168.1.1"), ("10.0.0.5/8", "10.255.255.254"), ("172.16.4.9/30", "172.16.4.10"),
+    ("", ""), ("", "ignored-without-a-static-ip"),
+])
+def test_static_ip_accepts(static_ip, gateway):
+    assert firstboot.validate_cfg(cfg(static_ip=static_ip, gateway=gateway)) == []
+
+
 def test_sed_cleanup_keeps_regdom(tmp_path):
     """The exact sed from firstrun.sh, run on what cmdline.txt looks like after raspi-config appended
     the regulatory domain: only the systemd.* tokens go."""
@@ -255,7 +327,10 @@ def test_patch_cmdline():
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
 def test_scripts_parse_in_bash(tmp_path):
     hostile = cfg(name="Lobby $(rm -rf /) 'Hall' \"2\" `x`", password="pa'ss $(x)", ssid="It's \"here\"")
+    static = dict(static_ip="192.168.1.50/24", gateway="192.168.1.1", ssh_pubkey=PUBKEY)
     for name, text in (("firstrun.sh", firstboot.render_firstrun(hostile)),
+                       ("firstrun-key-static.sh", firstboot.render_firstrun(cfg(**static))),
+                       ("firstrun-wired-static.sh", firstboot.render_firstrun(cfg(ethernet_only=True, ssid="", **static))),
                        ("provision.sh", firstboot.render_provision(hostile)),
                        ("provision-token.sh", firstboot.render_provision(cfg(token="tok-en_0123456789")))):
         p = tmp_path / name

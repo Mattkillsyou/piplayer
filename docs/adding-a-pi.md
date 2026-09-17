@@ -15,26 +15,43 @@ You'll need:
   installed on both
 
 > **On Windows: use the Projection5000 SD Flasher** (`tools/flasher/README.md`).
-> It replaces sections 1, 2, 4 and 5 below: fill in the form, insert a card,
-> click Flash, put the card in the Pi. No console login is needed on the Pi:
-> on its first launch the flasher asks for the console URL and a personal
-> API token you create once on the cloud console (Settings page, "My API
-> tokens", or the Users page for another admin or editor; admins only),
-> stores them in `%APPDATA%\Projection5000\flasher.json` (token
-> DPAPI-protected) and fetches the console's current **enrollment key** on
-> every launch. The Pi then enrolls itself on first boot, creating the device
-> and fetching its token. Re-flashing a card with the same device id
-> re-enrolls the same device (same token, same playlist). Rotate the key on
-> the Settings page if a flashed card is lost: a relaunch (or Connect) picks
-> up the new key, no rebuild needed. If the Settings page names a default
-> group and playlist ("New devices join group" / "New devices get
-> playlist"), the device gets them on its first enrollment only; see
+> It replaces sections 1, 2, 4 and 5 below in four steps, with no console
+> login on the Pi and nothing to copy and paste:
+>
+> 1. **Sign in** (once per PC): the browser opens the cloud console's
+>    `/authorize` page with a code prefilled; approve it as an editor or
+>    admin. The flasher keeps the resulting token DPAPI-protected in
+>    `%APPDATA%\Projection5000\flasher.json` and shows "Signed in as <you>"
+>    from then on (Sign out is under Advanced).
+> 2. **Device name**, e.g. "Lobby Projector"; the device id / hostname
+>    (`lobby-projector`) is derived and shown under it.
+> 3. **Wi-Fi network and password** (blank for a wired Pi).
+> 4. **SD card**, then **Flash**. When it says Done, put the card in the Pi.
+>
+> The console is fixed (baked in at build time and shown in the header). At
+> flash time the flasher fetches the console's current **enrollment key** with
+> your sign-in and puts it on the card, never showing it; the Pi enrolls
+> itself on first boot, creating the device and fetching its token, and
+> appears on the Devices page within a few minutes. The Pi's login is the
+> fixed user `projector-admin` with **SSH by key only**: the flasher makes one
+> ed25519 key per Windows user (`%APPDATA%\Projection5000\ssh\id_ed25519`)
+> and installs the public key on every card; there is no Pi password to
+> record. Timezone, keyboard layout and Wi-Fi country come from Windows; the
+> image is built into the exe. Advanced (collapsed) holds the image source,
+> those three locale settings, hidden network, static IP, an existing device
+> token, the SSH key path and Sign out. Re-flashing a card with the same
+> device id re-enrolls the same device (same token, same playlist). Rotate the
+> key on the Settings page if a flashed card is lost: the next flash fetches
+> the new key, no rebuild needed. If the Settings page names a default group
+> and playlist ("New devices join group" / "New devices get playlist"), the
+> device gets them on its first enrollment only; see
 > [automation.md](automation.md) sections A and B. Both consoles enroll: the
 > cloud console and the Python console (`cms/`) each have the Settings page
-> with the key and the two defaults, but only the cloud console issues
-> operator tokens; for a LAN-only cms site build the flasher with the offline
-> `build.ps1 -Key` override and paste the key from the cms Settings page. The
-> manual path that follows still works.
+> with the key and the two defaults, but only the cloud console offers the
+> browser sign-in; for a LAN-only cms site build the flasher with the offline
+> `build.ps1 -ConsoleUrl <url> -Key <key>` override (the key from the cms
+> Settings page), which flashes without signing in. The manual path that
+> follows still works.
 
 ## 1. Flash Raspberry Pi OS Lite (64-bit)
 

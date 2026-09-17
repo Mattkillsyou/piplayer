@@ -2,7 +2,9 @@
 
 The flasher itself never enrolls: the Pi does that on first boot. enroll() mirrors what the rendered
 projection5000-provision.sh does and is used by the tests; check_health() backs the GUI's "Test connection";
-fetch_enrollment() trades the operator's API token for the console's current enrollment key.
+fetch_enrollment() trades the operator's API token for the console's current enrollment key;
+request_device_code() / poll_device_token() are the flasher's half of the browser sign-in
+(POST /api/operator/device-code, GET /authorize in the browser, POST /api/operator/device-token).
 """
 import json
 import urllib.error
@@ -14,7 +16,11 @@ HEADERS = {"User-Agent": "Projection5000-SD-Flasher", "Content-Type": "applicati
 
 
 class ConsoleError(Exception):
-    pass
+    code = None  # HTTP status when the console answered with one
+
+
+class Pending(ConsoleError):
+    """The device code is not approved yet (HTTP 428): poll again."""
 
 
 def _base(console_url: str) -> str:
@@ -32,7 +38,9 @@ def _request(base: str, path: str, body: dict = None, headers: dict = None) -> d
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         hint = f" ({NOT_A_CONSOLE})" if e.code == 404 else ""
-        raise ConsoleError(f"{path}: {_detail(e)}{hint}") from e
+        err = (Pending if e.code == 428 else ConsoleError)(f"{path}: {_detail(e)}{hint}")
+        err.code = e.code
+        raise err from e
     except urllib.error.URLError as e:
         raise ConsoleError(f"cannot reach {base}{path}: {e.reason}") from e
     except OSError as e:  # a timeout while waiting for headers or body is a bare TimeoutError
@@ -91,3 +99,26 @@ def fetch_enrollment(console_url: str, token: str) -> dict:
         r[k] = [g for g in items if isinstance(g, dict) and isinstance(g.get("name"), str)]
     r["wyze_configured"] = bool(r.get("wyze_configured"))  # the provision script's --with-wyze
     return r
+
+
+def request_device_code(console_url: str, hostname: str) -> dict:
+    """POST /api/operator/device-code (no auth). Returns {device_code, user_code, verification_url, expires_in,
+    interval}; the browser opens verification_url?code=<user_code> and the operator approves there."""
+    base = _base(console_url)
+    r = _request(base, "/api/operator/device-code", {"hostname": hostname})
+    for k in ("device_code", "user_code", "verification_url"):
+        if not isinstance(r.get(k), str) or not r[k]:
+            raise ConsoleError(f"/api/operator/device-code: response carries no {k} ({NOT_A_CONSOLE})")
+    r["expires_in"] = int(r.get("expires_in") or 600)
+    r["interval"] = max(1, int(r.get("interval") or 3))
+    return r
+
+
+def poll_device_token(console_url: str, device_code: str) -> dict:
+    """POST /api/operator/device-token {device_code}. Returns {token, username} once approved (one shot);
+    raises Pending (428) while the operator has not approved yet, ConsoleError on 410 (expired or denied)."""
+    base = _base(console_url)
+    r = _request(base, "/api/operator/device-token", {"device_code": device_code})
+    if not isinstance(r.get("token"), str) or not r["token"].strip():
+        raise ConsoleError("/api/operator/device-token: response carries no token")
+    return {"token": r["token"].strip(), "username": str(r.get("username") or "")}
