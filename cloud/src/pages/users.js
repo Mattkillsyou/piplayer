@@ -174,10 +174,7 @@ async function userTokenCreate(ctx) {
   const user = await db.first(ctx.env, "SELECT id, username, role FROM users WHERE id = ?", userId);
   if (!user) fail(404, "User not found");
   if (user.role === "viewer") fail(400, "viewers cannot hold API tokens; change the role first");
-  const token = auth.newApiToken();
-  const id = (await db.run(ctx.env, "INSERT INTO api_tokens (user_id, name, token_hash) VALUES (?, ?, ?)",
-    userId, name, await auth.apiTokenHash(token))).last_row_id;
-  await audit.log(ctx, "api_token_created", "api_token", id, { name, username: user.username });
+  const { token } = await auth.issueApiToken(ctx, userId, name, { username: user.username });
   return usersPage(ctx, { userId, token });
 }
 

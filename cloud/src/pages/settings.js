@@ -453,10 +453,7 @@ async function enrollmentRotate(ctx) {
 async function tokenCreate(ctx) {
   const me = auth.requireRole(ctx, "admin");
   const name = tokenName(await ctx.form());
-  const token = auth.newApiToken();
-  const id = (await db.run(ctx.env, "INSERT INTO api_tokens (user_id, name, token_hash) VALUES (?, ?, ?)",
-    me.id, name, await auth.apiTokenHash(token))).last_row_id;
-  await audit.log(ctx, "api_token_created", "api_token", id, { name });
+  const { token } = await auth.issueApiToken(ctx, me.id, name);
   return settingsPage(ctx, token);
 }
 

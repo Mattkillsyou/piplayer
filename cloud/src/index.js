@@ -6,6 +6,7 @@ import * as api from "./api.js";
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
 import * as db from "./db.js";
+import * as deviceCodes from "./device_codes.js";
 import * as manifest from "./manifest.js";
 import * as media from "./media.js";
 import * as schedules from "./schedules.js";
@@ -27,7 +28,7 @@ import { fail, HttpError, json, redirect } from "./util.js";
 
 const MODULES = [
   login, setup, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings,
-  api, media, manifest, schedules, uploads, auth, audit, alerts,
+  api, media, manifest, schedules, uploads, auth, audit, alerts, deviceCodes,
 ];
 
 const router = new Router();

@@ -67,7 +67,11 @@ every launch the flasher presents that token to the cloud console, fetches
 the current enrollment key together with the console name and the group and
 playlist lists, and writes the fresh key onto the card. Rotating the key on
 the Settings page takes effect on the next flash, with no rebuild of the exe,
-and one build of the flasher serves every operator.
+and one build of the flasher serves every operator. The operator never sees
+the token: the flasher's Sign in button gets one through a device-code
+flow (the same shape as signing a TV in to a streaming app), approved with
+one click in the console. The Settings "My API tokens" panel remains for
+scripts and for anything that is not the flasher.
 
 **Cloud console.**
 
@@ -86,6 +90,27 @@ and one build of the flasher serves every operator.
   `POST /users/<user_id>/tokens` (create, shown once) and
   `POST /users/<user_id>/tokens/<token_id>/revoke`; viewers cannot hold
   tokens (400).
+- Device-code sign-in (`cloud/src/device_codes.js`, table `device_codes`,
+  migration `0004_device_codes.sql`). `POST /api/operator/device-code` (no
+  auth; optional JSON `{hostname}`) returns `{device_code, user_code,
+  verification_url, expires_in: 600, interval: 3}`: `user_code` is 6
+  characters from an alphabet without vowels or 0/O/1/I look-alikes, shown
+  as `XXXX-XX`; `verification_url` is `https://<console>/authorize`. Only
+  the SHA-256 hash of `device_code` is stored, with the hostname and the
+  caller's IP; more than 20 codes from one IP in an hour is a 429.
+  `GET /authorize` (any signed-in editor or admin; there is no menu item,
+  the flasher opens `verification_url?code=<user_code>`) shows "Sign in the
+  SD Flasher on <hostname>?" with Approve and Deny (or a box to type the
+  code when the link did not carry one; case and the hyphen do not matter).
+  Approve creates an `api_tokens` row named `SD Flasher on <hostname>` for
+  the signed-in user and audits `api_token_created` with `source:
+  "device-code"`; deny refuses it. `POST /api/operator/device-token`
+  `{device_code}` answers 428 `{status: "pending"}` until then, then 200
+  `{token, username}` exactly once (the code is deleted), or 410
+  `{status: "expired"}` / `{status: "denied"}`. Codes expire 10 minutes
+  after they are issued; expired rows, and a token that was approved but
+  never collected, are pruned by the nightly housekeeping and before every
+  new code, so nothing lingers.
 - `GET /api/operator/enrollment` with `Authorization: Bearer p5k_<token>`
   returns `{console_url, enrollment_key, groups: [{id, name}],
   playlists: [{id, name}], timezone, wyze_configured}`. `wyze_configured` is
@@ -97,14 +122,21 @@ and one build of the flasher serves every operator.
   written at most once per hour per token, so the audit log shows who is flashing
   without filling up on every launch.
 
-**Flasher.** On first run the tool asks for the console URL and an operator
-token and stores them in `%APPDATA%\Projection5000\flasher.json`. The token is
-protected with Windows DPAPI (`CryptProtectData` via ctypes, tied to the
-Windows user account, no extra package); if DPAPI fails the token is stored in
-plain text and the log warns you. (Plain form values such as the last Wi-Fi
-name live in a separate `%LOCALAPPDATA%\Projection5000\flasher.json`.) Every
-later launch calls `GET /api/operator/enrollment`, shows the console name and
-URL plus the fetched group and playlist lists, and passes the fresh
+**Flasher.** The console URL is baked in by `build.ps1` and shown as plain
+text; there is nothing to type. Clicking **Sign in** calls
+`POST /api/operator/device-code`, opens the browser at
+`verification_url?code=<user_code>` (or shows the URL and code to type when
+no browser opens), tells you "Approve in your browser (code XXXX-XX)" and
+polls `POST /api/operator/device-token` every 3 seconds for up to 10
+minutes. Once approved, the token lands in
+`%APPDATA%\Projection5000\flasher.json` protected with Windows DPAPI
+(`CryptProtectData` via ctypes, tied to the Windows user account, no extra
+package); if DPAPI fails the token is stored in plain text and the log warns
+you. (Plain form values such as the last Wi-Fi name live in a separate
+`%LOCALAPPDATA%\Projection5000\flasher.json`.) The header then reads
+"Signed in as <username>"; "Sign out" under Advanced clears it. Every later
+launch calls `GET /api/operator/enrollment` to validate the stored token
+(a 401 brings the Sign in button back) and, at flash time, passes the fresh
 enrollment key into the provision script it writes to the card. There is no
 per-card group or playlist choice: the site-wide defaults from section A
 decide what a new device gets. `build.ps1` no longer bakes a key;
@@ -115,16 +147,19 @@ where the console cannot be reached at flash time. The card layout and
 paste-a-device-token path still bypasses enrollment. See
 `tools/flasher/README.md` for the tool itself.
 
-**Operator steps** (once per operator):
+**Operator steps** (once per operator, on each PC that flashes cards):
 
-1. Sign in to the cloud console as an admin, open Settings, and under "My
-   API tokens" click Create token, giving it a name such as `matt-laptop`.
-   To issue a token for another admin or editor, open the Users page, expand
-   "API tokens" under their row and create it there.
-2. Copy the `p5k_...` value now: it is shown once. Treat it like a password.
-3. Start the flasher, enter the console URL
-   (`https://projectors.photogen5000.com`) and paste the token. The flasher
-   confirms by showing the console name and the group and playlist lists.
+1. Start the flasher and click **Sign in**. The browser opens the console's
+   `/authorize` page with the code filled in (sign in to the console first if
+   asked; any editor or admin account works).
+2. Check that the page names your PC ("Sign in the SD Flasher on
+   <hostname>?") and click **Approve**. The flasher picks the token up by
+   itself within a few seconds and shows "Signed in as <username>".
+
+Nothing is copied or pasted. The token appears under "My API tokens" on
+Settings (and under the user on the Users page) as `SD Flasher on
+<hostname>`, where it can be revoked like any other. Creating a token by
+hand there is still the way for scripts and other tools.
 
 **Rotation.** Two independent secrets are involved.
 
@@ -133,8 +168,8 @@ paste-a-device-token path still bypasses enrollment. See
   cards flashed after the rotation pick up the new key automatically. No
   rebuild, no operator action.
 - *Operator token*: revoke it under "My API tokens" or on the Users page when
-  an operator leaves or a laptop is lost, then create a new one and enter it
-  in the flasher. Both places show each token's last use, so a token that has
+  an operator leaves or a laptop is lost; the flasher on that PC then shows
+  Sign in again, and a fresh Sign in mints a new token. Both places show each token's last use, so a token that has
   not been used in months is easy to spot and revoke. The audit log's
   `api_token_used` entries name the token behind every flashing session.
 

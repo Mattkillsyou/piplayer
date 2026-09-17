@@ -1,5 +1,6 @@
 // Passwords (PBKDF2-SHA256 via WebCrypto), sessions (D1 row + HMAC-signed cookie), CSRF,
 // roles, the failed-login throttle and device bearer auth. Port of cms/app/auth.py.
+import * as audit from "./audit.js";
 import * as db from "./db.js";
 import { b64url, fail, fromB64url, HttpError, randomToken, redirect, sha256Hex, utf8Len } from "./util.js";
 
@@ -288,6 +289,17 @@ export function newApiToken() {
 }
 
 export const apiTokenHash = (token) => sha256Hex(token);
+
+// Mint a token for `userId`, store only its hash and audit api_token_created (the name plus
+// `details`, never the token). Returns {id, token}; the caller shows the plaintext once.
+// Shared by the Settings and Users pages and the device-code sign-in (device_codes.js).
+export async function issueApiToken(ctx, userId, name, details = {}) {
+  const token = newApiToken();
+  const id = (await db.run(ctx.env, "INSERT INTO api_tokens (user_id, name, token_hash) VALUES (?, ?, ?)",
+    userId, name, await apiTokenHash(token))).last_row_id;
+  await audit.log(ctx, "api_token_created", "api_token", id, { name, ...details });
+  return { id, token };
+}
 
 // {token_id, token_name, id, username, role} for `Authorization: Bearer p5k_...` or 401 JSON.
 // The lookup is by hash (constant-time compare on the stored hash); the role check is the

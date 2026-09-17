@@ -160,6 +160,7 @@ same, so the SQL from web.py/api.py ports verbatim (`?` placeholders, `datetime(
 | `deviceFromHeader(ctx)` | `{id, device_id, name, playlist_id, group_id}` for `Authorization: Bearer <token>`; 401 `"Missing bearer token"` / `"Invalid device token"`. The path `device_id` must equal `row.device_id` else 403 — your check |
 | `operatorFromHeader(ctx)` | `{token_id, token_name, id, username, role}` for `Authorization: Bearer p5k_<32 urlsafe>` (api_tokens, looked up by SHA-256 hex, `timingSafeEqual` on the stored hash); 401 `"Missing bearer token"` / `"Invalid API token"`. Role is the caller's check (`GET /api/operator/enrollment` wants editor+) |
 | `newApiToken()` / `apiTokenHash(token)` / `touchApiToken(env, id)` | mint `p5k_` + 32 chars; SHA-256 hex; stamp `last_used_at` at most once per `API_TOKEN_USED_AUDIT_HOURS` (returns true when it did, so the caller audits `api_token_used` then) |
+| `issueApiToken(ctx, userId, name, details?)` | mint + insert an `api_tokens` row and audit `api_token_created` (`{name, ...details}`, never the token); returns `{id, token}` for the one-time display. The Settings and Users pages and the device-code sign-in all go through it |
 | `requireSetupToken(ctx, token)` | 403 unless equal to `SETUP_TOKEN` |
 | `hasUsers(env)` | cached once true |
 | `housekeeping(env)` | expired sessions + throttle rows |
@@ -302,6 +303,27 @@ wyze_configured}` (`wyze_configured` = `secrets.wyzeConfigured`: a Wyze email an
 `api_token_created`, `api_token_revoked` (both carry the name, never the token) and
 `api_token_used` at most once per hour per token (`last_used_at`).
 
+**Device-code sign-in** (`device_codes.js`, table `device_codes`, migration 0004): how the SD flasher
+gets a token without anyone pasting one. `POST /api/operator/device-code` (no auth, optional JSON
+`{hostname}`, printable and cut to 46 chars, else "unknown PC") answers `{device_code (43 urlsafe
+chars), user_code (6 chars from `BCDFGHJKLMNPQRSTVWXZ23456789`, no vowels or 0/O/1/I),
+verification_url (<base>/authorize, `installBaseUrl`), expires_in: 600, interval: 3}`; only the
+SHA-256 hex of `device_code` is stored, with the hostname and the caller's IP. More than 20 codes from
+one IP within an hour → 429. `GET /authorize` (editor+, no nav item: the flasher opens
+`verification_url?code=<user_code>`) shows the code form (`?code=` prefilled; case and the display
+hyphen `XXXX-XX` do not matter) or, for a live pending code, "Sign in the SD Flasher on <hostname>?"
+with Approve / Deny. `POST /authorize` (CSRF; fields `code`, `action` = approve | deny; any other
+action → 303 back to the GET) approve calls `issueApiToken` for the signed-in user with the name
+`SD Flasher on <hostname>` (audit `api_token_created` details `{name, source: "device-code"}`) and
+parks the plaintext in `token_plain_until_claimed`; deny sets `denied`; an unknown, answered or
+expired code re-renders the form with an error (400). `POST /api/operator/device-token`
+`{device_code}` → 428 `{status: "pending"}` | 200 `{token, username}` exactly once (the row is
+deleted; a concurrent poll loses on the DELETE's row count) | 410 `{status: "expired" | "denied"}`
+(the row, and an approved token nobody claimed, are deleted then). Codes expire 10 minutes after
+`created_at`; rows stay an hour for the IP cap and are pruned by `prune(env)` (= `housekeeping`,
+also run before every new code) together with any unclaimed token, so `api_tokens` never keeps an
+orphan. Tests: `test/device_codes.test.js`.
+
 Other limits stay env vars: `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB), `PIPLAYER_MAX_SCREENSHOT_BYTES`
 (5 MiB), `PIPLAYER_MAX_CAMERA_BYTES` (2 MiB), `PIPLAYER_AUDIT_RETENTION_DAYS` (365). Read them with `envInt(env, name, fallback)`.
 Optional `PIPLAYER_PUBLIC_BASE_URL`: when set, the Devices install snippet prints it as `CMS_URL`
@@ -332,6 +354,9 @@ for E: `projector_control TEXT NOT NULL DEFAULT 'none'` (CHECK none | broadlink 
 `broadlink_host TEXT`, `projector_power_mode TEXT NOT NULL DEFAULT 'manual'` (CHECK manual | auto),
 `projector_power_state TEXT`, `projector_error TEXT`; for G: `tunnel_id TEXT`, `tunnel_hostname TEXT` (the
 Cloudflare Tunnel id and public hostname; the token is never stored).
+`migrations/0004_device_codes.sql` (schema_version 4) adds `device_codes(device_code_hash PK,
+user_code UNIQUE, hostname, ip, user_id → users ON DELETE CASCADE, token_plain_until_claimed, created_at,
+approved_at, denied)` + `idx_device_codes_ip(ip, created_at)` for the flasher sign-in.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
 
