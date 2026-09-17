@@ -430,8 +430,8 @@ def test_gui_sign_in_through_the_browser(monkeypatch, stub):
     app.signin_btn.invoke()
     assert str(app.signin_btn["state"]) == "disabled"
     assert _pump(root, app, lambda: "Approve in your browser" in app.signin_label.cget("text"), timeout=5)
-    assert app.signin_label.cget("text") == "Approve in your browser (code BCDF-GH)"
-    assert opened == [stub + "/authorize?code=BCDF-GH"]
+    assert app.signin_label.cget("text") == "Approve in your browser (code BCDF-GH)"  # shown XXXX-XX
+    assert opened == [stub + "/authorize?code=BCDFGH"]  # the link carries the raw code
     assert _pump(root, app, lambda: app.op["token"] == OPERATOR_TOKEN, timeout=8)
     assert app.signin_label.cget("text") == "Signed in as matt" and not app.signin_btn.winfo_manager()
     assert flasher.load_operator_config() == {"console_url": stub, "token": OPERATOR_TOKEN, "username": "matt"}
@@ -458,8 +458,9 @@ def test_gui_sign_in_denied_and_browserless(monkeypatch, stub):
     app.sign_in()
     assert _pump(root, app, lambda: "Sign in failed" in app.signin_label.cget("text"), timeout=8)
     log = _log(app)
-    assert f"Could not open a browser. Open {stub}/authorize?code=BCDF-GH yourself and type the code BCDF-GH." in log
-    assert "Sign in failed: /api/operator/device-token: denied" in log
+    assert f"Could not open a browser. Open {stub}/authorize?code=BCDFGH yourself and type the code BCDF-GH." in log
+    assert "Sign in failed: denied on the console" in log
+    assert app.signin_label.cget("text") == "Sign in failed: denied on the console"
     assert str(app.signin_btn["state"]) == "normal" and app.op["token"] == ""
     assert not flasher.operator_config_path().exists()
     # The console is down: reported, Sign in offered again.

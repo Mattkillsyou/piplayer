@@ -536,7 +536,7 @@ class App:
             opened = webbrowser.open(link)
         except Exception:
             opened = False
-        self.post(lambda: self._show_code(r["user_code"], link, opened))
+        self.post(lambda: self._show_code(console.display_code(r["user_code"]), link, opened))
         deadline = time.monotonic() + r["expires_in"]
         while time.monotonic() < deadline and not cancel.is_set():
             time.sleep(r["interval"])

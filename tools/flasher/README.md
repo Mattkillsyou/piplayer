@@ -87,8 +87,10 @@ The device-code flow, so no token is ever copied by hand:
    log prints the URL and the code to type. On the console (signed in as an
    editor or admin) you approve "Sign in the SD Flasher on <hostname>?".
 3. The flasher polls `POST /api/operator/device-token` every few seconds for
-   up to 10 minutes. `428` means not yet, `410` means expired or denied, `200`
-   carries the token (one shot) and your username.
+   up to 10 minutes. `428` means not yet, `410 {status}` means expired or denied
+   (the header then reads "Sign in failed: denied on the console" or "... the
+   code expired (click Sign in again)"), `200` carries the token (one shot) and
+   your username.
 4. The token is stored DPAPI-protected (Windows `CryptProtectData`, readable
    only by the same Windows account) in `%APPDATA%\Projection5000\flasher.json`
    together with the console URL and username. On later launches the header

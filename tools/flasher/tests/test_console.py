@@ -77,14 +77,15 @@ class StubConsole(http.server.BaseHTTPRequestHandler):
         self.calls.append((self.path, body))
         if self.path == "/api/operator/device-code":
             base = f"http://127.0.0.1:{self.server.server_port}"
-            return self._json(200, {"device_code": "dc-" + "x" * 40, "user_code": "BCDF-GH",
+            return self._json(200, {"device_code": "dc-" + "x" * 40, "user_code": "BCDFGH",
                                     "verification_url": base + "/authorize", "expires_in": 600,
                                     "interval": self.interval})
         if self.path == "/api/operator/device-token":
+            # exactly what cloud/src/device_codes.js sends: {status} and no detail
             if body.get("device_code") != "dc-" + "x" * 40 or self.claimed:
-                return self._json(410, {"detail": "unknown or expired code", "status": "gone"})
+                return self._json(410, {"status": "expired"})
             if self.deny:
-                return self._json(410, {"detail": "denied", "status": "denied"})
+                return self._json(410, {"status": "denied"})
             StubConsole.polls += 1
             if self.approve_after is None or self.polls < self.approve_after:
                 return self._json(428, {"status": "pending"})
@@ -163,7 +164,8 @@ def test_fetch_enrollment(stub):
 
 def test_device_code_sign_in_flow(stub):
     r = console.request_device_code(stub + "/", "MYPC")
-    assert r["user_code"] == "BCDF-GH" and r["verification_url"] == stub + "/authorize"
+    assert r["user_code"] == "BCDFGH" and r["verification_url"] == stub + "/authorize"
+    assert console.display_code(r["user_code"]) == "BCDF-GH"  # shown as the console's /authorize page shows it
     assert r["expires_in"] == 600 and r["interval"] == 1
     assert StubConsole.calls[-1] == ("/api/operator/device-code", {"hostname": "MYPC"})
     StubConsole.approve_after = 3
@@ -173,15 +175,16 @@ def test_device_code_sign_in_flow(stub):
         assert e.value.code == 428 and isinstance(e.value, console.ConsoleError)
     assert console.poll_device_token(stub, r["device_code"]) == {"token": OPERATOR_TOKEN, "username": "matt"}
     # One shot: the same code is gone afterwards (410), which is a plain ConsoleError.
-    with pytest.raises(console.ConsoleError, match="expired") as e:
+    with pytest.raises(console.ConsoleError, match="the code expired") as e:
         console.poll_device_token(stub, r["device_code"])
     assert e.value.code == 410 and not isinstance(e.value, console.Pending)
-    with pytest.raises(console.ConsoleError, match="unknown or expired"):
+    with pytest.raises(console.ConsoleError, match="the code expired"):
         console.poll_device_token(stub, "dc-wrong")
-    # Denied in the browser.
+    # Denied in the browser: the 410 body is {status: "denied"} with no detail, and the message says so.
     StubConsole.claimed, StubConsole.deny = False, True
-    with pytest.raises(console.ConsoleError, match="denied"):
+    with pytest.raises(console.ConsoleError, match="^denied on the console$") as e:
         console.poll_device_token(stub, r["device_code"])
+    assert e.value.code == 410 and e.value.body == {"status": "denied"}
     # The token the flow yields is accepted by /api/operator/enrollment.
     assert console.fetch_enrollment(stub, OPERATOR_TOKEN)["enrollment_key"] == KEY
 

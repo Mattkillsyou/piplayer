@@ -17,6 +17,7 @@ HEADERS = {"User-Agent": "Projection5000-SD-Flasher", "Content-Type": "applicati
 
 class ConsoleError(Exception):
     code = None  # HTTP status when the console answered with one
+    body = {}  # the parsed JSON error body, when there was one
 
 
 class Pending(ConsoleError):
@@ -38,8 +39,9 @@ def _request(base: str, path: str, body: dict = None, headers: dict = None) -> d
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         hint = f" ({NOT_A_CONSOLE})" if e.code == 404 else ""
-        err = (Pending if e.code == 428 else ConsoleError)(f"{path}: {_detail(e)}{hint}")
-        err.code = e.code
+        body = _body(e)
+        err = (Pending if e.code == 428 else ConsoleError)(f"{path}: {_detail(e, body)}{hint}")
+        err.code, err.body = e.code, body
         raise err from e
     except urllib.error.URLError as e:
         raise ConsoleError(f"cannot reach {base}{path}: {e.reason}") from e
@@ -54,14 +56,18 @@ def _request(base: str, path: str, body: dict = None, headers: dict = None) -> d
     return parsed
 
 
-def _detail(e: urllib.error.HTTPError) -> str:
+def _body(e: urllib.error.HTTPError) -> dict:
     try:
-        d = json.loads(e.read().decode("utf-8", "replace")).get("detail")
-        if d:
-            return str(d)
+        parsed = json.loads(e.read().decode("utf-8", "replace"))
     except (ValueError, AttributeError):
-        pass
-    return f"HTTP {e.code} {e.reason}"
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _detail(e: urllib.error.HTTPError, body: dict) -> str:
+    # The cloud's device-code endpoints answer with {status} and no detail (428 pending, 410 denied/expired).
+    d = body.get("detail") or body.get("status")
+    return str(d) if d else f"HTTP {e.code} {e.reason}"
 
 
 def check_health(console_url: str) -> None:
@@ -114,11 +120,28 @@ def request_device_code(console_url: str, hostname: str) -> dict:
     return r
 
 
+def display_code(user_code: str) -> str:
+    """The 6-char user code as the console shows it (XXXX-XX); anything else is shown as sent."""
+    c = user_code.strip()
+    return f"{c[:4]}-{c[4:]}" if len(c) == 6 and c.isalnum() else c
+
+
+GONE = {"denied": "denied on the console", "expired": "the code expired (click Sign in again)"}
+
+
 def poll_device_token(console_url: str, device_code: str) -> dict:
     """POST /api/operator/device-token {device_code}. Returns {token, username} once approved (one shot);
-    raises Pending (428) while the operator has not approved yet, ConsoleError on 410 (expired or denied)."""
+    raises Pending (428) while the operator has not approved yet, ConsoleError on 410 (the cloud answers
+    {status: "denied" | "expired"} with no detail; the message says which)."""
     base = _base(console_url)
-    r = _request(base, "/api/operator/device-token", {"device_code": device_code})
+    try:
+        r = _request(base, "/api/operator/device-token", {"device_code": device_code})
+    except ConsoleError as e:
+        if e.code == 410:
+            gone = ConsoleError(GONE.get(e.body.get("status"), GONE["expired"]))
+            gone.code, gone.body = e.code, e.body
+            raise gone from e
+        raise
     if not isinstance(r.get("token"), str) or not r["token"].strip():
         raise ConsoleError("/api/operator/device-token: response carries no token")
     return {"token": r["token"].strip(), "username": str(r.get("username") or "")}
