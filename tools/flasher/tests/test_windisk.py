@@ -353,3 +353,46 @@ def test_check_image_magic(tmp_path):
     ok = tmp_path / "ok.img"
     ok.write_bytes(b"\0" * 100)
     windisk.check_image_magic(str(ok))
+
+
+class _RecordingDrive(windisk.PhysicalDrive):
+    """A PhysicalDrive stand-in backed by a bytearray that records every write's offset."""
+
+    def __init__(self, size):
+        self.buf = bytearray(size)
+        self.pos = 0
+        self.writes = []
+
+    def write(self, data):
+        self.writes.append((self.pos, len(data)))
+        self.buf[self.pos:self.pos + len(data)] = data
+        self.pos += len(data)
+        return len(data)
+
+    def seek(self, offset, whence=0):
+        self.pos = offset
+
+    def flush(self):
+        pass
+
+
+def test_write_image_to_physical_drive_writes_first_mib_last(image, tmp_path):
+    """Windows mounts the new partitions as soon as the partition table lands and then refuses raw
+    writes inside them (error 5), so the first MiB must be the last thing written."""
+    data, xz, _ = image
+    drive = _RecordingDrive(IMG_SIZE + 4096)
+    written = windisk.write_image(str(xz), drive, chunk=256 * 1024)
+    assert bytes(drive.buf[:len(data)]) == data
+    assert written == len(data) + (512 - IMG_SIZE % 512)
+    first_region_writes = [w for w in drive.writes if w[0] < windisk.DEFER_FIRST_BYTES]
+    assert first_region_writes == [(0, windisk.DEFER_FIRST_BYTES)], drive.writes[:3]
+    assert drive.writes[-1] == (0, windisk.DEFER_FIRST_BYTES)
+    assert all(w[0] >= windisk.DEFER_FIRST_BYTES for w in drive.writes[:-1])
+
+
+def test_write_image_to_file_is_sequential(image, tmp_path):
+    """Plain file targets (tests, local images) keep the straight sequential write."""
+    data, xz, _ = image
+    target = tmp_path / "seq.bin"
+    windisk.write_image(str(xz), str(target))
+    assert target.read_bytes()[:len(data)] == data

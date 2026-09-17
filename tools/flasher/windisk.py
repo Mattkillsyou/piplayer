@@ -488,6 +488,13 @@ def _open_target(target, mode: str):
     return target, False
 
 
+# The first MiB (MBR/GPT and the start of the boot partition) is written LAST when the target is a
+# physical drive. As soon as a valid partition table lands, Windows mounts the new volumes and refuses
+# raw writes inside them (ERROR_ACCESS_DENIED 5); Rufus and rpi-imager defer the first sectors for the
+# same reason. With the table still blank the disk stays raw until the very end.
+DEFER_FIRST_BYTES = 1024 * 1024
+
+
 def write_image(src, target, progress_cb=None, cancel_event=None, chunk: int = CHUNK, limit: int = 0,
                 sector: int = SECTOR, expected_sha256: str = "") -> int:
     """Stream src (.img or .img.xz path, or a BundledImage) to target (file path or PhysicalDrive).
@@ -503,11 +510,22 @@ def write_image(src, target, progress_cb=None, cancel_event=None, chunk: int = C
     written = 0
     pending = b""
 
+    defer = isinstance(target, PhysicalDrive)
+    held: list = []  # the deferred first DEFER_FIRST_BYTES, written after everything else
+
     def emit(data: bytes):
         nonlocal written
         if limit and written + len(data) > limit:
             raise DiskError(f"image is larger than the card ({human_size(written + len(data))}+ > "
                             f"{human_size(limit)})")
+        if defer and written < DEFER_FIRST_BYTES:
+            take = min(DEFER_FIRST_BYTES - written, len(data))
+            held.append(data[:take])
+            written += take
+            out.seek(written)  # leave the region blank for now: nothing can mount while it is
+            data = data[take:]
+            if not data:
+                return
         out.write(data)
         written += len(data)
 
@@ -526,6 +544,11 @@ def write_image(src, target, progress_cb=None, cancel_event=None, chunk: int = C
             emit(pending + b"\0" * (sector - len(pending) % sector))
             if progress_cb:
                 progress_cb(written, total, total)
+        if held:
+            out.flush()
+            out.seek(0)
+            out.write(b"".join(held))
+            out.seek(written)
         out.flush()
     finally:
         if own:

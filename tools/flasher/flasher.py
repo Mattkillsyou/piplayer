@@ -835,6 +835,9 @@ class App:
             log(f"Cancelled. {e}".rstrip())
         except Exception as e:
             msg = str(e)  # bound now: the except variable is gone by the time the Tk thread runs the lambda
+            if "[5]" in msg:
+                msg += ("\n\nWindows refused to write to the card (access denied). Check the write-protect switch "
+                        "on the adapter, close Explorer windows showing the card, then flash again.")
             log(f"FAILED: {msg}")
             self.post(lambda: messagebox.showerror(APP_TITLE, msg))
         finally:
