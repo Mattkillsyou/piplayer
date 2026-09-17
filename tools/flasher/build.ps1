@@ -62,8 +62,11 @@ if ($ConsoleUrl) {
 
 # asInvoker: the exe starts unelevated (so --dry-run works on any account) and relaunches itself with
 # a UAC prompt for a real flash; declining the prompt shows the "Run as administrator" message.
+# fonts/ (Silkscreen, IBM Plex Mono, Space Grotesk; loaded privately at startup), the window icon and the
+# version resource (Explorer's Properties > Details) travel inside the exe.
 & $python -m PyInstaller --noconfirm --clean --onefile --windowed `
     --add-data "$archive;." --add-data "$info;." @consoleData `
+    --add-data "fonts;fonts" --add-data "icon.ico;." --icon icon.ico --version-file version.txt `
     --name Projection5000-SD-Flasher flasher.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 

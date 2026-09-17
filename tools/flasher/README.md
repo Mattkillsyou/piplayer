@@ -1,6 +1,6 @@
-# Projection5000 SD Flasher
+# Matt Brown's Projection5000 SD Flasher
 
-Windows desktop tool that writes Raspberry Pi OS Lite (64-bit) to an SD card and
+Windows desktop tool (window title "Matt Brown's Projection5000") that writes Raspberry Pi OS Lite (64-bit) to an SD card and
 pre-configures the Pi so that on first boot it joins the network, takes its
 hostname, installs the Projection5000 player (a copy of `player/` travels on
 the card; the Pi never needs GitHub access) and enrolls itself with the console.
@@ -234,6 +234,16 @@ start Tk, see its bundled image and report the console line). Set
 `$env:FLASHER_PYTHON` to choose the interpreter; the source floor is Python
 3.11. `dist/`, `build/` and the `.spec` file are git-ignored. Rebuild after
 every change to `tools/flasher` or `player/`: the exe carries a copy of both.
+
+The window wears the console's look (`cms/app/static/style.css`: black ground,
+white ink, solid white primary action, corner brackets, status lamp) on ttk's
+clam engine. The three faces (Silkscreen, IBM Plex Mono, Space Grotesk; OFL
+notices alongside) live in `fonts/`, travel in the exe (`--add-data`) and are
+registered for the process only at startup (`gdi32.AddFontResourceExW`,
+`FR_PRIVATE`: nothing is installed); the log line "Fonts: ..." says which
+families are in use, with Consolas / Segoe UI as fallbacks. `icon.ico` is the
+window and exe icon (`make_icon.py` renders it), `version.txt` the exe's
+version resource (Explorer's Properties > Details).
 
 ## Tests
 

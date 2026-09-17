@@ -235,8 +235,8 @@ def test_operator_config_falls_back_to_plain_text_with_a_warning(monkeypatch, tm
 # ---------------------------------------------------------------- the one screen
 
 def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
-    """The visible top level: console header, Sign in, Device name, Wi-Fi network, Wi-Fi password, SD card,
-    Refresh, Flash, Advanced. Everything else is helper text, collapsed, or under Advanced."""
+    """The visible top level: the eyebrow and console header, Sign in, Device name, Wi-Fi network, Wi-Fi password,
+    SD card, Refresh, FLASH, Advanced. Everything else is helper text, collapsed, or under Advanced."""
     monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
@@ -254,8 +254,9 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     fields = []
     for c in root.winfo_children():
         visible(c, fields)
-    assert fields == ["Console: projectors.photogen5000.com", "Sign in", "Device name", "Wi-Fi network",
-                      "Wi-Fi password", "SD card", "Refresh", "Flash", "Advanced"]
+    assert fields == [flasher.tracked("MATT BROWN'S"), "Console: projectors.photogen5000.com", "Sign in",
+                      "Device name", "Wi-Fi network", "Wi-Fi password", "SD card", "Refresh", "FLASH", "Advanced"]
+    assert root.title() == flasher.APP_TITLE == "Matt Brown's Projection5000"
     # No field ever holds the console URL, a username, a password, a key or a token on the main screen.
     entries = [w for w in app.id_label.master.winfo_children() if isinstance(w, flasher.ttk.Entry)]
     assert [e.cget("textvariable") for e in entries] == [str(app.v[k]) for k in ("name", "ssid", "wifi_password",
@@ -278,6 +279,58 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     app.adv_btn.invoke()
     assert not app.advanced.winfo_manager()
     root.destroy()
+
+
+def test_theme_is_the_console_look(monkeypatch):
+    """Black ground, white ink, the Flash button as the solid white primary action, the fields as dark wells."""
+    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    root = _root()
+    app = flasher.App(root)
+    st = flasher.ttk.Style(root)
+    assert st.theme_use() == "clam"
+    assert st.lookup(".", "background") == "#000000" and st.lookup("TLabel", "foreground") == "#E6E6E6"
+    assert app.flash_btn.cget("style") == "Primary.TButton" and app.flash_btn.cget("text") == "FLASH"
+    assert st.lookup("Primary.TButton", "background") == "#FFFFFF"
+    assert st.lookup("Primary.TButton", "foreground") == "#000000"
+    assert st.lookup("Primary.TButton", "background", ["disabled"]) == "#4A4A4A"
+    assert st.lookup("Primary.TButton", "background", ["active"]) == "#E6E6E6"
+    assert st.lookup("TButton", "background") == "#000000" and st.lookup("TButton", "bordercolor") == "#727272"
+    assert st.lookup("TEntry", "fieldbackground") == "#0A0A0A" and st.lookup("TEntry", "bordercolor") == "#3A3A3A"
+    assert st.lookup("TEntry", "bordercolor", ["focus"]) == "#FFFFFF"
+    assert st.lookup("Horizontal.TProgressbar", "background") == "#FFFFFF"
+    assert root.option_get("*TCombobox*Listbox.background", "") in ("", "#0A0A0A")  # option_add, not a widget
+    assert app.log_text.cget("background") == "#000000" and app.log_text.cget("foreground") == "#C9C9C9"
+    assert app.log_text.cget("highlightbackground") == "#FFFFFF" and app.log_text.cget("highlightthickness") == 1
+    # inline errors: white text behind the hatch marker; brackets on the four corners of the form panel
+    assert all(lbl.cget("style") == "Error.TLabel" and str(app.marker) in lbl.cget("image")
+               for lbl in app.err.values())
+    assert len(app.brackets) == 4 and all(isinstance(c, tk.Canvas) for c in app.brackets)
+    assert set(app.fonts) == {"display", "mono", "sans"}
+    # the lamp is dim when signed out and lit (with its glow ring) once signed in
+    assert len(app.lamp.find_all()) == 1 and app.lamp.itemcget(app.lamp.find_all()[0], "fill") == "#2E2E2E"
+    app.op = {"token": "t", "username": "matt"}
+    app._show_signed_in()
+    fills = [app.lamp.itemcget(i, "fill") for i in app.lamp.find_all()]
+    assert fills == ["#3A3A3A", "#FFFFFF"]
+    root.destroy()
+
+
+def test_fonts_load_privately_from_the_bundle(monkeypatch, tmp_path):
+    """Every bundled TTF is registered with gdi32 AddFontResourceExW(path, FR_PRIVATE, 0); a failure only
+    means the fallback families."""
+    calls = []
+    fake_gdi = type("G", (), {"AddFontResourceExW": staticmethod(lambda p, f, r: calls.append((p, f, r)) or 1)})
+    monkeypatch.setattr(flasher.ctypes, "windll", type("W", (), {"gdi32": fake_gdi}))
+    monkeypatch.setattr(flasher.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(flasher.sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert flasher.load_fonts() == list(flasher.FONT_FILES)
+    assert calls == [(str(tmp_path / "fonts" / n), 0x10, 0) for n in flasher.FONT_FILES]
+    assert {p.name for p in flasher.font_paths()} == {p.name for p in (FLASHER.parent / "fonts").glob("*.ttf")}
+    fake_gdi.AddFontResourceExW = staticmethod(lambda p, f, r: 0)
+    assert flasher.load_fonts() == []
+    assert flasher.font_families([]) == {"display": "Consolas", "mono": "Consolas", "sans": "Segoe UI"}
+    assert flasher.font_families(["Silkscreen", "IBM Plex Mono", "Space Grotesk"]) == {
+        "display": "Silkscreen", "mono": "IBM Plex Mono", "sans": "Space Grotesk"}
 
 
 def test_wifi_dropdown_lists_the_networks_and_fills_a_saved_password(monkeypatch):

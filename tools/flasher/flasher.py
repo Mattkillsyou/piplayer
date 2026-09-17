@@ -20,6 +20,7 @@ import tarfile
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import traceback
 import urllib.parse
 import webbrowser
@@ -35,7 +36,8 @@ import wifi
 import windisk
 import winlocale
 
-APP_TITLE = "Projection5000 SD Flasher"
+APP_TITLE = "Matt Brown's Projection5000"
+EYEBROW = "MATT BROWN'S"
 # Persisted between runs (%LOCALAPPDATA%). Never a secret: the enrollment key is fetched from the console at flash
 # time with the operator token, which lives DPAPI-protected in the operator config (%APPDATA%).
 SETTINGS_KEYS = ("name", "ssid", "wifi_country", "wifi_hidden", "timezone", "keymap", "image_mode", "image_path",
@@ -304,6 +306,132 @@ def console_url() -> str:
     return console_defaults()["console_url"] or DEFAULT_CONSOLE_URL
 
 
+# ---------------------------------------------------------------- theme (the console's look, cms/app/static/style.css)
+
+# Ground / ink ramp from the console's --p5k-* tokens; the translucent rules are baked to solid greys on black.
+GROUND, RAISED, FIELD = "#000000", "#0D0D0D", "#0A0A0A"
+PHOSPHOR, INK, BODY, MUTED, DIM, LAMP_OFF = "#FFFFFF", "#E6E6E6", "#C9C9C9", "#7A7A7A", "#4A4A4A", "#2E2E2E"
+RULE_2, RULE_3, RULE_STRONG = "#242424", "#3A3A3A", "#727272"
+FONT_FILES = ("Silkscreen-Regular.ttf", "Silkscreen-Bold.ttf", "IBMPlexMono-Regular.ttf", "IBMPlexMono-Medium.ttf",
+              "SpaceGrotesk[wght].ttf")
+FR_PRIVATE = 0x10  # gdi32: visible to this process only, never installed
+BRACKET = 14  # px arm of the panel's corner brackets
+
+
+def font_paths() -> list:
+    return [resource_path("fonts") / name for name in FONT_FILES]
+
+
+def load_fonts() -> list:
+    """Register the bundled TTFs for this process (AddFontResourceExW FR_PRIVATE). Call before the first widget;
+    returns the files that loaded. The fallbacks in font_families() cover a failed load (the App logs the
+    families in use)."""
+    loaded = []
+    for path in font_paths():
+        try:
+            if ctypes.windll.gdi32.AddFontResourceExW(str(path), FR_PRIVATE, 0):
+                loaded.append(path.name)
+        except Exception:
+            pass
+    return loaded
+
+
+def font_families(available=None) -> dict:
+    """display/mono/sans family names, checked against Tk's font list (Consolas / Segoe UI when a load failed)."""
+    have = set(tkfont.families() if available is None else available)
+    return {"display": "Silkscreen" if "Silkscreen" in have else "Consolas",
+            "mono": "IBM Plex Mono" if "IBM Plex Mono" in have else "Consolas",
+            "sans": "Space Grotesk" if "Space Grotesk" in have else "Segoe UI"}
+
+
+def tracked(text: str) -> str:
+    """Letter-spaced text (Tk has no tracking): a thin space between the characters."""
+    return "\u2009".join(text)
+
+
+def apply_theme(root: tk.Tk) -> dict:
+    """Black console theme on ttk's clam engine. Returns the font families in use."""
+    fam = font_families()
+    sans, mono, display = (fam["sans"], 10), (fam["mono"], 9), (fam["display"], 11, "bold")
+    root.configure(background=GROUND)
+    # The Combobox dropdown is a plain Tk listbox: styled through the option database.
+    for opt, val in (("*TCombobox*Listbox.background", FIELD), ("*TCombobox*Listbox.foreground", INK),
+                     ("*TCombobox*Listbox.selectBackground", PHOSPHOR), ("*TCombobox*Listbox.selectForeground", GROUND),
+                     ("*TCombobox*Listbox.font", f'{{{fam["mono"]}}} 9'), ("*TCombobox*Listbox.borderWidth", 0)):
+        root.option_add(opt, val)
+    st = ttk.Style(root)
+    st.theme_use("clam")
+    st.configure(".", background=GROUND, foreground=INK, fieldbackground=FIELD, bordercolor=RULE_3, darkcolor=GROUND,
+                 lightcolor=GROUND, troughcolor=RAISED, selectbackground=PHOSPHOR, selectforeground=GROUND,
+                 insertcolor=PHOSPHOR, focuscolor=GROUND, font=sans)
+    st.configure("TLabel", font=sans)
+    st.configure("Eyebrow.TLabel", font=(fam["sans"], 7), foreground=MUTED)
+    st.configure("Wordmark.TLabel", font=(fam["display"], 16, "bold"), foreground=INK)
+    st.configure("WordmarkKey.TLabel", font=(fam["display"], 16, "bold"), foreground=PHOSPHOR)
+    st.configure("Tag.TLabel", font=(fam["mono"], 8), foreground=MUTED)
+    st.configure("Mono.TLabel", font=mono, foreground=BODY)
+    st.configure("Hint.TLabel", font=(fam["sans"], 9), foreground=MUTED)
+    st.configure("Error.TLabel", font=(fam["sans"], 9), foreground=PHOSPHOR)
+    st.configure("Link.TLabel", font=(fam["mono"], 9), foreground=BODY)
+    # fields: #0A0A0A with a 1px grey edge, white when focused
+    for w in ("TEntry", "TCombobox"):
+        st.configure(w, fieldbackground=FIELD, foreground=PHOSPHOR, bordercolor=RULE_3, lightcolor=FIELD,
+                     darkcolor=FIELD, insertcolor=PHOSPHOR, padding=(6, 4), font=mono, arrowcolor=INK, arrowsize=14,
+                     background=FIELD)
+        st.map(w, bordercolor=[("focus", PHOSPHOR)], lightcolor=[("focus", PHOSPHOR)], darkcolor=[("focus", PHOSPHOR)],
+               fieldbackground=[("readonly", FIELD), ("disabled", RAISED)], foreground=[("disabled", DIM)],
+               selectbackground=[("!focus", FIELD), ("readonly", FIELD)], selectforeground=[("readonly", PHOSPHOR)],
+               background=[("active", RAISED), ("pressed", RAISED)], arrowcolor=[("disabled", DIM)])
+    for w in ("TCheckbutton", "TRadiobutton"):
+        st.configure(w, font=sans, indicatorbackground=FIELD, indicatorforeground=PHOSPHOR,
+                     indicatormargin=(0, 0, 8, 0), upperbordercolor=RULE_STRONG, lowerbordercolor=RULE_STRONG, padding=2)
+        st.map(w, background=[("active", GROUND)], foreground=[("disabled", DIM)],
+               indicatorbackground=[("selected", FIELD), ("active", RAISED), ("disabled", RAISED)],
+               upperbordercolor=[("active", PHOSPHOR)], lowerbordercolor=[("active", PHOSPHOR)])
+    # buttons: outlined white on black; the primary action is solid white with black text
+    st.configure("TButton", font=(fam["mono"], 9), foreground=PHOSPHOR, background=GROUND, bordercolor=RULE_STRONG,
+                 lightcolor=GROUND, darkcolor=GROUND, padding=(12, 5), anchor="center")
+    st.map("TButton", bordercolor=[("disabled", RULE_2), ("active", PHOSPHOR)], background=[("active", GROUND)],
+           foreground=[("disabled", DIM)], lightcolor=[("active", GROUND)], darkcolor=[("active", GROUND)])
+    st.configure("Primary.TButton", font=display, foreground=GROUND, background=PHOSPHOR, bordercolor=PHOSPHOR,
+                 lightcolor=PHOSPHOR, darkcolor=PHOSPHOR, padding=(28, 8))
+    st.map("Primary.TButton", background=[("disabled", DIM), ("active", INK)],
+           bordercolor=[("disabled", DIM), ("active", INK)], lightcolor=[("disabled", DIM), ("active", INK)],
+           darkcolor=[("disabled", DIM), ("active", INK)], foreground=[("disabled", GROUND)])
+    st.configure("Horizontal.TProgressbar", background=PHOSPHOR, troughcolor=RAISED, bordercolor=RULE_3,
+                 lightcolor=PHOSPHOR, darkcolor=PHOSPHOR, thickness=8)
+    st.configure("Vertical.TScrollbar", background=RAISED, troughcolor=GROUND, bordercolor=GROUND, arrowcolor=MUTED,
+                 lightcolor=RAISED, darkcolor=RAISED, gripcount=0)
+    st.map("Vertical.TScrollbar", background=[("active", RULE_3)], arrowcolor=[("active", PHOSPHOR)])
+    return fam
+
+
+def hatch_marker(master, w=8, h=14) -> tk.PhotoImage:
+    """The console's hatch (45 degree white stripes on black): the leading marker of an inline error."""
+    img = tk.PhotoImage(master=master, width=w, height=h)
+    img.put(GROUND, to=(0, 0, w, h))
+    for y in range(h):
+        for x in range(w):
+            if (x + y) % 4 < 2:
+                img.put(PHOSPHOR, (x, y))
+    return img
+
+
+def draw_brackets(panel: tk.Frame, inset=5) -> list:
+    """The console's panel frame: four corner L shapes, 1px white with 14px arms, on small canvases placed over
+    the panel's corners (its padding, so nothing is covered)."""
+    b, out = BRACKET, []
+    for ax, ay in ((0, 0), (1, 0), (0, 1), (1, 1)):
+        c = tk.Canvas(panel, width=b + 1, height=b + 1, bg=panel["bg"], highlightthickness=0, bd=0)
+        x, y = (b if ax else 0), (b if ay else 0)  # the corner pixel of the L
+        c.create_line(x, y, b - x, y, fill=PHOSPHOR)
+        c.create_line(x, y, x, b - y, fill=PHOSPHOR)
+        c.place(relx=ax, rely=ay, x=inset * (-1 if ax else 1), y=inset * (-1 if ay else 1),
+                anchor=("nw", "ne", "sw", "se")[ax + ay * 2])
+        out.append(c)
+    return out
+
+
 # ---------------------------------------------------------------- GUI
 
 class App:
@@ -311,6 +439,12 @@ class App:
         self.root = root
         root.title(APP_TITLE)
         root.minsize(700, 540)
+        try:
+            root.iconbitmap(str(resource_path("icon.ico")))
+        except tk.TclError:
+            pass
+        self.fonts = apply_theme(root)
+        self.marker = hatch_marker(root)  # the error labels' leading hatch, kept alive here
         self.dry_run_default = dry_run
         self.cancel = threading.Event()
         self.worker = None
@@ -331,6 +465,7 @@ class App:
         self.refresh_disks()
         self.refresh_networks()
         self.log(f"Console {self.console_url}.")
+        self.log(f"Fonts: {', '.join(self.fonts.values())}.")
         op = load_operator_config()
         if op["token"] and op["console_url"] in ("", self.console_url):
             self.op = {"token": op["token"], "username": op["username"]}
@@ -345,54 +480,68 @@ class App:
         return self.v[key]
 
     def _entry(self, parent, row, label, key, default="", show=None, width=40):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=4, pady=4)
         e = ttk.Entry(parent, textvariable=self._var(key, default), width=width, show=show)
-        e.grid(row=row, column=1, sticky="we", padx=4, pady=2)
+        e.grid(row=row, column=1, sticky="we", padx=4, pady=4)
         return e
 
     def _err(self, parent, row, field, column=1, columnspan=2):
         """An inline error line under a field (empty and collapsed until validate() fills it)."""
-        lbl = ttk.Label(parent, text="", foreground="#b00020", wraplength=520, justify="left")
+        lbl = ttk.Label(parent, text="", style="Error.TLabel", wraplength=520, justify="left", image=self.marker,
+                        compound="left", padding=(0, 2))
         lbl.grid(row=row, column=column, columnspan=columnspan, sticky="w", padx=4)
         lbl.grid_remove()
         self.err[field] = lbl
         return lbl
 
     def _build(self):
-        outer = ttk.Frame(self.root, padding=8)
+        outer = ttk.Frame(self.root, padding=16)
         outer.pack(fill="both", expand=True)
 
-        # 1. header: the console is fixed; sign in or the signed-in user.
+        # 1. header: the wordmark, then the fixed console and the sign-in state (a lamp: lit when signed in).
         header = ttk.Frame(outer)
-        header.pack(fill="x", pady=(0, 6))
+        header.pack(fill="x", pady=(0, 12))
         header.columnconfigure(1, weight=1)
-        ttk.Label(header, text=f"Console: {urllib.parse.urlsplit(self.console_url).netloc}",
-                  font=("", 10, "bold")).grid(row=0, column=0, sticky="w", padx=4)
-        self.signin_label = ttk.Label(header, text="")
-        self.signin_label.grid(row=0, column=1, sticky="e", padx=4)
+        ttk.Label(header, text=tracked(EYEBROW), style="Eyebrow.TLabel").grid(row=0, column=0, sticky="w", padx=4)
+        mark = ttk.Frame(header)
+        mark.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        ttk.Label(mark, text="PROJECTION", style="Wordmark.TLabel").pack(side="left", padx=(4, 0))
+        ttk.Label(mark, text="5000", style="WordmarkKey.TLabel").pack(side="left")
+        ttk.Label(mark, text=tracked("SD FLASHER"), style="Tag.TLabel").pack(side="left", padx=(14, 0), pady=(6, 0))
+        ttk.Label(header, text=f"Console: {urllib.parse.urlsplit(self.console_url).netloc}", style="Mono.TLabel"
+                  ).grid(row=2, column=0, sticky="w", padx=4)
+        state = ttk.Frame(header)
+        state.grid(row=2, column=1, sticky="e", padx=4)
+        self.lamp = tk.Canvas(state, width=12, height=12, bg=GROUND, highlightthickness=0)
+        self.lamp.pack(side="left", padx=(0, 6))
+        self.signin_label = ttk.Label(state, text="", style="Mono.TLabel")
+        self.signin_label.pack(side="left")
         self.signin_btn = ttk.Button(header, text="Sign in", command=self.sign_in)
-        self.signin_btn.grid(row=0, column=2, sticky="e", padx=4)
-        self._err(header, 1, "signin")
+        self.signin_btn.grid(row=2, column=2, sticky="e", padx=4)
+        self._err(header, 3, "signin")
 
-        # 2-4. what changes per Pi.
-        form = ttk.Frame(outer)
+        # 2-4. what changes per Pi, on a panel with the console's corner brackets.
+        panel = tk.Frame(outer, bg=GROUND)
+        panel.pack(fill="x")
+        form = ttk.Frame(panel, padding=(16, 14))
         form.pack(fill="x")
+        self.brackets = draw_brackets(panel)
         form.columnconfigure(1, weight=1)
         self._entry(form, 0, "Device name", "name")
-        self.id_label = ttk.Label(form, text="", foreground="grey")
+        self.id_label = ttk.Label(form, text="", style="Hint.TLabel")
         self.id_label.grid(row=1, column=1, sticky="w", padx=4)
         self._err(form, 2, "name")
         self.v["name"].trace_add("write", self._derive_id)
-        ttk.Label(form, text="Wi-Fi network").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(form, text="Wi-Fi network").grid(row=3, column=0, sticky="w", padx=4, pady=4)
         self.ssid_box = ttk.Combobox(form, textvariable=self._var("ssid"), width=38)  # editable: any name works
-        self.ssid_box.grid(row=3, column=1, sticky="we", padx=4, pady=2)
+        self.ssid_box.grid(row=3, column=1, sticky="we", padx=4, pady=4)
         self.ssid_box.bind("<<ComboboxSelected>>", self._ssid_picked)
         side = ttk.Frame(form)
         side.grid(row=3, column=2, sticky="w")
-        refresh = ttk.Label(side, text="Refresh", foreground="#0645ad", cursor="hand2", underline=0)
+        refresh = ttk.Label(side, text="Refresh", style="Link.TLabel", cursor="hand2", underline=0)
         refresh.pack(side="left", padx=4)
         refresh.bind("<Button-1>", lambda e: self.refresh_networks())
-        self.ssid_hint = ttk.Label(side, text=WIRED_HINT, foreground="grey", wraplength=260, justify="left")
+        self.ssid_hint = ttk.Label(side, text=WIRED_HINT, style="Hint.TLabel", wraplength=260, justify="left")
         self.ssid_hint.pack(side="left", padx=4)
         self._err(form, 4, "ssid")
         pw = self._entry(form, 5, "Wi-Fi password", "wifi_password", show="*")
@@ -402,36 +551,37 @@ class App:
         ttk.Checkbutton(side, text="Show", variable=self.v["show_wifi"],
                         command=lambda: pw.configure(show="" if self.v["show_wifi"].get() else "*")
                         ).pack(side="left", padx=4)
-        self.pw_hint = ttk.Label(side, text="", foreground="grey")
+        self.pw_hint = ttk.Label(side, text="", style="Hint.TLabel")
         self.pw_hint.pack(side="left", padx=4)
         self.v["wifi_password"].trace_add("write", self._password_edited)
         self._err(form, 6, "wifi_password")
-        ttk.Label(form, text="SD card").grid(row=7, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(form, text="SD card").grid(row=7, column=0, sticky="w", padx=4, pady=4)
         self.disk_box = ttk.Combobox(form, textvariable=self._var("disk"), state="readonly")
-        self.disk_box.grid(row=7, column=1, sticky="we", padx=4, pady=2)
+        self.disk_box.grid(row=7, column=1, sticky="we", padx=4, pady=4)
         ttk.Button(form, text="Refresh", command=self.refresh_disks).grid(row=7, column=2, sticky="w", padx=4)
         self._err(form, 8, "disk")
 
         # 5. Flash, progress, log.
-        buttons = ttk.Frame(outer)
-        buttons.pack(fill="x", pady=6)
-        style = ttk.Style(self.root)
-        style.configure("Flash.TButton", font=("", 11, "bold"), padding=(24, 6))
+        buttons = ttk.Frame(form)
+        buttons.grid(row=9, column=0, columnspan=3, sticky="we", pady=(12, 0))
         buttons.columnconfigure(2, weight=1)
-        self.flash_btn = ttk.Button(buttons, text="Flash", command=self.on_flash, style="Flash.TButton")
+        self.flash_btn = ttk.Button(buttons, text="FLASH", command=self.on_flash, style="Primary.TButton")
         self.flash_btn.grid(row=0, column=0, padx=4)
         self.cancel_btn = ttk.Button(buttons, text="Cancel", command=self.on_cancel)
         self.cancel_btn.grid(row=0, column=1, padx=4)
         self.cancel_btn.grid_remove()  # shown while a flash runs
         self.progress = ttk.Progressbar(buttons, maximum=100)
         self.progress.grid(row=0, column=2, sticky="we", padx=8)
-        self.status = ttk.Label(buttons, text="")
+        self.status = ttk.Label(buttons, text="", style="Mono.TLabel")
         self.status.grid(row=0, column=3, padx=4)
         self._err(buttons, 1, "flash", column=0, columnspan=4)
 
         logf = ttk.Frame(outer)
-        logf.pack(fill="both", expand=True, pady=4)
-        self.log_text = tk.Text(logf, height=8, wrap="word", state="disabled")
+        logf.pack(fill="both", expand=True, pady=(12, 4))
+        self.log_text = tk.Text(logf, height=8, wrap="word", state="disabled", bg=GROUND, fg=BODY, bd=0,
+                                highlightthickness=1, highlightbackground=PHOSPHOR, highlightcolor=PHOSPHOR,
+                                insertbackground=PHOSPHOR, selectbackground=PHOSPHOR, selectforeground=GROUND,
+                                font=(self.fonts["mono"], 9), padx=8, pady=6)
         sb = ttk.Scrollbar(logf, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
@@ -440,7 +590,7 @@ class App:
         # Advanced: one collapsed disclosure holding everything else.
         self.adv_btn = ttk.Button(outer, text="Advanced", command=self._toggle_advanced)
         self.adv_btn.pack(anchor="w", pady=(4, 0))
-        self.advanced = ttk.Frame(outer, padding=(12, 4, 4, 4))
+        self.advanced = ttk.Frame(outer, padding=(12, 8, 4, 4))
         self._build_advanced(self.advanced)
 
     def _build_advanced(self, adv):
@@ -474,14 +624,14 @@ class App:
         ttk.Checkbutton(adv, text="Hidden Wi-Fi network", variable=self._var("wifi_hidden", False, tk.BooleanVar)
                         ).grid(row=5, column=1, sticky="w", padx=4)
         self._entry(adv, 6, "Static IP", "static_ip", width=20)
-        ttk.Label(adv, text="e.g. 192.168.1.50/24; blank for DHCP", foreground="grey").grid(row=6, column=2, sticky="w")
+        ttk.Label(adv, text="e.g. 192.168.1.50/24; blank for DHCP", style="Hint.TLabel").grid(row=6, column=2, sticky="w")
         self._entry(adv, 7, "Gateway", "gateway", width=20)
-        ttk.Label(adv, text="also used as the DNS server", foreground="grey").grid(row=7, column=2, sticky="w")
+        ttk.Label(adv, text="also used as the DNS server", style="Hint.TLabel").grid(row=7, column=2, sticky="w")
         self._entry(adv, 8, "Existing device token", "token")
-        ttk.Label(adv, text="from the Devices page; skips enrollment", foreground="grey").grid(row=8, column=2,
-                                                                                               sticky="w")
+        ttk.Label(adv, text="from the Devices page; skips enrollment", style="Hint.TLabel").grid(row=8, column=2,
+                                                                                                 sticky="w")
         ttk.Label(adv, text="SSH key").grid(row=9, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(adv, text=str(sshkey.private_path())).grid(row=9, column=1, sticky="w", padx=4)
+        ttk.Label(adv, text=str(sshkey.private_path()), style="Mono.TLabel").grid(row=9, column=1, sticky="w", padx=4)
         ttk.Button(adv, text="Copy public key", command=self.copy_public_key).grid(row=9, column=2, sticky="w", padx=4)
         row10 = ttk.Frame(adv)
         row10.grid(row=10, column=1, columnspan=2, sticky="w")
@@ -489,7 +639,7 @@ class App:
         self.signout_btn.pack(side="left", padx=4, pady=4)
         ttk.Checkbutton(row10, text="Dry run (validate and resolve the image, do not write)",
                         variable=self._var("dry_run", self.dry_run_default, tk.BooleanVar)).pack(side="left", padx=8)
-        ttk.Label(adv, text=f"Build: {build_info()}", foreground="grey", wraplength=520, justify="left"
+        ttk.Label(adv, text=f"Build: {build_info()}", style="Hint.TLabel", wraplength=520, justify="left"
                   ).grid(row=11, column=1, columnspan=2, sticky="w", padx=4)
 
     def _fit_to_screen(self):
@@ -523,13 +673,23 @@ class App:
         self.log("Public key copied to the clipboard (paste it into authorized_keys on any other machine).")
 
     # ----- sign in (device-code flow: the browser approves, this thread polls)
+    def _set_lamp(self, lit: bool):
+        self.lamp.delete("all")
+        if lit:  # a white lamp with its glow ring
+            self.lamp.create_oval(0, 0, 11, 11, fill=RULE_3, outline="")
+            self.lamp.create_oval(3, 3, 8, 8, fill=PHOSPHOR, outline="")
+        else:
+            self.lamp.create_oval(3, 3, 8, 8, fill=LAMP_OFF, outline="")
+
     def _show_sign_in(self, note: str):
+        self._set_lamp(False)
         self.signin_label.configure(text=note)
         self.signin_btn.configure(state="normal")
         self.signin_btn.grid()
         self.signout_btn.configure(state="disabled")
 
     def _show_signed_in(self):
+        self._set_lamp(True)
         self.signin_btn.grid_remove()
         self.signin_label.configure(text=f"Signed in as {self.op['username'] or 'operator'}")
         self.signout_btn.configure(state="normal")
@@ -1172,6 +1332,7 @@ def main(argv=None) -> int:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on high-DPI screens
     except Exception:
         pass
+    load_fonts()  # before any widget: Tk enumerates the families when it starts
     root = tk.Tk()
     App(root, dry_run=dry_run)
     root.mainloop()
