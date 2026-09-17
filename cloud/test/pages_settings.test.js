@@ -43,6 +43,8 @@ describe("settings", () => {
     expect(page).toContain('<option value="off" selected>off</option>');
     expect(page).toContain('<option value="nightly">nightly</option>');
     expect(page).toContain('name="auto_update_window" value="03:00-05:00"');
+    // A \d inside the template literal would be emitted as a bare d and make the browser reject every submit.
+    expect(page).toContain('pattern="([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]"');
     expect(page).toContain('<option value="Europe/London">');
     expect(page).toContain('href="/settings" class="active"');
     expect(page).not.toContain("Settings saved.");

@@ -56,10 +56,15 @@ describe("POST /api/enroll", () => {
     const row = await dev("hall-2");
     expect(row.name).toBe("Hall (new card)");
     expect(row.token).toBe(first.token);
+    // a rename can change the derived Wyze camera name, so the Pi must refetch its camera config
+    const ver = async () => parseInt((await query("SELECT value FROM settings WHERE key = 'camera_config_version'"))[0]?.value || "0", 10);
+    const afterRename = await ver();
+    expect(afterRename).toBeGreaterThan(0);
     expect((await query("SELECT COUNT(*) AS n FROM devices WHERE device_id = 'hall-2'"))[0].n).toBe(1);
     // same name again: still a re-enroll audit, name untouched
     expect((await enroll({ key, device_id: "hall-2", name: "Hall (new card)" })).status).toBe(200);
     expect((await dev("hall-2")).name).toBe("Hall (new card)");
+    expect(await ver()).toBe(afterRename); // unchanged name: no bump
     expect((await audits("device_reenrolled")).map((a) => a.details)).toEqual([
       '{"device_id": "hall-2", "name": "Hall (new card)"}', '{"device_id": "hall-2", "name": "Hall (new card)"}',
     ]);

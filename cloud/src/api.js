@@ -266,7 +266,12 @@ async function enroll(ctx) {
       if (!row) throw e;
     }
   }
-  if (row.name !== name) await db.run(ctx.env, "UPDATE devices SET name = ? WHERE id = ?", name, row.id);
+  if (row.name !== name) {
+    await db.run(ctx.env, "UPDATE devices SET name = ? WHERE id = ?", name, row.id);
+    // The Wyze camera name can derive from the device name (wyze_camera_pattern), so a rename
+    // must make the Pi refetch its camera config.
+    await db.bumpCameraConfigVersion(ctx.env);
+  }
   await audit.log(ctx, "device_reenrolled", "device", row.id, { device_id: deviceId, name }, null);
   if (!row.tunnel_id && cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id: row.id, device_id: deviceId });
   return json({ device_id: deviceId, token: row.token, cms_url: ctx.url.origin });

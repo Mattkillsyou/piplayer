@@ -300,9 +300,13 @@ the update scripts, the sudoers entries, the post-check timer and the
 invocation shape, parsing and reporting of `update-status.json`, the auto
 window with a frozen clock and the no-double-run guard; the cloud tests cover
 the commands, settings validation, the manifest key, sync storage and page
-rendering; the shell scripts are checked with `bash -n`. A real update,
-including the rollback path, the systemd timer and the `apt-get` run, needs
-a Pi. Verify on one device, after the manual `install-player.sh --upgrade`
+rendering; the shell scripts are checked with `bash -n` and run end to end in
+a fake root (`PIPLAYER_ROOT`, a local git repo as the remote, `systemctl` and
+`apt-get` shims), covering already-at, updated with `.prev` kept, the
+post-check rollback, a failing installer, `--then-os` and `update-os` with and
+without `reboot_required`. Only real systemd (the `systemd-run` detach, the
+timer firing, `NRestarts`), the real `install-player.sh --upgrade` (venv, pip,
+sudoers, units) and a real `apt-get` need a Pi. Verify on one device, after the manual `install-player.sh --upgrade`
 has written `RELEASE`: `update-player` at the current ref (expect
 `already at <sha>`), then at a ref one commit ahead (expect
 `updated <old> -> <new>` and the post-check "ok" line in `update.log` two

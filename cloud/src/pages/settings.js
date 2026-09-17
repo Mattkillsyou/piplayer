@@ -263,7 +263,7 @@ ${testError ? alertBox(`Test alert failed: ${testError}`) : ""}
         </select>
       </label>
       <label>Auto-update window (site time, HH:MM-HH:MM)
-        <input type="text" name="auto_update_window" value="${esc(s.auto_update_window)}" placeholder="03:00-05:00" pattern="([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d" required>
+        <input type="text" name="auto_update_window" value="${esc(s.auto_update_window)}" placeholder="03:00-05:00" pattern="([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]" required>
       </label>
     </div>
     <p class="help small">"Update player" on the Devices page (and "Update all players") checks this release out on the Pi and reinstalls the player. With auto-update <code>nightly</code> every player does the same by itself inside the window, at most once a day, and skips when it is already on that release. Each Pi reports the outcome on its next sync (Devices page).</p>
