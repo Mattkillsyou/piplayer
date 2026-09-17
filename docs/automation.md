@@ -961,9 +961,11 @@ the one-time setup below. Cloud only: the Python console keeps the manual
 live URL ([camera.md](camera.md), "Live view").
 
 **Worker secrets.** Three secrets on the worker turn the feature on; without
-them the Settings page shows the tunnel section as **not configured**, the
-**Create tunnel** button is disabled, enrollment skips the tunnel step, and
-the manual **Camera live URL** field keeps working exactly as before.
+them the Settings panel **Camera tunnels (Cloudflare)** carries the badge
+**not configured** and names the missing secrets, the **Create tunnel**
+button is not rendered (the Camera block says to paste a live URL instead),
+enrollment skips the tunnel step, and the manual **Camera live URL** field
+keeps working exactly as before.
 
 | Secret | Value |
 |---|---|
@@ -971,8 +973,12 @@ the manual **Camera live URL** field keeps working exactly as before.
 | `CF_ACCOUNT_ID` | the Cloudflare account that owns the zone and the Zero Trust organisation |
 | `CF_ZONE_ID` | the zone id of `photogen5000.com`, where the `<device_id>-cam` hostnames are created |
 
-None of them is stored in D1 or shown in the console; the Settings section
-only says whether all three are present.
+None of them is stored in D1 or shown in the console; the Settings panel
+only says whether all three are present (badge **configured**), which
+operator emails the Access policy will get, and how many devices have a
+tunnel. The zone name in the hostnames is `photogen5000.com`; a
+`CF_ZONE_NAME` var in `wrangler.toml` overrides it (it must be the zone
+`CF_ZONE_ID` names).
 
 **What the console creates**, per device, all idempotent (an object that
 already exists with the right name is reused, so **Create tunnel** can be
@@ -984,7 +990,7 @@ made):
 | Cloudflare Tunnel (remotely managed) | `p5k-<device_id>` |
 | Tunnel configuration | ingress `<device_id>-cam.photogen5000.com` → `http://127.0.0.1:5000`, then the catch-all `http_status:404` |
 | DNS record in the zone | CNAME `<device_id>-cam.photogen5000.com` → `<tunnel_id>.cfargotunnel.com`, proxied |
-| Access application (self-hosted) | domain `<device_id>-cam.photogen5000.com`, one **Allow** policy listing the operator emails |
+| Access application (self-hosted) | name `p5k-<device_id> camera`, domain `<device_id>-cam.photogen5000.com`, 24 h session, one **Allow** policy named `p5k operators` listing the operator emails |
 
 Port 5000 is the wyze-bridge web player on the Pi (section D installs the
 bridge; an RTSP camera needs something of your own listening there, as in
@@ -997,17 +1003,21 @@ console falls back to the admin users' usernames, provided every one of
 them is an email address; if neither gives a list, tunnel creation stops
 with a message asking you to fill in **Email to** first, and nothing is
 created (the hostname must never go up without a policy in front of it,
-because the bridge player has no login of its own). Changing the list later
-does not rewrite existing applications: click **Create tunnel** again on
-each device to update the policy, or edit it in Zero Trust.
+because the bridge player has no login of its own). The policy is rewritten
+on every provision, so after changing the list click **Recreate tunnel**
+(the button's label once a device has a tunnel; it asks for confirmation,
+reuses the existing objects and resets the live URL to the tunnel) on each
+device, or edit the policy in Zero Trust. The button needs the editor or
+admin role.
 
 **What the console stores.** `devices.tunnel_id` and
 `devices.tunnel_hostname`, shown in the Camera block, plus
 `camera_live_url` set to `https://<tunnel_hostname>/` so the existing
 **Live** and **Show live** buttons work unchanged (you can still overwrite
-the URL by hand; only creation writes it). The tunnel token is not stored:
-when a device with a `tunnel_id` syncs, the console fetches the token from
-the Cloudflare API and puts it in that device's manifest as
+the URL by hand; only **Create tunnel** / **Recreate tunnel** and
+enrollment write it). The tunnel token is not stored or cached: on every
+sync of a device with a `tunnel_id` the console fetches the token from the
+Cloudflare API and puts it in that device's manifest as
 
 ```json
 {"tunnel": {"token": "eyJ...", "hostname": "pi-lobby-cam.photogen5000.com"}}
@@ -1016,10 +1026,17 @@ the Cloudflare API and puts it in that device's manifest as
 The manifest is only ever served to the device's own bearer token, so the
 tunnel token goes to the Pi it belongs to and nowhere else; it is never
 rendered in the console and never written to the audit log. A device
-without a tunnel simply has no `tunnel` key. Creation, and a failed
-creation, are audited against the device (the details name the object that
-failed and the Cloudflare error, so `/audit` answers "why is there no
-tunnel for the bar Pi").
+without a tunnel simply has no `tunnel` key, and so does one whose token
+fetch failed (Cloudflare API down or the token revoked): the Pi keeps the
+token it already has. Creation is audited against the device as
+`device_tunnel_created` (details: `device_id`, `tunnel_id`, `hostname`,
+the number of emails in the policy) and a failed creation as
+`device_tunnel_failed` (details: the Cloudflare error, prefixed with the
+API call that was refused), so `/audit` answers "why is there no tunnel
+for the bar Pi". On the Devices page the same outcome is a banner:
+**Tunnel ready: https://...** or **Tunnel creation failed: ...**. A device
+that re-enrolls (a reflashed card) without a tunnel gets one then, like a
+first enrollment.
 
 **What the Pi does.** The installer (`install-player.sh`, also on
 `--upgrade`) installs `cloudflared` for arm64 from Cloudflare's apt
@@ -1101,7 +1118,8 @@ console's own login is separate from Access; being signed in to
    enrollment; on the Devices page the Camera block shows the hostname and
    a **Live** button within a minute of the first sync. Devices enrolled
    before the secrets were set: expand the Camera block and click
-   **Create tunnel** once each.
+   **Create tunnel** once each (a reflash does it too, since re-enrollment
+   provisions a device that has no tunnel).
 
 **Removing a device** does not delete its tunnel, DNS record or Access
 application (the worker only ever creates); delete them in the dashboard
@@ -1116,9 +1134,11 @@ surfacing as the audited message; the manifest carrying `tunnel` only for
 the device's own bearer). The player tests cover the token file (contents,
 mode 600), the restart through a fake `systemctl` and the no-op on an
 unchanged token. What needs the real account: the API token's permissions
-actually sufficing (a missing one shows up as a `403` / code `10000`
-"Authentication error" in the device's audit entry; fix the token in the
-dashboard and click **Create tunnel** again), `cloudflared` on arm64
+actually sufficing (a missing one shows up in the device's
+`device_tunnel_failed` audit entry and the Devices banner as
+`Cloudflare API POST /accounts/.../cfd_tunnel: Authentication error` or
+similar, naming the call that was refused; fix the token in the dashboard
+and click **Create tunnel** again), `cloudflared` on arm64
 connecting, and Access issuing the PIN. Verify once on one Pi: **Create
 tunnel**, wait for the next sync, `sudo systemctl status
 projector-cloudflared.service` on the Pi should show `Registered tunnel
