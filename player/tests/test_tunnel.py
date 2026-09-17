@@ -103,8 +103,9 @@ def test_daemon_applies_the_manifest_token(cfg, cms, mpv, client, runs):
     assert tunnel.token_path(cfg).read_text() == TOKEN + "\n" and runs.args == [RESTART]
     run_cycle(cfg, client, state)
     assert runs.args == [RESTART]
-    # the token is never echoed back to the console
+    # the token is never echoed back to the console nor cached in the manifest
     assert all(TOKEN not in str(p) for p in cms.sync_calls)
+    assert TOKEN not in cfg.manifest_path.read_text()
 
 
 # ------------------------------------------------------ deploy files ---

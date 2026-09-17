@@ -128,6 +128,7 @@ usermod -aG video,render,input,audio,tty "${USER_NAME}"
 echo "==> Creating directories"
 mkdir -p "${INSTALL_DIR}" "${DATA_DIR}/media" "${ETC_DIR}" "${DATA_DIR}/.config/mpv"
 chown -R "${USER_NAME}:${USER_NAME}" "${DATA_DIR}"
+chmod 700 "${DATA_DIR}"   # tunnel.token / wyze.env live here; useradd HOME_MODE is not guaranteed
 
 echo "==> Copying app files from ${SRC_DIR}"
 rsync -a --delete \

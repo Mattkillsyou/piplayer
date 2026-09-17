@@ -65,7 +65,12 @@ def _write_json_atomic(path: Path, data) -> None:
 
 
 def _save_local_manifest(cfg: PlayerConfig, manifest: dict) -> None:
-    _write_json_atomic(cfg.manifest_path, manifest)
+    # The offline cache is world-readable; the tunnel token lives only in
+    # tunnel.token (mode 600). tunnel.maybe_apply ignores an empty token.
+    data = dict(manifest)
+    if isinstance(data.get("tunnel"), dict):
+        data["tunnel"] = {**data["tunnel"], "token": None}
+    _write_json_atomic(cfg.manifest_path, data)
 
 
 # --- media index: {filename: {"sha256", "size", "mtime"}} of verified files ---
