@@ -395,7 +395,8 @@ credentials as `"set"`), `POST /settings/alerts/twilio/clear`, `POST /settings/a
 (`channel` in `alerts.CHANNELS`, 400 otherwise; redirects `?tested=<channel>` or
 `?test_error=<channel>: <why>`; audit `alert_test_sent`). `/alerts` (`pages/alerts.js`, any role)
 lists the open rows and the last 100 recovered; the dashboard's fourth card links there with the
-open count (`alerts.openCount`); "Alerts" sits in the nav for every role.
+open count (`alerts.openCount`); "Alerts" sits in the nav for every role. Closed rows older than
+90 days are pruned by the nightly housekeeping (`alerts.housekeeping`).
 
 ## Camera feed (room camera on the Pi)
 

@@ -27,7 +27,7 @@ import { fail, HttpError, json, redirect } from "./util.js";
 
 const MODULES = [
   login, setup, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings,
-  api, media, manifest, schedules, uploads, auth, audit,
+  api, media, manifest, schedules, uploads, auth, audit, alerts,
 ];
 
 const router = new Router();

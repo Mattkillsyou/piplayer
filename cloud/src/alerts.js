@@ -230,3 +230,8 @@ export const openCount = (env) => db.first(env, "SELECT COUNT(*) AS n FROM alert
 export const kindBadge = (kind) => `<span class="badge badge-stale">${esc(KIND_TEXT[kind] || kind)}</span>`;
 
 export function register() {}
+
+// Daily: prune closed rows older than 90 days (open rows are never touched).
+export async function housekeeping(env) {
+  await db.run(env, "DELETE FROM alerts WHERE closed_at IS NOT NULL AND closed_at < datetime('now', '-90 days')");
+}

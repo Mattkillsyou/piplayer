@@ -848,7 +848,8 @@ error text, the update message, last seen) is on the Devices page. The
 dashboard's "open alerts" card shows the count and links here (`all clear`
 at 0). Alerts are read-only: there is no acknowledge or mute, close the
 condition instead (and to silence a device permanently, delete it: its
-alerts are deleted with it). Closed rows are kept; nothing prunes them.
+alerts are deleted with it). Closed rows older than 90 days are pruned by
+the nightly housekeeping.
 
 **Operator steps** (once per site). Only the channels you want; each is
 independent.

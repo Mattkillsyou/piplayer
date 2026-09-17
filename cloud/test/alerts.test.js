@@ -125,12 +125,26 @@ describe("evaluate", () => {
   it("the */5 cron runs the evaluator, the daily cron does not", async () => {
     const ALERT_CRON = alerts.CRON;
     expect(ALERT_CRON).toBe("*/5 * * * *");
+    // Real clock here (worker.scheduled has no injected `now`): keep the lobby fresh.
+    await setDevice(lobby.id, { last_seen_at: ago(30, new Date()) });
     await setDevice(hall.id, { last_seen_at: nowUtc(new Date(Date.now() - 3600 * 1000)) });
     await worker.scheduled(createScheduledController({ cron: "0 3 * * *" }), env, createExecutionContext());
     expect((await rows()).length).toBe(0);
     await worker.scheduled(createScheduledController({ cron: ALERT_CRON }), env, createExecutionContext());
     expect((await rows()).map((a) => [a.device_id, a.kind])).toEqual([[hall.id, "offline"]]);
     await setDevice(hall.id, { last_seen_at: null });
+    await query("DELETE FROM alerts");
+  });
+
+  it("the daily cron prunes closed alerts older than 90 days and keeps the rest", async () => {
+    // Real clock: the SQL compares against datetime('now').
+    const real = new Date();
+    const daysAgo = (n) => ago(n * 86400, real);
+    await query("INSERT INTO alerts (device_id, kind, opened_at, closed_at, notified_at) VALUES (?, 'offline', ?, ?, ?)", hall.id, daysAgo(92), daysAgo(91), daysAgo(91));
+    await query("INSERT INTO alerts (device_id, kind, opened_at, closed_at, notified_at) VALUES (?, 'offline', ?, ?, ?)", hall.id, daysAgo(11), daysAgo(10), daysAgo(10));
+    await query("INSERT INTO alerts (device_id, kind, opened_at, closed_at, notified_at) VALUES (?, 'mpv-down', ?, NULL, ?)", hall.id, daysAgo(200), daysAgo(200));
+    await worker.scheduled(createScheduledController({ cron: "0 3 * * *" }), env, createExecutionContext());
+    expect((await rows()).map((a) => [a.kind, a.closed_at])).toEqual([["offline", daysAgo(10)], ["mpv-down", null]]);
     await query("DELETE FROM alerts");
   });
 });
