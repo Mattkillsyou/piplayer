@@ -171,7 +171,7 @@ describe("cloudflare client", () => {
     const fake = fakeCloudflare();
     fake.refuse = { key: "POST /zones/zone1/dns_records", message: "DNS Validation Error: record already exists" };
     await expect(cloudflare.provision(CF, "lobby", EMAILS)).rejects.toThrow(
-      "Cloudflare API POST /zones/zone1/dns_records: DNS Validation Error: record already exists");
+      "Cloudflare API POST /zones/.../dns_records: DNS Validation Error: record already exists");
     expect(fake.state.tunnels.length).toBe(1);
     expect(fake.state.apps.length).toBe(0);
     // the retry finds the tunnel and carries on
@@ -180,7 +180,10 @@ describe("cloudflare client", () => {
     expect(fake.state.tunnels.length).toBe(1);
     expect(fake.state.apps.length).toBe(1);
     fake.status = 502;
-    await expect(cloudflare.tunnelToken(CF, "tun-1")).rejects.toThrow("Cloudflare API GET /accounts/acct1/cfd_tunnel/tun-1/token: HTTP 502");
+    // the account / zone ids never appear in the error: it lands in the audit log and the Devices banner URL
+    const err = await cloudflare.tunnelToken(CF, "tun-1").catch((e) => e);
+    expect(err.message).toBe("Cloudflare API GET /accounts/.../cfd_tunnel/tun-1/token: HTTP 502");
+    expect(err.message).not.toMatch(/acct1|zone1/);
     fake.status = null;
     expect(await cloudflare.tunnelToken(CF, "tun-1")).toBe("eyJ-token-for-tun-1");
     vi.stubGlobal("fetch", async () => { throw new TypeError("connect failed"); });
@@ -234,7 +237,7 @@ describe("provisioning", () => {
     expect(typeof (await bad.json()).token).toBe("string");
     expect(await devRow((await one("SELECT id FROM devices WHERE device_id = 'e-fail'")).id)).toEqual({ tunnel_id: null, tunnel_hostname: null, camera_live_url: null });
     const [f] = await audits("device_tunnel_failed");
-    expect(JSON.parse(f.details)).toEqual({ device_id: "e-fail", error: "Cloudflare API POST /accounts/acct1/cfd_tunnel: Authentication error" });
+    expect(JSON.parse(f.details)).toEqual({ device_id: "e-fail", error: "Cloudflare API POST /accounts/.../cfd_tunnel: Authentication error" });
     // no operator email known: refused before any API call
     await query("DELETE FROM settings WHERE key = 'alert_email'");
     fake.refuse = null;
@@ -266,9 +269,9 @@ describe("provisioning", () => {
     fake.refuse = { key: "PUT /accounts/acct1/cfd_tunnel/tun-1/configurations", message: "tunnel is locked" };
     const bad = await post(r.editor, `/devices/${lobby.id}/tunnel`);
     expect(bad.status).toBe(303);
-    expect(bad.headers.get("location")).toBe(`/devices?tunnel_error=${encodeURIComponent("Cloudflare API PUT /accounts/acct1/cfd_tunnel/tun-1/configurations: tunnel is locked")}`);
+    expect(bad.headers.get("location")).toBe(`/devices?tunnel_error=${encodeURIComponent("Cloudflare API PUT /accounts/.../cfd_tunnel/tun-1/configurations: tunnel is locked")}`);
     page = await (await r.editor.get(bad.headers.get("location"))).text();
-    expect(page).toContain("Tunnel creation failed: Cloudflare API PUT /accounts/acct1/cfd_tunnel/tun-1/configurations: tunnel is locked");
+    expect(page).toContain("Tunnel creation failed: Cloudflare API PUT /accounts/.../cfd_tunnel/tun-1/configurations: tunnel is locked");
     expect((await audits("device_tunnel_failed"))[0]).toMatchObject({ username: "ed", target_id: String(lobby.id) });
     expect((await devRow(lobby.id)).tunnel_id).toBe("tun-1");
     expect((await post(r.editor, "/devices/999999/tunnel")).status).toBe(404);

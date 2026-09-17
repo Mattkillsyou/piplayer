@@ -269,7 +269,8 @@ def run(base, persist, fake):
     r = admin.post("/devices/%d/tunnel" % row_d["id"])
     assert r.status_code == 303 and r.headers["location"].startswith("/devices?tunnel_error="), (r.status_code, r.headers.get("location"))
     msg = urllib.parse.unquote(r.headers["location"])
-    assert "Cloudflare API POST /zones/%s/dns_records: refused by the e2e fake" % ZONE in msg, msg
+    assert "Cloudflare API POST /zones/.../dns_records: refused by the e2e fake" in msg, msg
+    assert ZONE not in msg and ACCT not in msg, msg
     assert "Tunnel creation failed: Cloudflare API POST" in admin.get(r.headers["location"]).text
     assert dev_row(persist, "pi-d")["tunnel_id"] is None
     failed = audit_rows(persist, "device_tunnel_failed")

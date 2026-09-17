@@ -42,7 +42,10 @@ async function call(env, method, path, body) {
   }
   if (!res.ok || !data || data.success === false) {
     const errors = data && Array.isArray(data.errors) ? data.errors.map((e) => e.message || e.code).filter(Boolean) : [];
-    throw new Error(`Cloudflare API ${method} ${path.split("?")[0]}: ${errors.length ? errors.join("; ") : `HTTP ${res.status}`}`);
+    // Label the call without the account / zone ids: the message lands in the audit log, the
+    // Devices banner URL and the worker log, none of which should carry secrets.
+    const where = path.split("?")[0].replace(acct(env), "/accounts/...").replace(zone(env), "/zones/...");
+    throw new Error(`Cloudflare API ${method} ${where}: ${errors.length ? errors.join("; ") : `HTTP ${res.status}`}`);
   }
   return data.result;
 }
