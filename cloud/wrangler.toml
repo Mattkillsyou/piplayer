@@ -41,5 +41,8 @@ name = "ALERT_MAIL"
 [triggers]
 crons = ["0 3 * * *", "*/5 * * * *"]   # daily housekeeping; alerts.evaluate every 5 min (index.js scheduled)
 
-# Secrets (wrangler secret put): SESSION_SECRET, SETUP_TOKEN.
+# Secrets (wrangler secret put): SESSION_SECRET, SETUP_TOKEN. Optional, for the automatic camera
+# tunnels (src/cloudflare.js): CF_API_TOKEN (Account > Cloudflare Tunnel: Edit, Zone > DNS: Edit,
+# Account > Access: Apps and Policies: Edit), CF_ACCOUNT_ID, CF_ZONE_ID (photogen5000.com; the
+# CF_ZONE_NAME var overrides the zone name). Without all three the feature reports "not configured".
 # Local dev gets throwaway values from the `dev` script via --var.

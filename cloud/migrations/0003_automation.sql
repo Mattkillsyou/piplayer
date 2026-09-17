@@ -92,4 +92,11 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_open ON alerts(closed_at, device_id, kind);
 
+-- G (auto tunnel): the Cloudflare Tunnel provisioned for the device (cloudflare.js: tunnel
+-- p5k-<device_id>, DNS, ingress, Access app) and its public hostname
+-- <device_id>-cam.photogen5000.com. The tunnel token is fetched from the Cloudflare API on
+-- every sync (manifest `tunnel`) and never stored.
+ALTER TABLE devices ADD COLUMN tunnel_id TEXT;
+ALTER TABLE devices ADD COLUMN tunnel_hostname TEXT;
+
 INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3');

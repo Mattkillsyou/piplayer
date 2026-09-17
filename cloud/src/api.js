@@ -3,6 +3,7 @@
 // path must be the token's own device.
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
+import * as cloudflare from "./cloudflare.js";
 import * as db from "./db.js";
 import * as manifest from "./manifest.js";
 import * as media from "./media.js";
@@ -84,7 +85,24 @@ async function sync(ctx) {
 
   const settings = await ctx.settings();
   const body = await manifest.manifest_for_device(ctx.env, device, ctx.url.origin, settings);
+  body.tunnel = await tunnelBlock(ctx.env, device);
   return new Response(manifest.manifest_json(body), { headers: { "content-type": "application/json" } });
+}
+
+// Auto tunnel (G): {token, hostname} for the device's own Cloudflare Tunnel, the token fetched
+// from the API on every sync and never stored or rendered anywhere else (this handler only
+// answers the device's own bearer). null when the device has no tunnel, the secrets are not
+// set or the API is down: absence = feature off, the player keeps the token it already wrote.
+// ponytail: one API call per sync per tunnelled device (2/min each; the API allows 1200 per
+// 5 min), cache the token in KV past a few dozen devices.
+async function tunnelBlock(env, device) {
+  if (!device.tunnel_id || !cloudflare.configured(env)) return null;
+  try {
+    return { token: await cloudflare.tunnelToken(env, device.tunnel_id), hostname: device.tunnel_hostname };
+  } catch (e) {
+    console.error(`tunnel token for ${device.device_id}: ${e && e.message || e}`);
+    return null;
+  }
 }
 
 // ?update_status=<json> is sent once by the daemon that starts after update-player.sh /
@@ -213,7 +231,8 @@ async function enrollDefaults(env, settings) {
 // token. Re-enrolling an existing device_id returns the existing token so a re-flashed card
 // keeps the console's view of that device (group/playlist untouched; only a FIRST enrollment
 // applies the Settings defaults, and the audit row says which). Throttled per ip like login;
-// the token is never logged or audited.
+// the token is never logged or audited. With the Cloudflare secrets set, a device without a
+// tunnel gets one here (cloudflare.tryProvisionDevice: a failure is audited, never fatal).
 async function enroll(ctx) {
   const wait = await auth.loginLockedFor(ctx.env, ctx.ip, auth.ENROLL_KEY, auth.ENROLL_MAX_FAILURES, auth.ENROLL_LOCK_SECONDS);
   if (wait) throw new HttpError(429, `Too many failed attempts; try again in ${wait} s`, { "Retry-After": String(wait) });
@@ -229,7 +248,7 @@ async function enroll(ctx) {
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `name must be 1-${MAX_DEVICE_NAME} chars`);
 
-  const existing = () => db.first(ctx.env, "SELECT id, name, token FROM devices WHERE device_id = ?", deviceId);
+  const existing = () => db.first(ctx.env, "SELECT id, name, token, tunnel_id FROM devices WHERE device_id = ?", deviceId);
   let row = await existing();
   if (!row) {
     const token = randomToken(32);
@@ -239,6 +258,7 @@ async function enroll(ctx) {
         deviceId, name, token, group_id, playlist_id)).last_row_id;
       await audit.log(ctx, "device_enrolled", "device", id,
         { device_id: deviceId, name, group_id: group_id ?? undefined, playlist_id: playlist_id ?? undefined }, null);
+      if (cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id, device_id: deviceId });
       return json({ device_id: deviceId, token, cms_url: ctx.url.origin });
     } catch (e) {
       if (!db.isConstraintError(e)) throw e;
@@ -248,6 +268,7 @@ async function enroll(ctx) {
   }
   if (row.name !== name) await db.run(ctx.env, "UPDATE devices SET name = ? WHERE id = ?", name, row.id);
   await audit.log(ctx, "device_reenrolled", "device", row.id, { device_id: deviceId, name }, null);
+  if (!row.tunnel_id && cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id: row.id, device_id: deviceId });
   return json({ device_id: deviceId, token: row.token, cms_url: ctx.url.origin });
 }
 

@@ -7,10 +7,12 @@
 // and the Wyze account for camera zero-config (encrypted in `secrets`, shown only as set /
 // not set; every player fetches it through GET /api/camera-config), and the alert channels
 // (offline / repeat minutes, email addresses, webhook URL, Twilio SMS in `secrets`; each with
-// a Send test button; alerts.js).
+// a Send test button; alerts.js), and the automatic camera tunnel status (cloudflare.js: the
+// three worker secrets are set or not; read-only, `wrangler secret put` sets them).
 import * as alerts from "../alerts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
+import * as cloudflare from "../cloudflare.js";
 import * as db from "../db.js";
 import * as secrets from "../secrets.js";
 import { esc, fail, floatField, idParam, intField, isValidTimeZone, localTime, nowUtc, redirect, str, zoneName } from "../util.js";
@@ -181,6 +183,21 @@ async function alertsPanel(ctx, s) {
 </div>`;
 }
 
+// Automatic camera tunnels (G): configured when CF_API_TOKEN, CF_ACCOUNT_ID and CF_ZONE_ID are
+// set as worker secrets (never entered here), which of the three are missing otherwise, the
+// zone the hostnames go under and the operator emails the Access policy will allow.
+async function tunnelPanel(ctx, s) {
+  const on = cloudflare.configured(ctx.env);
+  const emails = await cloudflare.operatorEmails(ctx.env, s);
+  const badge = (ok, text) => `<span class="badge ${ok ? "badge-active" : "badge-muted"}">${text}</span>`;
+  const n = (await db.first(ctx.env, "SELECT COUNT(*) AS n FROM devices WHERE tunnel_id IS NOT NULL")).n;
+  return `<div class="panel">
+  <h2>Camera tunnels (Cloudflare) ${badge(on, on ? "configured" : "not configured")}</h2>
+  <p class="muted small">With the worker secrets set, every device gets its own Cloudflare Tunnel at enrollment (or from "Create tunnel" on the Devices page): <code>p5k-&lt;device_id&gt;</code>, the name <code>&lt;device_id&gt;-cam.${esc(cloudflare.zoneName(ctx.env))}</code> pointing at the Wyze bridge on the Pi, and an Access application so only the operators below can open it. The Pi receives the tunnel token on its next sync; nothing is stored here.${on ? "" : ` Missing: ${cloudflare.missing(ctx.env).map((k) => `<code>${k}</code>`).join(", ")} (<code>wrangler secret put</code>; the API token needs Account &gt; Cloudflare Tunnel: Edit, Zone &gt; DNS: Edit, Account &gt; Access: Apps and Policies: Edit). Until then, paste a live URL per device.`}</p>
+  <p class="muted small">Operator emails (Access policy): ${emails ? emails.map((e) => `<code>${esc(e)}</code>`).join(", ") : '<span class="badge badge-stale">none</span> set the alert email addresses above (or make an admin username an email address) before creating a tunnel'}. Devices with a tunnel: ${n}.</p>
+</div>`;
+}
+
 async function settingsPage(ctx, newToken = "") {
   const me = auth.requireRole(ctx, "admin");
   const s = await ctx.settings();
@@ -283,6 +300,8 @@ ${testError ? alertBox(`Test alert failed: ${testError}`) : ""}
 ${await wyzePanel(ctx, s)}
 
 ${await alertsPanel(ctx, s)}
+
+${await tunnelPanel(ctx, s)}
 
 ${await tokensPanel(ctx, me, newToken, s.timezone)}`;
   return layout(ctx, { title: "Settings", content });

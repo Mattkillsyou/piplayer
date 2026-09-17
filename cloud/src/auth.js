@@ -268,7 +268,8 @@ export async function deviceFromHeader(ctx) {
   const token = authorization.slice(7).trim();
   const row = token && await db.first(ctx.env,
     `SELECT id, device_id, name, playlist_id, group_id,
-            projector_control, projector_power_mode, projector_ir_codes, broadlink_host
+            projector_control, projector_power_mode, projector_ir_codes, broadlink_host,
+            tunnel_id, tunnel_hostname
        FROM devices WHERE token = ?`, token);
   if (!row) fail(401, "Invalid device token");
   return row;

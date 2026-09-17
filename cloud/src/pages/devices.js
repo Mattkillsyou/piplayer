@@ -3,6 +3,7 @@
 // dashboard shares.
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
+import * as cloudflare from "../cloudflare.js";
 import * as db from "../db.js";
 import * as manifest from "../manifest.js";
 import * as media from "../media.js";
@@ -293,6 +294,27 @@ function projectorBlock(ctx, d, canEdit, dis) {
       </details>`;
 }
 
+// Auto tunnel (G): the device's tunnel hostname badge and, with the Cloudflare secrets set, the
+// "Create tunnel" / "Recreate tunnel" button (POST /devices/:id/tunnel); the token itself is
+// never on this page (only the device's own sync gets it).
+function tunnelBlock(ctx, d, canEdit, tunnelOn) {
+  const badge = d.tunnel_hostname
+    ? `<span class="badge badge-active" title="Cloudflare Tunnel ${esc(cloudflare.tunnelName(d.device_id))}">tunnel · ${esc(d.tunnel_hostname)}</span>`
+    : '<span class="badge badge-muted">no tunnel</span>';
+  const button = canEdit && tunnelOn ? `<form method="post" action="/devices/${d.id}/tunnel" class="inline"${d.tunnel_hostname ? ` data-confirm="Recreate the tunnel for ${esc(d.name)}? Existing Cloudflare objects are reused; the live URL is reset to the tunnel."` : ""}>
+            ${csrfInput(ctx)}
+            <button type="submit" class="small${d.tunnel_hostname ? "" : " primary"}" title="Cloudflare Tunnel + DNS + Access app for this device's camera">${d.tunnel_hostname ? "Recreate tunnel" : "Create tunnel"}</button>
+          </form>` : "";
+  const help = tunnelOn
+    ? `Creates the Cloudflare Tunnel <code>${esc(cloudflare.tunnelName(d.device_id))}</code>, the name <code>${esc(cloudflare.hostnameFor(ctx.env, d.device_id))}</code> and an Access app for the operator emails, and sets the live URL to it; the Pi receives the tunnel token on its next sync. New devices get this at enrollment.`
+    : 'Automatic tunnels are not configured (<a href="/settings">Settings</a>): paste a live URL above.';
+  return `<div class="action-buttons tunnel-block">
+            ${badge}
+            ${button}
+          </div>
+          <p class="help small">${help}</p>`;
+}
+
 function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
   return `<form method="post" action="/devices/${d.id}/command" class="inline"${extra}>
           ${csrfInput(ctx)}
@@ -301,7 +323,7 @@ function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
         </form>`;
 }
 
-function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wyzeOn) {
+function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wyzeOn, tunnelOn) {
   const dis = canEdit ? "" : " disabled";
   const live = liveUrl(d.camera_live_url);
   return `<div class="device-row${isFault(d) ? " is-fault" : ""}">
@@ -354,7 +376,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
       ${updateStatus(d, tz)}
 
       <details class="camera-block">
-        <summary>Camera${live ? " · live URL set" : ""}${d.camera_source ? ` · ${esc(d.camera_source)}` : ""}</summary>
+        <summary>Camera${live ? " · live URL set" : ""}${d.tunnel_hostname ? " · tunnel" : ""}${d.camera_source ? ` · ${esc(d.camera_source)}` : ""}</summary>
         <div class="token-block">
           <form method="post" action="/devices/${d.id}/camera-source" class="row">
             ${csrfInput(ctx)}
@@ -381,6 +403,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
             <button type="submit" class="small"${dis}>Save</button>
           </form>
           <p class="help small">Page the console embeds for the live view (e.g. a Cloudflare Tunnel hostname to the Wyze bridge player). Snapshots come from the Pi on their own; see docs/camera.md.</p>
+          ${tunnelBlock(ctx, d, canEdit, tunnelOn)}
           ${live ? `<div class="action-buttons">
             <a href="${esc(live)}" target="_blank" rel="noopener noreferrer" class="button small">Live</a>
             <button type="button" class="small" data-live-frame="live-frame-${d.id}">Show live</button>
@@ -453,6 +476,7 @@ async function devicesPage(ctx) {
             d.projector_control, d.projector_ir_codes, d.broadlink_host, d.projector_power_mode,
             d.projector_power_state, d.projector_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
+            d.tunnel_id, d.tunnel_hostname,
             p.id AS playlist_id, p.name AS playlist_name,
             g.id AS group_id, g.name AS group_name
        FROM devices d
@@ -481,7 +505,10 @@ async function devicesPage(ctx) {
   for (const c of recent) byId.get(c.device_id)?.recent_commands.push(c);
   const install = installBaseUrl(env, ctx.url);
   const queued = ctx.url.searchParams.get("queued");
+  const tunnelDone = ctx.url.searchParams.get("tunnel") || "";
+  const tunnelError = ctx.url.searchParams.get("tunnel_error") || "";
   const wyzeOn = await secrets.wyzeConfigured(env);
+  const tunnelOn = cloudflare.configured(env);
 
   const content = `<div class="page-head">
   <h1>Devices</h1>
@@ -503,11 +530,13 @@ async function devicesPage(ctx) {
 </div>
 ${canEdit ? '<p class="help small">After registering, open "Token / install" on the new device and run that command on the Pi.</p>' : ""}
 ${/^\d+$/.test(queued || "") ? alertBox(`Update queued for ${queued} device${queued === "1" ? "" : "s"}.`, "ok") : ""}
+${tunnelDone ? alertBox(`Tunnel ready: https://${tunnelDone}/ (the Pi picks up the token on its next sync; open the live view logged in to Cloudflare Access).`, "ok") : ""}
+${tunnelError ? alertBox(`Tunnel creation failed: ${tunnelError}`) : ""}
 
 ${!devices.length
     ? emptyState("NO SIGNAL", `No devices yet.${canEdit ? " Register one above." : ""}`)
     : `<div class="device-rows">
-  ${devices.map((d) => deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wyzeOn)).join("\n  ")}
+  ${devices.map((d) => deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wyzeOn, tunnelOn)).join("\n  ")}
 </div>`}`;
   return layout(ctx, { title: "Devices", content });
 }
@@ -668,6 +697,21 @@ async function devicesSetCameraSource(ctx) {
   return redirect("/devices");
 }
 
+// "Create tunnel" (editor+): tunnel + DNS + ingress + Access app through the Cloudflare API
+// (cloudflare.provisionDevice), tunnel_id / tunnel_hostname / camera_live_url stored, audit
+// device_tunnel_created; a refusal comes back as a banner (audit device_tunnel_failed), never
+// a 500. 400 when the secrets are not set (the button is not rendered then).
+async function devicesCreateTunnel(ctx) {
+  auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  if (!cloudflare.configured(ctx.env)) fail(400, `automatic tunnels are not configured (${cloudflare.missing(ctx.env).join(", ")} not set)`);
+  const row = await db.first(ctx.env, "SELECT id, device_id FROM devices WHERE id = ?", deviceId);
+  if (!row) fail(404, "Device not found");
+  const done = await cloudflare.tryProvisionDevice(ctx, row);
+  if (done.error) return redirect(`/devices?tunnel_error=${encodeURIComponent(done.error)}`);
+  return redirect(`/devices?tunnel=${encodeURIComponent(done.hostname)}`);
+}
+
 // Projector block form: control none | broadlink | cec, power mode manual | auto, optional RM4
 // host. Learned codes are untouched (they come from ir-learn command results, api.js).
 async function devicesSetProjector(ctx) {
@@ -701,4 +745,5 @@ export function register(router) {
   router.get("/devices/:device_id/camera", devicesCamera);
   router.post("/devices/:device_id/camera-url", devicesSetCameraUrl);
   router.post("/devices/:device_id/camera-source", devicesSetCameraSource);
+  router.post("/devices/:device_id/tunnel", devicesCreateTunnel);
 }

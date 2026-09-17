@@ -330,7 +330,8 @@ rebuilds `device_commands` (rename-copy-drop, rows and ids kept, index recreated
 for E: `projector_control TEXT NOT NULL DEFAULT 'none'` (CHECK none | broadlink | cec),
 `projector_ir_codes TEXT` (JSON `{power_on, power_off, input_hdmi1}` base64 packets or NULL),
 `broadlink_host TEXT`, `projector_power_mode TEXT NOT NULL DEFAULT 'manual'` (CHECK manual | auto),
-`projector_power_state TEXT`, `projector_error TEXT`.
+`projector_power_state TEXT`, `projector_error TEXT`; for G: `tunnel_id TEXT`, `tunnel_hostname TEXT` (the
+Cloudflare Tunnel id and public hostname; the token is never stored).
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
 
@@ -427,6 +428,28 @@ console holds the configuration, the learned codes and what the player last repo
 | `POST /api/commands/:id/result` for an `ir-learn:<name>` command (`api.storeLearnedCode`) | the base64 packet in `code`, in a JSON-string `result` `{"learned": name, "code": b64}` (what the player sends), or the whole `result` when it is base64 (`IR_CODE_RE`, 20-4000 chars), is stored under `name` in `devices.projector_ir_codes` (`manifest.ir_codes` reads it back, dropping unknown names and junk); a "timeout" result changes nothing; audit `device_ir_code_learned` (device_id, name, never the packet) |
 | `GET /api/sync/:id?projector_state=&projector_error=` | `projector_state` on \| off \| unknown (`manifest.PROJECTOR_STATES`; absent or junk keeps the stored value, so a player without projector support never resets it); `projector_error` trimmed to 200, empty/absent -> NULL like `camera_error` |
 | manifest `projector` | `null` when `projector_control` is none (absence = feature off for the player), else `{control, mode, want: "on" \| "off", codes: {name: base64}, broadlink_host}` (`manifest.projector_block`); `want` = `projector_want(device, scheduleRows, groupPlaylistId, wall, settings)`: on while `pick_playlist` finds a playlist (device / group default included), from `projector_lead_minutes` before `schedules.next_start` starts, and while any of the last `projector_idle_minutes` minutes had a playlist; off otherwise. `auth.deviceFromHeader` selects the projector columns so the sync needs no extra statement; `manifest_for_device` reads the schedule rows once for the playlist, `next_rule` and `want` |
+
+## Auto camera tunnel (feature G, `cloudflare.js`, migration 0003)
+
+Cloud only. With the worker secrets `CF_API_TOKEN` (Account > Cloudflare Tunnel: Edit, Zone > DNS:
+Edit, Account > Access: Apps and Policies: Edit), `CF_ACCOUNT_ID` and `CF_ZONE_ID` set
+(`cloudflare.configured(env)`; `missing(env)` names what is not), every device gets its own
+Cloudflare Tunnel so the console's Live embed needs no hand-made tunnel. Without them nothing in
+the module is called: the Settings panel says "not configured", the Devices page hides the button
+and the manual live URL keeps working.
+
+| where | what |
+|---|---|
+| `cloudflare.provision(env, deviceId, emails)` | four idempotent steps over `fetch` to `api.cloudflare.com/client/v4` (bearer `CF_API_TOKEN`, 15 s timeout; a `success: false` envelope or a non-2xx answer throws `Cloudflare API <METHOD> <path>: <messages or HTTP status>`): tunnel `p5k-<device_id>` (`GET cfd_tunnel?name=&is_deleted=false`, else `POST` with `config_src: cloudflare`), `PUT .../configurations` with ingress `<hostname> -> http://127.0.0.1:5000` + `http_status:404`, the proxied CNAME `<device_id>-cam.<zone>` -> `<tunnel_id>.cfargotunnel.com` (`GET dns_records?type=CNAME&name=`, `POST`, or `PUT` when it points elsewhere), the Access self-hosted app on the hostname (`GET access/apps?domain=`, else `POST`) with one policy `p5k operators` (allow, `include: [{email}]`; `POST` or `PUT` so a changed operator list is applied on the next run). Returns `{tunnel_id, hostname}`; `hostnameFor(env, deviceId)` uses `CF_ZONE_NAME` or `photogen5000.com` |
+| `cloudflare.operatorEmails(env, settings)` | who the Access policy allows: `db.parseEmails(settings.alert_email)`, else the admin usernames that are addresses, else null (provisioning refuses with "no operator email known") |
+| `cloudflare.provisionDevice(ctx, {id, device_id})` / `tryProvisionDevice` | provision + `UPDATE devices SET tunnel_id, tunnel_hostname, camera_live_url = https://<hostname>/` + audit `device_tunnel_created` (`{device_id, tunnel_id, hostname, emails: n}`); the try variant never throws: it logs, audits `device_tunnel_failed` (`{device_id, error}`) and returns `{error}` |
+| `POST /api/enroll` (`api.enroll`) | when configured, a first enrollment and a re-enrollment of a device without `tunnel_id` call `tryProvisionDevice` after the audit row; the enrollment answer never depends on it |
+| `POST /devices/:id/tunnel` (editor+, `pages/devices.devicesCreateTunnel`) | the "Create tunnel" / "Recreate tunnel" button in the Camera block; 400 when not configured, 404 unknown device; redirects `?tunnel=<hostname>` or `?tunnel_error=<why>` and the page shows the banner. The block also shows the `tunnel · <hostname>` / `no tunnel` badge (every role) |
+| `GET /api/sync/:id` (`api.tunnelBlock`) | manifest `tunnel`: `{token, hostname}` with the token from `GET cfd_tunnel/<id>/token` on every sync (never stored, never rendered; `auth.deviceFromHeader` selects `tunnel_id` / `tunnel_hostname`), `null` when the device has no tunnel, the secrets are unset or the API fails (the sync still answers; the player keeps the token it already wrote) |
+| `/settings` panel "Camera tunnels (Cloudflare)" | configured / not configured badge with the missing secret names and the permissions, the zone, the operator emails the policy will get (or a warning to set `alert_email`), the count of devices with a tunnel. Read-only: the secrets are `wrangler secret put` |
+
+Deleting a device leaves its tunnel, CNAME and Access app in Cloudflare (still gated by Access);
+remove them by hand or recreate the device with the same id to reuse them.
 
 ## Tests
 
