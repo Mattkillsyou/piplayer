@@ -11,7 +11,7 @@ import pytest
 
 import firstboot
 import flasher
-from conftest import PUBKEY
+from conftest import PUBKEY, fake_wifi
 from test_console import OPERATOR_TOKEN, StubConsole, _serve
 
 FLASHER = Path(flasher.__file__)
@@ -257,9 +257,12 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     assert fields == ["Console: projectors.photogen5000.com", "Sign in", "Device name", "Wi-Fi network",
                       "Wi-Fi password", "SD card", "Refresh", "Flash", "Advanced"]
     # No field ever holds the console URL, a username, a password, a key or a token on the main screen.
-    entries = [w for w in app.id_label.master.winfo_children()
-               if isinstance(w, flasher.ttk.Entry) and not isinstance(w, flasher.ttk.Combobox)]
-    assert [e.cget("textvariable") for e in entries] == [str(app.v[k]) for k in ("name", "ssid", "wifi_password")]
+    entries = [w for w in app.id_label.master.winfo_children() if isinstance(w, flasher.ttk.Entry)]
+    assert [e.cget("textvariable") for e in entries] == [str(app.v[k]) for k in ("name", "ssid", "wifi_password",
+                                                                                   "disk")]
+    # The network is an editable Combobox (the networks this PC sees, any other name typed), the rest are Entries.
+    assert isinstance(app.ssid_box, flasher.ttk.Combobox) and str(app.ssid_box["state"]) == "normal"
+    assert [isinstance(e, flasher.ttk.Combobox) for e in entries] == [False, True, False, True]
     assert not app.advanced.winfo_manager() and not app.cancel_btn.winfo_manager()
     # Advanced opens one frame with the rest; the button toggles it.
     app.adv_btn.invoke()
@@ -274,6 +277,52 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
                for w in app.advanced.winfo_children())
     app.adv_btn.invoke()
     assert not app.advanced.winfo_manager()
+    root.destroy()
+
+
+def test_wifi_dropdown_lists_the_networks_and_fills_a_saved_password(monkeypatch):
+    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    nets = [{"ssid": "Cafe", "signal": 60, "auth": "Open"}, {"ssid": "Venue", "signal": 30, "auth": "WPA2-Personal"},
+            {"ssid": "Far", "signal": 3, "auth": "WPA2-Personal"}]
+    monkeypatch.setattr(flasher, "wifi", fake_wifi(nets, current="Venue", passwords={"Venue": "p4ss: word 1"}))
+    root = _root()
+    app = flasher.App(root)
+    assert app.ssid_hint.cget("text") == "scanning ..."
+    assert _pump(root, app, lambda: list(app.ssid_box["values"]) == ["Venue", "Cafe", "Far"])  # connected one first
+    assert app.ssid_hint.cget("text") == "leave blank for a wired Pi" and app.pw_hint.cget("text") == ""
+    # Picking a network with a profile on this PC fills the password (from netsh, off the Tk thread).
+    app.ssid_box.set("Venue")
+    app.ssid_box.event_generate("<<ComboboxSelected>>")
+    assert _pump(root, app, lambda: app.v["wifi_password"].get() == "p4ss: word 1")
+    assert app.pw_hint.cget("text") == "password from this PC"
+    assert "p4ss" not in _log(app)
+    # Editing the password drops the hint; picking a network without a profile leaves the field alone.
+    app.v["wifi_password"].set("p4ss: word 2")
+    assert app.pw_hint.cget("text") == ""
+    app.ssid_box.set("Cafe")
+    app.ssid_box.event_generate("<<ComboboxSelected>>")
+    root.update()
+    time.sleep(0.1)
+    root.update()
+    assert app.v["wifi_password"].get() == "p4ss: word 2"
+    # A typed name that is not in the list is an ordinary value with the ordinary rules.
+    app.baked_key = KEY
+    _fill(app, ssid="Typed Net", wifi_password="wp123456", image_mode="latest")
+    app.v["dry_run"].set(True)
+    v = app.validate()
+    assert v is not None and flasher.card_cfg(v)["ssid"] == "Typed Net" and _shown_errors(app) == {}
+    _fill(app, ssid="C:\\net", image_mode="latest")
+    assert app.validate() is None and _shown_errors(app) == {"ssid": "Wi-Fi SSID must not contain a backslash."}
+    # Refresh rescans; nothing seen: the box is empty and editable with a hint to type the name.
+    monkeypatch.setattr(flasher, "wifi", fake_wifi())
+    app.refresh_networks()
+    assert _pump(root, app, lambda: app.ssid_hint.cget("text") == "type the network name")
+    assert list(app.ssid_box["values"]) == [] and app.v["ssid"].get() == "C:\\net"
+    # Windows 11 with Location off for desktop apps: connected, but the scan shows nothing.
+    monkeypatch.setattr(flasher, "wifi", fake_wifi(current="Venue"))
+    app.refresh_networks()
+    assert _pump(root, app, lambda: app.ssid_hint.cget("text") == flasher.LOCATION_HINT)
+    assert list(app.ssid_box["values"]) == []
     root.destroy()
 
 

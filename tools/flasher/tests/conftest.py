@@ -1,4 +1,5 @@
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,15 @@ def _operator_config_sandbox(monkeypatch, tmp_path, request):
     monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: pytest.fail(f"browser opened: {url}"))
     if request.module.__name__ != "test_sshkey":
         monkeypatch.setattr(flasher.sshkey, "ensure_keypair", lambda log=None: PUBKEY)
+    # No netsh from the GUI tests: a PC with no Wi-Fi (test_wifi drives the real module with a fake netsh).
+    monkeypatch.setattr(flasher, "wifi", fake_wifi())
+
+
+def fake_wifi(networks=(), current=None, passwords=None):
+    """A stand-in for the wifi module: what this PC sees, what it is connected to, the saved passwords."""
+    pw = dict(passwords or {})
+    return types.SimpleNamespace(scan_networks=lambda: list(networks), current_ssid=lambda: current,
+                                 saved_password=lambda ssid: pw.get(ssid), saved_profiles=lambda: list(pw))
 
 
 PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIUL3nG/VzzJ6wyH+UdpX4KRzETi9LJnhz6FuBwRr0U5 projection5000-flasher@pc"

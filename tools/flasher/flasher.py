@@ -31,6 +31,7 @@ import console
 import firstboot
 import imagefetch
 import sshkey
+import wifi
 import windisk
 import winlocale
 
@@ -56,6 +57,8 @@ PLAIN_WORDS = [("Device name", "name", "Give the Pi a name."),
                ("Wi-Fi country", "adv", None), ("Timezone", "adv", None), ("Keyboard", "adv", None),
                ("Static IP", "adv", None), ("Gateway", "adv", None), ("Device token", "adv", None),
                ("SSH public key", "adv", None)]
+WIRED_HINT = "leave blank for a wired Pi"
+LOCATION_HINT = "turn on Location in Windows Settings to list networks"
 COUNTRIES = ["US", "GB", "CA", "AU", "NZ", "DE", "FR", "ES", "IT", "NL", "SE", "NO", "DK", "FI", "IE", "JP", "MX", "BR"]
 TIMEZONES = ["America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York", "America/Phoenix",
              "America/Anchorage", "Pacific/Honolulu", "America/Toronto", "America/Vancouver", "America/Mexico_City",
@@ -326,6 +329,7 @@ class App:
         self._fit_to_screen()
         self._pump()
         self.refresh_disks()
+        self.refresh_networks()
         self.log(f"Console {self.console_url}.")
         op = load_operator_config()
         if op["token"] and op["console_url"] in ("", self.console_url):
@@ -379,14 +383,28 @@ class App:
         self.id_label.grid(row=1, column=1, sticky="w", padx=4)
         self._err(form, 2, "name")
         self.v["name"].trace_add("write", self._derive_id)
-        self._entry(form, 3, "Wi-Fi network", "ssid")
-        ttk.Label(form, text="leave blank for a wired Pi", foreground="grey").grid(row=3, column=2, sticky="w", padx=4)
+        ttk.Label(form, text="Wi-Fi network").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+        self.ssid_box = ttk.Combobox(form, textvariable=self._var("ssid"), width=38)  # editable: any name works
+        self.ssid_box.grid(row=3, column=1, sticky="we", padx=4, pady=2)
+        self.ssid_box.bind("<<ComboboxSelected>>", self._ssid_picked)
+        side = ttk.Frame(form)
+        side.grid(row=3, column=2, sticky="w")
+        refresh = ttk.Label(side, text="Refresh", foreground="#0645ad", cursor="hand2", underline=0)
+        refresh.pack(side="left", padx=4)
+        refresh.bind("<Button-1>", lambda e: self.refresh_networks())
+        self.ssid_hint = ttk.Label(side, text=WIRED_HINT, foreground="grey", wraplength=260, justify="left")
+        self.ssid_hint.pack(side="left", padx=4)
         self._err(form, 4, "ssid")
         pw = self._entry(form, 5, "Wi-Fi password", "wifi_password", show="*")
         self._var("show_wifi", False, tk.BooleanVar)
-        ttk.Checkbutton(form, text="Show", variable=self.v["show_wifi"],
+        side = ttk.Frame(form)
+        side.grid(row=5, column=2, sticky="w")
+        ttk.Checkbutton(side, text="Show", variable=self.v["show_wifi"],
                         command=lambda: pw.configure(show="" if self.v["show_wifi"].get() else "*")
-                        ).grid(row=5, column=2, sticky="w", padx=4)
+                        ).pack(side="left", padx=4)
+        self.pw_hint = ttk.Label(side, text="", foreground="grey")
+        self.pw_hint.pack(side="left", padx=4)
+        self.v["wifi_password"].trace_add("write", self._password_edited)
         self._err(form, 6, "wifi_password")
         ttk.Label(form, text="SD card").grid(row=7, column=0, sticky="w", padx=4, pady=2)
         self.disk_box = ttk.Combobox(form, textvariable=self._var("disk"), state="readonly")
@@ -668,6 +686,54 @@ class App:
             self.disk_box.current(0)
             if previous:
                 self.log(f"Target reset to {disks[0]['label']} (the previous selection is gone).")
+
+    # ----- Wi-Fi networks this PC sees (netsh, in a thread; the box stays editable for any other name)
+    def refresh_networks(self):
+        self.ssid_hint.configure(text="scanning ...")
+
+        def work():
+            nets, current = wifi.scan_networks(), wifi.current_ssid()
+            self.post(lambda: self._show_networks(nets, current))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_networks(self, nets, current):
+        names = [n["ssid"] for n in nets]
+        if current in names:
+            names.remove(current)
+            names.insert(0, current)
+        self.ssid_box["values"] = names
+        if names:
+            hint = WIRED_HINT
+        elif current:  # Windows 11 hides scan results from desktop apps while Location access is off
+            hint = LOCATION_HINT
+        else:
+            hint = "type the network name"
+        self.ssid_hint.configure(text=hint)
+
+    def _ssid_picked(self, _event=None):
+        ssid = self.v["ssid"].get()
+
+        def work():
+            pw = wifi.saved_password(ssid)  # None without a profile on this PC; never logged
+            if pw:
+                self.post(lambda: self._fill_password(ssid, pw))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _fill_password(self, ssid: str, pw: str):
+        if self.v["ssid"].get() != ssid:  # the operator moved on while netsh ran
+            return
+        self._setting_pw = True
+        try:
+            self.v["wifi_password"].set(pw)
+        finally:
+            self._setting_pw = False
+        self.pw_hint.configure(text="password from this PC")
+
+    def _password_edited(self, *_):
+        if not getattr(self, "_setting_pw", False):
+            self.pw_hint.configure(text="")
 
     def selected_disk(self):
         label = self.v["disk"].get()

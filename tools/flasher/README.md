@@ -13,7 +13,12 @@ One screen, four steps, nothing to copy and paste.
    then reads "Signed in as <you>" and stays that way on later launches.
 2. **Device name**, e.g. "Lobby Projector". The device id / hostname
    (`lobby-projector`) is derived from it and shown in grey under the entry.
-3. **Wi-Fi network and password**. Leave both blank for a wired Pi.
+3. **Wi-Fi network and password**. The network box lists the networks this
+   PC currently sees (strongest first, the one it is connected to at the top;
+   Refresh rescans). Picking one that this PC has a saved profile for fills
+   the password too ("password from this PC" in grey; the hint goes away as
+   soon as you edit it). A network that is not listed can be typed in as
+   before. Leave both blank for a wired Pi.
 4. **SD card**: pick the reader (Refresh rescans), click **Flash**, confirm the
    erase warning. When it finishes: "Done. Put the card in the Pi and power it
    on. It appears on the Devices page within a few minutes."
@@ -324,3 +329,14 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
   /inheritance:r /grant:r "%USERNAME%:F"`.
 - **Wrong Wi-Fi password / SSID**: nothing to fix on the card after the fact,
   re-flash it.
+- **The network list is empty** ("type the network name"): the scan comes
+  from `netsh wlan show networks`; there is no Wi-Fi adapter, it is off, or
+  the Wireless AutoConfig service is not running. On a non-English Windows
+  the output may not be recognised at all: type the network name, everything
+  else works the same. The saved password is read from `netsh wlan show
+  profile ... key=clear` and is never written to the log or the settings.
+- **"turn on Location in Windows Settings to list networks"**: this PC is
+  connected to Wi-Fi but the scan is empty. Windows 11 hides scan results
+  from desktop apps while Location access is off: Settings, Privacy &
+  security, Location, turn on "Location services" and "Let desktop apps
+  access your location", then click Refresh next to the network box.
