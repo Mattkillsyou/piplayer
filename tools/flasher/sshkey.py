@@ -1,9 +1,10 @@
 """One ed25519 SSH keypair per Windows user for the flasher (%APPDATA%\\Projection5000\\ssh\\id_ed25519).
 
 Pure Python (RFC 8032 key derivation, OpenSSH key file formats), no third-party package and no ssh-keygen.exe:
-the build interpreter has no `cryptography`, Windows' OpenSSH client is an optional feature that can be removed,
-and a --windowed exe spawning ssh-keygen flashes a console window. Key generation from a 32-byte seed is ~40
-lines of arithmetic; the tests check it against an RFC 8032 vector and against ssh-keygen -y when present.
+`cryptography` would make the build depend on a native wheel the build machine may not have, and Windows' OpenSSH
+client is an optional feature that can be removed, so ssh-keygen could only be a second generator beside a
+pure-Python fallback. Key generation from a 32-byte seed is ~40 lines of arithmetic; the tests check it against
+an RFC 8032 vector and against ssh-keygen -y / -l when present.
 
 The private key is a plain OpenSSH file (ssh.exe must read it, so DPAPI is out) with its ACL cut down to the
 current user via icacls, which is what ssh.exe demands before it uses a key ("UNPROTECTED PRIVATE KEY FILE").

@@ -459,48 +459,88 @@ def test_provision_with_token_never_enrolls(tmp_path):
     assert not r["sbin"] and not r["archive"]
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
-def test_firstrun_wipes_itself_and_logs_rc(tmp_path):
-    """Run the rendered firstrun.sh with stubbed tools: it must finish, log each step's rc, zero-fill and
-    remove the secret-bearing files, and write firstrun.ok."""
+def _run_firstrun(tmp_path, c, stubs=()):
+    """Run render_firstrun(c) under bash with the machine stubbed: BOOT, a fake imager (set_keymap fails),
+    a stub userconf, /etc and /usr/local paths moved into tmp_path, plus extra stub commands on PATH.
+    Real coreutils (openssl, install, dd, stat, sed, ...) do the work. Forward slashes: Git Bash on Windows."""
     boot = tmp_path / "boot"
     boot.mkdir()
-    s = firstboot.render_firstrun(cfg())
-    # Point the script at the temp tree: BOOT, a fake imager and a stub userconf; the real coreutils
-    # (openssl, install, dd, stat, sed, ...) do the work. Forward slashes: bash on Windows (Git Bash).
     tmp = tmp_path.as_posix()
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     imager = bin_dir / "imager_custom"
     imager.write_text('#!/bin/bash\necho "imager $1"\n[ "$1" = set_keymap ] && exit 3\nexit 0\n')
-    imager.chmod(0o755)
-    s = (s.replace('BOOT=/boot/firmware; [ -d "$BOOT" ] || BOOT=/boot', f"BOOT={shlex.quote(boot.as_posix())}")
-          .replace("IMAGER=/usr/lib/raspberrypi-sys-mods/imager_custom", f"IMAGER={shlex.quote(imager.as_posix())}")
-          .replace("/usr/lib/userconf-pi/userconf", (bin_dir / "userconf").as_posix())
-          .replace("/usr/local/sbin/", tmp + "/sbin-")
-          .replace("/opt/", tmp + "/opt-")
-          .replace("/etc/systemd/system/", tmp + "/unit-")
-          .replace("run systemctl enable", "run true systemctl enable"))
     (bin_dir / "userconf").write_text("#!/bin/bash\nexit 0\n")
-    (bin_dir / "userconf").chmod(0o755)
-    firstrun = boot / "firstrun.sh"
-    firstrun.write_bytes(s.encode())
-    provision = boot / "projection5000-provision.sh"
-    provision.write_bytes(b"#!/bin/bash\nDEVICE_TOKEN=supersecrettoken0000\n")
+    for name, body in stubs:
+        (bin_dir / name).write_text("#!/bin/bash\n" + body)
+    for f in bin_dir.iterdir():
+        f.chmod(0o755)
+    s = (firstboot.render_firstrun(c)
+         .replace('BOOT=/boot/firmware; [ -d "$BOOT" ] || BOOT=/boot', f"BOOT={shlex.quote(boot.as_posix())}")
+         .replace("IMAGER=/usr/lib/raspberrypi-sys-mods/imager_custom", f"IMAGER={shlex.quote(imager.as_posix())}")
+         .replace("/usr/lib/userconf-pi/userconf", (bin_dir / "userconf").as_posix())
+         .replace("/usr/local/sbin/", tmp + "/sbin-")
+         .replace("/opt/", tmp + "/opt-")
+         .replace("/etc/systemd/system/", tmp + "/unit-")
+         .replace("/etc/ssh/", tmp + "/etc-ssh/")
+         .replace("/etc/NetworkManager/", tmp + "/etc-nm/")
+         .replace("run systemctl enable", "run true systemctl enable"))
+    (boot / "firstrun.sh").write_bytes(s.encode())
+    (boot / "projection5000-provision.sh").write_bytes(b"#!/bin/bash\nDEVICE_TOKEN=supersecrettoken0000\n")
     (boot / firstboot.PLAYER_ARCHIVE).write_bytes(b"tarball")
     (boot / "cmdline.txt").write_text("console=tty1 rootwait " + firstboot.CMDLINE_ARGS + " cfg80211.ieee80211_regdom=US\n")
-    r = subprocess.run(["bash", str(firstrun)], capture_output=True, text=True, timeout=60)
+    env = dict(os.environ, PATH=bin_dir.as_posix() + ":" + os.environ.get("PATH", ""))
+    r = subprocess.run(["bash", str(boot / "firstrun.sh")], capture_output=True, text=True, timeout=60, env=env)
     log = (boot / "firstrun.log").read_text()
     assert r.returncode == 0, log + r.stderr
+    return boot, log
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_firstrun_wipes_itself_and_logs_rc(tmp_path):
+    """Run the rendered firstrun.sh with stubbed tools: it must finish, log each step's rc, zero-fill and
+    remove the secret-bearing files, and write firstrun.ok."""
+    boot, log = _run_firstrun(tmp_path, cfg())
     assert "set_hostname -> rc=0" in log and "set_keymap -> rc=3" in log and "userconf pi -> rc=0" in log, log
     assert "firstrun done" in log and "1 step(s) failed" in log
     assert not (boot / "firstrun.ok").exists()  # one step failed: no success marker
-    assert not firstrun.exists() and not provision.exists() and not (boot / firstboot.PLAYER_ARCHIVE).exists()
+    assert not (boot / "firstrun.sh").exists() and not (boot / "projection5000-provision.sh").exists()
+    assert not (boot / firstboot.PLAYER_ARCHIVE).exists()
     assert (tmp_path / "sbin-projection5000-provision.sh").read_bytes() == b"#!/bin/bash\nDEVICE_TOKEN=supersecrettoken0000\n"
     assert (tmp_path / "opt-projection5000-player.tar.gz").read_bytes() == b"tarball"
     assert (boot / "cmdline.txt").read_text() == "console=tty1 rootwait cfg80211.ieee80211_regdom=US\n"
     # No secret is left in the log.
     assert "correct horse battery" not in log and "supersecret" not in log and "$ecret" not in log
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_firstrun_key_and_static_ip_under_bash(tmp_path):
+    """The key-only SSH and static-IP lines run end to end: getent resolves the home, install/chown/chmod
+    set up authorized_keys, sshd gets the no-password drop-in, NetworkManager gets the static keyfile.
+    getent and chown are stubbed and install loses -o/-g (Git Bash has no Linux users or groups)."""
+    home = tmp_path / "home"
+    msys_home = _msys(str(home))  # /c/... : a C: drive letter would be one more field for cut -d:
+    stubs = [
+        ("getent", f'echo "projector-admin:x:1000:1000::{msys_home}:/bin/bash"\n'),
+        ("chown", 'echo "chown $*" >>"$(dirname "$0")/../chown.log"\n'),
+        # -o/-g dropped; MSYS install -d creates the directory but cannot chmod it, so that counts as done.
+        ("install", 'a=(); while [ $# -gt 0 ]; do case $1 in -o|-g) shift;; *) a+=("$1");; esac; shift; done\n'
+                    '/usr/bin/install "${a[@]}" 2>/dev/null || { [ "${a[0]}" = -d ] && [ -d "${a[-1]}" ]; }\n'),
+    ]
+    c = cfg(username="projector-admin", ssh_pubkey=PUBKEY, static_ip="192.168.1.50/24", gateway="192.168.1.1")
+    boot, log = _run_firstrun(tmp_path, c, stubs)
+    assert (home / ".ssh" / "authorized_keys").read_text() == PUBKEY + "\n"
+    assert "install -d -> rc=0" in log and "chown projector-admin:projector-admin -> rc=0" in log, log
+    assert "chmod 0600 -> rc=0" in log
+    assert (tmp_path / "chown.log").read_text() == f"chown projector-admin:projector-admin {msys_home}/.ssh/authorized_keys\n"
+    assert (tmp_path / "etc-ssh" / "sshd_config.d" / "projection5000.conf").read_text() == (
+        "PasswordAuthentication no\nKbdInteractiveAuthentication no\n")
+    nm = (tmp_path / "etc-nm" / "system-connections" / "preconfigured.nmconnection").read_text()
+    assert "ssid=Venue WiFi" in nm and "[ipv4]\nmethod=manual\naddress1=192.168.1.50/24,192.168.1.1\ndns=192.168.1.1;\n" in nm
+    assert "psk=" in nm and "correct horse battery" not in nm  # the PSK is the pbkdf2 hex, not the passphrase
+    assert "set_wlan" not in log  # static IP: the keyfile, not imager_custom set_wlan (DHCP only)
+    assert "firstrun done" in log and not (boot / "firstrun.sh").exists()
+    assert "supersecret" not in log and "AAAAC3" not in log  # run() logs two words: never the key or a secret
 
 
 def test_wipe_zero_fills_before_unlink(tmp_path):

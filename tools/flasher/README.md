@@ -112,10 +112,13 @@ On the console the sign-in appears as an API token named "SD Flasher on
 - For building or running from source: Python 3.11+ with tkinter (the
   python.org installer includes it). No third-party packages at runtime: the
   SSH key is generated in pure Python (RFC 8032 arithmetic plus the OpenSSH
-  file formats, checked against `ssh-keygen -y` in the tests), because the
-  build interpreter has no `cryptography`, Windows' OpenSSH client is an
-  optional feature, and a windowed exe spawning `ssh-keygen.exe` flashes a
-  console window. `icacls` (always present) restricts the private key's ACL.
+  file formats, checked against an RFC 8032 vector and `ssh-keygen -y` /
+  `-l` in the tests). `cryptography` would make the build depend on a native
+  wheel the build machine may not have, and `ssh-keygen.exe` (Windows'
+  OpenSSH client is an optional feature that can be removed) could only ever
+  be a second generator next to a pure-Python fallback; one tested generator
+  is less code than two. `icacls` (always present) restricts the private
+  key's ACL.
 
 ## Run the exe
 
