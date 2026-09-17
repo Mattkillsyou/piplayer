@@ -13,8 +13,7 @@ and treats the feature as off.
 
 Each section says what the feature does, which settings drive it, and the
 one-time steps the operator must do by hand (tokens, accounts, dashboard
-settings). Sections marked "coming in this branch" are filled in as the
-feature lands.
+settings).
 
 ## A. Auto-assign on enrollment (cloud + cms)
 
@@ -948,5 +947,179 @@ it back in and wait for the `RECOVERED` one.
 
 ## G. Live camera without manual tunnel (cloud + player)
 
-Coming in this branch. Cloud-only; on a Python console use the manual live
-URL described in [camera.md](camera.md).
+**What it does.** The **Live** view in camera.md needs a Cloudflare Tunnel
+from each Pi to a hostname with Cloudflare Access in front, which until now
+meant `cloudflared tunnel login`, a config file and an Access application
+per device, by hand. With this feature the cloud console does all of that
+through the Cloudflare API: when a device enrolls (or when you click
+**Create tunnel** on the Devices page) the console creates the tunnel, the
+DNS record and the Access application, hands the tunnel token to the Pi in
+its manifest, and fills in **Camera live URL** itself. The Pi runs
+`cloudflared` as a service and picks the token up on its next sync. Nothing
+is typed on the Pi and nothing is clicked in the Cloudflare dashboard after
+the one-time setup below. Cloud only: the Python console keeps the manual
+live URL ([camera.md](camera.md), "Live view").
+
+**Worker secrets.** Three secrets on the worker turn the feature on; without
+them the Settings page shows the tunnel section as **not configured**, the
+**Create tunnel** button is disabled, enrollment skips the tunnel step, and
+the manual **Camera live URL** field keeps working exactly as before.
+
+| Secret | Value |
+|---|---|
+| `CF_API_TOKEN` | a Cloudflare API token with the three permissions listed under Operator steps |
+| `CF_ACCOUNT_ID` | the Cloudflare account that owns the zone and the Zero Trust organisation |
+| `CF_ZONE_ID` | the zone id of `photogen5000.com`, where the `<device_id>-cam` hostnames are created |
+
+None of them is stored in D1 or shown in the console; the Settings section
+only says whether all three are present.
+
+**What the console creates**, per device, all idempotent (an object that
+already exists with the right name is reused, so **Create tunnel** can be
+clicked again after a partial failure and only the missing pieces are
+made):
+
+| Object | Name / value |
+|---|---|
+| Cloudflare Tunnel (remotely managed) | `p5k-<device_id>` |
+| Tunnel configuration | ingress `<device_id>-cam.photogen5000.com` → `http://127.0.0.1:5000`, then the catch-all `http_status:404` |
+| DNS record in the zone | CNAME `<device_id>-cam.photogen5000.com` → `<tunnel_id>.cfargotunnel.com`, proxied |
+| Access application (self-hosted) | domain `<device_id>-cam.photogen5000.com`, one **Allow** policy listing the operator emails |
+
+Port 5000 is the wyze-bridge web player on the Pi (section D installs the
+bridge; an RTSP camera needs something of your own listening there, as in
+camera.md). Device ids are already lowercase letters, digits and hyphens, so
+every `<device_id>-cam` is a valid hostname label.
+
+The Access policy's email list comes from the Settings page: **Email to**
+(`alert_email`, section F) doubles as the operator list. If it is empty the
+console falls back to the admin users' usernames, provided every one of
+them is an email address; if neither gives a list, tunnel creation stops
+with a message asking you to fill in **Email to** first, and nothing is
+created (the hostname must never go up without a policy in front of it,
+because the bridge player has no login of its own). Changing the list later
+does not rewrite existing applications: click **Create tunnel** again on
+each device to update the policy, or edit it in Zero Trust.
+
+**What the console stores.** `devices.tunnel_id` and
+`devices.tunnel_hostname`, shown in the Camera block, plus
+`camera_live_url` set to `https://<tunnel_hostname>/` so the existing
+**Live** and **Show live** buttons work unchanged (you can still overwrite
+the URL by hand; only creation writes it). The tunnel token is not stored:
+when a device with a `tunnel_id` syncs, the console fetches the token from
+the Cloudflare API and puts it in that device's manifest as
+
+```json
+{"tunnel": {"token": "eyJ...", "hostname": "pi-lobby-cam.photogen5000.com"}}
+```
+
+The manifest is only ever served to the device's own bearer token, so the
+tunnel token goes to the Pi it belongs to and nowhere else; it is never
+rendered in the console and never written to the audit log. A device
+without a tunnel simply has no `tunnel` key. Creation, and a failed
+creation, are audited against the device (the details name the object that
+failed and the Cloudflare error, so `/audit` answers "why is there no
+tunnel for the bar Pi").
+
+**What the Pi does.** The installer (`install-player.sh`, also on
+`--upgrade`) installs `cloudflared` for arm64 from Cloudflare's apt
+repository (`pkg.cloudflare.com`), falling back to the `.deb` from the
+GitHub releases page when the repository cannot be added, and installs
+`projector-cloudflared.service`, which runs `cloudflared tunnel run` with
+the token read from `/var/lib/projector-player/tunnel.token` and is
+enabled but stays stopped while the file is missing. On any sync whose
+manifest carries `tunnel.token`, the daemon writes the token to
+`/var/lib/projector-player/tunnel.token` (mode 600, owned by `projector`)
+and, if the token changed, runs
+`sudo -n systemctl restart projector-cloudflared.service` (a new line in
+the sudoers drop-in `/etc/sudoers.d/projector-player`, next to the
+wyze-bridge one). An unchanged token is a no-op, so the service is not
+bounced on every sync. A player talking to a console that never sends the
+key (the Python console, or the cloud console without the three secrets)
+leaves the service stopped and behaves exactly as before. Players installed
+before this branch need one `sudo bash deploy/install-player.sh --upgrade`
+to get `cloudflared`, the unit and the sudoers line.
+
+**Viewing.** Open **Live** in a new tab first: the hostname is behind
+Cloudflare Access, which shows its login page and, with the default
+identity provider, emails a one-time PIN to the address you enter; only the
+addresses in the policy get one. Once you are through, **Show live**
+(the inline iframe on the Devices page) works in the same browser, because
+the Access cookie is set for the hostname. The iframe itself cannot show
+the login page (it is sandboxed and sends no referrer), so a blank or
+"login" iframe always means "open Live in a tab and sign in first". The
+console's own login is separate from Access; being signed in to
+`projectors.photogen5000.com` does not sign you in to the camera hostnames.
+
+**Operator steps** (once per site):
+
+1. **Zero Trust organisation.** In the Cloudflare dashboard open **Zero
+   Trust** once and, if asked, pick a team name and the Free plan (up to
+   50 users). Access applications cannot be created by the API until the
+   account has this. While there, check **Settings → Authentication →
+   Login methods** lists **One-time PIN** (it does by default); that is how
+   operators will sign in to the camera pages.
+2. **Account and zone ids.** Dashboard → **Websites → photogen5000.com →
+   Overview**; the right-hand **API** panel shows **Zone ID** and
+   **Account ID**. Copy both.
+3. **API token.** Dashboard → profile menu → **My Profile → API Tokens →
+   Create Token → Create Custom Token**. Name it `projection5000-tunnels`
+   and add exactly these three permissions:
+
+   | Type | Item | Level |
+   |---|---|---|
+   | Account | **Cloudflare Tunnel** | **Edit** |
+   | Account | **Access: Apps and Policies** | **Edit** |
+   | Zone | **DNS** | **Edit** |
+
+   Under **Account Resources** include your account; under **Zone
+   Resources** choose **Specific zone → photogen5000.com**. Leave client IP
+   filtering and TTL empty (the worker calls from Cloudflare's own network
+   and the token must not expire silently). **Continue to summary → Create
+   Token**, and copy the token now; it is shown once.
+4. **Put the three values on the worker** from `cloud/` on your machine
+   (each command prompts for the value; nothing goes into a file or the
+   repository):
+
+   ```powershell
+   cd cloud
+   npx wrangler secret put CF_API_TOKEN
+   npx wrangler secret put CF_ACCOUNT_ID
+   npx wrangler secret put CF_ZONE_ID
+   ```
+
+   `wrangler secret put` targets the deployed worker and takes effect on
+   the next request, no redeploy needed. Rotate the token the same way
+   (create a new one, `secret put` it, then delete the old one in the
+   dashboard).
+5. Cloud console, **Settings**: the tunnel section now reads
+   **configured**, and **Email to** holds the addresses that may open the
+   camera pages (the same list the alerts go to; add colleagues who need
+   the camera but not the alerts and they will get both, or leave the field
+   empty and let the admin usernames stand in).
+6. Flash cards as usual (section B). Each new device gets its tunnel at
+   enrollment; on the Devices page the Camera block shows the hostname and
+   a **Live** button within a minute of the first sync. Devices enrolled
+   before the secrets were set: expand the Camera block and click
+   **Create tunnel** once each.
+
+**Removing a device** does not delete its tunnel, DNS record or Access
+application (the worker only ever creates); delete them in the dashboard
+(**Zero Trust → Networks → Tunnels**, **DNS → Records**, **Zero Trust →
+Access → Applications**) when you retire a Pi, or leave them: an unused
+tunnel with no connector is harmless and free.
+
+**Not covered by the automated tests.** The cloud tests drive the API
+client against a fake `fetch` (request shapes for tunnel, configuration,
+DNS and Access; reuse of objects that already exist; a Cloudflare error
+surfacing as the audited message; the manifest carrying `tunnel` only for
+the device's own bearer). The player tests cover the token file (contents,
+mode 600), the restart through a fake `systemctl` and the no-op on an
+unchanged token. What needs the real account: the API token's permissions
+actually sufficing (a missing one shows up as a `403` / code `10000`
+"Authentication error" in the device's audit entry; fix the token in the
+dashboard and click **Create tunnel** again), `cloudflared` on arm64
+connecting, and Access issuing the PIN. Verify once on one Pi: **Create
+tunnel**, wait for the next sync, `sudo systemctl status
+projector-cloudflared.service` on the Pi should show `Registered tunnel
+connection`, then **Live** in a new tab, the PIN, and the bridge player.

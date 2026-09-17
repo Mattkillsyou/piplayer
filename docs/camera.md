@@ -28,7 +28,8 @@ in [hardware.md](hardware.md).
 - **Live** is a link the operator pastes once per device (**Camera live
   URL** on the Devices page): an https URL the console opens in a new tab and
   can embed inline. Nothing on the Pi is exposed until you set that up (see
-  "Live view").
+  "Live view"). On the cloud console the tunnel, the hostname and the URL
+  can be created for you: [automation.md](automation.md) section G.
 
 ## Option A: any RTSP camera
 
@@ -205,6 +206,14 @@ the bridge's web player (Wyze) or at whatever serves your camera's live page
 (RTSP cameras: the camera's own web UI, or a small HLS/WebRTC gateway such as
 `mediamtx` on the Pi), with Cloudflare Access in front.
 
+> **Cloud console:** once the three `CF_*` worker secrets are set, the
+> console creates the tunnel, the DNS record and the Access application
+> itself, at enrollment or from a **Create tunnel** button, and the Pi runs
+> `cloudflared` from a token in its manifest; see
+> [automation.md](automation.md) section G. The steps below are the manual
+> route, still needed on a Python console or for a camera page other than
+> the wyze-bridge player on port 5000.
+
 1. On the Pi, install `cloudflared` and create a tunnel, as in
    [public-access.md](public-access.md) ("Recommended: Cloudflare Tunnel",
    steps 2-5) but on the player Pi, with an ingress rule for the camera:
@@ -311,8 +320,9 @@ most once every 10 minutes (`journalctl -u projector-player.service | grep
   and log in through Access, then click **Show live** again. Access
   applications and the console must be viewed in the same browser profile.
 - `lobby-cam.yourdomain.com` times out: the tunnel is down on the Pi
-  (`sudo systemctl status cloudflared`) or the ingress `service:` port is
-  wrong (`curl -sI http://127.0.0.1:5000/` on the Pi should answer).
+  (`sudo systemctl status cloudflared`, or `projector-cloudflared.service`
+  for a console-made tunnel) or the ingress `service:` port is wrong
+  (`curl -sI http://127.0.0.1:5000/` on the Pi should answer).
 - The picture in the bridge's web player is black while the snapshot works:
   the browser stream needs a different codec path than ffmpeg; see the
   wyze-bridge README (WebRTC vs HLS). The snapshot is independent of it.
