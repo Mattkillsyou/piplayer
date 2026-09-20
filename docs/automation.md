@@ -456,7 +456,12 @@ way and also shows up as `camera_error` on the Devices page; the daemon
 never stops over it.
 
 **Installer and flasher.** `install-player.sh --with-wyze` still installs
-Docker and `projector-wyze-bridge.service`, but no longer needs the `WYZE_*`
+Docker and `projector-wyze-bridge.service` (only on a 64-bit Pi with at least
+1 GB of memory: on a Pi Zero 2 W or any 32-bit board the installer logs
+"Camera bridge: not supported" and skips Docker, the player reports
+`camera_supported=0` on sync, and the Devices page says "Camera is not
+supported on this Pi model." instead of showing the Wyze picker), but no
+longer needs the `WYZE_*`
 variables: no empty template is written, the unit tolerates a missing env
 file, stays enabled, and is started by the daemon once it has fetched
 credentials (the installer pre-pulls the bridge image so that first restart

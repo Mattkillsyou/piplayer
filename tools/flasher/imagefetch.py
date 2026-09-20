@@ -7,7 +7,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-LATEST_URL = "https://downloads.raspberrypi.com/raspios_lite_arm64_latest"
+LATEST_URLS = {"arm64": "https://downloads.raspberrypi.com/raspios_lite_arm64_latest",
+               "armhf": "https://downloads.raspberrypi.com/raspios_lite_armhf_latest"}
+LATEST_URL = LATEST_URLS["arm64"]
 USER_AGENT = "Projection5000-SD-Flasher/1.0"
 
 
@@ -50,6 +52,16 @@ def resolve_latest(url: str = LATEST_URL) -> tuple:
     if not name:
         raise FetchError(f"no filename in {final}")
     return final, name
+
+
+def remote_size(url: str):
+    """Content-Length of url (HEAD), or None when the server does not say: only for a log line."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD"),
+                                    timeout=30) as resp:
+            return int(resp.headers.get("Content-Length") or 0) or None
+    except Exception:
+        return None
 
 
 def fetch_sha256(url: str) -> str:

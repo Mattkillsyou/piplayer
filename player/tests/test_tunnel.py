@@ -38,8 +38,11 @@ def client(cfg, mpv):
 
 
 @pytest.fixture
-def runs(monkeypatch):
+def runs(monkeypatch, tmp_path):
     calls = SimpleNamespace(args=[], rc=0)
+    binary = tmp_path / "cloudflared"
+    binary.write_text("")
+    monkeypatch.setattr(tunnel, "BINARY", binary)
 
     def fake_run(cmd, **kw):
         calls.args.append(list(cmd))
@@ -82,6 +85,20 @@ def test_maybe_apply_restarts_cloudflared_only_when_the_token_changes(cfg, runs)
     assert tunnel.token_path(cfg).read_text() == "new\n" and runs.args == [RESTART, RESTART]
 
 
+def test_missing_binary_writes_the_token_but_never_restarts(cfg, runs, caplog):
+    """A Pi the installer could not get cloudflared for (download failed): the
+    token is kept for a later install, the unit is not poked (its
+    ConditionPathExists on the binary keeps systemd from looping on it) and
+    the reason is logged once, not every cycle."""
+    tunnel.BINARY.unlink()
+    with caplog.at_level("WARNING", logger="piplayer.tunnel"):
+        assert tunnel.maybe_apply(cfg, {"tunnel": {"token": TOKEN, "hostname": "dev-1-cam.example"}}) is True
+        assert tunnel.maybe_apply(cfg, {"tunnel": {"token": TOKEN, "hostname": "dev-1-cam.example"}}) is False
+    assert tunnel.token_path(cfg).read_text() == TOKEN + "\n" and runs.args == []
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "not installed on this Pi" in warnings[0] and "dev-1-cam.example" in warnings[0]
+
+
 def test_write_failure_is_logged_and_retried(cfg, runs, monkeypatch):
     tunnel.token_path(cfg).mkdir()          # the rename onto a directory fails
     assert tunnel.maybe_apply(cfg, {"tunnel": {"token": TOKEN}}) is False
@@ -116,6 +133,8 @@ DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 def test_unit_runs_cloudflared_with_the_token_file_and_tolerates_its_absence():
     unit = (DEPLOY / "projector-cloudflared.service").read_text()
     assert "ConditionPathExists=/var/lib/projector-player/tunnel.token" in unit
+    assert "ConditionPathExists=/usr/bin/cloudflared" in unit         # no binary: skipped, not a restart loop
+    assert tunnel.BINARY.as_posix() == "/usr/bin/cloudflared"
     assert 'TUNNEL_TOKEN="$(cat /var/lib/projector-player/tunnel.token)"' in unit
     assert "/usr/bin/cloudflared --no-autoupdate tunnel run" in unit
     assert "User=projector" in unit
@@ -132,21 +151,28 @@ def _posix(p):
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
-@pytest.mark.parametrize("case", ["present", "apt", "deb", "offline"])
+@pytest.mark.parametrize("case", ["present", "apt", "deb", "offline", "armv6", "armv6-offline"])
 def test_installer_cloudflared_block(tmp_path, case):
     """Idempotent: an installed cloudflared is left alone; else the Cloudflare
     apt repo, and the GitHub .deb for the dpkg architecture when that fails;
-    both failing is a warning, not an installer (or --upgrade) failure."""
+    both failing is a warning, not an installer (or --upgrade) failure. On an
+    ARMv6 board (Pi Zero / Zero W / Pi 1) the apt repo and the armhf .deb are
+    ARMv7 builds that SIGILL, so the raw GOARM=5 cloudflared-linux-arm binary
+    goes to /usr/bin instead."""
     src = (DEPLOY / "install-player.sh").read_text()
     block = src[src.index('echo "==> Installing cloudflared'):src.index('echo "==> Installing Docker for the Wyze bridge"')]
     block = block[:block.rindex("if [[")]          # drop the opening line of the wyze block that follows
     log = tmp_path / "calls.log"
     keyring, aptlist = tmp_path / "cloudflare-main.gpg", tmp_path / "cloudflared.list"
     env = {"CLOUDFLARED_KEYRING": _posix(keyring), "CLOUDFLARED_LIST": _posix(aptlist),
+           "CLOUDFLARED_BIN": _posix(tmp_path / "usr-bin-cloudflared"),
+           "PI_MACHINE": "armv6l" if case.startswith("armv6") else "aarch64", "PI_MODEL": "Raspberry Pi Zero W Rev 1.1",
            "LOG": _posix(log), "TMPDIR": _posix(tmp_path), "FAKE_APT_RC": "0" if case == "apt" else "1",
-           "FAKE_DPKG_RC": "1" if case == "offline" else "0"}
+           "FAKE_DPKG_RC": "1" if case == "offline" else "0", "FAKE_CURL_RC": "1" if case == "armv6-offline" else "0"}
     prelude = "set -euo pipefail\n" + "".join(f'{k}="{v}"\n' for k, v in env.items())
-    prelude += 'curl() { echo "curl $*" >> "$LOG"; }\n'
+    # the fake download creates its -o target (the raw-binary path chmods and moves it)
+    prelude += ('curl() { echo "curl $*" >> "$LOG"; local a prev=""; for a in "$@"; do [[ "$prev" == -o ]] && echo bin > "$a"; '
+                'prev="$a"; done; [[ "${FAKE_CURL_RC}" == 0 ]]; }\n')
     prelude += 'dpkg() { echo "dpkg $*" >> "$LOG"; [[ "$1" == --print-architecture ]] && echo arm64; [[ "${FAKE_DPKG_RC}" == 0 ]]; }\n'
     prelude += 'apt-get() { echo "apt-get $*" >> "$LOG"; [[ "${FAKE_APT_RC}" == 0 ]]; }\n'
     if case == "present":
@@ -159,6 +185,15 @@ def test_installer_cloudflared_block(tmp_path, case):
     elif case == "apt":
         assert "apt-get install -y cloudflared" in calls and "dpkg -i" not in calls
         assert aptlist.read_text() == f"deb [signed-by={_posix(keyring)}] https://pkg.cloudflare.com/cloudflared any main\n"
+    elif case.startswith("armv6"):
+        assert "releases/latest/download/cloudflared-linux-arm\n" in calls and "apt-get" not in calls and "dpkg" not in calls
+        assert "is ARMv6: installing the raw cloudflared-linux-arm binary" in res.stdout
+        installed = tmp_path / "usr-bin-cloudflared"
+        assert not installed.with_name(installed.name + ".new").exists()
+        if case == "armv6":
+            assert installed.read_text() == "bin\n" and res.stderr == ""
+        else:
+            assert not installed.exists() and "WARNING: cloudflared could not be installed" in res.stderr
     else:
         assert "cloudflared-linux-arm64.deb" in calls and "dpkg -i " in calls
         assert not aptlist.exists() and "GitHub releases" in res.stdout

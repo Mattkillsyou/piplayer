@@ -331,7 +331,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
       ${deviceScreen(d, { link: true, staleTitle: "No new screenshot for more than 3 capture intervals" })}
       ${cameraScreen(d, { link: true, staleTitle: "No new camera snapshot for more than 3 camera intervals" })}
       <span class="device-name">${esc(d.name)}</span>
-      <span class="device-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}</span>
+      <span class="device-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}${d.pi_model ? ` · ${esc(d.pi_model)}` : ""}</span>
       ${statusLamp(d)}
     </div>
 
@@ -378,7 +378,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
       <details class="camera-block">
         <summary>Camera${live ? " · live URL set" : ""}${d.tunnel_hostname ? " · tunnel" : ""}${d.camera_source ? ` · ${esc(d.camera_source)}` : ""}</summary>
         <div class="token-block">
-          <form method="post" action="/devices/${d.id}/camera-source" class="row">
+          ${d.camera_supported === 0 ? `<p class="help small">Camera is not supported on this Pi model.</p>` : `<form method="post" action="/devices/${d.id}/camera-source" class="row">
             ${csrfInput(ctx)}
             <label>Camera source
               <select name="camera_source"${dis}>
@@ -394,7 +394,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          <p class="help small">The player fetches this on start and whenever it changes (<code>GET /api/camera-config</code>) and (re)starts its Wyze bridge with the account from <a href="/settings">Settings</a>${wyzeOn ? "" : " (no Wyze account set yet)"}. Leave the name empty to use the Settings pattern shown.</p>
+          <p class="help small">The player fetches this on start and whenever it changes (<code>GET /api/camera-config</code>) and (re)starts its Wyze bridge with the account from <a href="/settings">Settings</a>${wyzeOn ? "" : " (no Wyze account set yet)"}. Leave the name empty to use the Settings pattern shown.</p>`}
           <form method="post" action="/devices/${d.id}/camera-url" class="row">
             ${csrfInput(ctx)}
             <label>Camera live URL
@@ -476,7 +476,7 @@ async function devicesPage(ctx) {
             d.projector_control, d.projector_ir_codes, d.broadlink_host, d.projector_power_mode,
             d.projector_power_state, d.projector_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
-            d.tunnel_id, d.tunnel_hostname,
+            d.tunnel_id, d.tunnel_hostname, d.pi_model, d.camera_supported,
             p.id AS playlist_id, p.name AS playlist_name,
             g.id AS group_id, g.name AS group_name
        FROM devices d

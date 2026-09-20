@@ -13,6 +13,7 @@ import { envInt, fail, HttpError, json, jsonObject, nowUtc, randomToken } from "
 import { cameraConfig } from "./pages/devices.js";
 
 export const MAX_SYNC_ERROR_LEN = 200;
+const MAX_PI_MODEL_LEN = 64;
 export const MAX_UPDATE_REF_LEN = 100;
 export const DEVICE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/; // same rule as the Devices page
 export const MAX_DEVICE_NAME = 120;
@@ -57,6 +58,10 @@ async function sync(ctx) {
   // projector control); projector_error clears like camera_error.
   const projectorState = manifest.PROJECTOR_STATES.includes(q.get("projector_state")) ? q.get("projector_state") : null;
   const projectorError = (q.get("projector_error") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
+  // pi_model / camera_supported: kept like player_version when the player does not send them
+  // (old players); "" model = unreadable on the Pi, stored as NULL (unknown).
+  const piModel = (q.get("pi_model") || "").trim().slice(0, MAX_PI_MODEL_LEN) || null;
+  const cameraSupported = ["0", "1"].includes(q.get("camera_supported")) ? Number(q.get("camera_supported")) : null;
   await db.run(ctx.env,
     `UPDATE devices SET
         last_seen_at = datetime('now'),
@@ -68,7 +73,9 @@ async function sync(ctx) {
         last_error = ?,
         camera_error = ?,
         projector_power_state = COALESCE(?, projector_power_state),
-        projector_error = ?
+        projector_error = ?,
+        pi_model = COALESCE(?, pi_model),
+        camera_supported = COALESCE(?, camera_supported)
       WHERE id = ?`,
     ctx.ip,
     intQuery(q, "current_position"),
@@ -79,6 +86,8 @@ async function sync(ctx) {
     cameraError,
     projectorState,
     projectorError,
+    piModel,
+    cameraSupported,
     device.id);
 
   await storeUpdateStatus(ctx, device, q.get("update_status"));

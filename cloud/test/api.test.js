@@ -99,6 +99,19 @@ describe("sync", () => {
     expect(await one("SELECT player_version, player_status FROM devices WHERE id = ?", ids.dev.id)).toEqual({ player_version: "test-0.0.1", player_status: "idle" });
   });
 
+  it("stores pi_model (trimmed, 64 chars) and camera_supported; omitted or empty keeps the old values (migration 0005)", async () => {
+    const row = () => one("SELECT pi_model, camera_supported FROM devices WHERE id = ?", ids.dev.id);
+    expect(await row()).toEqual({ pi_model: null, camera_supported: null }); // never sent = unknown
+    await sync(ids.dev, { pi_model: "  Raspberry Pi 2 Model B Rev 1.1  ", camera_supported: "0" });
+    expect(await row()).toEqual({ pi_model: "Raspberry Pi 2 Model B Rev 1.1", camera_supported: 0 });
+    await sync(ids.dev, { player_status: "idle" });
+    expect(await row()).toEqual({ pi_model: "Raspberry Pi 2 Model B Rev 1.1", camera_supported: 0 });
+    await sync(ids.dev, { pi_model: "", camera_supported: "yes" }); // unreadable model / junk flag: keep
+    expect(await row()).toEqual({ pi_model: "Raspberry Pi 2 Model B Rev 1.1", camera_supported: 0 });
+    await sync(ids.dev, { pi_model: "M".repeat(80), camera_supported: "1" });
+    expect(await row()).toEqual({ pi_model: "M".repeat(64), camera_supported: 1 });
+  });
+
   it("non-integer current_position is the fixed CMS's 400 {detail: 'query.<name>: <msg>'}", async () => {
     for (const bad of ["abc", "1.5", "", "1.", "1e3"]) {
       const r = await sync(ids.dev, { current_position: bad });

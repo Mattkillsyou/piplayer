@@ -241,6 +241,20 @@ describe("Devices page: camera source", () => {
     expect(page).not.toContain("<Lobby>");
   });
 
+  it("camera_supported = 0 replaces the source picker with one sentence; 1 or NULL keep it; the API still accepts config", async () => {
+    const picker = `action="/devices/${dev.id}/camera-source"`;
+    const sentence = '<p class="help small">Camera is not supported on this Pi model.</p>';
+    for (const [flag, want] of [[null, true], [1, true], [0, false]]) {
+      await query("UPDATE devices SET camera_supported = ? WHERE id = ?", flag, dev.id);
+      const page = await (await r.editor.get("/devices")).text();
+      expect(page.includes(picker), String(flag)).toBe(want);
+      expect(page.includes(sentence), String(flag)).toBe(!want);
+      expect(page).toContain(`action="/devices/${dev.id}/camera-url"`); // live URL form stays
+    }
+    expect((await post(r.editor, `/devices/${dev.id}/camera-source`, { camera_source: "none" })).status).toBe(303);
+    await query("UPDATE devices SET camera_supported = NULL WHERE id = ?", dev.id);
+  });
+
   it("clearing the Wyze account: site default becomes none, an explicit wyze device falls back to none, version bumps", async () => {
     const v0 = await version();
     await roleMatrix(r, "POST", "/settings/wyze/clear", { minRole: "admin" });

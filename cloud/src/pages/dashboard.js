@@ -16,7 +16,7 @@ function deviceCard(ctx, d, tz, canEdit) {
       <div class="device-card-head">
         <div>
           <div class="device-card-title">${esc(d.name)}</div>
-          <div class="device-card-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}</div>
+          <div class="device-card-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}${d.pi_model ? ` · ${esc(d.pi_model)}` : ""}</div>
         </div>
         ${statusLamp(d)}
       </div>
@@ -64,7 +64,7 @@ async function dashboard(ctx) {
             d.current_position, d.current_filename, d.player_status,
             d.last_screenshot_at, d.last_error, d.last_camera_at, d.camera_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
-            d.projector_control, d.projector_power_state, d.projector_error,
+            d.projector_control, d.projector_power_state, d.projector_error, d.pi_model,
             p.name AS playlist_name, g.name AS group_name
        FROM devices d
        LEFT JOIN playlists p ON p.id = d.playlist_id

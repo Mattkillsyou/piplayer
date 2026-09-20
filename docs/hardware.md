@@ -93,6 +93,21 @@ Everything else in the kit is the same.
 Pi 4 compute subtotal: about $98 (roughly the same as the Pi 5; buy the
 Pi 5 for new builds).
 
+## Older Pis you already own
+
+Nothing in this kit has to be a Pi 5 or Pi 4. A Pi 3, Zero 2 W, Pi 2, Zero or
+Pi 1 Model B+ that is already in a drawer plays the loop too, with less
+picture (1080p on the Pi 3 and Pi 2, 720p on the Zero and Pi 1), no room
+camera on the boards with 512 MB or a 32-bit chip, and no remote access on the
+Zero and Pi 1. The full row-by-row list is the "Which Pi?" table in
+[adding-a-pi.md](adding-a-pi.md). Pick the board under **Pi model** in the
+flasher; for the 32-bit boards (Pi 2 V1.1, Zero, Zero W, Pi 1) the flasher
+downloads the 32-bit image itself the first time (about 530 MB, then kept),
+nothing to fetch by hand. The older boards take a micro-USB power supply
+(the official 2.5 A one, not a phone charger) and a full-size HDMI cable
+(mini-HDMI on the Zero), and the Pi 2, Pi 1 and Zero (no W) need a USB
+Wi-Fi adapter or Ethernet.
+
 ## Compatibility notes
 
 - **Pi 5 Active Cooler and the official case lid are mutually exclusive.** The

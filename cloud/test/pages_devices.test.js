@@ -120,13 +120,20 @@ describe("page content", () => {
     expect(page).toContain("<summary>Camera</summary>"); // but the live URL form is always there
     expect(page).toContain('<span class="value">never</span>');
     expect(page).toContain('<span class="value">—</span>');
-    expect(page).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group</span>');
+    expect(page).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group</span>'); // no pi_model yet: nothing appended
     expect(page).toContain(`<option value="${w.gid}" selected>Lobby group</option>`);
     expect(page).toContain(`<option value="${w.pid}" selected>Default PL</option>`);
     expect(page).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
     await query("DELETE FROM device_schedules WHERE device_id = ?", w.dev.id);
     const again = await (await r.admin.get("/devices")).text();
     expect(again).toContain('<span class="now-label">active now · via device default</span>');
+  });
+
+  it("shows the reported Pi model in the id line, escaped", async () => {
+    await query("UPDATE devices SET pi_model = ? WHERE id = ?", "Raspberry Pi 4 Model B Rev 1.5 <b>", w.dev.id);
+    const page = await (await r.viewer.get("/devices")).text();
+    expect(page).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group · Raspberry Pi 4 Model B Rev 1.5 &lt;b&gt;</span>');
+    await query("UPDATE devices SET pi_model = NULL WHERE id = ?", w.dev.id);
   });
 
   it("a malformed stored schedule row never 500s the page", async () => {

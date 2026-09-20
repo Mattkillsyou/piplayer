@@ -9,6 +9,7 @@ an existing token file is left alone (a tunnel the console deleted stops
 working by itself)."""
 import logging
 import subprocess
+from pathlib import Path
 
 from .camera_config import write_private
 from .config import PlayerConfig
@@ -16,6 +17,7 @@ from .config import PlayerConfig
 log = logging.getLogger("piplayer.tunnel")
 
 UNIT = "projector-cloudflared.service"
+BINARY = Path("/usr/bin/cloudflared")     # missing when the installer could not get one for this board
 
 
 def token_path(cfg: PlayerConfig):
@@ -49,6 +51,11 @@ def maybe_apply(cfg: PlayerConfig, manifest: dict) -> bool:
     except OSError as e:
         log.warning("tunnel token write failed (will retry): %s", e)
         return False
+    if not BINARY.exists():
+        # said once: the token file only changes when the console rotates it
+        log.warning("tunnel token updated for %s but %s is not installed on this Pi; remote access stays off",
+                    block.get("hostname") or "?", BINARY)
+        return True
     try:
         log.info("tunnel token updated for %s: %s", block.get("hostname") or "?", restart_service())
     except subprocess.SubprocessError as e:

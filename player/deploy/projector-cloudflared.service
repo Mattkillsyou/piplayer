@@ -7,6 +7,9 @@ Wants=network-online.target
 # writes the file from the manifest's `tunnel.token` (tunnel.py) and
 # restarts this unit (sudoers allows it).
 ConditionPathExists=/var/lib/projector-player/tunnel.token
+# No cloudflared binary (the install failed or was skipped): skipped too, so
+# Restart=always cannot loop on exit code 203/EXEC every 10 s.
+ConditionPathExists=/usr/bin/cloudflared
 
 [Service]
 Type=simple

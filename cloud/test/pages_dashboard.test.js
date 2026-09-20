@@ -64,8 +64,10 @@ describe("dashboard", () => {
     expect(page).toContain('<span class="status status-offline"><span class="lamp"></span>offline</span>');
     expect(page).toContain("d ago · 2020-01-01 00:00 UTC</span>");
     expect(page).toContain('<div class="alert error small" title="Reported by the player on its last sync">Sync problem: 2 of 5 items missing: &lt;x&gt;</div>');
-    // device B: group fallback, no screenshot
+    // device B: group fallback, no screenshot; the Pi model follows the group on the tile
     expect(page).toContain("<code>b-dev</code> · G1");
+    await query("UPDATE devices SET pi_model = 'Raspberry Pi Zero 2 W Rev 1.0' WHERE id = ?", b.id);
+    expect(await (await r.viewer.get("/dashboard")).text()).toContain('<div class="device-card-id"><code>b-dev</code> · G1 · Raspberry Pi Zero 2 W Rev 1.0</div>');
     expect(page).toContain('<span class="now-via">via group: G1</span>');
     expect(page).toContain('<span class="empty-sub">no screenshot yet</span>');
     expect(page).not.toContain("device-camera"); // no camera snapshot yet
