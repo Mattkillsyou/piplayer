@@ -19,13 +19,15 @@ DISK = {"number": 2, "name": "Generic MassStorageClass", "bus": "USB", "size": 3
         "unique_id": "USBSTOR\\X&0:", "serial": "", "signature": 1, "boot": False,
         "label": "Disk 2  Generic MassStorageClass  29.7 GiB"}
 KEY = "form-enrollment-key_0123456789abcdef"
-# The widgets of the one screen (plus Advanced), as the operator fills them.
+# The form's values (widgets plus the hidden ones: keymap and country come from Windows, the image from --image),
+# as the operator fills them.
 FORM = {"name": "Lobby", "ssid": "Venue", "wifi_password": "wp123456", "wifi_hidden": False, "timezone": "UTC",
-        "keymap": "us", "wifi_country": "us", "token": "", "image_mode": "local", "image_path": "", "static_ip": "",
+        "keymap": "us", "wifi_country": "us", "image_mode": "local", "image_path": "", "static_ip": "",
         "gateway": ""}
 # What App.values() adds from outside the widgets (the fixed login, the baked key, the sign-in, the SSH key).
-FULL = dict(FORM, device_id="lobby", username="projector-admin", password="pw", console_url="http://console.local/",
-            enrollment_key=KEY, operator_token="", ssh_pubkey=PUBKEY, dry_run=False)
+FULL = dict(FORM, token="", device_id="lobby", username="projector-admin", password="pw",
+            console_url="http://console.local/", enrollment_key=KEY, operator_token="", ssh_pubkey=PUBKEY,
+            dry_run=False)
 ENROLLMENT = {"console_url": "https://c.example", "enrollment_key": KEY, "timezone": "UTC",
               "groups": [{"id": 1, "name": "Lobby"}], "playlists": [{"id": 7, "name": "Loop"}], "wyze_configured": False}
 
@@ -77,6 +79,41 @@ def _log(app):
 
 def _shown_errors(app):
     return {f: lbl.cget("text") for f, lbl in app.err.items() if lbl.winfo_manager()}
+
+
+def _status(app):
+    return app.status_label.cget("text")
+
+
+def _visible_texts(w, out):
+    """Buttons and row labels (grid column 0) that are on screen, top to bottom."""
+    if not w.winfo_manager():
+        return out  # collapsed: its children are not on screen either
+    if isinstance(w, flasher.ttk.Button) or (isinstance(w, flasher.ttk.Label) and w.grid_info().get("column") == 0):
+        if w.cget("text"):
+            out.append(w.cget("text"))
+    for c in w.winfo_children():
+        _visible_texts(c, out)
+    return out
+
+
+def _all_texts(w, out):
+    for c in w.winfo_children():
+        try:
+            out.append(str(c.cget("text")))
+        except tk.TclError:
+            pass
+        _all_texts(c, out)
+    return out
+
+
+def _widgets(w, kind, out=None):
+    out = [] if out is None else out
+    for c in w.winfo_children():
+        if isinstance(c, kind):
+            out.append(c)
+        _widgets(c, kind, out)
+    return out
 
 
 def test_selfcheck_prints_scripts():
@@ -235,47 +272,59 @@ def test_operator_config_falls_back_to_plain_text_with_a_warning(monkeypatch, tm
 # ---------------------------------------------------------------- the one screen
 
 def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
-    """The visible top level: the eyebrow and console header, Sign in, Device name, Wi-Fi network, Wi-Fi password,
-    SD card, Refresh, FLASH, Advanced. Everything else is helper text, collapsed, or under Advanced."""
+    """One button. The visible top level: the masthead (logo, name, wordmark), Device name, Pi model, Wi-Fi network,
+    Wi-Fi password, SD card, Refresh, FLASH, the status line, Advanced. No console line, no sign-in, no log box."""
     monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
     root.update()
-
-    def visible(w, out):
-        if not w.winfo_manager():
-            return  # collapsed: its children are not on screen either
-        if isinstance(w, flasher.ttk.Button) or (isinstance(w, flasher.ttk.Label) and w.grid_info().get("column") == 0):
-            if w.cget("text"):
-                out.append(w.cget("text"))
-        for c in w.winfo_children():
-            visible(c, out)
-
     fields = []
     for c in root.winfo_children():
-        visible(c, fields)
-    assert fields == [flasher.tracked("MATT BROWN'S"), "Console: projectors.photogen5000.com", "Sign in",
-                      "Device name", "Wi-Fi network", "Wi-Fi password", "SD card", "Refresh", "FLASH", "Advanced"]
+        _visible_texts(c, fields)
+    assert fields == ["Device name", "Pi model", "Wi-Fi network", "Wi-Fi password", "SD card", "Refresh", "FLASH",
+                      "Ready.", "Advanced"]
     assert root.title() == flasher.APP_TITLE == "Matt Brown's Projection5000"
+    # The masthead: the projector icon at 64 px, the name over the wordmark, nothing else in that frame.
+    head = app.eyebrow.master.master
+    assert app.logo.width() == app.logo.height() == 64 and head.cget("height") == 96
+    assert app.eyebrow.cget("text") == "MATT BROWN'S" and app.wordmark.cget("text") == "PROJECTION5000"
+    assert _all_texts(head, []) == ["", "MATT BROWN'S", "PROJECTION5000"]  # the icon label (frames have no text)
+    # Nothing on the screen names the console, the fonts or the sign-in; the log box lives under Advanced.
+    texts = _all_texts(root, [])
+    assert not any("Console" in t or "Signed in" in t or "Sign in" in t or "Fonts" in t or "SD FLASHER" in t
+                   for t in texts), texts
+    assert _status(app) == "Ready." and app.status_label.cget("style") == "Status.TLabel"
+    assert not app.details.winfo_manager() and app.log_text.master is app.details  # hidden until Show details
     # No field ever holds the console URL, a username, a password, a key or a token on the main screen.
     entries = [w for w in app.id_label.master.winfo_children() if isinstance(w, flasher.ttk.Entry)]
-    assert [e.cget("textvariable") for e in entries] == [str(app.v[k]) for k in ("name", "ssid", "wifi_password",
-                                                                                   "disk")]
+    assert entries[1] is app.model_box  # the Pi model box shows labels; its key lives in v["pi_model"]
+    assert [e.cget("textvariable") for e in entries] == [str(app.v["name"]), "", str(app.v["ssid"]),
+                                                          str(app.v["wifi_password"]), str(app.v["disk"])]
     # The network is an editable Combobox (the networks this PC sees, any other name typed), the rest are Entries.
     assert isinstance(app.ssid_box, flasher.ttk.Combobox) and str(app.ssid_box["state"]) == "normal"
-    assert [isinstance(e, flasher.ttk.Combobox) for e in entries] == [False, True, False, True]
+    assert [isinstance(e, flasher.ttk.Combobox) for e in entries] == [False, True, True, False, True]
     assert not app.advanced.winfo_manager() and not app.cancel_btn.winfo_manager()
-    # Advanced opens one frame with the rest; the button toggles it.
+    # Advanced opens one frame with the rest; the button toggles it. No image source, token, keymap, country or
+    # SSH key rows any more: the model picks the image, Windows picks the locale, the key is automatic.
     app.adv_btn.invoke()
     assert app.advanced.winfo_manager() == "pack"
-    texts = []
-    visible(app.advanced, texts)
-    assert texts == ["Image", "Browse...", "Timezone", "Keyboard layout", "Wi-Fi country", "Static IP", "Gateway",
-                     "Existing device token", "SSH key", "Copy public key", "Sign out"]
-    assert any(isinstance(w, flasher.ttk.Checkbutton) and w.cget("text").startswith("Hidden Wi-Fi")
-               for w in app.advanced.winfo_children())
+    assert _visible_texts(app.advanced, []) == ["Time zone", "Static IP", "Gateway", "Account", "Connect"]
+    assert app.account_label.cget("text") == "Not connected"
+    checks = [w.cget("text") for w in _widgets(app.advanced, flasher.ttk.Checkbutton)]
+    assert checks == ["Hidden Wi-Fi network", "Show details"]  # the dry-run box exists only under --dry-run
     assert any(isinstance(w, flasher.ttk.Label) and w.cget("text").startswith("Build: ")
                for w in app.advanced.winfo_children())
+    assert _widgets(app.advanced, flasher.ttk.Radiobutton) == []
+    # Show details reveals the technical log box, still styled as the console's terminal.
+    assert not app.details.winfo_manager()
+    app.v["show_details"].set(True)
+    app._toggle_details()
+    root.update()
+    assert app.details.winfo_manager() == "grid" and app.log_text.winfo_manager() == "pack"
+    assert "Fonts: " in _log(app) and "Console " in _log(app)
+    app.v["show_details"].set(False)
+    app._toggle_details()
+    assert not app.details.winfo_manager()
     app.adv_btn.invoke()
     assert not app.advanced.winfo_manager()
     root.destroy()
@@ -306,12 +355,16 @@ def test_theme_is_the_console_look(monkeypatch):
                for lbl in app.err.values())
     assert len(app.brackets) == 4 and all(isinstance(c, tk.Canvas) for c in app.brackets)
     assert set(app.fonts) == {"display", "mono", "sans"}
-    # the lamp is dim when signed out and lit (with its glow ring) once signed in
-    assert len(app.lamp.find_all()) == 1 and app.lamp.itemcget(app.lamp.find_all()[0], "fill") == "#2E2E2E"
-    app.op = {"token": "t", "username": "matt"}
-    app._show_signed_in()
-    fills = [app.lamp.itemcget(i, "fill") for i in app.lamp.find_all()]
-    assert fills == ["#3A3A3A", "#FFFFFF"]
+    # the masthead: the name in the pixel face at 13 pt in ink, the wordmark bold at 24 pt in white
+    display = app.fonts["display"]
+    fam = f"{{{display}}}" if " " in display else display
+    assert st.lookup("Eyebrow.TLabel", "font") == f"{fam} 13" and st.lookup("Eyebrow.TLabel", "foreground") == "#E6E6E6"
+    assert st.lookup("Wordmark.TLabel", "font") == f"{fam} 24 bold"
+    assert st.lookup("Wordmark.TLabel", "foreground") == "#FFFFFF"
+    assert app.eyebrow.cget("style") == "Eyebrow.TLabel" and app.wordmark.cget("style") == "Wordmark.TLabel"
+    # the status line in the mono face; no lamp anywhere (the four bracket canvases are the only canvases)
+    assert st.lookup("Status.TLabel", "font").endswith(" 10") and st.lookup("Status.TLabel", "foreground") == "#E6E6E6"
+    assert not hasattr(app, "lamp") and len(_widgets(root, tk.Canvas)) == 4
     root.destroy()
 
 
@@ -379,6 +432,26 @@ def test_wifi_dropdown_lists_the_networks_and_fills_a_saved_password(monkeypatch
     root.destroy()
 
 
+def test_window_grows_inside_the_work_area(monkeypatch):
+    """Windows opens the window low on the screen (cascade); Advanced + details grow it. It never hangs behind
+    the taskbar: capped to the work area and moved up when needed. Under --dry-run the dry-run box appears."""
+    monkeypatch.setattr(flasher, "work_area", lambda root: (0, 700))  # a short work area
+    root = _root()
+    app = flasher.App(root, dry_run=True)
+    assert [w.cget("text") for w in _widgets(app.advanced, flasher.ttk.Checkbutton)][-1].startswith("Dry run")
+    root.deiconify()
+    root.geometry("+50+300")
+    root.update()
+    app.adv_btn.invoke()
+    app.v["show_details"].set(True)
+    app._toggle_details()
+    root.update()
+    chrome = root.winfo_rooty() - root.winfo_y() + 8
+    assert root.winfo_y() + root.winfo_height() + chrome <= 700 and root.winfo_x() == 50
+    assert root.winfo_height() >= 600  # it did grow, as far as the work area allows
+    root.destroy()
+
+
 def test_gui_constructs_with_windows_defaults(monkeypatch):
     monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [DISK])
     monkeypatch.setattr(flasher.winlocale, "timezone", lambda name=None: "Europe/London")
@@ -395,7 +468,8 @@ def test_gui_constructs_with_windows_defaults(monkeypatch):
     assert len(v["password"]) >= 24 and v["password"] not in _log(app)  # random, never shown
     assert v["timezone"] == "Europe/London" and v["keymap"] == "gb" and v["wifi_country"] == "GB"
     assert v["console_url"] == flasher.DEFAULT_CONSOLE_URL and v["enrollment_key"] == "" and v["operator_token"] == ""
-    assert v["token"] == "" and v["static_ip"] == "" and v["image_mode"] == "latest"  # no bundle when run from source
+    assert "token" not in v and v["static_ip"] == "" and v["image_mode"] == "latest"  # no bundle when run from source
+    assert v["image_path"] == "" and flasher.card_cfg(dict(v, ssh_pubkey=PUBKEY))["token"] == ""
     # Text fields are stripped (pasted trailing spaces/newlines), the Wi-Fi password is not.
     app.v["name"].set(" Lobby \n")
     app.v["wifi_password"].set(" keep me ")
@@ -404,13 +478,18 @@ def test_gui_constructs_with_windows_defaults(monkeypatch):
     app.v["name"].set("---")
     assert app.id_label.cget("text") == ""
     assert root.winfo_reqheight() <= root.winfo_screenheight() - 120
-    # Not signed in, no baked key: the header offers Sign in.
-    assert app.signin_btn.winfo_manager() == "grid" and app.signin_label.cget("text") == ""
-    assert str(app.signout_btn["state"]) == "disabled"
+    # Not connected, no baked key: nothing says so on the screen; Advanced shows the account state.
+    assert _status(app) == "Ready." and app.account_label.cget("text") == "Not connected"
+    assert app.account_btn.cget("text") == "Connect"
+    app.v["timezone"].set("Europe/Paris")
     app.on_close()  # saves the form
-    # The remembered form survives a restart; the Windows defaults only fill an empty form.
+    # The remembered form survives a restart; keymap and country are never remembered (always this PC's).
+    monkeypatch.setattr(flasher.winlocale, "keymap", lambda langid=None: "de")
     app2 = flasher.App(_root())
-    assert app2.values()["name"] == "---" and app2.values()["timezone"] == "Europe/London"
+    assert app2.values()["name"] == "---" and app2.values()["timezone"] == "Europe/Paris"
+    assert app2.values()["keymap"] == "de" and app2.values()["wifi_country"] == "GB"
+    assert set(flasher.load_settings()) <= set(flasher.SETTINGS_KEYS)
+    assert not {"keymap", "wifi_country", "image_mode", "image_path", "token"} & set(flasher.SETTINGS_KEYS)
     app2.root.destroy()
 
 
@@ -446,11 +525,11 @@ def test_validate_shows_plain_words_inline(monkeypatch, tmp_path):
         ("name", "###", "name", "The name needs at least one letter or digit."),
         ("wifi_password", "1234567", "wifi_password", "Wi-Fi password must be 8-63 characters."),
         ("ssid", "C:\\net", "ssid", "Wi-Fi SSID must not contain a backslash."),
-        ("wifi_country", "UK", "adv", "Wi-Fi country UK is not an ISO code: use GB."),
         ("timezone", "Europe/Londn x", "adv", "Timezone must look like Area/City (e.g. Europe/London) or UTC."),
-        ("keymap", "us/dvorak", "adv", "Keyboard layout must be 2-8 lowercase letters (e.g. us, gb, de)."),
         ("static_ip", "192.168.1.300/24", "adv", "Static IP must be an IPv4 address with a prefix (e.g. 192.168.1.50/24)."),
-        ("token", "tok'en", "adv", "Device token must be at least 16 letters, digits, '-' or '_' (as issued by the console)."),
+        # no widgets for these (Windows fills them): a bad value still stops the flash, under the button
+        ("wifi_country", "UK", "flash", "Wi-Fi country UK is not an ISO code: use GB."),
+        ("keymap", "us/dvorak", "flash", "Keyboard layout must be 2-8 lowercase letters (e.g. us, gb, de)."),
     ]:
         _fill(app, image_mode="latest", **{key: val})
         assert app.validate() is None, (key, val)
@@ -463,23 +542,20 @@ def test_validate_shows_plain_words_inline(monkeypatch, tmp_path):
     _fill(app, image_mode="latest", static_ip="192.168.1.50/24", gateway="192.168.1.1")
     v = app.validate()
     assert v is not None and "address1=192.168.1.50/24,192.168.1.1" in firstboot.render_firstrun(flasher.card_cfg(v))
-    # Advanced: a device token bypasses the key; the key rule returns when it is cleared.
+    # Not connected and nothing baked is not a form error: FLASH connects first (see the connect tests).
     app.baked_key = ""
     _fill(app, image_mode="latest")
-    assert app.validate() is None and _shown_errors(app) == {"signin": "Sign in first."}
-    _fill(app, image_mode="latest", token="A-valid_token_0123456789")
-    v = app.validate()
-    assert v is not None and flasher.card_cfg(v)["token"] == "A-valid_token_0123456789"
-    app.op["token"] = OPERATOR_TOKEN  # signed in: fine without a token or a baked key
+    assert app.validate() is not None and _shown_errors(app) == {}
+    app.op["token"] = OPERATOR_TOKEN  # connected: the key is fetched at flash time
     _fill(app, image_mode="latest")
     assert app.validate() is not None and app.values()["operator_token"] == OPERATOR_TOKEN
-    # Local image: must exist and look like an image.
+    # A developer's --image must exist and look like an image.
     _fill(app, image_mode="local", image_path=str(img))
-    assert app.validate() is None and _shown_errors(app) == {"adv": "Local image file not found."}
+    assert app.validate() is None and _shown_errors(app) == {"flash": f"Image file not found: {img}"}
     zipped = tmp_path / "os.zip"
     zipped.write_bytes(b"PK\x03\x04" + b"\0" * 100)
     _fill(app, image_mode="local", image_path=str(zipped))
-    assert app.validate() is None and "zip archive" in _shown_errors(app)["adv"]
+    assert app.validate() is None and "zip archive" in _shown_errors(app)["flash"]
     # The SSH key is created on first use; a failure is an inline error, never a card without a key.
     monkeypatch.setattr(flasher.sshkey, "ensure_keypair", lambda log=None: (_ for _ in ()).throw(OSError("disk full")))
     _fill(app, image_mode="latest")
@@ -520,61 +596,75 @@ def stub():
         srv.shutdown()
 
 
-def test_gui_sign_in_through_the_browser(monkeypatch, stub):
+def test_flash_connects_in_the_browser_then_makes_the_card(monkeypatch, stub):
+    """Not connected, no baked key: FLASH opens the browser, says so in plain words, waits for the approval and then
+    flashes with no further click. 'Signed in as' appears nowhere on the screen."""
     monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher, "console_url", lambda: stub)
-    opened = []
+    opened, flashed = [], []
     monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: opened.append(url) or True)
+    monkeypatch.setattr(flasher, "run_flash", lambda v, *a, **k: flashed.append(v))
     StubConsole.approve_after = 2
     root = _root()
     app = flasher.App(root)
-    assert app.console_url == stub and app.signin_btn.winfo_manager() == "grid"
-    app.signin_btn.invoke()
-    assert str(app.signin_btn["state"]) == "disabled"
-    assert _pump(root, app, lambda: "Approve in your browser" in app.signin_label.cget("text"), timeout=5)
-    assert app.signin_label.cget("text") == "Approve in your browser (code BCDF-GH)"  # shown XXXX-XX
-    assert opened == [stub + "/authorize?code=BCDFGH"]  # the link carries the raw code
-    assert _pump(root, app, lambda: app.op["token"] == OPERATOR_TOKEN, timeout=8)
-    assert app.signin_label.cget("text") == "Signed in as matt" and not app.signin_btn.winfo_manager()
-    assert flasher.load_operator_config() == {"console_url": stub, "token": OPERATOR_TOKEN, "username": "matt"}
-    assert StubConsole.polls == 2 and "Signed in as matt." in _log(app)
-    assert str(app.signout_btn["state"]) == "normal"
-    # Signed in: the enrollment key is not needed on the form and the flash fetches it.
+    assert app.console_url == stub and not app.connected()
     _fill(app, image_mode="latest")
     app.v["dry_run"].set(True)
-    assert app.validate() is not None
-    # Sign out forgets the token.
-    app.sign_out()
+    app.flash_btn.invoke()
+    assert _status(app) == flasher.CONNECT_TEXT
+    assert str(app.flash_btn["state"]) == "disabled" and app.cancel_btn.winfo_manager() == "grid"
+    assert _pump(root, app, lambda: "approve the sign-in there (code BCDF-GH)" in _log(app), timeout=5)
+    assert opened == [stub + "/authorize?code=BCDFGH"]  # the link carries the raw code
+    assert _status(app) == flasher.CONNECT_TEXT  # the code is a detail, not something to type
+    assert _pump(root, app, lambda: bool(flashed), timeout=8)
+    assert app.op["token"] == OPERATOR_TOKEN and flashed[0]["operator_token"] == OPERATOR_TOKEN
+    assert flasher.load_operator_config() == {"console_url": stub, "token": OPERATOR_TOKEN, "username": "matt"}
+    assert StubConsole.polls == 2 and "Signed in as matt." in _log(app)
+    assert _pump(root, app, lambda: _status(app) == flasher.DRY_RUN_TEXT)
+    assert str(app.flash_btn["state"]) == "normal" and not app.cancel_btn.winfo_manager()
+    texts = _all_texts(root, [])
+    assert not any("Signed in" in t or "Sign in" in t for t in texts)
+    # Advanced names the account; Disconnect forgets the token, Connect comes back.
+    assert app.account_label.cget("text") == "Connected as matt" and app.account_btn.cget("text") == "Disconnect"
+    app.account_btn.invoke()
     assert app.op["token"] == "" and not flasher.operator_config_path().exists()
-    assert app.signin_btn.winfo_manager() == "grid" and "Signed out" in _log(app)
+    assert app.account_label.cget("text") == "Not connected" and app.account_btn.cget("text") == "Connect"
+    assert "Signed out" in _log(app) and _status(app) == flasher.DRY_RUN_TEXT
     root.destroy()
 
 
-def test_gui_sign_in_denied_and_browserless(monkeypatch, stub):
+def test_connect_denied_browserless_and_offline(monkeypatch, stub):
     monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher, "console_url", lambda: stub)
     monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: False)
     StubConsole.deny = True
     root = _root()
     app = flasher.App(root)
-    app.sign_in()
-    assert _pump(root, app, lambda: "Sign in failed" in app.signin_label.cget("text"), timeout=8)
-    log = _log(app)
-    assert f"Could not open a browser. Open {stub}/authorize?code=BCDFGH yourself and type the code BCDF-GH." in log
-    assert "Sign in failed: denied on the console" in log
-    assert app.signin_label.cget("text") == "Sign in failed: denied on the console"
-    assert str(app.signin_btn["state"]) == "normal" and app.op["token"] == ""
+    app.adv_btn.invoke()
+    app.account_btn.invoke()  # Connect under Advanced: the same flow, no flash afterwards
+    assert str(app.account_btn["state"]) == "disabled"
+    link = f"{stub}/authorize?code=BCDFGH"
+    # No browser: the status line carries the URL and the code to type.
+    assert _pump(root, app, lambda: link in _status(app), timeout=5)
+    assert _status(app) == f"Open {link} in a browser and type the code BCDF-GH. Then the card is made automatically."
+    assert f"Could not open a browser. Open {link} yourself and type the code BCDF-GH." in _log(app)
+    assert _pump(root, app, lambda: _status(app).startswith("Not approved"), timeout=8)
+    assert _status(app) == "Not approved: denied on the console"
+    assert "Connect failed: Not approved: denied on the console" in _log(app)
+    assert str(app.account_btn["state"]) == "normal" and app.op["token"] == ""
+    assert str(app.flash_btn["state"]) == "normal" and not app.cancel_btn.winfo_manager()
     assert not flasher.operator_config_path().exists()
-    # The console is down: reported, Sign in offered again.
+    # The console is down: reported in plain words, the button is back.
     monkeypatch.setattr(flasher.console, "request_device_code", lambda *a: (_ for _ in ()).throw(
         flasher.console.ConsoleError("cannot reach it")))
-    app.sign_in()
-    assert _pump(root, app, lambda: "Sign in failed: cannot reach it" in _log(app))
-    assert app.signin_label.cget("text") == "Sign in failed: cannot reach it"
+    app.account_btn.invoke()
+    assert _pump(root, app, lambda: "cannot reach it" in _status(app))
+    assert _status(app) == "Could not reach the console: cannot reach it"
+    assert app.account_label.cget("text") == "Not connected" and app.account_btn.cget("text") == "Connect"
     root.destroy()
 
 
-def test_gui_sign_in_polls_until_the_code_expires(monkeypatch, stub):
+def test_connect_times_out_or_is_cancelled_back_to_ready(monkeypatch, stub):
     monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher, "console_url", lambda: stub)
     monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: True)
@@ -583,19 +673,32 @@ def test_gui_sign_in_polls_until_the_code_expires(monkeypatch, stub):
     monkeypatch.setattr(flasher.console, "request_device_code", lambda *a: dict(real(*a), expires_in=2))
     root = _root()
     app = flasher.App(root)
-    app.sign_in()
-    assert _pump(root, app, lambda: "timed out" in app.signin_label.cget("text"), timeout=8)
+    app.connect()
+    assert _pump(root, app, lambda: "took too long" in _status(app), timeout=8)
+    assert _status(app) == "The approval took too long (10 minutes). Press FLASH again."
     assert StubConsole.polls >= 1 and app.op["token"] == ""
-    # Closing the window stops the poll thread.
+    # Cancel during the wait: back to Ready, the poll thread stops.
     StubConsole.polls = 0
     monkeypatch.setattr(flasher.console, "request_device_code", lambda *a: dict(real(*a), expires_in=600))
-    app.sign_in()
+    _fill(app, image_mode="latest")
+    app.v["dry_run"].set(True)
+    app.on_flash()
+    assert _status(app) == flasher.CONNECT_TEXT
     assert _pump(root, app, lambda: StubConsole.polls >= 1, timeout=5)
+    app.cancel_btn.invoke()
+    assert app._signin_cancel.is_set() and _status(app) == "Ready."
+    assert str(app.flash_btn["state"]) == "normal" and not app.cancel_btn.winfo_manager()
+    polls = StubConsole.polls
+    time.sleep(1.5)
+    assert StubConsole.polls <= polls + 1  # at most the poll that was in flight
+    # Closing the window stops it too.
+    app.on_flash()
+    assert _pump(root, app, lambda: StubConsole.polls > polls + 1, timeout=5)
     app.on_close()
     assert app._signin_cancel.is_set()
 
 
-def test_gui_checks_a_stored_token_on_launch(monkeypatch):
+def test_gui_uses_a_stored_token_silently(monkeypatch):
     monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
     flasher.save_operator_config(flasher.DEFAULT_CONSOLE_URL, OPERATOR_TOKEN, "matt")
     seen = []
@@ -611,23 +714,25 @@ def test_gui_checks_a_stored_token_on_launch(monkeypatch):
     monkeypatch.setattr(flasher.console, "fetch_enrollment", fetch)
     root = _root()
     app = flasher.App(root)
-    assert app.signin_label.cget("text") == "Signed in as matt" and not app.signin_btn.winfo_manager()
+    assert app.connected() and app.account_label.cget("text") == "Connected as matt"
     assert _pump(root, app, lambda: "Signed in as matt (checked with the console)." in _log(app))
     assert seen == [(flasher.DEFAULT_CONSOLE_URL, OPERATOR_TOKEN)]
+    assert _status(app) == "Ready."  # the check is a detail
     assert KEY not in _log(app)  # the key is never shown
     root.destroy()
-    # The console rejects the stored token (revoked): Sign in is offered again and the file is gone.
+    # The console rejects the stored token (revoked): forgotten; the next FLASH connects again.
     root = _root()
     app = flasher.App(root)
-    assert _pump(root, app, lambda: app.signin_btn.winfo_manager() == "grid")
-    assert app.signin_label.cget("text") == "Session expired: sign in again" and app.op["token"] == ""
+    assert _pump(root, app, lambda: not app.connected())
+    assert app.account_label.cget("text") == "Not connected" and _status(app) == "Ready."
+    assert "FLASH connects again" in _log(app)
     assert not flasher.operator_config_path().exists()
     root.destroy()
     # A token saved for another console does not count for this build.
     flasher.save_operator_config("https://other.example", OPERATOR_TOKEN, "matt")
     root = _root()
     app = flasher.App(root)
-    assert app.signin_btn.winfo_manager() == "grid" and app.op["token"] == "" and len(seen) == 2
+    assert not app.connected() and len(seen) == 2
     root.destroy()
     # Offline at launch: the stored sign-in is kept.
     flasher.save_operator_config(flasher.DEFAULT_CONSOLE_URL, OPERATOR_TOKEN, "matt")
@@ -636,16 +741,83 @@ def test_gui_checks_a_stored_token_on_launch(monkeypatch):
     root = _root()
     app = flasher.App(root)
     assert _pump(root, app, lambda: "Console check failed (cannot reach); the stored sign-in is kept." in _log(app))
-    assert app.op["token"] == OPERATOR_TOKEN and app.signin_label.cget("text") == "Signed in as matt"
+    assert app.op["token"] == OPERATOR_TOKEN and app.account_label.cget("text") == "Connected as matt"
     root.destroy()
 
 
-def test_copy_public_key(monkeypatch):
+def test_log_goes_to_the_details_box_and_the_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    path = tmp_path / "localappdata" / "Projection5000" / "flasher.log"
+    assert flasher.log_path() == path
+    root = _root()
+    app = flasher.App(root)
+    app.log("Using bundled image x.img.xz")
+    assert "Using bundled image x.img.xz" in _log(app)
+    lines = path.read_text("utf-8").splitlines()
+    assert lines[0].split(" ", 2)[2].startswith("Console ") and lines[1].split(" ", 2)[2].startswith("Fonts: ")
+    assert lines[-1].endswith(" Using bundled image x.img.xz") and lines[-1][4] == "-"  # timestamped
+    assert _status(app) == "Ready."  # none of it reaches the status line
+    # Rotation: over 2 MB the file moves to flasher.log.1 and a fresh one starts.
+    path.write_text("x" * (flasher.LOG_MAX + 1))
+    app.log("after rotation")
+    assert path.with_suffix(".log.1").stat().st_size == flasher.LOG_MAX + 1
+    assert path.read_text("utf-8").endswith(" after rotation\n") and path.stat().st_size < 100
+    # An unwritable log never stops the program.
+    monkeypatch.setattr(flasher, "log_path", lambda: tmp_path / "nope" / "dir" / "x" / "flasher.log")
+    (tmp_path / "nope").write_text("a file, not a directory")
+    app.log("still fine")
+    assert "still fine" in _log(app)
+    root.destroy()
+
+
+def test_status_line_speaks_plain_words(monkeypatch):
     monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
-    app.copy_public_key()
-    assert root.clipboard_get() == PUBKEY and "copied to the clipboard" in _log(app)
+    app.set_phase("Writing the card")
+    assert _status(app) == "Writing the card..."
+    app.set_progress(43.4, "1234 MB written, 21.0 MB/s")
+    assert _status(app) == "Writing the card (43%)..." and app.progress["value"] == 43.4
+    app.set_status(flasher.DONE_TEXT)
+    app.set_progress(100, "verified")  # a late tick never overwrites a sentence
+    assert _status(app) == flasher.DONE_TEXT
+    assert flasher.DONE_TEXT == ("Done. Put the card in the Pi and turn it on. It shows up on the Devices page in a "
+                                 "few minutes.")
+    # A failed flash: the first line of the reason, plus the dialog; the button comes back.
+    errors = []
+    monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: errors.append(a))
+    monkeypatch.setattr(flasher, "run_flash", lambda *a, **k: (_ for _ in ()).throw(
+        flasher.windisk.DiskError("read-back verification failed\n\nmore words")))
+    app._run_flash(dict(FULL, dry_run=False))
+    assert _pump(root, app, lambda: bool(errors))
+    assert _status(app) == "Failed: read-back verification failed" and "FAILED: read-back" in _log(app)
+    # Cancelled: said once, in words.
+    monkeypatch.setattr(flasher, "run_flash", lambda *a, **k: (_ for _ in ()).throw(
+        flasher.windisk.Cancelled("The card is NOT usable; flash it again.")))
+    app._run_flash(dict(FULL, dry_run=False))
+    assert _pump(root, app, lambda: _status(app).startswith("Cancelled"))
+    assert _status(app) == "Cancelled. The card is NOT usable; flash it again."
+    root.destroy()
+
+
+def test_image_override_flag_and_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    img = tmp_path / "dev.img"
+    assert flasher.image_arg(["--dry-run"], env={}) == ""
+    assert flasher.image_arg(["--image", str(img), "--dry-run"], env={}) == str(img)
+    assert flasher.image_arg(["--dry-run", "--image"], env={"FLASHER_IMAGE": " e.img "}) == "e.img"  # no value
+    assert flasher.image_arg([], env={"FLASHER_IMAGE": "e.img"}) == "e.img"
+    monkeypatch.setenv("FLASHER_IMAGE", "env.img")
+    assert flasher.image_arg([]) == "env.img"
+    root = _root()
+    app = flasher.App(root, dry_run=True, image=str(img))
+    assert app.values()["image_mode"] == "local" and app.values()["image_path"] == str(img)
+    assert f"Image override: {img}" in _log(app) and _status(app) == "Ready."
+    app.baked_key = KEY
+    _fill(app, image_mode="local", image_path=str(img))
+    assert app.validate() is None and _shown_errors(app) == {"flash": f"Image file not found: {img}"}
+    img.write_bytes(b"\x01" * 1024)
+    assert app.validate() is not None
     root.destroy()
 
 
@@ -725,7 +897,7 @@ def test_failed_flash_reenables_the_form_and_shows_the_error(monkeypatch, tmp_pa
     assert _pump(root, app, lambda: str(app.flash_btn["state"]) == "normal", timeout=10)
     assert not app.cancel_btn.winfo_manager()
     assert errors and "image resolution boom" in errors[-1][1]
-    assert "FAILED: image resolution boom" in _log(app)
+    assert "FAILED: image resolution boom" in _log(app) and _status(app) == "Failed: image resolution boom"
     root.destroy()
 
 
@@ -840,8 +1012,10 @@ def test_run_flash_end_to_end_with_stubs(monkeypatch, tmp_path):
     img = tmp_path / "x.img"
     img.write_bytes(bytes(range(256)) * 8)
     v = dict(FULL, image_path=str(img), disk_info=dict(DISK, size=1 << 20))
-    flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
+    steps = []
+    flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event(), status=steps.append)
     assert calls == ["check", "clear", "lock", "commit", "refresh", "find", "eject"]
+    assert steps == ["Writing the card", "Checking the card", "Finishing the card"]  # what the user reads
     assert card.read_bytes() == bytes(range(256)) * 8
     firstrun = (boot / "firstrun.sh").read_bytes()
     assert firstrun.startswith(b"#!/bin/bash\n")
@@ -1060,24 +1234,20 @@ def test_gui_uses_the_bundled_image_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(flasher.bundle, "find_bundle", lambda path=None: b)
     root = _root()
     app = flasher.App(root)
-    assert app.bundled is b and app.v["image_mode"].get() == "bundled"
-    radios = [w for f in app.advanced.winfo_children() for w in f.winfo_children()
-              if isinstance(w, flasher.ttk.Radiobutton)]
-    assert radios[0].cget("text").startswith("Bundled: raspios-lite-arm64-test.img.xz (") and \
-        radios[0].cget("value") == "bundled"
-    assert [r.cget("value") for r in radios] == ["bundled", "latest", "local"]
-    # Done dialog after a successful flash names the device id.
+    assert app.bundled is b and app.v["image_mode"].get() == "bundled"  # no image choice on the screen
+    texts = " ".join(_all_texts(root, []))
+    assert _widgets(root, flasher.ttk.Radiobutton) == [] and "Bundled" not in texts and "Local image" not in texts
+    # Done: the status line and a dialog naming the device id.
     done = []
     monkeypatch.setattr(flasher.messagebox, "showinfo", lambda *a, **k: done.append(a[1]))
     monkeypatch.setattr(flasher, "run_flash", lambda *a, **k: None)
     app._run_flash(dict(FULL, dry_run=False))
     assert _pump(root, app, lambda: bool(done))
-    assert done == [flasher.DONE_TEXT + "\n\nDevice id: lobby"]
+    assert done == [flasher.DONE_TEXT + "\n\nDevice id: lobby"] and _status(app) == flasher.DONE_TEXT
     root.destroy()
-    # The saved mode survives a restart of a bundled exe but falls back when this build has no bundle.
-    flasher.save_settings(dict(FORM, image_mode="bundled"))
+    # A developer's --image wins over the bundle; without a bundle the model's image is downloaded.
     root = _root()
-    assert flasher.App(root).v["image_mode"].get() == "bundled"
+    assert flasher.App(root, image="C:/dev/x.img").v["image_mode"].get() == "local"
     root.destroy()
     monkeypatch.setattr(flasher.bundle, "find_bundle", lambda path=None: None)
     root = _root()

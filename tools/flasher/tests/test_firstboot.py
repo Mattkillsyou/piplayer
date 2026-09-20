@@ -71,6 +71,35 @@ def test_firstrun_contents_and_quoting():
     assert positions == sorted(positions)
 
 
+def test_setup_screen_in_firstrun_and_provision():
+    """No login prompt on the HDMI console: getty@tty1 is masked before anything else, the console font is
+    guarded, and the branded screen function plus each step text land in the right order."""
+    s = firstboot.render_firstrun(cfg())
+    marks = ["systemctl mask --now getty@tty1.service", "setterm --blank 0 --cursor off --powersave off",
+             '[ -f "$f" ] && setfont "$f" -C "$SCREEN_TTY"', "screen() {", "centre \"MATT BROWN'S\"",
+             'centre "PROJECTION5000"', "\nscreen_init\n", 'screen "Setting up this projector" "Step 1 of 4: first start"',
+             "# hostname"]
+    positions = [s.index(m) for m in marks]
+    assert positions == sorted(positions), marks
+    assert s.count("Lat15-TerminusBold32x16.psf.gz") == 1
+    assert "run systemctl mask" not in s  # cosmetic: never counted as a failed step
+    p = firstboot.render_provision(cfg())
+    marks = ["screen() {", "\nscreen_init\n", '"Step 2 of 4: joining the network"',
+             "check the Wi-Fi name and password", "install-player.sh",
+             'screen "Ready. Waiting for the first video."',
+             'cp /var/log/projection5000-provision.log "$BOOT/setup-failed.log"',
+             'screen "Setup did not finish." "$REASON" "Log: /boot/firmware/setup-failed.log"']
+    positions = [p.index(m) for m in marks]
+    assert positions == sorted(positions), marks
+    assert p.index('REASON="The console did not accept') < p.index("install attempt")
+    installer = os.path.join(os.path.dirname(firstboot.__file__), "..", "..", "player", "deploy", "install-player.sh")
+    with open(installer, encoding="utf-8") as f:
+        installer = f.read()
+    assert "\n".join(firstboot.SCREEN_FN) in installer  # install-player.sh carries the same copy
+    assert '"Step 3 of 4: installing the player (about 10 minutes)"' in installer
+    assert '"Step 4 of 4: connecting to the console"' in installer
+
+
 def test_wifi_psk_rules():
     hexkey = "ab" * 32
     assert firstboot.wifi_psk("x", hexkey) == hexkey  # a 64-hex key is passed through
@@ -391,23 +420,28 @@ def _provision_harness(tmp_path, script: str, responses: list, install_fails: bo
     archive = tmp_path / "player.tar.gz"
     archive.write_bytes(buf.getvalue())
     log = tmp_path / "provision.log"
+    boot = tmp_path / "bootfs"
+    boot.mkdir()
     sbin = tmp_path / "sbin-provision.sh"
     sbin.write_text("copy on the pi")
-    s = (script.replace("exec >>/var/log/projection5000-provision.log 2>&1", f"exec >>{shlex.quote(_msys(log))} 2>&1")
+    s = (script.replace("/var/log/projection5000-provision.log", shlex.quote(_msys(log)))
+               .replace("BOOT=/boot/firmware;", f"BOOT={shlex.quote(_msys(boot))};")
                .replace("SRC=/opt/projection5000-player.tar.gz", f"SRC={shlex.quote(_msys(archive))}")
                .replace("/opt/projection5000-src", tmp + "/src")
                .replace("/usr/local/sbin/projection5000-provision.sh", _msys(sbin))
                .replace("sleep 60", "sleep 0").replace("sleep 15", "sleep 0").replace("-ge 20", "-ge 3"))
     p = tmp_path / "provision.sh"
     p.write_bytes(s.encode())
-    env = dict(os.environ, PATH=_msys(bin_dir) + ":" + os.environ.get("PATH", ""))
+    (rec / "tty").write_text("")  # stands in for /dev/tty1: the setup screen lands here
+    env = dict(os.environ, PATH=_msys(bin_dir) + ":" + os.environ.get("PATH", ""), SCREEN_TTY=_msys(rec / "tty"))
     r = subprocess.run(["bash", str(p)], capture_output=True, text=True, timeout=120, env=env)
     read = lambda n: (rec / n).read_text().replace("\r", "") if (rec / n).exists() else ""
     bodies = [json.loads((rec / f"body.{i}").read_text()) for i in range(1, int(read("count") or 0) + 1)]
     return {"rc": r.returncode, "log": log.read_text() + r.stderr, "bodies": bodies,
             "install": read("install").split("\n")[:3], "systemctl": read("systemctl"),
             "enroll_calls": read("enroll").count("/api/enroll"), "health_calls": read("health").count("/api/health"),
-            "sbin": sbin.exists(), "archive": archive.exists(), "rec": rec}
+            "sbin": sbin.exists(), "archive": archive.exists(), "rec": rec, "tty": read("tty"),
+            "boot_log": (boot / "setup-failed.log").read_text() if (boot / "setup-failed.log").exists() else None}
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
@@ -428,6 +462,12 @@ def test_provision_enrolls_then_installs(tmp_path):
     # Secret hygiene: the script and archive are gone, the service is disabled, no secret in the log.
     assert not r["sbin"] and not r["archive"] and "disable projection5000-provision.service" in r["systemctl"]
     assert key not in r["log"] and "tok-from-console" not in r["log"]
+    assert r["boot_log"] is None  # the FAT copy only appears on give-up
+    # The HDMI console showed step 2, then the success screen (the last clear wins), centred on 80 columns.
+    assert "Step 2 of 4: joining the network" in r["tty"]
+    last = r["tty"][r["tty"].rindex("\033[2J"):]
+    assert "Ready. Waiting for the first video." in last and "Step 2 of 4" not in last
+    assert "\n" + " " * 34 + "MATT BROWN'S\n" in last and "PROJECTION5000" in last
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
@@ -447,6 +487,11 @@ def test_provision_retries_enrollment_and_install(tmp_path):
                            install_fails=True)
     assert r["rc"] == 1 and "GAVE UP after 3 attempts" in r["log"], r["log"]
     assert r["enroll_calls"] == 1 and r["sbin"] and r["archive"]  # nothing deleted: the next boot retries
+    last = r["tty"][r["tty"].rindex("\033[2J"):]
+    assert "Setup did not finish." in last and "The player did not install." in last
+    assert "Log: /boot/firmware/setup-failed.log" in last
+    assert r["boot_log"] and "GAVE UP after 3 attempts" in r["boot_log"]  # the log named on screen is really there
+    assert "Try 2 did not finish; trying again in a minute." in r["tty"]
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
@@ -489,7 +534,9 @@ def _run_firstrun(tmp_path, c, stubs=()):
     (boot / "projection5000-provision.sh").write_bytes(b"#!/bin/bash\nDEVICE_TOKEN=supersecrettoken0000\n")
     (boot / firstboot.PLAYER_ARCHIVE).write_bytes(b"tarball")
     (boot / "cmdline.txt").write_text("console=tty1 rootwait " + firstboot.CMDLINE_ARGS + " cfg80211.ieee80211_regdom=US\n")
-    env = dict(os.environ, PATH=bin_dir.as_posix() + ":" + os.environ.get("PATH", ""))
+    (tmp_path / "tty").write_text("")  # stands in for /dev/tty1
+    env = dict(os.environ, PATH=bin_dir.as_posix() + ":" + os.environ.get("PATH", ""),
+               SCREEN_TTY=(tmp_path / "tty").as_posix())
     r = subprocess.run(["bash", str(boot / "firstrun.sh")], capture_output=True, text=True, timeout=60, env=env)
     log = (boot / "firstrun.log").read_text()
     assert r.returncode == 0, log + r.stderr
@@ -511,6 +558,11 @@ def test_firstrun_wipes_itself_and_logs_rc(tmp_path):
     assert (boot / "cmdline.txt").read_text() == "console=tty1 rootwait cfg80211.ieee80211_regdom=US\n"
     # No secret is left in the log.
     assert "correct horse battery" not in log and "supersecret" not in log and "$ecret" not in log
+    # The HDMI console got the step 1 screen (setterm/setfont missing here: swallowed, not counted as failures).
+    tty = (tmp_path / "tty").read_text()
+    assert tty.startswith("\033[2J\033[H") and "MATT BROWN'S" in tty and "PROJECTION5000" in tty
+    assert "Setting up this projector" in tty and "Step 1 of 4: first start" in tty
+    assert "command not found" not in log
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")

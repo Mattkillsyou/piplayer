@@ -1,11 +1,14 @@
 """Projection5000 SD Flasher: write Raspberry Pi OS Lite to a card and pre-configure the Pi.
 
-One screen: the console is fixed (baked in by build.ps1), Sign in happens in the browser, and only what changes
-per Pi is asked (name, Wi-Fi, card). Everything else is automatic or under Advanced.
+One button: the console is fixed (baked in by build.ps1), the sign-in happens in the browser the first time
+FLASH is pressed, and only what changes per Pi is asked (name, model, Wi-Fi, card). Everything else is automatic
+or under Advanced. The technical log goes to the hidden details box and %LOCALAPPDATA%/Projection5000/flasher.log.
 
 Run: python flasher.py            (relaunches itself elevated if needed)
      python flasher.py --selfcheck (prints the generated first-boot scripts, exits 0)
      python flasher.py --dry-run   (no admin needed; Flash stops before touching the card)
+     python flasher.py --image X   (developers: write this .img / .img.xz instead of the model's image;
+                                    the FLASHER_IMAGE environment variable does the same)
 """
 import base64
 import ctypes
@@ -25,12 +28,13 @@ import traceback
 import urllib.parse
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 import bundle
 import console
 import firstboot
 import imagefetch
+import pimodel
 import sshkey
 import wifi
 import windisk
@@ -40,8 +44,15 @@ APP_TITLE = "Matt Brown's Projection5000"
 EYEBROW = "MATT BROWN'S"
 # Persisted between runs (%LOCALAPPDATA%). Never a secret: the enrollment key is fetched from the console at flash
 # time with the operator token, which lives DPAPI-protected in the operator config (%APPDATA%).
-SETTINGS_KEYS = ("name", "ssid", "wifi_country", "wifi_hidden", "timezone", "keymap", "image_mode", "image_path",
-                 "static_ip", "gateway")
+SETTINGS_KEYS = ("name", "pi_model", "ssid", "wifi_hidden", "timezone", "static_ip", "gateway")
+LOG_NAME, LOG_MAX = "flasher.log", 2_000_000  # the technical log; rotated to flasher.log.1 at 2 MB
+# The status line: plain sentences, one at a time (everything technical goes to the details box and the file).
+READY_TEXT = "Ready."
+CONNECT_TEXT = "Approve this computer in the browser window that just opened, then the card is made automatically."
+DRY_RUN_TEXT = "Dry run finished. Nothing was written."
+# An armhf model with no internet: shown under the model row instead of a dialog.
+OFFLINE_TEXT = (f"This model needs the 32-bit image. Connect to the internet once (about {pimodel.DOWNLOAD_MB} MB) "
+                "and press FLASH again.")
 # Entry fields whose value is taken verbatim (everything else is stripped of surrounding whitespace).
 UNSTRIPPED = ("wifi_password",)
 CONSOLE_JSON = "console.json"  # {"console_url": ..., "enrollment_key": ...}, written by build.ps1 (key optional)
@@ -55,13 +66,9 @@ PLAIN_WORDS = [("Device name", "name", "Give the Pi a name."),
                ("device_id", "name", "The name needs at least one letter or digit."),
                ("Wi-Fi SSID", "ssid", None),
                ("Wi-Fi password", "wifi_password", "Wi-Fi password must be 8-63 characters."),
-               ("Enrollment key", "signin", "Sign in first."),
-               ("Wi-Fi country", "adv", None), ("Timezone", "adv", None), ("Keyboard", "adv", None),
-               ("Static IP", "adv", None), ("Gateway", "adv", None), ("Device token", "adv", None),
-               ("SSH public key", "adv", None)]
+               ("Timezone", "adv", None), ("Static IP", "adv", None), ("Gateway", "adv", None)]
 WIRED_HINT = "leave blank for a wired Pi"
 LOCATION_HINT = "turn on Location in Windows Settings to list networks"
-COUNTRIES = ["US", "GB", "CA", "AU", "NZ", "DE", "FR", "ES", "IT", "NL", "SE", "NO", "DK", "FI", "IE", "JP", "MX", "BR"]
 TIMEZONES = ["America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York", "America/Phoenix",
              "America/Anchorage", "Pacific/Honolulu", "America/Toronto", "America/Vancouver", "America/Mexico_City",
              "America/Sao_Paulo", "Europe/London", "Europe/Dublin", "Europe/Paris", "Europe/Berlin", "Europe/Madrid",
@@ -71,6 +78,17 @@ PLAYER_EXCLUDE = ("__pycache__", ".venv", ".pytest_cache", "tests")
 
 
 # ---------------------------------------------------------------- elevation
+
+def work_area(root) -> tuple:
+    """(top, bottom) of the Windows work area in px: the screen without the taskbar. The whole screen elsewhere."""
+    try:
+        r = (ctypes.c_long * 4)()
+        if ctypes.windll.user32.SystemParametersInfoW(0x30, 0, r, 0):  # SPI_GETWORKAREA
+            return r[1], r[3]
+    except (AttributeError, OSError):
+        pass
+    return 0, root.winfo_screenheight()
+
 
 def is_admin() -> bool:
     try:
@@ -130,6 +148,24 @@ def save_settings(values: dict) -> None:
     try:
         settings_path().parent.mkdir(parents=True, exist_ok=True)
         settings_path().write_text(json.dumps({k: values[k] for k in SETTINGS_KEYS if k in values}, indent=2), "utf-8")
+    except OSError:
+        pass
+
+
+def log_path() -> Path:
+    return imagefetch.app_dir() / LOG_NAME
+
+
+def append_log(line: str) -> None:
+    """The technical log on disk (what the details box shows), timestamped; rotated once at LOG_MAX. Never raises:
+    a full or read-only profile must not stop a flash."""
+    p = log_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists() and p.stat().st_size > LOG_MAX:
+            p.replace(p.with_suffix(".log.1"))
+        with p.open("a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line.rstrip()}\n")
     except OSError:
         pass
 
@@ -310,7 +346,7 @@ def console_url() -> str:
 
 # Ground / ink ramp from the console's --p5k-* tokens; the translucent rules are baked to solid greys on black.
 GROUND, RAISED, FIELD = "#000000", "#0D0D0D", "#0A0A0A"
-PHOSPHOR, INK, BODY, MUTED, DIM, LAMP_OFF = "#FFFFFF", "#E6E6E6", "#C9C9C9", "#7A7A7A", "#4A4A4A", "#2E2E2E"
+PHOSPHOR, INK, BODY, MUTED, DIM = "#FFFFFF", "#E6E6E6", "#C9C9C9", "#7A7A7A", "#4A4A4A"
 RULE_2, RULE_3, RULE_STRONG = "#242424", "#3A3A3A", "#727272"
 FONT_FILES = ("Silkscreen-Regular.ttf", "Silkscreen-Bold.ttf", "IBMPlexMono-Regular.ttf", "IBMPlexMono-Medium.ttf",
               "SpaceGrotesk[wght].ttf")
@@ -344,11 +380,6 @@ def font_families(available=None) -> dict:
             "sans": "Space Grotesk" if "Space Grotesk" in have else "Segoe UI"}
 
 
-def tracked(text: str) -> str:
-    """Letter-spaced text (Tk has no tracking): a thin space between the characters."""
-    return "\u2009".join(text)
-
-
 def apply_theme(root: tk.Tk) -> dict:
     """Black console theme on ttk's clam engine. Returns the font families in use."""
     fam = font_families()
@@ -365,12 +396,13 @@ def apply_theme(root: tk.Tk) -> dict:
                  lightcolor=GROUND, troughcolor=RAISED, selectbackground=PHOSPHOR, selectforeground=GROUND,
                  insertcolor=PHOSPHOR, focuscolor=GROUND, font=sans)
     st.configure("TLabel", font=sans)
-    st.configure("Eyebrow.TLabel", font=(fam["sans"], 7), foreground=MUTED)
-    st.configure("Wordmark.TLabel", font=(fam["display"], 16, "bold"), foreground=INK)
-    st.configure("WordmarkKey.TLabel", font=(fam["display"], 16, "bold"), foreground=PHOSPHOR)
-    st.configure("Tag.TLabel", font=(fam["mono"], 8), foreground=MUTED)
+    # the masthead: the name over the wordmark, both in the pixel face (the product logo, not a page header)
+    st.configure("Eyebrow.TLabel", font=(fam["display"], 13), foreground=INK)
+    st.configure("Wordmark.TLabel", font=(fam["display"], 24, "bold"), foreground=PHOSPHOR)
     st.configure("Mono.TLabel", font=mono, foreground=BODY)
+    st.configure("Status.TLabel", font=(fam["mono"], 10), foreground=INK)
     st.configure("Hint.TLabel", font=(fam["sans"], 9), foreground=MUTED)
+    st.configure("MonoHint.TLabel", font=(fam["mono"], 8), foreground=MUTED)
     st.configure("Error.TLabel", font=(fam["sans"], 9), foreground=PHOSPHOR)
     st.configure("Link.TLabel", font=(fam["mono"], 9), foreground=BODY)
     # fields: #0A0A0A with a 1px grey edge, white when focused
@@ -417,6 +449,17 @@ def hatch_marker(master, w=8, h=14) -> tk.PhotoImage:
     return img
 
 
+def load_logo(master, size=64):
+    """icon.png (256 px, bundled next to icon.ico) scaled to 64 px for the masthead; None when it is missing or Tk
+    cannot read it (the masthead then shows the name alone)."""
+    try:
+        img = tk.PhotoImage(master=master, file=str(resource_path("icon.png")))
+        factor = max(1, img.width() // size)
+        return img.subsample(factor, factor) if factor > 1 else img
+    except tk.TclError:
+        return None
+
+
 def draw_brackets(panel: tk.Frame, inset=5) -> list:
     """The console's panel frame: four corner L shapes, 1px white with 14px arms, on small canvases placed over
     the panel's corners (its padding, so nothing is covered)."""
@@ -435,10 +478,10 @@ def draw_brackets(panel: tk.Frame, inset=5) -> list:
 # ---------------------------------------------------------------- GUI
 
 class App:
-    def __init__(self, root: tk.Tk, dry_run: bool = False):
+    def __init__(self, root: tk.Tk, dry_run: bool = False, image: str = ""):
         self.root = root
         root.title(APP_TITLE)
-        root.minsize(700, 540)
+        root.minsize(700, 460)
         try:
             root.iconbitmap(str(resource_path("icon.ico")))
         except tk.TclError:
@@ -446,6 +489,7 @@ class App:
         self.fonts = apply_theme(root)
         self.marker = hatch_marker(root)  # the error labels' leading hatch, kept alive here
         self.dry_run_default = dry_run
+        self.image_override = image  # --image / FLASHER_IMAGE: a developer's local image instead of the model's
         self.cancel = threading.Event()
         self.worker = None
         self.q = queue.Queue()
@@ -457,6 +501,7 @@ class App:
         self.op = {"token": "", "username": ""}  # the sign-in (operator token), never a widget
         self._password = secrets.token_urlsafe(24)  # the Pi user's password: random, never shown, fresh per flash
         self._signin_cancel = threading.Event()
+        self._phase = ""  # what the progress bar measures ("Writing the card"), shown with the percentage
         self._build()
         self._apply_settings(load_settings())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -466,13 +511,14 @@ class App:
         self.refresh_networks()
         self.log(f"Console {self.console_url}.")
         self.log(f"Fonts: {', '.join(self.fonts.values())}.")
+        if self.image_override:
+            self.log(f"Image override: {self.image_override}")
         op = load_operator_config()
         if op["token"] and op["console_url"] in ("", self.console_url):
             self.op = {"token": op["token"], "username": op["username"]}
-            self._show_signed_in()
             self.check_token()
-        else:
-            self._show_sign_in("")
+        self._show_account()
+        self.set_status(READY_TEXT)
 
     # ----- form
     def _var(self, key, default="", kind=tk.StringVar):
@@ -498,27 +544,19 @@ class App:
         outer = ttk.Frame(self.root, padding=16)
         outer.pack(fill="both", expand=True)
 
-        # 1. header: the wordmark, then the fixed console and the sign-in state (a lamp: lit when signed in).
-        header = ttk.Frame(outer)
+        # 1. masthead: the product logo (the projector icon, the name over the wordmark), nothing else.
+        header = ttk.Frame(outer, height=96)
         header.pack(fill="x", pady=(0, 12))
-        header.columnconfigure(1, weight=1)
-        ttk.Label(header, text=tracked(EYEBROW), style="Eyebrow.TLabel").grid(row=0, column=0, sticky="w", padx=4)
+        header.pack_propagate(False)
+        self.logo = load_logo(self.root)
+        if self.logo:
+            ttk.Label(header, image=self.logo).pack(side="left", padx=(4, 16), anchor="center")
         mark = ttk.Frame(header)
-        mark.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 6))
-        ttk.Label(mark, text="PROJECTION", style="Wordmark.TLabel").pack(side="left", padx=(4, 0))
-        ttk.Label(mark, text="5000", style="WordmarkKey.TLabel").pack(side="left")
-        ttk.Label(mark, text=tracked("SD FLASHER"), style="Tag.TLabel").pack(side="left", padx=(14, 0), pady=(6, 0))
-        ttk.Label(header, text=f"Console: {urllib.parse.urlsplit(self.console_url).netloc}", style="Mono.TLabel"
-                  ).grid(row=2, column=0, sticky="w", padx=4)
-        state = ttk.Frame(header)
-        state.grid(row=2, column=1, sticky="e", padx=4)
-        self.lamp = tk.Canvas(state, width=12, height=12, bg=GROUND, highlightthickness=0)
-        self.lamp.pack(side="left", padx=(0, 6))
-        self.signin_label = ttk.Label(state, text="", style="Mono.TLabel")
-        self.signin_label.pack(side="left")
-        self.signin_btn = ttk.Button(header, text="Sign in", command=self.sign_in)
-        self.signin_btn.grid(row=2, column=2, sticky="e", padx=4)
-        self._err(header, 3, "signin")
+        mark.pack(side="left", anchor="center")
+        self.eyebrow = ttk.Label(mark, text=EYEBROW, style="Eyebrow.TLabel")
+        self.eyebrow.pack(anchor="w", padx=(0, 0))
+        self.wordmark = ttk.Label(mark, text="PROJECTION5000", style="Wordmark.TLabel")
+        self.wordmark.pack(anchor="w")
 
         # 2-4. what changes per Pi, on a panel with the console's corner brackets.
         panel = tk.Frame(outer, bg=GROUND)
@@ -532,122 +570,140 @@ class App:
         self.id_label.grid(row=1, column=1, sticky="w", padx=4)
         self._err(form, 2, "name")
         self.v["name"].trace_add("write", self._derive_id)
-        ttk.Label(form, text="Wi-Fi network").grid(row=3, column=0, sticky="w", padx=4, pady=4)
+        # Pi model: the key lives in v["pi_model"] (saved in flasher.json); the box shows the label.
+        ttk.Label(form, text="Pi model").grid(row=3, column=0, sticky="w", padx=4, pady=4)
+        self.model_box = ttk.Combobox(form, values=pimodel.LABELS, state="readonly", width=38)
+        self.model_box.grid(row=3, column=1, sticky="we", padx=4, pady=4)
+        self.model_box.bind("<<ComboboxSelected>>",
+                            lambda e: self.v["pi_model"].set(pimodel.MODELS[self.model_box.current()].key))
+        self.model_hint = ttk.Label(form, text="", style="MonoHint.TLabel", wraplength=520, justify="left")
+        self.model_hint.grid(row=4, column=1, columnspan=2, sticky="w", padx=4)
+        self._err(form, 5, "pi_model")
+        self._var("pi_model", pimodel.DEFAULT).trace_add("write", self._model_changed)
+        self._model_changed()
+        ttk.Label(form, text="Wi-Fi network").grid(row=6, column=0, sticky="w", padx=4, pady=4)
         self.ssid_box = ttk.Combobox(form, textvariable=self._var("ssid"), width=38)  # editable: any name works
-        self.ssid_box.grid(row=3, column=1, sticky="we", padx=4, pady=4)
+        self.ssid_box.grid(row=6, column=1, sticky="we", padx=4, pady=4)
         self.ssid_box.bind("<<ComboboxSelected>>", self._ssid_picked)
         side = ttk.Frame(form)
-        side.grid(row=3, column=2, sticky="w")
+        side.grid(row=6, column=2, sticky="w")
         refresh = ttk.Label(side, text="Refresh", style="Link.TLabel", cursor="hand2", underline=0)
         refresh.pack(side="left", padx=4)
         refresh.bind("<Button-1>", lambda e: self.refresh_networks())
         self.ssid_hint = ttk.Label(side, text=WIRED_HINT, style="Hint.TLabel", wraplength=260, justify="left")
         self.ssid_hint.pack(side="left", padx=4)
-        self._err(form, 4, "ssid")
-        pw = self._entry(form, 5, "Wi-Fi password", "wifi_password", show="*")
+        self._err(form, 7, "ssid")
+        pw = self._entry(form, 8, "Wi-Fi password", "wifi_password", show="*")
         self._var("show_wifi", False, tk.BooleanVar)
         side = ttk.Frame(form)
-        side.grid(row=5, column=2, sticky="w")
+        side.grid(row=8, column=2, sticky="w")
         ttk.Checkbutton(side, text="Show", variable=self.v["show_wifi"],
                         command=lambda: pw.configure(show="" if self.v["show_wifi"].get() else "*")
                         ).pack(side="left", padx=4)
         self.pw_hint = ttk.Label(side, text="", style="Hint.TLabel")
         self.pw_hint.pack(side="left", padx=4)
         self.v["wifi_password"].trace_add("write", self._password_edited)
-        self._err(form, 6, "wifi_password")
-        ttk.Label(form, text="SD card").grid(row=7, column=0, sticky="w", padx=4, pady=4)
+        self._err(form, 9, "wifi_password")
+        ttk.Label(form, text="SD card").grid(row=10, column=0, sticky="w", padx=4, pady=4)
         self.disk_box = ttk.Combobox(form, textvariable=self._var("disk"), state="readonly")
-        self.disk_box.grid(row=7, column=1, sticky="we", padx=4, pady=4)
-        ttk.Button(form, text="Refresh", command=self.refresh_disks).grid(row=7, column=2, sticky="w", padx=4)
-        self._err(form, 8, "disk")
+        self.disk_box.grid(row=10, column=1, sticky="we", padx=4, pady=4)
+        ttk.Button(form, text="Refresh", command=self.refresh_disks).grid(row=10, column=2, sticky="w", padx=4)
+        self._err(form, 11, "disk")
 
-        # 5. Flash, progress, log.
+        # 5. Flash, progress, the one status line.
         buttons = ttk.Frame(form)
-        buttons.grid(row=9, column=0, columnspan=3, sticky="we", pady=(12, 0))
+        buttons.grid(row=12, column=0, columnspan=3, sticky="we", pady=(12, 0))
         buttons.columnconfigure(2, weight=1)
         self.flash_btn = ttk.Button(buttons, text="FLASH", command=self.on_flash, style="Primary.TButton")
         self.flash_btn.grid(row=0, column=0, padx=4)
         self.cancel_btn = ttk.Button(buttons, text="Cancel", command=self.on_cancel)
         self.cancel_btn.grid(row=0, column=1, padx=4)
-        self.cancel_btn.grid_remove()  # shown while a flash runs
+        self.cancel_btn.grid_remove()  # shown while a flash runs, and while the browser approval is awaited
         self.progress = ttk.Progressbar(buttons, maximum=100)
         self.progress.grid(row=0, column=2, sticky="we", padx=8)
-        self.status = ttk.Label(buttons, text="", style="Mono.TLabel")
-        self.status.grid(row=0, column=3, padx=4)
-        self._err(buttons, 1, "flash", column=0, columnspan=4)
+        self.status_label = ttk.Label(buttons, text="", style="Status.TLabel", wraplength=560, justify="left")
+        self.status_label.grid(row=1, column=0, columnspan=3, sticky="w", padx=4, pady=(10, 0))
+        self._err(buttons, 2, "flash", column=0, columnspan=3)
 
-        logf = ttk.Frame(outer)
-        logf.pack(fill="both", expand=True, pady=(12, 4))
-        self.log_text = tk.Text(logf, height=8, wrap="word", state="disabled", bg=GROUND, fg=BODY, bd=0,
-                                highlightthickness=1, highlightbackground=PHOSPHOR, highlightcolor=PHOSPHOR,
-                                insertbackground=PHOSPHOR, selectbackground=PHOSPHOR, selectforeground=GROUND,
-                                font=(self.fonts["mono"], 9), padx=8, pady=6)
-        sb = ttk.Scrollbar(logf, orient="vertical", command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.log_text.pack(side="left", fill="both", expand=True)
-
-        # Advanced: one collapsed disclosure holding everything else.
+        # Advanced: one collapsed disclosure holding everything else, the technical log included.
         self.adv_btn = ttk.Button(outer, text="Advanced", command=self._toggle_advanced)
-        self.adv_btn.pack(anchor="w", pady=(4, 0))
+        self.adv_btn.pack(anchor="w", pady=(12, 0))
         self.advanced = ttk.Frame(outer, padding=(12, 8, 4, 4))
         self._build_advanced(self.advanced)
+        # Hidden values other code reads: the image (a developer's override, else the model decides) and the
+        # locale defaults, always taken from Windows.
+        self.bundled = bundle.find_bundle()
+        self._var("image_mode", "local" if self.image_override else "bundled" if self.bundled else "latest")
+        self._var("image_path", self.image_override)
+        self._var("keymap", winlocale.keymap())
+        self._var("wifi_country", winlocale.country(firstboot.ISO3166))
 
     def _build_advanced(self, adv):
         adv.columnconfigure(1, weight=1)
         self._err(adv, 0, "adv", column=0, columnspan=3)
-
-        ttk.Label(adv, text="Image").grid(row=1, column=0, sticky="nw", padx=4, pady=2)
-        img = ttk.Frame(adv)
-        img.grid(row=1, column=1, columnspan=2, sticky="we")
-        img.columnconfigure(0, weight=1)
-        self.bundled = bundle.find_bundle()
-        self._var("image_mode", "bundled" if self.bundled else "latest")
-        if self.bundled:
-            ttk.Radiobutton(img, text=f"Bundled: {self.bundled.name} ({windisk.human_size(self.bundled.length)})",
-                            variable=self.v["image_mode"], value="bundled").grid(row=0, column=0, columnspan=2,
-                                                                                 sticky="w")
-        ttk.Radiobutton(img, text="Latest Raspberry Pi OS Lite (64-bit), downloaded and cached",
-                        variable=self.v["image_mode"], value="latest").grid(row=1, column=0, columnspan=2, sticky="w")
-        ttk.Radiobutton(img, text="Local image file (.img or .img.xz)", variable=self.v["image_mode"],
-                        value="local").grid(row=2, column=0, columnspan=2, sticky="w")
-        ttk.Entry(img, textvariable=self._var("image_path")).grid(row=3, column=0, sticky="we", padx=4)
-        ttk.Button(img, text="Browse...", command=self.browse_image).grid(row=3, column=1, padx=4)
-
-        ttk.Label(adv, text="Timezone").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(adv, text="Time zone").grid(row=1, column=0, sticky="w", padx=4, pady=2)
         ttk.Combobox(adv, textvariable=self._var("timezone", winlocale.timezone()), values=TIMEZONES
-                     ).grid(row=2, column=1, sticky="we", padx=4, pady=2)
-        self._entry(adv, 3, "Keyboard layout", "keymap", winlocale.keymap(), width=8)
-        ttk.Label(adv, text="Wi-Fi country").grid(row=4, column=0, sticky="w", padx=4, pady=2)
-        ttk.Combobox(adv, textvariable=self._var("wifi_country", winlocale.country(firstboot.ISO3166)),
-                     values=COUNTRIES, width=8).grid(row=4, column=1, sticky="w", padx=4, pady=2)
+                     ).grid(row=1, column=1, sticky="we", padx=4, pady=2)
         ttk.Checkbutton(adv, text="Hidden Wi-Fi network", variable=self._var("wifi_hidden", False, tk.BooleanVar)
-                        ).grid(row=5, column=1, sticky="w", padx=4)
-        self._entry(adv, 6, "Static IP", "static_ip", width=20)
-        ttk.Label(adv, text="e.g. 192.168.1.50/24; blank for DHCP", style="Hint.TLabel").grid(row=6, column=2, sticky="w")
-        self._entry(adv, 7, "Gateway", "gateway", width=20)
-        ttk.Label(adv, text="also used as the DNS server", style="Hint.TLabel").grid(row=7, column=2, sticky="w")
-        self._entry(adv, 8, "Existing device token", "token")
-        ttk.Label(adv, text="from the Devices page; skips enrollment", style="Hint.TLabel").grid(row=8, column=2,
-                                                                                                 sticky="w")
-        ttk.Label(adv, text="SSH key").grid(row=9, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(adv, text=str(sshkey.private_path()), style="Mono.TLabel").grid(row=9, column=1, sticky="w", padx=4)
-        ttk.Button(adv, text="Copy public key", command=self.copy_public_key).grid(row=9, column=2, sticky="w", padx=4)
-        row10 = ttk.Frame(adv)
-        row10.grid(row=10, column=1, columnspan=2, sticky="w")
-        self.signout_btn = ttk.Button(row10, text="Sign out", command=self.sign_out)
-        self.signout_btn.pack(side="left", padx=4, pady=4)
-        ttk.Checkbutton(row10, text="Dry run (validate and resolve the image, do not write)",
-                        variable=self._var("dry_run", self.dry_run_default, tk.BooleanVar)).pack(side="left", padx=8)
+                        ).grid(row=2, column=1, sticky="w", padx=4)
+        self._entry(adv, 3, "Static IP", "static_ip", width=20)
+        ttk.Label(adv, text="e.g. 192.168.1.50/24; blank for DHCP", style="Hint.TLabel").grid(row=3, column=2, sticky="w")
+        self._entry(adv, 4, "Gateway", "gateway", width=20)
+        ttk.Label(adv, text="also used as the DNS server", style="Hint.TLabel").grid(row=4, column=2, sticky="w")
+        ttk.Label(adv, text="Account").grid(row=5, column=0, sticky="w", padx=4, pady=2)
+        account = ttk.Frame(adv)
+        account.grid(row=5, column=1, columnspan=2, sticky="w")
+        self.account_label = ttk.Label(account, text="", style="Mono.TLabel")
+        self.account_label.pack(side="left", padx=4)
+        self.account_btn = ttk.Button(account, text="Connect", command=self.toggle_account)
+        self.account_btn.pack(side="left", padx=8)
+        row6 = ttk.Frame(adv)
+        row6.grid(row=6, column=1, columnspan=2, sticky="w")
+        self._var("show_details", False, tk.BooleanVar)
+        ttk.Checkbutton(row6, text="Show details", variable=self.v["show_details"], command=self._toggle_details
+                        ).pack(side="left", padx=4, pady=4)
+        self._var("dry_run", self.dry_run_default, tk.BooleanVar)
+        if self.dry_run_default:  # a developer's --dry-run: the checkbox exists only then, never for the user
+            ttk.Checkbutton(row6, text="Dry run (validate and resolve the image, do not write)",
+                            variable=self.v["dry_run"]).pack(side="left", padx=8)
+        self.details = ttk.Frame(adv)
+        self.details.grid(row=7, column=0, columnspan=3, sticky="nsew", pady=(4, 4))
+        self.details.grid_remove()
+        adv.rowconfigure(7, weight=1)
+        self.log_text = tk.Text(self.details, height=6, wrap="word", state="disabled", bg=GROUND, fg=BODY, bd=0,
+                                highlightthickness=1, highlightbackground=PHOSPHOR, highlightcolor=PHOSPHOR,
+                                insertbackground=PHOSPHOR, selectbackground=PHOSPHOR, selectforeground=GROUND,
+                                font=(self.fonts["mono"], 9), padx=8, pady=6)
+        sb = ttk.Scrollbar(self.details, orient="vertical", command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.log_text.pack(side="left", fill="both", expand=True)
         ttk.Label(adv, text=f"Build: {build_info()}", style="Hint.TLabel", wraplength=520, justify="left"
-                  ).grid(row=11, column=1, columnspan=2, sticky="w", padx=4)
+                  ).grid(row=8, column=1, columnspan=2, sticky="w", padx=4)
 
     def _fit_to_screen(self):
-        # Never taller than the screen minus the taskbar and title bar, so the log stays visible.
+        # Never taller than the work area (screen minus taskbar); the window grows when Advanced opens.
         self.root.update_idletasks()
-        w = max(self.root.winfo_reqwidth(), 700)
-        h = min(max(self.root.winfo_reqheight(), 540), self.root.winfo_screenheight() - 120)
-        self.root.geometry(f"{w}x{h}")
+        self._size_to(max(self.root.winfo_reqwidth(), 700), max(self.root.winfo_reqheight(), 460))
+
+    def _grow(self):
+        """Advanced (and the details box) opened: make the window tall enough to show it all."""
+        self.root.update_idletasks()
+        need = self.root.winfo_reqheight()
+        if need > self.root.winfo_height():
+            self._size_to(self.root.winfo_width(), need)
+
+    def _size_to(self, w: int, h: int):
+        """Resize to w x h (client px) inside the work area: no taller than it, and moved up when the bottom
+        would hang behind the taskbar (Windows opens the window at a cascade position, then it grows)."""
+        top, bottom = work_area(self.root)
+        chrome = (self.root.winfo_rooty() - self.root.winfo_y() or 31) + 8  # title bar and bottom border
+        h = min(h, bottom - top - chrome)
+        pos = ""
+        if self.root.winfo_viewable():  # before the first map there is no position to keep
+            y = max(top, min(self.root.winfo_y(), bottom - h - chrome))
+            pos = f"+{self.root.winfo_x()}+{y}"
+        self.root.geometry(f"{w}x{h}{pos}")
 
     def _derive_id(self, *_):
         dev = firstboot.derive_device_id(self.v["name"].get())
@@ -656,58 +712,67 @@ class App:
     def device_id(self) -> str:
         return firstboot.derive_device_id(self.v["name"].get())
 
+    def _model_changed(self, *_):
+        key = self.v["pi_model"].get()
+        m = pimodel.get(key)
+        if m.key != key:  # a bad flasher.json: back to the default, silently
+            self.v["pi_model"].set(m.key)
+            return
+        self.model_box.current(pimodel.MODELS.index(m))
+        self.model_hint.configure(text=m.hint)
+
     def _toggle_advanced(self):
         if self.advanced.winfo_manager():
             self.advanced.pack_forget()
         else:
-            self.advanced.pack(fill="x", after=self.adv_btn)
+            self.advanced.pack(fill="both", expand=True, after=self.adv_btn)
+            self._grow()
 
-    def copy_public_key(self):
-        try:
-            line = sshkey.ensure_keypair(self.log)
-        except OSError as e:
-            self.log(f"SSH key: {e}")
-            return
-        self.root.clipboard_clear()
-        self.root.clipboard_append(line)
-        self.log("Public key copied to the clipboard (paste it into authorized_keys on any other machine).")
-
-    # ----- sign in (device-code flow: the browser approves, this thread polls)
-    def _set_lamp(self, lit: bool):
-        self.lamp.delete("all")
-        if lit:  # a white lamp with its glow ring
-            self.lamp.create_oval(0, 0, 11, 11, fill=RULE_3, outline="")
-            self.lamp.create_oval(3, 3, 8, 8, fill=PHOSPHOR, outline="")
+    def _toggle_details(self):
+        if self.v["show_details"].get():
+            self.details.grid()
+            self.log_text.see("end")
+            self._grow()
         else:
-            self.lamp.create_oval(3, 3, 8, 8, fill=LAMP_OFF, outline="")
+            self.details.grid_remove()
 
-    def _show_sign_in(self, note: str):
-        self._set_lamp(False)
-        self.signin_label.configure(text=note)
-        self.signin_btn.configure(state="normal")
-        self.signin_btn.grid()
-        self.signout_btn.configure(state="disabled")
+    # ----- the account (device-code flow: the browser approves, this thread polls). Invisible in normal use: a
+    # stored token is used silently, and FLASH connects first when there is none.
+    def connected(self) -> bool:
+        return bool(self.op["token"])
 
-    def _show_signed_in(self):
-        self._set_lamp(True)
-        self.signin_btn.grid_remove()
-        self.signin_label.configure(text=f"Signed in as {self.op['username'] or 'operator'}")
-        self.signout_btn.configure(state="normal")
-        self._show_error("signin", "")
+    def _show_account(self):
+        """The Account row under Advanced: 'Connected as <name>' with Disconnect, or 'Not connected' with Connect."""
+        if self.connected():
+            self.account_label.configure(text=f"Connected as {self.op['username'] or 'operator'}")
+            self.account_btn.configure(text="Disconnect", state="normal")
+        else:
+            self.account_label.configure(text="Not connected")
+            self.account_btn.configure(text="Connect", state="normal")
 
-    def sign_in(self):
-        self.signin_btn.configure(state="disabled")
-        self.signin_label.configure(text="Contacting the console ...")
+    def toggle_account(self):
+        if self.connected():
+            self.disconnect()
+        else:
+            self.connect()
+
+    def connect(self, then=None):
+        """Open the browser for approval; `then` runs on the Tk thread once the token is in hand (FLASH passes
+        itself so the card is made with no further click). Cancel puts the UI back to Ready."""
+        self.account_btn.configure(state="disabled")
+        self.flash_btn.configure(state="disabled")
+        self.cancel_btn.grid()
+        self.set_status(CONNECT_TEXT)
         self._signin_cancel = threading.Event()
-        threading.Thread(target=self._sign_in_work, args=(self._signin_cancel,), daemon=True).start()
+        threading.Thread(target=self._connect_work, args=(self._signin_cancel, then), daemon=True).start()
 
-    def _sign_in_work(self, cancel: threading.Event):
+    def _connect_work(self, cancel: threading.Event, then):
         url = self.console_url
         try:
             r = console.request_device_code(url, socket.gethostname())
         except console.ConsoleError as e:
-            msg = f"Sign in failed: {e}"
-            self.post(lambda: self._sign_in_failed(msg))
+            msg = f"Could not reach the console: {e}"
+            self.post(lambda: self._connect_failed(msg))
             return
         link = f"{r['verification_url']}?code={urllib.parse.quote(r['user_code'])}"
         try:
@@ -718,40 +783,59 @@ class App:
         deadline = time.monotonic() + r["expires_in"]
         while time.monotonic() < deadline and not cancel.is_set():
             time.sleep(r["interval"])
+            if cancel.is_set():
+                break
             try:
                 tok = console.poll_device_token(url, r["device_code"])
             except console.Pending:
                 continue
             except console.ConsoleError as e:
-                msg = f"Sign in failed: {e}"
-                self.post(lambda: self._sign_in_failed(msg))
+                msg = f"Not approved: {e}"
+                self.post(lambda: self._connect_failed(msg))
                 return
-            self.post(lambda: self._signed_in(url, tok))
+            self.post(lambda: self._connected(url, tok, then))
             return
         if not cancel.is_set():
-            self.post(lambda: self._sign_in_failed("Sign in timed out (10 minutes): click Sign in again."))
+            self.post(lambda: self._connect_failed("The approval took too long (10 minutes). Press FLASH again."))
 
     def _show_code(self, code: str, link: str, opened: bool):
-        self.signin_label.configure(text=f"Approve in your browser (code {code})")
         if opened:
             self.log(f"Browser opened at {link}: approve the sign-in there (code {code}).")
         else:
             self.log(f"Could not open a browser. Open {link} yourself and type the code {code}.")
+            self.set_status(f"Open {link} in a browser and type the code {code}. Then the card is made "
+                            "automatically.")
 
-    def _sign_in_failed(self, msg: str):
-        self.log(msg)
-        self._show_sign_in(msg if len(msg) < 60 else "Sign in failed (see the log)")
+    def _connect_failed(self, msg: str):
+        self.log(f"Connect failed: {msg}")
+        self._connect_done()
+        self.set_status(msg)
 
-    def _signed_in(self, url: str, tok: dict):
+    def _connect_done(self):
+        self.flash_btn.configure(state="normal")
+        self.cancel_btn.grid_remove()
+        self._show_account()
+
+    def _connected(self, url: str, tok: dict, then):
         warning = save_operator_config(url, tok["token"], tok["username"])
         if warning:
             self.log(warning)
         self.op = {"token": tok["token"], "username": tok["username"]}
-        self._show_signed_in()
         self.log(f"Signed in as {tok['username'] or 'operator'}.")
+        self._connect_done()
+        self.set_status(READY_TEXT)
+        if then:
+            then()
+
+    def cancel_connect(self):
+        self._signin_cancel.set()
+        self.log("Connect cancelled.")
+        self._connect_done()
+        self.set_status(READY_TEXT)
 
     def check_token(self):
-        """A stored token is checked against GET /api/operator/enrollment; 401 means sign in again."""
+        """A stored token is checked in the background against GET /api/operator/enrollment; 401 means the token
+        was revoked, so it is forgotten and the next FLASH connects again. Nothing on the status line."""
         url, token = self.console_url, self.op["token"]
 
         def work():
@@ -760,8 +844,8 @@ class App:
             except console.ConsoleError as e:
                 if e.code == 401:
                     self.post(lambda: (clear_operator_config(), self.op.update(token="", username=""),
-                                       self._show_sign_in("Session expired: sign in again"),
-                                       self.log("The stored sign-in was rejected by the console: sign in again.")))
+                                       self._show_account(),
+                                       self.log("The stored sign-in was rejected by the console: FLASH connects again.")))
                 else:
                     msg = f"Console check failed ({e}); the stored sign-in is kept."
                     self.post(lambda: self.log(msg))
@@ -771,11 +855,11 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def sign_out(self):
+    def disconnect(self):
         self._signin_cancel.set()
         clear_operator_config()
         self.op = {"token": "", "username": ""}
-        self._show_sign_in("")
+        self._show_account()
         self.log("Signed out. Revoke the token on the console's Settings page too if this PC changes hands.")
 
     def _apply_settings(self, s: dict):
@@ -785,8 +869,6 @@ class App:
                     self.v[k].set(s[k])
                 except tk.TclError:
                     pass
-        if self.v["image_mode"].get() == "bundled" and not self.bundled:  # saved by an exe that had one
-            self.v["image_mode"].set("latest")
 
     def values(self) -> dict:
         """Form values; text fields are stripped (pasted spaces and newlines otherwise reach the card).
@@ -807,12 +889,6 @@ class App:
         return out
 
     # ----- actions
-    def browse_image(self):
-        p = filedialog.askopenfilename(title="Choose image", filetypes=[("Disk images", "*.img *.xz"), ("All", "*")])
-        if p:
-            self.v["image_path"].set(p)
-            self.v["image_mode"].set("local")
-
     def refresh_disks(self):
         previous = self.selected_disk()  # read before the placeholder replaces the combobox text
         self.disk_box.set("Scanning...")
@@ -923,14 +999,27 @@ class App:
             self.root.after(50, self._pump)
 
     def log(self, line: str):
+        """A technical line: the details box (under Advanced, Show details) and the log file. Never the status line."""
         self.log_text.configure(state="normal")
         self.log_text.insert("end", line.rstrip("\n") + "\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+        append_log(line)
+
+    def set_status(self, text: str):
+        """The one sentence the user reads. Clears the phase, so a late progress tick cannot overwrite it."""
+        self._phase = ""
+        self.status_label.configure(text=text)
+
+    def set_phase(self, text: str):
+        """A step the progress bar measures: 'Writing the card' becomes 'Writing the card (43%)...'."""
+        self._phase = text
+        self.status_label.configure(text=f"{text}...")
 
     def set_progress(self, pct, text=""):
         self.progress["value"] = max(0, min(100, pct))
-        self.status.configure(text=text)
+        if self._phase:
+            self.status_label.configure(text=f"{self._phase} ({self.progress['value']:.0f}%)...")
 
     def on_close(self):
         if self.worker and self.worker.is_alive():
@@ -948,8 +1037,12 @@ class App:
         self.root.destroy()
 
     def on_cancel(self):
-        self.cancel.set()
-        self.log("Cancelling...")
+        if self.worker and self.worker.is_alive():
+            self.cancel.set()
+            self.log("Cancelling...")
+            self.set_status("Stopping...")
+        else:  # the browser approval is being awaited
+            self.cancel_connect()
 
     def _show_error(self, field: str, text: str):
         lbl = self.err[field]
@@ -968,9 +1061,7 @@ class App:
         if not v["ssid"] and v["wifi_password"]:
             problems["ssid"] = "Enter the Wi-Fi network name (or clear the password for a wired Pi)."
         cfg = card_cfg(v)
-        if not cfg["enrollment_key"] and not cfg["token"]:
-            if not v["operator_token"]:
-                problems["signin"] = "Sign in first."
+        if not cfg["enrollment_key"]:  # fetched at flash time with the sign-in (FLASH connects first if needed)
             cfg["enrollment_key"] = "fetched-at-flash-time-with-the-token"  # the other rules still apply
         try:
             cfg["ssh_pubkey"] = sshkey.ensure_keypair(self.log)
@@ -983,14 +1074,14 @@ class App:
                     break
             else:
                 problems.setdefault("flash", p)
-        if v["image_mode"] == "local":
+        if v["image_mode"] == "local":  # --image / FLASHER_IMAGE
             if not Path(v["image_path"]).is_file():
-                problems.setdefault("adv", "Local image file not found.")
+                problems.setdefault("flash", f"Image file not found: {v['image_path']}")
             else:
                 try:
                     windisk.check_image_magic(v["image_path"])
                 except windisk.DiskError as e:
-                    problems.setdefault("adv", str(e))
+                    problems.setdefault("flash", str(e))
         disk = self.selected_disk()
         if not v["dry_run"]:  # a dry run never touches the card, so none is needed
             if not is_admin():
@@ -1020,6 +1111,10 @@ class App:
         v = self.validate()
         if not v:
             return
+        if not v["enrollment_key"] and not self.connected():
+            # First use on this PC: approve it in the browser, then the flash continues by itself.
+            self.connect(then=self.on_flash)
+            return
         if not v["dry_run"]:
             # Rescan so the confirmation names the disk as it is now (cards get swapped, numbers move).
             chosen = v["disk_info"]
@@ -1045,26 +1140,38 @@ class App:
         self.flash_btn.configure(state="disabled")
         self.cancel_btn.grid()
         self.set_progress(0, "")
+        self.set_phase("Preparing")
         self.worker = threading.Thread(target=self._run_flash, args=(v,), daemon=True)
         self.worker.start()
 
     # ----- worker
     def _run_flash(self, v: dict):
         log = lambda s: self.post(lambda: self.log(s))
+        status = lambda s: self.post(lambda: self.set_phase(s))
         try:
             run_flash(v, log, lambda pct, text: self.post(lambda: self.set_progress(pct, text)), self.cancel,
-                      dry_run=v["dry_run"])
-            if not v["dry_run"]:
+                      dry_run=v["dry_run"], status=status)
+            if v["dry_run"]:
+                self.post(lambda: self.set_status(DRY_RUN_TEXT))
+            else:
                 done = DONE_TEXT + f"\n\nDevice id: {v['device_id']}"
+                self.post(lambda: self.set_status(DONE_TEXT))
                 self.post(lambda: messagebox.showinfo(APP_TITLE, done))
         except (windisk.Cancelled, imagefetch.Cancelled) as e:
-            log(f"Cancelled. {e}".rstrip())
+            msg = f"Cancelled. {e}".rstrip()
+            log(msg)
+            self.post(lambda: self.set_status(msg))
+        except ImageOffline as e:
+            msg = str(e)
+            log(f"FAILED: {msg}")
+            self.post(lambda: (self._show_error("pi_model", msg), self.set_status("Could not get the image.")))
         except Exception as e:
             msg = str(e)  # bound now: the except variable is gone by the time the Tk thread runs the lambda
             if "[5]" in msg:
                 msg += ("\n\nWindows refused to write to the card (access denied). Check the write-protect switch "
                         "on the adapter, close Explorer windows showing the card, then flash again.")
             log(f"FAILED: {msg}")
+            self.post(lambda: self.set_status(f"Failed: {msg.splitlines()[0]}"))
             self.post(lambda: messagebox.showerror(APP_TITLE, msg))
         finally:
             self.post(self._finished)
@@ -1072,13 +1179,16 @@ class App:
     def _finished(self):
         self.flash_btn.configure(state="normal")
         self.cancel_btn.grid_remove()
-        self.status.configure(text="")
         self._password = secrets.token_urlsafe(24)  # never reuse a Pi password across cards
 
 
 # ---------------------------------------------------------------- flash sequence (no widgets here)
 
-DONE_TEXT = ("Done. Put the card in the Pi and power it on. It appears on the Devices page within a few minutes.")
+DONE_TEXT = "Done. Put the card in the Pi and turn it on. It shows up on the Devices page in a few minutes."
+
+
+class ImageOffline(imagefetch.FetchError):
+    """An armhf model's 32-bit image could not be fetched: shown under the model row, not in a dialog."""
 
 
 def card_cfg(v: dict) -> dict:
@@ -1090,7 +1200,7 @@ def card_cfg(v: dict) -> dict:
     cfg["ethernet_only"] = not v["ssid"]  # blank Wi-Fi fields: a wired Pi
     cfg["wifi_country"] = v["wifi_country"].strip().upper()
     cfg["console_url"] = v["console_url"].strip().rstrip("/")
-    cfg["token"] = v["token"].strip()  # Advanced: an existing device token bypasses enrollment
+    cfg["token"] = (v.get("token") or "").strip()  # an existing device token bypasses enrollment (no widget)
     cfg["with_wyze"] = bool(v.get("with_wyze"))
     return cfg
 
@@ -1113,9 +1223,10 @@ def fetch_key(cfg: dict, operator_token: str, log) -> None:
                                   if cfg["with_wyze"] else "Wyze bridge: not configured on the console."))
 
 
-def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = False):
+def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = False, status=lambda s: None):
     """The flash sequence. Contacts the console only for the enrollment key (the Pi enrolls itself on first
-    boot); dry_run stops after image resolution, before any disk access."""
+    boot); dry_run stops after image resolution, before any disk access. `status` gets the plain-words step the
+    progress callbacks measure ("Writing the card"); `log` gets every technical line."""
     d = v["disk_info"]
     cfg = card_cfg(v)
     fetch_key(cfg, v.get("operator_token") or "", log)
@@ -1124,6 +1235,8 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
         raise ValueError(" ".join(problems))
 
     # 1. first-boot files
+    model = pimodel.get(v.get("pi_model"))
+    log(f"Pi model: {model.label} ({model.arch}).")
     log(f"Console {cfg['console_url']}: {console_mode(cfg)}.")
     firstrun = firstboot.render_firstrun(cfg)
     provision = firstboot.render_provision(cfg)
@@ -1131,7 +1244,7 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     log(f"Player files for the card: {len(archive) / 1e3:.0f} kB ({build_info()}).")
 
     # 2. image
-    image, sha256 = obtain_image(v, log, progress, cancel, dry_run)
+    image, sha256 = obtain_image(v, log, progress, cancel, dry_run, status)
     if cancel.is_set():
         raise windisk.Cancelled()
     if dry_run:
@@ -1153,6 +1266,7 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
         log(f"Removing partitions from disk {d['number']} ...")
         windisk.clear_disk(d["number"], d.get("unique_id", ""))
         log(f"Writing {windisk.source_name(image)} to disk {d['number']} ...")
+        status("Writing the card")
         with windisk.open_physical_drive(d["number"], expect_size=d["size"]) as drive:
             drive.lock(windisk.volume_paths(d["number"]))
             start = time.monotonic()
@@ -1168,6 +1282,7 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
             # The partition table is still blank, so Windows cannot mount (and scribble on) anything
             # while the card is read back. It is written and checked last by commit_head().
             log(f"Wrote {written / 1e6:.0f} MB. Reading the whole card back to verify ...")
+            status("Checking the card")
 
             def on_verify(checked, consumed, total):
                 progress(consumed * 100 / total if total else 0, f"verified {checked / 1e6:.0f} MB")
@@ -1182,6 +1297,7 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     progress(100, "written and verified")
 
     # 6-7. boot volume and first-boot files
+    status("Finishing the card")
     try:
         log("Waiting for the boot partition to mount ...")
         letter = windisk.find_boot_volume(d["number"], cancel_event=cancel, log=log)
@@ -1211,7 +1327,9 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     log(f"  Login: ssh {cfg['username']}@{cfg['device_id']}.local with the key {sshkey.private_path()} "
         "(password login is off)" if cfg["ssh_pubkey"] else f"  Login: {cfg['username']} (no SSH key on the card)")
     log(f"  Console: {cfg['console_url']} ({console_mode(cfg)})")
-    log(f"  Image: {windisk.source_name(image)}" + (" (bundled in this exe)" if v["image_mode"] == "bundled" else ""))
+    log(f"  Pi model: {model.label} ({model.arch})")
+    log(f"  Image: {windisk.source_name(image)}" + (" (bundled in this exe)" if isinstance(image, bundle.BundledImage)
+                                                    else ""))
     log("  The Pi needs internet access on its first boot (apt and pip). Progress is logged on the Pi in")
     log("  /var/log/projection5000-provision.log; firstrun.log and firstrun.ok appear on the boot partition.")
     log("  A card that never booted still carries the enrollment key: keep it safe or rotate the key on the console.")
@@ -1220,37 +1338,60 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     log(f"Device id: {cfg['device_id']}")
 
 
-def obtain_image(v: dict, log, progress, cancel, dry_run: bool = False) -> tuple:
-    """Returns (image source, expected_sha256 or ''): a path, or the BundledImage inside this exe."""
-    if v["image_mode"] == "bundled":
+def obtain_image(v: dict, log, progress, cancel, dry_run: bool = False, status=lambda s: None) -> tuple:
+    """Returns (image source, expected_sha256 or ''): a path, or the BundledImage inside this exe.
+    The Pi model's arch decides: arm64 models take the bundled image, armhf models the 32-bit download (a
+    bundled 64-bit image cannot boot them). A local file is used as given."""
+    model = pimodel.get(v.get("pi_model"))
+    other = "armhf" if model.arch == "arm64" else "arm64"
+    mode = v["image_mode"]
+    if mode == "local":
+        log(f"Using local image {v['image_path']}")
+        if other in Path(v["image_path"]).name.lower():
+            log(f"WARNING: that file name says {other}, but {model.label} needs an {model.arch} image.")
+        return v["image_path"], ""
+    if mode == "bundled" and model.arch == "armhf":
+        log(f"{model.label} needs the 32-bit image; the bundled 64-bit image is skipped.")
+        mode = "latest"
+    if mode == "bundled":
         b = bundle.find_bundle()
         if b is None:
             raise imagefetch.FetchError("this build carries no bundled image; choose another image source")
         log(f"Using bundled image {b.name} ({windisk.human_size(b.length)} compressed, sha256 {b.sha256[:12]}...)")
         return b, b.sha256
-    if v["image_mode"] == "local":
-        log(f"Using local image {v['image_path']}")
-        return v["image_path"], ""
-    log("Resolving latest Raspberry Pi OS Lite (64-bit) ...")
-    url, name = imagefetch.resolve_latest()
-    expected = imagefetch.fetch_sha256(url)
-    dest = imagefetch.cached_path(name)
-    if dest.exists():
-        log(f"Checking cached {name} ...")
-        if imagefetch.verify_sha256(dest, expected):
-            log("Cached image is valid.")
+    bits = "64-bit" if model.arch == "arm64" else "32-bit"
+    try:
+        log(f"Resolving latest Raspberry Pi OS Lite ({bits}) ...")
+        url, name = imagefetch.resolve_latest(imagefetch.LATEST_URLS[model.arch])
+        expected = imagefetch.fetch_sha256(url)
+        dest = imagefetch.cached_path(name)
+        if dest.exists():
+            log(f"Checking cached {name} ...")
+            if imagefetch.verify_sha256(dest, expected):
+                log("Cached image is valid.")
+                return str(dest), expected
+            log("Cached image is stale or corrupt, downloading again.")
+        if dry_run:
+            log(f"Dry run: would download {url}")
             return str(dest), expected
-        log("Cached image is stale or corrupt, downloading again.")
-    if dry_run:
-        log(f"Dry run: would download {url}")
-        return str(dest), expected
-    log(f"Downloading {name} ...")
+        size = imagefetch.remote_size(url)
+        size = f" ({size / 1e6:.0f} MB)" if size else ""
+        if model.arch == "armhf":
+            log(f"{model.label} needs the 32-bit image; downloading {name}{size}")
+        else:
+            log(f"Downloading {name}{size} ...")
+        status(f"Getting the {bits} image")
 
-    def on_dl(done, total, rate):
-        pct = done * 100 / total if total else 0
-        progress(pct, f"downloading {done / 1e6:.0f} MB, {rate / 1e6:.1f} MB/s")
+        def on_dl(done, total, rate):
+            pct = done * 100 / total if total else 0
+            progress(pct, f"downloading {done / 1e6:.0f} MB, {rate / 1e6:.1f} MB/s")
 
-    imagefetch.download(url, dest, on_dl, cancel)
+        imagefetch.download(url, dest, on_dl, cancel)
+    except imagefetch.FetchError as e:
+        if model.arch == "armhf":  # the default flow for these models; say it in plain words under the row
+            log(f"Could not fetch the 32-bit image: {e}")
+            raise ImageOffline(OFFLINE_TEXT) from e
+        raise
     log("Verifying download ...")
     if not imagefetch.verify_sha256(dest, expected):
         dest.unlink(missing_ok=True)
@@ -1295,6 +1436,7 @@ def selfcheck() -> int:
         f"player archive: {len(archive)} bytes, {len(names)} entries",
         f"bundled image: {b.name} {b.length} bytes sha256 {b.sha256} (trailer ok)" if b else "bundled image: none",
         console_summary(),
+        "pi models (key, image arch, label; the armhf image is downloaded once):", pimodel.table(),
         f"defaults from Windows: timezone {winlocale.timezone()}, keymap {winlocale.keymap()}, "
         f"country {winlocale.country(firstboot.ISO3166)}, ssh key {sshkey.private_path()}",
         "=== firstrun.sh ===", firstboot.render_firstrun(cfg),
@@ -1320,11 +1462,20 @@ def selfcheck() -> int:
     return 0 if tk_ok == "ok" or not getattr(sys, "frozen", False) else 1
 
 
+def image_arg(argv, env=None) -> str:
+    """Developers only: --image <path> (else the FLASHER_IMAGE environment variable) writes that .img / .img.xz
+    instead of the Pi model's image. Empty for everyone else."""
+    if "--image" in argv[:-1]:
+        return argv[argv.index("--image") + 1].strip()
+    return (os.environ if env is None else env).get("FLASHER_IMAGE", "").strip()
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if "--selfcheck" in argv:
         return selfcheck()
     dry_run = "--dry-run" in argv
+    image = image_arg(argv)
     # A dry run never opens the disk, so it does not need (or ask for) elevation.
     if not dry_run and not ensure_admin(argv):
         return 1
@@ -1334,7 +1485,7 @@ def main(argv=None) -> int:
         pass
     load_fonts()  # before any widget: Tk enumerates the families when it starts
     root = tk.Tk()
-    App(root, dry_run=dry_run)
+    App(root, dry_run=dry_run, image=image)
     root.mainloop()
     return 0
 

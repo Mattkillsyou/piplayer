@@ -1,40 +1,81 @@
 # Matt Brown's Projection5000 SD Flasher
 
-Windows desktop tool (window title "Matt Brown's Projection5000") that writes Raspberry Pi OS Lite (64-bit) to an SD card and
+Windows desktop tool (window title "Matt Brown's Projection5000") that writes Raspberry Pi OS Lite to an SD card and
 pre-configures the Pi so that on first boot it joins the network, takes its
 hostname, installs the Projection5000 player (a copy of `player/` travels on
 the card; the Pi never needs GitHub access) and enrolls itself with the console.
-One screen, four steps, nothing to copy and paste.
+One screen, one button, nothing to copy and paste.
 
-## The four steps
+## The screen
 
-1. **Sign in** (once per PC). Click "Sign in": the browser opens the console's
-   `/authorize` page with a short code prefilled; approve it there. The header
-   then reads "Signed in as <you>" and stays that way on later launches.
-2. **Device name**, e.g. "Lobby Projector". The device id / hostname
+The masthead is the product logo: the projector icon, "MATT BROWN'S" over
+"PROJECTION5000". Under it the form, the white FLASH button, a progress bar and
+one status line in plain words ("Ready.", "Writing the card (43%)...", "Done.
+Put the card in the Pi and turn it on. It shows up on the Devices page in a
+few minutes."). Nothing on the screen names the console, the fonts or the
+account; all of that is under Advanced.
+
+1. **Device name**, e.g. "Lobby Projector". The device id / hostname
    (`lobby-projector`) is derived from it and shown in grey under the entry.
-3. **Wi-Fi network and password**. The network box lists the networks this
+   Then **pick your Pi model** in the row below it (see "Pi models"); the
+   grey line under the box says what to expect from that board. The last
+   choice is remembered.
+2. **Wi-Fi network and password**. The network box lists the networks this
    PC currently sees (strongest first, the one it is connected to at the top;
    Refresh rescans). Picking one that this PC has a saved profile for fills
    the password too ("password from this PC" in grey; the hint goes away as
    soon as you edit it). A network that is not listed can be typed in as
    before. Leave both blank for a wired Pi.
-4. **SD card**: pick the reader (Refresh rescans), click **Flash**, confirm the
-   erase warning. When it finishes: "Done. Put the card in the Pi and power it
-   on. It appears on the Devices page within a few minutes."
+3. **SD card**: pick the reader (Refresh rescans), press **FLASH**, confirm
+   the erase warning. The first time on a PC the status line says "Approve
+   this computer in the browser window that just opened, then the card is
+   made automatically." and the browser opens the console's `/authorize` page
+   with the code prefilled; approve it there and the flash continues with no
+   further click (see "Connecting"). When it finishes: "Done. Put the card in
+   the Pi and turn it on. It shows up on the Devices page in a few minutes."
 
-The console is fixed: the header shows `Console: projectors.photogen5000.com`
-(baked in by `build.ps1 -ConsoleUrl`, or the product default). There is no
-console field, no key field, no token field and no Pi password field.
-Validation is inline, in plain words under the field ("Give the Pi a name.",
-"Wi-Fi password must be 8-63 characters."); the only dialogs are the erase
-confirmation, the final "Done" and a failure.
+The console is fixed (baked in by `build.ps1 -ConsoleUrl`, or the product
+default) and never shown. There is no console field, no key field, no token
+field and no Pi password field. Validation is inline, in plain words under the
+field ("Give the Pi a name.", "Wi-Fi password must be 8-63 characters."); the
+only dialogs are the erase confirmation, the final "Done" and a failure.
+
+## Pi models
+
+The model decides which OS image goes on the card. The 64-bit image built into
+the exe boots every board from the Pi 3 up (and the Zero 2 W and the Pi 2
+V1.2); the older 32-bit boards need the 32-bit image, which the flasher
+downloads once (about 530 MB, cached in `%LOCALAPPDATA%\Projection5000\images`,
+verified against the published `.sha256`) and reuses afterwards. No prompt: the
+status line says "Getting the 32-bit image (12%)..." and the details log
+"<model> needs the 32-bit image; downloading <name> (<size>)". Without
+internet the model row shows "This model needs the 32-bit image. Connect to the
+internet once (about 530 MB) and press FLASH again." The table lives in
+`pimodel.py`, newest first; `--selfcheck` prints it.
+
+| Pi model                     | Image                   | What to expect                                                  |
+|------------------------------|-------------------------|-----------------------------------------------------------------|
+| Raspberry Pi 5 / 500         | 64-bit, bundled         | Best pick. 4K video, camera, remote access.                     |
+| Raspberry Pi 4 / 400         | 64-bit, bundled         | 1080p video, camera, remote access.                             |
+| Raspberry Pi 3 (B, B+, A+)   | 64-bit, bundled         | 1080p video, camera, remote access. Slower updates.             |
+| Raspberry Pi Zero 2 W        | 64-bit, bundled         | 1080p video, remote access. No camera (512 MB is not enough for the camera bridge). |
+| Raspberry Pi 2 Model B V1.2  | 64-bit, bundled         | Same chip as the Pi 3. Board print says V1.2.                   |
+| Raspberry Pi 2 Model B V1.1  | 32-bit, downloaded once | 1080p may stutter. No camera. Board print says V1.1 (the common one). |
+| Raspberry Pi Zero / Zero W   | 32-bit, downloaded once | Slow: 720p at best. No camera. Zero (no W) needs a USB Wi-Fi or Ethernet adapter. |
+| Raspberry Pi 1 Model B+ / A+ | 32-bit, downloaded once | Slow: 720p at best. No camera. Wi-Fi needs a USB adapter.       |
+
+A card made for the wrong model sits on the rainbow square (the 64-bit image
+has no kernel for a Pi 1, Pi 2 V1.1, Zero or Zero W): pick the right model and
+flash it again. There is no image choice on the screen: the model decides.
+Developers can write any file instead with `python flasher.py --image
+C:\path\to\x.img.xz` (or `$env:FLASHER_IMAGE`); it is written as given, with a
+warning in the details log when its name carries the other architecture.
 
 ## What is automatic
 
 - **Enrollment key**: fetched from the console at flash time with your sign-in
-  (`GET /api/operator/enrollment`), written to the card, never shown; the log
-  says "Enrollment key: ok". The flasher never enrolls anything itself: the Pi
+  (`GET /api/operator/enrollment`), written to the card, never shown; the
+  details log says "Enrollment key: ok". The flasher never enrolls anything itself: the Pi
   does that on first boot, and a re-flashed card with the same device id
   re-enrolls the same device (token, playlist and history survive).
 - **Pi login**: the fixed user `projector-admin`. SSH is on with **key-based
@@ -48,61 +89,69 @@ confirmation, the final "Done" and a failure.
   first user. Log in with `ssh projector-admin@<device-id>.local` from the PC
   that flashed the card (ssh.exe finds the key when you pass
   `-i %APPDATA%\Projection5000\ssh\id_ed25519`, or copy it to `~/.ssh/`).
-  "Copy public key" under Advanced puts the `.pub` line on the clipboard for
-  any other machine's `authorized_keys`.
-- **Timezone, keyboard, Wi-Fi country**: taken from Windows (the registry's
+  The `.pub` file next to it is the line for any other machine's
+  `authorized_keys`.
+- **Time zone, keyboard, Wi-Fi country**: taken from Windows (the registry's
   time zone key mapped to an IANA name, the input locale, the region setting;
   fallbacks `America/Los_Angeles`, `us`, `US`). `--selfcheck` prints what this
-  PC yields; Advanced lets you override all three.
-- **Image**: the Raspberry Pi OS Lite arm64 image built into the exe (see
-  "Bundled image"); no download, no internet needed for the image.
+  PC yields; Advanced lets you override the time zone.
+- **Image**: for 64-bit models the Raspberry Pi OS Lite arm64 image built
+  into the exe (see "Bundled image"); no download, no internet needed. For
+  the 32-bit models the one-time download (see "Pi models").
 - **Wyze bridge**: when the console has a Wyze account (`wyze_configured` in
-  the enrollment answer) the card's installer runs with `--with-wyze`; the log
-  says so. Nothing to tick.
+  the enrollment answer) the card's installer runs with `--with-wyze`; the
+  details log says so. Nothing to tick.
+- **The technical log**: every line the tool used to print (console, fonts,
+  image, enrollment key, disk steps, the summary) goes to the details box
+  under Advanced and to `%LOCALAPPDATA%\Projection5000\flasher.log`
+  (timestamped, appended; rotated to `flasher.log.1` at 2 MB). The status line
+  never shows any of it.
 
 ## Advanced
 
-One collapsed section at the bottom holds everything else:
+One collapsed section at the bottom holds everything else (the window grows to
+show it):
 
-- **Image**: the bundled image (default), "Latest Raspberry Pi OS Lite"
-  (downloaded, verified against the published `.sha256`, cached in
-  `%LOCALAPPDATA%\Projection5000\images`) or a local `.img` / `.img.xz`.
-- **Timezone**, **Keyboard layout**, **Wi-Fi country**, **Hidden Wi-Fi
-  network**.
+- **Time zone** (editable, from Windows), **Hidden Wi-Fi network**.
 - **Static IP** (`192.168.1.50/24`) and **Gateway** (also used as the DNS
   server); blank means DHCP. Works for Wi-Fi and wired cards.
-- **Existing device token**: a token from the console's Devices page. The
-  card then installs straight away without enrolling (no key on the card).
-- **SSH key**: the private key path and "Copy public key".
-- **Sign out**: forgets the stored sign-in (revoke the token on the console's
-  Settings page as well if the PC changes hands). **Dry run** (see "Run from
+- **Account**: "Connected as <you>" with **Disconnect** (forgets the stored
+  sign-in; revoke the token on the console's Settings page as well if the PC
+  changes hands), or "Not connected" with **Connect** (the same browser flow
+  FLASH runs by itself).
+- **Show details**: reveals the technical log box. **Dry run** (see "Run from
   source"). The build stamp.
 
 A problem in an Advanced field opens the section and shows the words there.
 
-## Sign in
+## Connecting
 
-The device-code flow, so no token is ever copied by hand:
+The device-code flow, so no token is ever copied by hand. It is invisible in
+normal use: a stored token is used silently, and FLASH connects first when
+there is none.
 
-1. "Sign in" calls `POST /api/operator/device-code` (no auth) with this PC's
-   hostname and gets a `device_code`, a short `user_code` and the
-   `verification_url`.
-2. The browser opens `<verification_url>?code=<user_code>`; the header shows
-   "Approve in your browser (code XXXX-XX)". If no browser could be opened the
-   log prints the URL and the code to type. On the console (signed in as an
+1. FLASH (or Connect under Advanced) calls `POST /api/operator/device-code`
+   (no auth) with this PC's hostname and gets a `device_code`, a short
+   `user_code` and the `verification_url`.
+2. The browser opens `<verification_url>?code=<user_code>`; the status line
+   reads "Approve this computer in the browser window that just opened, then
+   the card is made automatically." If no browser could be opened the status
+   line shows the URL and the code to type. On the console (signed in as an
    editor or admin) you approve "Sign in the SD Flasher on <hostname>?".
+   Cancel (or closing the window) stops the wait and puts the line back to
+   "Ready.".
 3. The flasher polls `POST /api/operator/device-token` every few seconds for
    up to 10 minutes. `428` means not yet, `410 {status}` means expired or denied
-   (the header then reads "Sign in failed: denied on the console" or "... the
-   code expired (click Sign in again)"), `200` carries the token (one shot) and
-   your username.
+   (the status line then reads "Not approved: denied on the console" or "The
+   approval took too long (10 minutes). Press FLASH again."), `200` carries the
+   token (one shot) and your username; the flash then continues by itself.
 4. The token is stored DPAPI-protected (Windows `CryptProtectData`, readable
    only by the same Windows account) in `%APPDATA%\Projection5000\flasher.json`
-   together with the console URL and username. On later launches the header
-   shows the username right away and the token is checked with
-   `GET /api/operator/enrollment` in the background; a `401` (revoked) clears
-   it and offers Sign in again, a network error keeps it. A token saved for a
-   different console is ignored.
+   together with the console URL and username. On later launches it is used
+   right away and checked with `GET /api/operator/enrollment` in the
+   background; a `401` (revoked) forgets it so the next FLASH connects again,
+   a network error keeps it. A token saved for a different console is ignored.
+   The result of the check is a line in the details log, never on the screen.
 
 On the console the sign-in appears as an API token named "SD Flasher on
 <hostname>" (Settings, "My API tokens"); revoke it there to lock a PC out.
@@ -112,8 +161,8 @@ On the console the sign-in appears as an API token named "SD Flasher on
 - Windows 10/11, 64-bit, an SD card reader.
 - Administrator rights (raw disk writes). The exe and the source both relaunch
   themselves elevated (UAC prompt) on start.
-- Internet access for the Pi's first boot (and for the "latest" image mode;
-  the bundled image needs none).
+- Internet access for the Pi's first boot (and, once, for the 32-bit image of
+  the older models; the bundled image needs none).
 - For building or running from source: Python 3.11+ with tkinter (the
   python.org installer includes it). No third-party packages at runtime: the
   SSH key is generated in pure Python (RFC 8032 arithmetic plus the OpenSSH
@@ -132,8 +181,8 @@ the UAC prompt. If you decline the prompt the tool shows "Run as administrator"
 and exits. `Projection5000-SD-Flasher.exe --dry-run` works without the prompt
 (see below). The exe is not code-signed: a downloaded copy triggers SmartScreen
 ("Windows protected your PC"; More info, Run anyway); a locally built copy does
-not. The browser opened by "Sign in" runs from the elevated process; that is
-fine for approving a code.
+not. The browser opened for the approval runs from the elevated process; that
+is fine for approving a code.
 
 ## What happens on the card
 
@@ -173,16 +222,16 @@ operator needs no download and no internet for the image. `build.ps1` appends
 the image and a 256-byte trailer after PyInstaller's archive (`bundle.py`); at
 flash time the image is streamed straight out of the exe, nothing is unpacked
 to disk. `--selfcheck` prints which image is inside:
-`bundled image: <name> <bytes> bytes sha256 <hex> (trailer ok)`. Advanced
-shows it as "Bundled: <name> (<size>)" and selects it by default.
+`bundled image: <name> <bytes> bytes sha256 <hex> (trailer ok)`; the details
+log names it at flash time ("Using bundled image <name> ...").
 
 To rebuild with a newer image, run `build.ps1` again: it resolves the official
 "latest" redirect, downloads into the tool's own cache
 (`%LOCALAPPDATA%\Projection5000\images`, so a second build does not download
 again), verifies the `.sha256` and embeds it. `$env:FLASHER_IMAGE = 'C:\path\to\x.img.xz'`
 embeds that file instead (offline or pinned builds); `$env:FLASHER_NO_BUNDLE = '1'`
-builds the small exe without an image (the download mode is then the default).
-The exe is about 550 MB with the image inside.
+builds the small exe without an image (every model's image is then
+downloaded). The exe is about 550 MB with the image inside.
 
 ## Run from source
 
@@ -199,12 +248,15 @@ From a normal prompt it relaunches itself elevated (UAC prompt) and exits.
 Advanced) ticked and needs no admin rights: Flash validates the form, fetches
 the enrollment key (unless one is baked in), renders the first-boot files,
 resolves the image (download URL and sha256, cache check, no download) and
-then stops with "Dry run: would write ... Nothing was written". Use it to check
-the form and the sign-in before touching a card.
+then stops with "Dry run finished. Nothing was written." (the details log has
+"Dry run: would write ..."). Use it to check the form and the connection before
+touching a card. `--image <path>` (or `$env:FLASHER_IMAGE`) writes that
+`.img` / `.img.xz` instead of the model's image, for developers.
 
 `python flasher.py --selfcheck` prints the generated `firstrun.sh`,
 `projection5000-provision.sh` and `cmdline.txt` for a sample configuration,
-the console line, the Windows-derived defaults and the SSH key path, and exits
+the console line, the Pi model table (key, image arch, label), the
+Windows-derived defaults and the SSH key path, and exits
 0 (no admin needed). It also starts and stops Tk once and checks the player
 archive. The exe does the same, but because it is a windowed program it writes
 the text (LF line endings, byte-identical to what goes on the card) to
@@ -219,7 +271,7 @@ powershell -ExecutionPolicy Bypass -File tools\flasher\build.ps1 -ConsoleUrl htt
 ```
 
 No secret is needed to build. `-ConsoleUrl <url>` (or `$env:FLASHER_CONSOLE_URL`)
-bakes the console into `console.json` (the fixed header); without it the
+bakes the console into `console.json` (never shown on screen); without it the
 product default `https://projectors.photogen5000.com` applies. `-Key
 <enrollment key>` (or `$env:FLASHER_ENROLL_KEY`, needs a URL) bakes a key for
 an offline build (a LAN-only `cms/` site that cannot issue sign-ins); such an
@@ -236,14 +288,17 @@ start Tk, see its bundled image and report the console line). Set
 every change to `tools/flasher` or `player/`: the exe carries a copy of both.
 
 The window wears the console's look (`cms/app/static/style.css`: black ground,
-white ink, solid white primary action, corner brackets, status lamp) on ttk's
-clam engine. The three faces (Silkscreen, IBM Plex Mono, Space Grotesk; OFL
-notices alongside) live in `fonts/`, travel in the exe (`--add-data`) and are
-registered for the process only at startup (`gdi32.AddFontResourceExW`,
-`FR_PRIVATE`: nothing is installed); the log line "Fonts: ..." says which
-families are in use, with Consolas / Segoe UI as fallbacks. `icon.ico` is the
-window and exe icon (`make_icon.py` renders it), `version.txt` the exe's
-version resource (Explorer's Properties > Details).
+white ink, solid white primary action, corner brackets) on ttk's clam engine.
+The masthead is the logo: `icon.png` at 64 px, "MATT BROWN'S" in Silkscreen
+Regular 13 pt and "PROJECTION5000" in Silkscreen Bold 24 pt; the status line
+is IBM Plex Mono. The three faces (Silkscreen, IBM Plex Mono, Space Grotesk;
+OFL notices alongside) live in `fonts/`, travel in the exe (`--add-data`) and
+are registered for the process only at startup (`gdi32.AddFontResourceExW`,
+`FR_PRIVATE`: nothing is installed); the details log line "Fonts: ..." says
+which families are in use, with Consolas / Segoe UI as fallbacks. `icon.ico`
+is the window and exe icon and `icon.png` the masthead's (`make_icon.py`
+renders both; both travel in the exe), `version.txt` the exe's version
+resource (Explorer's Properties > Details).
 
 ## Tests
 
@@ -260,17 +315,20 @@ the device-code sign-in against a stub console (`/api/enroll`,
 `/api/enroll`) against the real Python CMS in `cms/`, the rendered
 `firstrun.sh` and `projection5000-provision.sh` by running them in bash against
 stubbed tools, the SSH key against RFC 8032 vectors and `ssh-keygen -y`, and
-the GUI (the exact set of top-level fields, inline validation, sign-in, failure,
-cancel, confirmation) against a withdrawn Tk window. The GUI tests are skipped
+the GUI (the exact set of top-level fields, the masthead, inline validation,
+the connect-then-flash flow, the status line, the details log and its file,
+failure, cancel, confirmation) against a withdrawn Tk window. The GUI tests are skipped
 when there is no display.
 
 ## Files on this PC
 
 - `%LOCALAPPDATA%\Projection5000\flasher.json`: last-used form values (name,
-  Wi-Fi network, country, timezone, keymap, image choice, static IP). Never a
-  password, key or token.
+  Pi model, Wi-Fi network, hidden flag, time zone, static IP, gateway). Never
+  a password, key or token.
+- `%LOCALAPPDATA%\Projection5000\flasher.log` (and `.log.1`): the technical
+  log, the same lines as the details box.
 - `%APPDATA%\Projection5000\flasher.json`: the sign-in (console URL, username,
-  DPAPI-protected token). "Sign out" deletes it.
+  DPAPI-protected token). "Disconnect" under Advanced deletes it.
 - `%APPDATA%\Projection5000\ssh\id_ed25519` and `.pub`: the SSH key installed
   on every card. Delete both to start over (cards flashed before then keep the
   old public key).
@@ -295,15 +353,15 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
 
 ## Troubleshooting
 
-- **"Sign in first."** under the header: no stored sign-in and no baked key.
-  Click Sign in.
-- **Sign in never completes**: the browser page must be approved by an editor
-  or admin within 10 minutes; a viewer account cannot approve. The log shows
-  the URL and code if the browser did not open; open it on any device that
-  can reach the console.
-- **"Session expired: sign in again"** at launch: the token was revoked on the
-  console (Settings, "My API tokens") or created by another Windows account.
-  Sign in again.
+- **"Approve this computer in the browser window that just opened ..."** and
+  nothing happens: the browser page must be approved by an editor or admin
+  within 10 minutes; a viewer account cannot approve. If no browser opened the
+  status line shows the URL and the code; open it on any device that can
+  reach the console.
+- **The browser asks for approval again** on a PC that was connected: the
+  token was revoked on the console (Settings, "My API tokens") or created by
+  another Windows account. Approve once more; Advanced shows "Connected as
+  <you>" afterwards.
 - **Card not listed**: click Refresh. The tool only lists USB/SD/MMC disks that
   are not the Windows boot or system disk. Some readers report the card only
   after a re-insert; if it still does not appear, try a different reader or
@@ -316,9 +374,12 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
 - **"The image was written but the first-boot files were NOT"**: Windows did
   not mount the boot partition in time. The card holds a plain, unconfigured OS;
   re-insert it and Flash again.
-- **Download fails or is slow**: use the bundled image (the default), or
-  "Local image file" under Advanced with an image you downloaded from
-  raspberrypi.com.
+- **"Could not get the image."**: a 32-bit model needs its one-time download;
+  the line under the model row says so. Connect the PC to the internet and
+  press FLASH again (developers: `--image` with a file from raspberrypi.com).
+- **The Pi shows a rainbow square and nothing else**: the card was made for
+  the wrong model (a 64-bit image on a Pi 1, Pi 2 V1.1, Zero or Zero W). Pick
+  the right model and flash again; `docs/adding-a-pi.md` has the longer list.
 - **Pi does not appear on the console**: put the card back in the PC and read
   `firstrun.log` on the boot partition: every step is listed with its exit
   status (`rc=0` is good) and `firstrun.ok` exists when all of them passed. If
@@ -331,11 +392,11 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
   fetches the current key).
 - **SSH says "Permission denied (publickey)"**: the card was flashed on another
   PC (a different key) or the key files were deleted and regenerated. Re-flash
-  the card, or add this PC's `.pub` line (Advanced, "Copy public key") to the
-  Pi's `~projector-admin/.ssh/authorized_keys` from a PC that can log in.
+  the card, or add this PC's `%APPDATA%\Projection5000\ssh\id_ed25519.pub` line
+  to the Pi's `~projector-admin/.ssh/authorized_keys` from a PC that can log in.
 - **ssh.exe says "UNPROTECTED PRIVATE KEY FILE"**: the ACL on
-  `id_ed25519` is too open (the log said "icacls failed" when the key was
-  created). Run `icacls "%APPDATA%\Projection5000\ssh\id_ed25519"
+  `id_ed25519` is too open (the details log said "icacls failed" when the key
+  was created). Run `icacls "%APPDATA%\Projection5000\ssh\id_ed25519"
   /inheritance:r /grant:r "%USERNAME%:F"`.
 - **Wrong Wi-Fi password / SSID**: nothing to fix on the card after the fact,
   re-flash it.
@@ -344,7 +405,7 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
   the Wireless AutoConfig service is not running. On a non-English Windows
   the output may not be recognised at all: type the network name, everything
   else works the same. The saved password is read from `netsh wlan show
-  profile ... key=clear` and is never written to the log or the settings.
+  profile ... key=clear` and is never written to the log file or the settings.
 - **"turn on Location in Windows Settings to list networks"**: this PC is
   connected to Wi-Fi but the scan is empty. Windows 11 hides scan results
   from desktop apps while Location access is off: Settings, Privacy &

@@ -37,6 +37,54 @@ ETC_DIR="/etc/projector-player"
 USER_NAME="projector"
 CLOUDFLARED_KEYRING="/usr/share/keyrings/cloudflare-main.gpg"
 CLOUDFLARED_LIST="/etc/apt/sources.list.d/cloudflared.list"
+CLOUDFLARED_BIN="/usr/bin/cloudflared"
+# the camera bridge (Docker + the arm64-only wyze-bridge image) needs a 64-bit
+# OS and this much RAM (MemTotal in kB; 1 GB boards report about 935000 with
+# the default gpu_mem). player/pi_info.py applies the same rule.
+CAMERA_MIN_MEM_KB=900000
+
+# What kind of Pi this is: PI_ARCH (dpkg arch: arm64 / armhf), PI_MACHINE
+# (uname -m: aarch64 / armv7l / armv6l), PI_MEM_KB / PI_MEM_MB, PI_MODEL (the
+# board string), PI_SOC (device-tree compatible, e.g. "brcm,bcm2837") and
+# CAMERA_SUPPORTED (1 / 0). PROC_ROOT is only overridden by the tests.
+pi_caps() {
+    local proc="${PROC_ROOT:-/proc}"
+    PI_ARCH="$(dpkg --print-architecture 2>/dev/null || echo unknown)"
+    PI_MACHINE="$(uname -m 2>/dev/null || echo unknown)"
+    PI_MEM_KB="$(awk '/^MemTotal:/ {print $2}' "${proc}/meminfo" 2>/dev/null || true)"
+    PI_MEM_KB="${PI_MEM_KB:-0}"
+    PI_MEM_MB=$(( PI_MEM_KB / 1024 ))
+    PI_MODEL="$(tr -d '\0' < "${proc}/device-tree/model" 2>/dev/null || true)"
+    PI_MODEL="${PI_MODEL:-unknown board}"
+    PI_SOC="$(tr '\0' ' ' < "${proc}/device-tree/compatible" 2>/dev/null || true)"
+    CAMERA_SUPPORTED=0
+    if [[ "${PI_ARCH}" == arm64 && "${PI_MEM_KB}" -ge "${CAMERA_MIN_MEM_KB}" ]]; then
+        CAMERA_SUPPORTED=1
+    fi
+}
+
+# The first-boot setup screen on the HDMI console (a copy of firstboot.SCREEN_FN in the flasher; a no-op
+# without /dev/tty1). The player's status screen covers it as soon as projector-player starts.
+# setup screen: screen_init once, then screen STEP [HINT...] (centred, the hints dim) on the HDMI console.
+SCREEN_TTY="${SCREEN_TTY:-/dev/tty1}"
+screen_init() {
+  [ -w "$SCREEN_TTY" ] || return 0
+  TERM=linux setterm --blank 0 --cursor off --powersave off >>"$SCREEN_TTY" 2>/dev/null || true
+  local f=/usr/share/consolefonts/Lat15-TerminusBold32x16.psf.gz
+  [ -f "$f" ] && setfont "$f" -C "$SCREEN_TTY" 2>/dev/null || true
+}
+screen() {
+  [ -w "$SCREEN_TTY" ] || return 0
+  local size rows cols i
+  size=$(stty size <"$SCREEN_TTY" 2>/dev/null || true); rows=${size%% *}; cols=${size##* }
+  [ "${cols:-0}" -gt 0 ] 2>/dev/null || { rows=25; cols=80; }
+  centre() { local pad=$(( (cols - ${#1}) / 2 )); [ "$pad" -gt 0 ] || pad=0; printf "%*s%s\n" "$pad" "" "$1"; }
+  {
+    printf "\033[2J\033[H"; for ((i = 0; i < rows / 2 - 3; i++)); do echo; done
+    centre "MATT BROWN'S"; printf "\033[1m"; centre "PROJECTION5000"; printf "\033[0m"; echo
+    centre "$1"; shift; printf "\033[2m"; for i in "$@"; do centre "$i"; done; printf "\033[0m"
+  } >>"$SCREEN_TTY" 2>/dev/null || true
+}
 
 WITH_WYZE=0
 UNINSTALL=0
@@ -79,6 +127,7 @@ if [[ "${UNINSTALL}" == 1 ]]; then
     rm -f /etc/sudoers.d/projector-player
 
     echo "==> Re-enabling the login prompt on tty1"
+    systemctl unmask getty@tty1.service || true
     systemctl enable getty@tty1.service || true
     systemctl start getty@tty1.service || true
 
@@ -111,7 +160,19 @@ fi
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+pi_caps
+echo "==> This is a ${PI_MODEL} (${PI_ARCH}, ${PI_MEM_MB} MB)"
+if [[ "${WITH_WYZE}" == 1 && "${CAMERA_SUPPORTED}" == 0 ]]; then
+    # WITH_WYZE=0 skips Docker, the [camera] config, the wyze unit and its start below
+    echo "    Camera bridge: not supported on ${PI_MODEL} (${PI_ARCH}, ${PI_MEM_MB} MB); skipping Docker and the Wyze bridge"
+    WITH_WYZE=0
+fi
+
 echo "==> Installing system dependencies"
+if [[ "${UPGRADE}" == 0 ]]; then
+    screen_init
+    screen "Setting up this projector" "Step 3 of 4: installing the player (about 10 minutes)"
+fi
 apt-get update
 # git and rsync are not part of Raspberry Pi OS Lite; both are needed here.
 # ffmpeg grabs the room-camera snapshots ([camera] in config.toml).
@@ -149,6 +210,14 @@ if [[ -f "${MPV_CONF}" ]]; then
     fi
 else
     cp "${SRC_DIR}/deploy/mpv.conf" "${MPV_CONF}"
+    if [[ "${PI_SOC}" == *bcm283[567]* ]]; then
+        # VideoCore IV boards (Pi 0/1/2/3, any arch): auto-safe finds no decoder
+        # there; the V4L2 M2M copy path (bcm2835-codec) is the H.264 hardware
+        # decoder. Later lines win in mpv.conf, so append rather than edit.
+        echo "    ${PI_MODEL}: hwdec=v4l2m2m-copy (VideoCore IV H.264 decoder)"
+        printf '\n# %s (VideoCore IV): the V4L2 M2M copy path is the H.264 hardware decoder\nhwdec=v4l2m2m-copy\n' \
+            "${PI_MODEL}" >> "${MPV_CONF}"
+    fi
 fi
 chown -R "${USER_NAME}:${USER_NAME}" "${DATA_DIR}/.config"
 
@@ -235,6 +304,17 @@ fi
 echo "==> Installing cloudflared (Cloudflare Tunnel client for the console's live camera view)"
 if command -v cloudflared >/dev/null 2>&1; then
     echo "    cloudflared already installed ($(cloudflared --version 2>/dev/null | head -n 1))"
+elif [[ "${PI_MACHINE}" == armv6l ]]; then
+    # Pi Zero / Zero W / Pi 1: the apt repo and the armhf .deb are ARMv7 builds
+    # and die with "Illegal instruction" here; Cloudflare's ARMv6-capable build
+    # (GOARM=5) only ships as the raw cloudflared-linux-arm binary, so install
+    # that (no apt upgrades for it; re-run the installer to refresh it).
+    echo "    ${PI_MODEL} is ARMv6: installing the raw cloudflared-linux-arm binary (the .deb would crash)"
+    if ! { curl -fsSL -o "${CLOUDFLARED_BIN}.new" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm" \
+            && chmod 755 "${CLOUDFLARED_BIN}.new" && mv "${CLOUDFLARED_BIN}.new" "${CLOUDFLARED_BIN}"; }; then
+        rm -f "${CLOUDFLARED_BIN}.new"
+        echo "WARNING: cloudflared could not be installed; the console's live camera view needs it (re-run the installer later)" >&2
+    fi
 else
     # The Cloudflare apt repo first (so apt upgrades keep it current), the .deb
     # from GitHub releases as fallback. Nothing runs until tunnel.token exists.
@@ -336,6 +416,7 @@ if [[ "${UPGRADE}" == 1 ]]; then
     exit 0
 fi
 
+screen "Setting up this projector" "Step 4 of 4: connecting to the console"
 echo "==> Starting services"
 if [[ "${WITH_WYZE}" == 1 ]]; then
     systemctl restart projector-wyze-bridge.service

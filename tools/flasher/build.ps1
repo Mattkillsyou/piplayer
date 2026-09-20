@@ -66,7 +66,7 @@ if ($ConsoleUrl) {
 # version resource (Explorer's Properties > Details) travel inside the exe.
 & $python -m PyInstaller --noconfirm --clean --onefile --windowed `
     --add-data "$archive;." --add-data "$info;." @consoleData `
-    --add-data "fonts;fonts" --add-data "icon.ico;." --icon icon.ico --version-file version.txt `
+    --add-data "fonts;fonts" --add-data "icon.ico;." --add-data "icon.png;." --icon icon.ico --version-file version.txt `
     --name Projection5000-SD-Flasher flasher.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
