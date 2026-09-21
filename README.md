@@ -171,8 +171,12 @@ the players' `/api/*` path reachable when you put Cloudflare Access in front.
   `sudo systemctl restart projector-mpv.service`. Treat 4K (Pi 5, HEVC) as
   something to test on your own hardware before relying on it. Pi 5 has no
   H.264 hardware decoder; 1080p H.264 in software is still fine there.
-- **Audio:** mpv autodetects. If you want to force HDMI audio, edit
-  `/var/lib/projector-player/.config/mpv/mpv.conf` on the Pi.
+- **Audio:** the installer points mpv at the HDMI sound card
+  (`audio-device=alsa/default:CARD=vc4hdmi0`, or `vc4hdmi` on Pi 0-3) in
+  `/var/lib/projector-player/.config/mpv/mpv.conf`, because ALSA's default is
+  the 3.5 mm jack on every board but the Pi 5. Edit that line on the Pi to use
+  the jack (`CARD=Headphones`) or the second HDMI socket (`vc4hdmi1`); an
+  upgrade never touches an existing mpv.conf.
 - **Storage:** videos live at `/var/lib/projector-cms/media/` on the
   controller and `/var/lib/projector-player/media/` on each player.
 - **Resilience:** if the network drops, players keep playing the last synced
