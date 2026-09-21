@@ -126,7 +126,7 @@ def test_selfcheck_prints_scripts():
     assert "player archive:" in r.stdout and "tk:" in r.stdout
     assert firstboot.CMDLINE_ARGS in r.stdout
     assert "\nconsole: " in r.stdout  # what this build talks to (the default when run from source)
-    assert "\ndefaults from Windows: timezone " in r.stdout and "ssh key " in r.stdout
+    assert f"\ndefaults from {flasher.host.NAME}: timezone " in r.stdout and "ssh key " in r.stdout
     assert '"$CONSOLE/api/enroll"' in r.stdout
 
 
@@ -186,13 +186,13 @@ def test_ensure_admin_paths(monkeypatch):
     assert flasher.ensure_admin([]) is True
 
     monkeypatch.setattr(flasher, "is_admin", lambda: False)
-    monkeypatch.setattr(flasher, "relaunch_elevated", lambda: calls.append("relaunch") or True)
+    monkeypatch.setattr(flasher, "relaunch_elevated", lambda argv: calls.append(("relaunch", list(argv))) or True)
     monkeypatch.setattr(flasher, "not_admin_message", lambda: calls.append("message"))
-    assert flasher.ensure_admin([]) is False
-    assert calls == ["relaunch"]
+    assert flasher.ensure_admin(["--image", "x.img"]) is False
+    assert calls == [("relaunch", ["--image", "x.img"])]  # the elevated copy gets the same arguments
 
     calls.clear()
-    monkeypatch.setattr(flasher, "relaunch_elevated", lambda: calls.append("relaunch") or False)
+    monkeypatch.setattr(flasher, "relaunch_elevated", lambda argv: calls.append("relaunch") or False)
     assert flasher.ensure_admin([]) is False
     assert calls == ["relaunch", "message"]  # UAC declined: message box, no crash
 
@@ -205,7 +205,8 @@ def test_settings_never_store_secrets(tmp_path):
     flasher.save_settings({"name": "Lobby", "password": "pi-secret", "wifi_password": "wifi-secret",
                            "enrollment_key": "k-secret", "token": "tok", "operator_token": "p5k_secret",
                            "ssh_pubkey": "ssh-ed25519 AAAA", "ssid": "Venue", "static_ip": "10.0.0.5/24"})
-    path = tmp_path / "localappdata" / "Projection5000" / "flasher.json"
+    path = flasher.settings_path()
+    assert path.is_relative_to(tmp_path) and path.name == "flasher.json"  # the conftest sandbox, never the real one
     text = path.read_text()
     assert "Lobby" in text and "Venue" in text and "10.0.0.5/24" in text
     for secret in ("pi-secret", "wifi-secret", "k-secret", "tok", "p5k_secret", "ssh-ed25519"):
@@ -217,6 +218,7 @@ def test_settings_never_store_secrets(tmp_path):
         assert flasher.load_settings() == {}
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="DPAPI is Windows; test_machost covers the keychain")
 def test_operator_config_round_trip_is_dpapi_protected(tmp_path):
     path = Path(tmp_path / "appdata" / "Projection5000" / "flasher.json")  # APPDATA from conftest
     assert flasher.operator_config_path() == path
@@ -239,31 +241,33 @@ def test_operator_config_round_trip_is_dpapi_protected(tmp_path):
     assert not path.exists() and flasher.load_operator_config()["token"] == ""
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="crypt32 is Windows")
 def test_dpapi_prefers_win32crypt_and_falls_back_to_crypt32(monkeypatch):
-    import sys
     import types
+
+    import winhost
 
     calls = []
     fake = types.ModuleType("win32crypt")
     fake.CryptProtectData = lambda data, *a: calls.append(("protect", data)) or b"blob:" + data
     fake.CryptUnprotectData = lambda data, *a: calls.append(("unprotect", data)) or ("", data[5:])
     monkeypatch.setitem(sys.modules, "win32crypt", fake)
-    assert flasher._dpapi(b"tok", protect=True) == b"blob:tok"
-    assert flasher._dpapi(b"blob:tok", protect=False) == b"tok"
+    assert winhost._dpapi(b"tok", protect=True) == b"blob:tok"
+    assert winhost._dpapi(b"blob:tok", protect=False) == b"tok"
     assert calls == [("protect", b"tok"), ("unprotect", b"blob:tok")]
     # Without pywin32 (the venv and the frozen exe) the same calls go through ctypes crypt32.
     monkeypatch.setitem(sys.modules, "win32crypt", None)
-    blob = flasher._dpapi(b"tok", protect=True)
-    assert blob != b"tok" and flasher._dpapi(blob, protect=False) == b"tok"
+    blob = winhost._dpapi(b"tok", protect=True)
+    assert blob != b"tok" and winhost._dpapi(blob, protect=False) == b"tok"
 
 
 def test_operator_config_falls_back_to_plain_text_with_a_warning(monkeypatch, tmp_path):
-    def no_dpapi(data, protect):
+    def no_seal(token):
         raise OSError("no crypt32")
 
-    monkeypatch.setattr(flasher, "_dpapi", no_dpapi)
+    monkeypatch.setattr(flasher.host, "seal_token", no_seal)
     warning = flasher.save_operator_config("https://c.example", OPERATOR_TOKEN)
-    assert warning.startswith("WARNING: DPAPI is not available") and "flasher.json" in warning
+    assert warning.startswith(f"WARNING: {flasher.host.SEAL_NAME} is not available") and "flasher.json" in warning
     text = flasher.operator_config_path().read_text("utf-8")
     assert OPERATOR_TOKEN in text and '"token_dpapi": false' in text
     assert flasher.load_operator_config()["token"] == OPERATOR_TOKEN
@@ -274,7 +278,7 @@ def test_operator_config_falls_back_to_plain_text_with_a_warning(monkeypatch, tm
 def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     """One button. The visible top level: the masthead (logo, name, wordmark), Device name, Pi model, Wi-Fi network,
     Wi-Fi password, SD card, Refresh, FLASH, the status line, Advanced. No console line, no sign-in, no log box."""
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
     root.update()
@@ -332,7 +336,7 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
 
 def test_theme_is_the_console_look(monkeypatch):
     """Black ground, white ink, the Flash button as the solid white primary action, the fields as dark wells."""
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
     st = flasher.ttk.Style(root)
@@ -368,32 +372,46 @@ def test_theme_is_the_console_look(monkeypatch):
     root.destroy()
 
 
-def test_fonts_load_privately_from_the_bundle(monkeypatch, tmp_path):
-    """Every bundled TTF is registered with gdi32 AddFontResourceExW(path, FR_PRIVATE, 0); a failure only
-    means the fallback families."""
+def test_fonts_come_from_the_bundle_with_the_hosts_fallbacks(monkeypatch, tmp_path):
+    """load_fonts hands every bundled TTF to the host (gdi32 on Windows, CoreText on macOS); a failure only
+    means the host's fallback families."""
     calls = []
-    fake_gdi = type("G", (), {"AddFontResourceExW": staticmethod(lambda p, f, r: calls.append((p, f, r)) or 1)})
-    monkeypatch.setattr(flasher.ctypes, "windll", type("W", (), {"gdi32": fake_gdi}))
+    monkeypatch.setattr(flasher.host, "load_fonts", lambda paths: calls.extend(paths) or [p.name for p in paths])
     monkeypatch.setattr(flasher.sys, "frozen", True, raising=False)
     monkeypatch.setattr(flasher.sys, "_MEIPASS", str(tmp_path), raising=False)
     assert flasher.load_fonts() == list(flasher.FONT_FILES)
-    assert calls == [(str(tmp_path / "fonts" / n), 0x10, 0) for n in flasher.FONT_FILES]
+    assert calls == [tmp_path / "fonts" / n for n in flasher.FONT_FILES]
     assert {p.name for p in flasher.font_paths()} == {p.name for p in (FLASHER.parent / "fonts").glob("*.ttf")}
-    fake_gdi.AddFontResourceExW = staticmethod(lambda p, f, r: 0)
-    assert flasher.load_fonts() == []
-    assert flasher.font_families([]) == {"display": "Consolas", "mono": "Consolas", "sans": "Segoe UI"}
+    assert flasher.font_families([]) == flasher.host.FALLBACK_FONTS
     assert flasher.font_families(["Silkscreen", "IBM Plex Mono", "Space Grotesk"]) == {
         "display": "Silkscreen", "mono": "IBM Plex Mono", "sans": "Space Grotesk"}
+    if sys.platform == "win32":
+        assert flasher.host.FALLBACK_FONTS == {"display": "Consolas", "mono": "Consolas", "sans": "Segoe UI"}
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="gdi32 is Windows; test_machost covers CoreText")
+def test_fonts_load_privately_with_gdi32(monkeypatch, tmp_path):
+    """Every TTF is registered with gdi32 AddFontResourceExW(path, FR_PRIVATE, 0): visible to this process only."""
+    import winhost
+
+    calls = []
+    fake_gdi = type("G", (), {"AddFontResourceExW": staticmethod(lambda p, f, r: calls.append((p, f, r)) or 1)})
+    monkeypatch.setattr(winhost.ctypes, "windll", type("W", (), {"gdi32": fake_gdi}))
+    paths = [tmp_path / "fonts" / n for n in flasher.FONT_FILES]
+    assert winhost.load_fonts(paths) == list(flasher.FONT_FILES)
+    assert calls == [(str(p), 0x10, 0) for p in paths]
+    fake_gdi.AddFontResourceExW = staticmethod(lambda p, f, r: 0)
+    assert winhost.load_fonts(paths) == []
 
 
 def test_wifi_dropdown_lists_the_networks_and_fills_a_saved_password(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     nets = [{"ssid": "Cafe", "signal": 60, "auth": "Open"}, {"ssid": "Venue", "signal": 30, "auth": "WPA2-Personal"},
             {"ssid": "Far", "signal": 3, "auth": "WPA2-Personal"}]
     monkeypatch.setattr(flasher, "wifi", fake_wifi(nets, current="Venue", passwords={"Venue": "p4ss: word 1"}))
     root = _root()
     app = flasher.App(root)
-    assert app.ssid_hint.cget("text") == "scanning ..."
+    assert app.ssid_hint.cget("text") == flasher.SCANNING_HINT == "Looking for networks..."
     assert _pump(root, app, lambda: list(app.ssid_box["values"]) == ["Venue", "Cafe", "Far"])  # connected one first
     assert app.ssid_hint.cget("text") == "leave blank for a wired Pi" and app.pw_hint.cget("text") == ""
     # Picking a network with a profile on this PC fills the password (from netsh, off the Tk thread).
@@ -453,10 +471,10 @@ def test_window_grows_inside_the_work_area(monkeypatch):
 
 
 def test_gui_constructs_with_windows_defaults(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [DISK])
-    monkeypatch.setattr(flasher.winlocale, "timezone", lambda name=None: "Europe/London")
-    monkeypatch.setattr(flasher.winlocale, "keymap", lambda langid=None: "gb")
-    monkeypatch.setattr(flasher.winlocale, "country", lambda valid=None: "GB")
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [DISK])
+    monkeypatch.setattr(flasher.defaults, "timezone", lambda name=None: "Europe/London")
+    monkeypatch.setattr(flasher.defaults, "keymap", lambda langid=None: "gb")
+    monkeypatch.setattr(flasher.defaults, "country", lambda valid=None: "GB")
     root = _root()
     app = flasher.App(root)
     app.v["name"].set("Lobby Projector")
@@ -484,7 +502,7 @@ def test_gui_constructs_with_windows_defaults(monkeypatch):
     app.v["timezone"].set("Europe/Paris")
     app.on_close()  # saves the form
     # The remembered form survives a restart; keymap and country are never remembered (always this PC's).
-    monkeypatch.setattr(flasher.winlocale, "keymap", lambda langid=None: "de")
+    monkeypatch.setattr(flasher.defaults, "keymap", lambda langid=None: "de")
     app2 = flasher.App(_root())
     assert app2.values()["name"] == "---" and app2.values()["timezone"] == "Europe/Paris"
     assert app2.values()["keymap"] == "de" and app2.values()["wifi_country"] == "GB"
@@ -494,7 +512,7 @@ def test_gui_constructs_with_windows_defaults(monkeypatch):
 
 
 def test_blank_wifi_means_wired(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root, dry_run=True)
     app.baked_key = KEY
@@ -512,7 +530,7 @@ def test_blank_wifi_means_wired(monkeypatch):
 
 
 def test_validate_shows_plain_words_inline(monkeypatch, tmp_path):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: pytest.fail("dialog instead of inline text"))
     root = _root()
     app = flasher.App(root, dry_run=True)
@@ -564,7 +582,7 @@ def test_validate_shows_plain_words_inline(monkeypatch, tmp_path):
 
 
 def test_dry_run_validate_needs_no_disk(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root, dry_run=True)
     app.baked_key = KEY
@@ -599,7 +617,7 @@ def stub():
 def test_flash_connects_in_the_browser_then_makes_the_card(monkeypatch, stub):
     """Not connected, no baked key: FLASH opens the browser, says so in plain words, waits for the approval and then
     flashes with no further click. 'Signed in as' appears nowhere on the screen."""
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher, "console_url", lambda: stub)
     opened, flashed = [], []
     monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: opened.append(url) or True)
@@ -634,7 +652,7 @@ def test_flash_connects_in_the_browser_then_makes_the_card(monkeypatch, stub):
 
 
 def test_connect_denied_browserless_and_offline(monkeypatch, stub):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher, "console_url", lambda: stub)
     monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: False)
     StubConsole.deny = True
@@ -665,7 +683,7 @@ def test_connect_denied_browserless_and_offline(monkeypatch, stub):
 
 
 def test_connect_times_out_or_is_cancelled_back_to_ready(monkeypatch, stub):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher, "console_url", lambda: stub)
     monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: True)
     StubConsole.approve_after = None
@@ -699,7 +717,7 @@ def test_connect_times_out_or_is_cancelled_back_to_ready(monkeypatch, stub):
 
 
 def test_gui_uses_a_stored_token_silently(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     flasher.save_operator_config(flasher.DEFAULT_CONSOLE_URL, OPERATOR_TOKEN, "matt")
     seen = []
 
@@ -746,9 +764,9 @@ def test_gui_uses_a_stored_token_silently(monkeypatch):
 
 
 def test_log_goes_to_the_details_box_and_the_file(monkeypatch, tmp_path):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
-    path = tmp_path / "localappdata" / "Projection5000" / "flasher.log"
-    assert flasher.log_path() == path
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    path = flasher.log_path()
+    assert path.is_relative_to(tmp_path) and path.name == "flasher.log"  # the conftest sandbox
     root = _root()
     app = flasher.App(root)
     app.log("Using bundled image x.img.xz")
@@ -771,7 +789,7 @@ def test_log_goes_to_the_details_box_and_the_file(monkeypatch, tmp_path):
 
 
 def test_status_line_speaks_plain_words(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
     app.set_phase("Writing the card")
@@ -787,13 +805,13 @@ def test_status_line_speaks_plain_words(monkeypatch):
     errors = []
     monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: errors.append(a))
     monkeypatch.setattr(flasher, "run_flash", lambda *a, **k: (_ for _ in ()).throw(
-        flasher.windisk.DiskError("read-back verification failed\n\nmore words")))
+        flasher.disk.DiskError("read-back verification failed\n\nmore words")))
     app._run_flash(dict(FULL, dry_run=False))
     assert _pump(root, app, lambda: bool(errors))
     assert _status(app) == "Failed: read-back verification failed" and "FAILED: read-back" in _log(app)
     # Cancelled: said once, in words.
     monkeypatch.setattr(flasher, "run_flash", lambda *a, **k: (_ for _ in ()).throw(
-        flasher.windisk.Cancelled("The card is NOT usable; flash it again.")))
+        flasher.disk.Cancelled("The card is NOT usable; flash it again.")))
     app._run_flash(dict(FULL, dry_run=False))
     assert _pump(root, app, lambda: _status(app).startswith("Cancelled"))
     assert _status(app) == "Cancelled. The card is NOT usable; flash it again."
@@ -801,7 +819,7 @@ def test_status_line_speaks_plain_words(monkeypatch):
 
 
 def test_image_override_flag_and_env(monkeypatch, tmp_path):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     img = tmp_path / "dev.img"
     assert flasher.image_arg(["--dry-run"], env={}) == ""
     assert flasher.image_arg(["--image", str(img), "--dry-run"], env={}) == str(img)
@@ -834,14 +852,14 @@ def test_write_firstboot_files(tmp_path):
     # Not a Pi image (no cmdline.txt): refuse before writing anything.
     other = tmp_path / "other"
     other.mkdir()
-    with pytest.raises(flasher.windisk.DiskError, match="cmdline.txt not found"):
+    with pytest.raises(flasher.disk.DiskError, match="cmdline.txt not found"):
         flasher.write_firstboot_files(other, "a", "b", b"c")
     assert list(other.iterdir()) == []
 
 
 def test_refresh_keeps_selected_disk(monkeypatch):
     disk3 = dict(DISK, number=3, label="Disk 3  Reader B  (no card)", size=0)
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [DISK, disk3])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [DISK, disk3])
     root = _root()
     app = flasher.App(root)
     assert _pump(root, app, lambda: bool(app.disks))
@@ -856,7 +874,7 @@ def test_refresh_keeps_selected_disk(monkeypatch):
 
 
 def test_pump_survives_a_raising_callback(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
     hits = []
@@ -875,7 +893,7 @@ def test_pump_survives_a_raising_callback(monkeypatch):
 
 def test_failed_flash_reenables_the_form_and_shows_the_error(monkeypatch, tmp_path):
     """Any exception in run_flash must end with a dialog and the Flash button back (not a frozen GUI)."""
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [DISK])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [DISK])
     monkeypatch.setattr(flasher, "is_admin", lambda: True)
     errors = []
     monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: errors.append(a))
@@ -902,7 +920,7 @@ def test_failed_flash_reenables_the_form_and_shows_the_error(monkeypatch, tmp_pa
 
 
 def test_confirmation_defaults_to_no_and_rechecks_the_disk(monkeypatch, tmp_path):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [DISK])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [DISK])
     monkeypatch.setattr(flasher, "is_admin", lambda: True)
     dialogs = []
     monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: dialogs.append(("error", a, k)))
@@ -920,12 +938,12 @@ def test_confirmation_defaults_to_no_and_rechecks_the_disk(monkeypatch, tmp_path
     assert "Everything on that card will be erased" in dialogs[-1][1][1]
     assert app.worker is None
     # A different card in the same reader (new signature/size) after Refresh: the flash is refused inline.
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [dict(DISK, unique_id="USBSTOR\\Y&0:")])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [dict(DISK, unique_id="USBSTOR\\Y&0:")])
     dialogs.clear()
     app.on_flash()
     assert dialogs == [] and _shown_errors(app)["disk"].startswith("The card changed since it was chosen")
     # Without admin rights a real flash is refused with a clear message.
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [DISK])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [DISK])
     monkeypatch.setattr(flasher, "is_admin", lambda: False)
     app.on_flash()
     assert dialogs == [] and "Restart as administrator" in _shown_errors(app)["flash"]
@@ -933,7 +951,7 @@ def test_confirmation_defaults_to_no_and_rechecks_the_disk(monkeypatch, tmp_path
 
 
 def test_close_during_flash_cancels_and_defaults_to_no(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     asked = []
     monkeypatch.setattr(flasher.messagebox, "askyesno", lambda *a, **k: asked.append(k) or True)
     root = _root()
@@ -960,9 +978,9 @@ def _flash_stubs(monkeypatch, tmp_path, calls):
     # The flasher never enrolls: the Pi does that on first boot.
     monkeypatch.setattr(flasher.console, "enroll", lambda *a: pytest.fail("flasher enrolled"))
     monkeypatch.setattr(flasher.console, "check_health", lambda *a: pytest.fail("flasher contacted the console"))
-    monkeypatch.setattr(flasher.windisk, "check_disk", lambda d: calls.append("check"))
-    monkeypatch.setattr(flasher.windisk, "clear_disk", lambda n, uid="": calls.append("clear"))
-    monkeypatch.setattr(flasher.windisk, "volume_paths", lambda n: [])
+    monkeypatch.setattr(flasher.disk, "check_disk", lambda d: calls.append("check"))
+    monkeypatch.setattr(flasher.disk, "clear_disk", lambda n, uid="": calls.append("clear"))
+    monkeypatch.setattr(flasher.disk, "volume_paths", lambda n: [])
 
     class Drive:
         def __init__(self, n, expect_size=0):
@@ -998,11 +1016,11 @@ def _flash_stubs(monkeypatch, tmp_path, calls):
         def refresh_partitions(self):
             calls.append("refresh")
 
-    monkeypatch.setattr(flasher.windisk, "open_physical_drive", Drive)
-    monkeypatch.setattr(flasher.windisk, "find_boot_volume",
-                        lambda n, timeout=30.0, cancel_event=None, log=None: calls.append("find") or "Z")
+    monkeypatch.setattr(flasher.disk, "open_physical_drive", Drive)
+    monkeypatch.setattr(flasher.disk, "find_boot_volume",
+                        lambda n, timeout=30.0, cancel_event=None, log=None: calls.append("find") or "Z:/")
     monkeypatch.setattr(flasher, "Path", lambda s: boot if str(s).startswith("Z:") else Path(s))
-    monkeypatch.setattr(flasher.windisk, "eject", lambda letter: calls.append("eject"))
+    monkeypatch.setattr(flasher.disk, "eject", lambda letter: calls.append("eject"))
     return card, boot
 
 
@@ -1036,7 +1054,7 @@ def test_run_flash_end_to_end_with_stubs(monkeypatch, tmp_path):
     # Oversized image: refused before the card is touched.
     calls.clear()
     v["disk_info"] = dict(DISK, size=1024)
-    with pytest.raises(flasher.windisk.DiskError, match="larger than the card"):
+    with pytest.raises(flasher.disk.DiskError, match="larger than the card"):
         flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
     assert calls == []
     # Advanced: a device token on the card bypasses enrollment (no key on the card at all).
@@ -1091,10 +1109,10 @@ def test_cancel_after_write_is_honoured_and_reported(monkeypatch, tmp_path):
     img = tmp_path / "x.img"
     img.write_bytes(b"\x01" * 4096)
     cancel = threading.Event()
-    monkeypatch.setattr(flasher.windisk, "find_boot_volume",
-                        lambda n, timeout=30.0, cancel_event=None, log=None: cancel.set() or "Z")
+    monkeypatch.setattr(flasher.disk, "find_boot_volume",
+                        lambda n, timeout=30.0, cancel_event=None, log=None: cancel.set() or "Z:/")
     v = dict(FULL, image_path=str(img), disk_info=dict(DISK, size=1 << 20))
-    with pytest.raises(flasher.windisk.Cancelled, match="first-boot files are NOT"):
+    with pytest.raises(flasher.disk.Cancelled, match="first-boot files are NOT"):
         flasher.run_flash(v, lines.append, lambda pct, text: None, cancel)
     assert not (boot / "firstrun.sh").exists() and "eject" not in calls
     # Cancel before the disk is touched: a plain cancellation, the card was never touched.
@@ -1102,13 +1120,13 @@ def test_cancel_after_write_is_honoured_and_reported(monkeypatch, tmp_path):
     cancel = threading.Event()
     real_obtain = flasher.obtain_image
     monkeypatch.setattr(flasher, "obtain_image", lambda *a, **k: cancel.set() or real_obtain(*a, **k))
-    with pytest.raises(flasher.windisk.Cancelled) as e:
+    with pytest.raises(flasher.disk.Cancelled) as e:
         flasher.run_flash(v, lines.append, lambda pct, text: None, cancel)
     assert str(e.value) == "" and calls == []
     # Cancel during the write: the card is reported unusable.
     cancel = threading.Event()
     monkeypatch.setattr(flasher, "obtain_image", real_obtain)
-    with pytest.raises(flasher.windisk.Cancelled, match="NOT usable"):
+    with pytest.raises(flasher.disk.Cancelled, match="NOT usable"):
         flasher.run_flash(v, lines.append, lambda pct, text: cancel.set() if "written" in text else None, cancel)
 
 
@@ -1119,11 +1137,11 @@ def test_failure_after_write_explains_the_card_state(monkeypatch, tmp_path):
     img.write_bytes(b"\x01" * 4096)
 
     def no_volume(n, timeout=30.0, cancel_event=None, log=None):
-        raise flasher.windisk.DiskError("no FAT boot partition appeared on disk 2 within 30 s")
+        raise flasher.disk.DiskError("no FAT boot partition appeared on disk 2 within 30 s")
 
-    monkeypatch.setattr(flasher.windisk, "find_boot_volume", no_volume)
+    monkeypatch.setattr(flasher.disk, "find_boot_volume", no_volume)
     v = dict(FULL, image_path=str(img), disk_info=dict(DISK, size=1 << 20))
-    with pytest.raises(flasher.windisk.DiskError) as e:
+    with pytest.raises(flasher.disk.DiskError) as e:
         flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
     assert "no FAT boot partition" in str(e.value) and "first-boot files were NOT" in str(e.value)
 
@@ -1134,9 +1152,9 @@ def test_dry_run_stops_before_disk(monkeypatch, tmp_path):
     # A dry run validates, renders and resolves the image; with a key in hand it never contacts the console.
     monkeypatch.setattr(flasher.console.urllib.request, "urlopen",
                         lambda *a, **k: pytest.fail("console contacted in dry run"))
-    monkeypatch.setattr(flasher.windisk, "clear_disk", lambda *a: pytest.fail("clear_disk called in dry run"))
-    monkeypatch.setattr(flasher.windisk, "check_disk", lambda d: pytest.fail("check_disk called in dry run"))
-    monkeypatch.setattr(flasher.windisk, "open_physical_drive",
+    monkeypatch.setattr(flasher.disk, "clear_disk", lambda *a: pytest.fail("clear_disk called in dry run"))
+    monkeypatch.setattr(flasher.disk, "check_disk", lambda d: pytest.fail("check_disk called in dry run"))
+    monkeypatch.setattr(flasher.disk, "open_physical_drive",
                         lambda *a, **k: pytest.fail("open_physical_drive called in dry run"))
     v = dict(FULL, image_path=str(img), disk_info=None)
     lines = []
@@ -1167,7 +1185,7 @@ def test_run_flash_validates_before_rendering(monkeypatch, tmp_path):
 
 
 def test_pi_password_is_random_and_rotates_after_a_flash(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
     first = app.values()["password"]
@@ -1215,21 +1233,21 @@ def test_run_flash_bundled_end_to_end(monkeypatch, tmp_path):
     assert card.read_bytes() == bytes(range(256)) * 8
     text = "\n".join(lines)
     assert "Writing raspios-lite-arm64-test.img.xz to disk 2" in text
-    assert "Image: raspios-lite-arm64-test.img.xz (bundled in this exe)" in text
+    assert "Image: raspios-lite-arm64-test.img.xz (bundled in this program)" in text
     # Dry run names it too and stays off the network.
     lines.clear()
     flasher.run_flash(dict(v, disk_info=None), lines.append, lambda pct, text: None, threading.Event(), dry_run=True)
     assert any(s.startswith("Dry run: would write raspios-lite-arm64-test.img.xz to") for s in lines)
     # Oversized: refused with the bundled name before the card is touched.
     calls.clear()
-    with pytest.raises(flasher.windisk.DiskError, match="raspios-lite-arm64-test.img.xz is larger than the card"):
+    with pytest.raises(flasher.disk.DiskError, match="raspios-lite-arm64-test.img.xz is larger than the card"):
         flasher.run_flash(dict(v, disk_info=dict(DISK, size=1024)), lines.append, lambda pct, text: None,
                           threading.Event())
     assert calls == []
 
 
 def test_gui_uses_the_bundled_image_by_default(monkeypatch, tmp_path):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     b = _bundled_exe(tmp_path)
     monkeypatch.setattr(flasher.bundle, "find_bundle", lambda path=None: b)
     root = _root()

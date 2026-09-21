@@ -1,10 +1,12 @@
 # Matt Brown's Projection5000 SD Flasher
 
-Windows desktop tool (window title "Matt Brown's Projection5000") that writes Raspberry Pi OS Lite to an SD card and
-pre-configures the Pi so that on first boot it joins the network, takes its
-hostname, installs the Projection5000 player (a copy of `player/` travels on
-the card; the Pi never needs GitHub access) and enrolls itself with the console.
-One screen, one button, nothing to copy and paste.
+Windows and macOS desktop tool (window title "Matt Brown's Projection5000") that writes Raspberry Pi OS Lite to
+an SD card and pre-configures the Pi so that on first boot it joins the
+network, takes its hostname, installs the Projection5000 player (a copy of
+`player/` travels on the card; the Pi never needs GitHub access) and enrolls
+itself with the console. One screen, one button, nothing to copy and paste.
+The screen, the words and the flow are the same on both systems; the Windows
+exe is described first, "On a Mac" below lists what differs on a Mac.
 
 ## The screen
 
@@ -90,7 +92,8 @@ warning in the details log when its name carries the other architecture.
   that flashed the card (ssh.exe finds the key when you pass
   `-i %APPDATA%\Projection5000\ssh\id_ed25519`, or copy it to `~/.ssh/`).
   The `.pub` file next to it is the line for any other machine's
-  `authorized_keys`.
+  `authorized_keys`. (On a Mac the key is
+  `~/Library/Application Support/Projection5000/ssh/id_ed25519`, mode 0600.)
 - **Time zone, keyboard, Wi-Fi country**: taken from Windows (the registry's
   time zone key mapped to an IANA name, the input locale, the region setting;
   fallbacks `America/Los_Angeles`, `us`, `US`). `--selfcheck` prints what this
@@ -147,7 +150,8 @@ there is none.
    token (one shot) and your username; the flash then continues by itself.
 4. The token is stored DPAPI-protected (Windows `CryptProtectData`, readable
    only by the same Windows account) in `%APPDATA%\Projection5000\flasher.json`
-   together with the console URL and username. On later launches it is used
+   together with the console URL and username (on a Mac: in the login
+   keychain, the file holds only the URL and username). On later launches it is used
    right away and checked with `GET /api/operator/enrollment` in the
    background; a `401` (revoked) forgets it so the next FLASH connects again,
    a network error keeps it. A token saved for a different console is ignored.
@@ -158,9 +162,11 @@ On the console the sign-in appears as an API token named "SD Flasher on
 
 ## Requirements
 
-- Windows 10/11, 64-bit, an SD card reader.
+- Windows 10/11, 64-bit, an SD card reader; or a Mac (macOS 12 or newer, Apple
+  Silicon or Intel; see "On a Mac").
 - Administrator rights (raw disk writes). The exe and the source both relaunch
-  themselves elevated (UAC prompt) on start.
+  themselves elevated (UAC prompt) on start. On a Mac nothing is relaunched:
+  macOS asks for your password when the card is written.
 - Internet access for the Pi's first boot (and, once, for the 32-bit image of
   the older models; the bundled image needs none).
 - For building or running from source: Python 3.11+ with tkinter (the
@@ -183,6 +189,103 @@ and exits. `Projection5000-SD-Flasher.exe --dry-run` works without the prompt
 ("Windows protected your PC"; More info, Run anyway); a locally built copy does
 not. The browser opened for the approval runs from the elevated process; that
 is fine for approving a code.
+
+## On a Mac
+
+Download `Projection5000-SD-Flasher-mac-arm64.dmg` (Apple Silicon: M1, M2,
+M3, M4) or `Projection5000-SD-Flasher-mac-intel.dmg` (an Intel Mac) from the
+release, open it and drag **Projection5000 SD Flasher** to Applications.
+
+**The first time you open it** macOS says the app "cannot be opened because
+the developer cannot be verified" (it is signed but not notarized, see
+below). Do this once:
+
+1. In Applications, **right-click** (or Control-click) **Projection5000 SD
+   Flasher** and choose **Open**.
+2. In the box that appears, click **Open** again.
+
+On macOS 15 (Sequoia) and newer the right-click trick is gone and the steps
+are:
+
+1. Double-click the app; macOS says it was not opened. Click **Done**.
+2. Open **System Settings**, **Privacy & Security**, scroll down to the line
+   that says the app was blocked and click **Open Anyway**.
+3. Enter your Mac password, then click **Open** in the box that follows.
+
+After that it opens like any other app. (Removing this step needs an Apple
+Developer account, US$99 a year, to notarize each release; the build is ready
+for it, only the signing identity is missing.)
+
+Then it is the same screen: name the Pi, pick the model, pick the Wi-Fi,
+pick the card, press **FLASH**, confirm the erase warning. What differs:
+
+- **Password prompt**: writing a card needs administrator rights, so macOS
+  shows its standard prompt ("Projection5000 SD Flasher wants to make
+  changes") once per flash. Enter your Mac password. Cancel it and the status
+  line says "Permission was refused or the password prompt was cancelled:
+  enter your Mac password when asked, then flash again"; nothing was written.
+  This is Apple's `authopen`, the same mechanism Raspberry Pi Imager and
+  Etcher use; no `sudo`, nothing installed.
+- **Cards** are listed as `disk4  SanDisk  32 GB` (what `diskutil list` and
+  Finder call them), USB readers and the built-in SD slot alike. Internal
+  disks, disk images, USB hard disks and SSDs and any disk holding a mounted
+  system volume are never listed. Refresh rescans.
+- **Wi-Fi**: the network list comes from `system_profiler` (no Location
+  permission needed; it takes a few seconds, the box says "Looking for
+  networks..." meanwhile). Picking a network this Mac knows reads its password
+  from the login keychain: macOS asks **Allow** or **Deny** for the flasher;
+  Deny just leaves the field empty.
+- **Time zone, keyboard, Wi-Fi country** come from macOS (`/etc/localtime`,
+  the keyboard layout in System Settings, the region of the language setting).
+- **The sign-in** (first FLASH, browser approval) is the same; the token is
+  kept in the login keychain as "Matt Brown's Projection5000" (Keychain
+  Access shows it), never in a file.
+- **Ejecting**: the card is ejected when the flash finishes, as on Windows.
+  macOS's own files (`._*`, `.fseventsd`, `.Spotlight-V100`) are removed from
+  the boot partition first.
+- **The card is written the same way**: unmounted, the old partition table
+  blanked, the image streamed to the raw device (`/dev/rdiskN`), read back and
+  verified, and the partition table written and checked last, so macOS cannot
+  mount the new boot partition and write to it before the verification is
+  done.
+
+Files on this Mac (all under `~/Library/Application Support/Projection5000`):
+`flasher.json` (the remembered form, never a secret), `flasher.log` (the
+technical log), `images/` (downloaded images) and `ssh/id_ed25519` plus `.pub`
+(the SSH key, mode 0600; `ssh -i "~/Library/Application Support/Projection5000/ssh/id_ed25519" projector-admin@<device-id>.local`).
+The sign-in lives in the keychain; **Disconnect** under Advanced deletes it.
+
+Run from source on a Mac: `python3 flasher.py` from `tools/flasher` (Python
+3.11+ with tkinter; python.org's installer has it, Homebrew's needs
+`python-tk`). No admin shell: the password prompt appears at FLASH.
+`--dry-run`, `--selfcheck` and `--image` work as on Windows; `--selfcheck`
+prints "defaults from macOS: ...".
+
+Build: `bash tools/flasher/build_mac.sh` (same environment variables as
+`build.ps1`: `FLASHER_CONSOLE_URL`, `FLASHER_ENROLL_KEY` for an offline build,
+`FLASHER_IMAGE`, `FLASHER_NO_BUNDLE`, `FLASHER_PYTHON`) makes
+`dist/Projection5000 SD Flasher.app`, signs it ad hoc, runs `--selfcheck`
+(output in `dist/selfcheck.txt`) and packs `dist/Projection5000-SD-Flasher-mac-arm64.dmg`
+or `-intel.dmg` after the Mac it runs on. The OS image is not appended to the
+program (a Mach-O with bytes after it fails its signature) but written to
+`Contents/Resources/bundle.bin`, the same image-plus-trailer bytes, which is
+the second place `bundle.find_bundle()` looks. The GitHub Actions workflow
+`.github/workflows/flasher-mac.yml` builds both DMGs (Apple Silicon on
+`macos-14`, Intel on `macos-15-intel`), runs this test suite on macOS first,
+and attaches them to a release: run it by hand (Actions, flasher-mac, Run
+workflow, optionally naming an existing release tag) or let it run when a
+release is published. It needs no secret beyond the repository's own token.
+
+How the code is split: `flasher.py` (the screen and the flash sequence) never
+asks which system it is on. `sysplat.py` picks, once, by `sys.platform`:
+`windisk.py` / `macdisk.py` (cards), `wifi.py` / `macwifi.py` (networks),
+`winlocale.py` / `maclocale.py` (time zone, keymap, country) and
+`winhost.py` / `machost.py` (folders, the token store, fonts, elevation, the
+window). The pairs expose the same function names; the streaming and verify
+engine (`write_image`, `verify_image`, the deferred first MiB) is one piece of
+code in `windisk.py` used by both. `tests/test_mac*.py` drive the macOS
+modules on any system with `diskutil`, `authopen`, `system_profiler`,
+`security` and `defaults` faked.
 
 ## What happens on the card
 
@@ -306,6 +409,13 @@ resource (Explorer's Properties > Details).
 cms\.venv\Scripts\python.exe -m pytest tools\flasher\tests -q
 ```
 
+On a Mac: `python3 -m pytest -q` from `tools/flasher` (the first-boot script
+tests that run bash need GNU `sed` and `stat`, `brew install gnu-sed coreutils`
+with their `gnubin` folders first on PATH; otherwise they skip). The same
+suite runs on Windows and macOS: the Windows-only tests (live PowerShell,
+DPAPI, gdi32, netsh) skip on a Mac and the macOS layer's tests run everywhere
+with the tools faked.
+
 No admin rights, card, console or browser needed: the write engine is tested
 against temp files and a fake drive with a synthetic `.img.xz`, the download
 code against a local HTTP server on a free port, enrollment, the key fetch and
@@ -320,7 +430,7 @@ the connect-then-flash flow, the status line, the details log and its file,
 failure, cancel, confirmation) against a withdrawn Tk window. The GUI tests are skipped
 when there is no display.
 
-## Files on this PC
+## Files on this PC (for a Mac see "On a Mac")
 
 - `%LOCALAPPDATA%\Projection5000\flasher.json`: last-used form values (name,
   Pi model, Wi-Fi network, hidden flag, time zone, static IP, gateway). Never

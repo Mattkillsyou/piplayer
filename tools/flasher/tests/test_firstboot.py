@@ -19,6 +19,20 @@ def cfg(**over):
     return c
 
 
+def _gnu(tool: str) -> bool:
+    """True when `tool --version` says GNU: the scripts run on the Pi's coreutils (stat -c, sed -i -E). Git Bash
+    on Windows has them; a Mac needs Homebrew's coreutils and gnu-sed first on PATH (the CI workflow does that)."""
+    try:
+        r = subprocess.run([tool, "--version"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "GNU" in (r.stdout + r.stderr)
+
+
+gnu_tools = pytest.mark.skipif(shutil.which("bash") is None or not (_gnu("sed") and _gnu("stat")),
+                               reason="bash with GNU sed and stat not available")
+
+
 def test_derive_device_id():
     assert firstboot.derive_device_id("Lobby Projector") == "lobby-projector"
     assert firstboot.derive_device_id("  --Hall #2 (East)!  ") == "hall-2-east"
@@ -193,11 +207,10 @@ def test_static_ip_accepts(static_ip, gateway):
     assert firstboot.validate_cfg(cfg(static_ip=static_ip, gateway=gateway)) == []
 
 
+@gnu_tools
 def test_sed_cleanup_keeps_regdom(tmp_path):
     """The exact sed from firstrun.sh, run on what cmdline.txt looks like after raspi-config appended
     the regulatory domain: only the systemd.* tokens go."""
-    if shutil.which("bash") is None or shutil.which("sed") is None:
-        pytest.skip("bash/sed not available")
     line = "console=tty1 root=PARTUUID=abc rootwait " + firstboot.CMDLINE_ARGS + " cfg80211.ieee80211_regdom=US\n"
     p = tmp_path / "cmdline.txt"
     p.write_text(line)
@@ -543,7 +556,7 @@ def _run_firstrun(tmp_path, c, stubs=()):
     return boot, log
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@gnu_tools
 def test_firstrun_wipes_itself_and_logs_rc(tmp_path):
     """Run the rendered firstrun.sh with stubbed tools: it must finish, log each step's rc, zero-fill and
     remove the secret-bearing files, and write firstrun.ok."""
@@ -565,7 +578,7 @@ def test_firstrun_wipes_itself_and_logs_rc(tmp_path):
     assert "command not found" not in log
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@gnu_tools
 def test_firstrun_key_and_static_ip_under_bash(tmp_path):
     """The key-only SSH and static-IP lines run end to end: getent resolves the home, install/chown/chmod
     set up authorized_keys, sshd gets the no-password drop-in, NetworkManager gets the static keyfile.
@@ -595,10 +608,9 @@ def test_firstrun_key_and_static_ip_under_bash(tmp_path):
     assert "supersecret" not in log and "AAAAC3" not in log  # run() logs two words: never the key or a secret
 
 
+@gnu_tools
 def test_wipe_zero_fills_before_unlink(tmp_path):
     """The wipe helper overwrites the bytes in place (a plain rm leaves them in the free FAT clusters)."""
-    if shutil.which("bash") is None:
-        pytest.skip("bash not available")
     f = tmp_path / "secret.sh"
     f.write_bytes(b"WIFI=hunter2hunter2\n" * 50)
     wipe = [ln for ln in firstboot.render_firstrun(cfg()).splitlines() if ln.startswith("wipe()")][0]

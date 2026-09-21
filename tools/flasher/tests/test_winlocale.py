@@ -31,7 +31,7 @@ def test_live_values_are_valid_for_the_card(monkeypatch):
     cfg.update(timezone=winlocale.timezone(), keymap=winlocale.keymap(), wifi_country=winlocale.country(firstboot.ISO3166))
     assert firstboot.validate_cfg(cfg) == []
     # Unknown or unreadable region: the default; a region outside `valid` too.
-    monkeypatch.setattr(winlocale.ctypes, "windll", None)
+    monkeypatch.setattr(winlocale.ctypes, "windll", None, raising=False)  # absent on macOS: same fallbacks
     assert winlocale.country() == winlocale.DEFAULT_COUNTRY and winlocale.keymap() == winlocale.DEFAULT_KEYMAP
 
     class Geo:

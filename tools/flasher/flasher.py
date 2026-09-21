@@ -1,17 +1,20 @@
 """Projection5000 SD Flasher: write Raspberry Pi OS Lite to a card and pre-configure the Pi.
 
-One button: the console is fixed (baked in by build.ps1), the sign-in happens in the browser the first time
-FLASH is pressed, and only what changes per Pi is asked (name, model, Wi-Fi, card). Everything else is automatic
-or under Advanced. The technical log goes to the hidden details box and %LOCALAPPDATA%/Projection5000/flasher.log.
+One button: the console is fixed (baked in by build.ps1 / build_mac.sh), the sign-in happens in the browser the
+first time FLASH is pressed, and only what changes per Pi is asked (name, model, Wi-Fi, card). Everything else is
+automatic or under Advanced. The technical log goes to the hidden details box and flasher.log in the data folder
+(%LOCALAPPDATA%\\Projection5000 on Windows, ~/Library/Application Support/Projection5000 on macOS).
 
-Run: python flasher.py            (relaunches itself elevated if needed)
+Windows and macOS: everything platform-specific lives behind sysplat (disk, wifi, defaults, host); nothing in
+this file branches on the platform.
+
+Run: python flasher.py            (Windows: relaunches itself elevated if needed; macOS: asks for the password
+                                   when a card is written)
      python flasher.py --selfcheck (prints the generated first-boot scripts, exits 0)
      python flasher.py --dry-run   (no admin needed; Flash stops before touching the card)
      python flasher.py --image X   (developers: write this .img / .img.xz instead of the model's image;
                                     the FLASHER_IMAGE environment variable does the same)
 """
-import base64
-import ctypes
 import io
 import json
 import os
@@ -36,14 +39,13 @@ import firstboot
 import imagefetch
 import pimodel
 import sshkey
-import wifi
-import windisk
-import winlocale
+from sysplat import defaults, disk, host, wifi
 
 APP_TITLE = "Matt Brown's Projection5000"
 EYEBROW = "MATT BROWN'S"
-# Persisted between runs (%LOCALAPPDATA%). Never a secret: the enrollment key is fetched from the console at flash
-# time with the operator token, which lives DPAPI-protected in the operator config (%APPDATA%).
+# Persisted between runs (host.data_dir). Never a secret: the enrollment key is fetched from the console at flash
+# time with the operator token, which lives DPAPI-protected in the operator config (Windows) or in the login
+# keychain (macOS).
 SETTINGS_KEYS = ("name", "pi_model", "ssid", "wifi_hidden", "timezone", "static_ip", "gateway")
 LOG_NAME, LOG_MAX = "flasher.log", 2_000_000  # the technical log; rotated to flasher.log.1 at 2 MB
 # The status line: plain sentences, one at a time (everything technical goes to the details box and the file).
@@ -68,7 +70,8 @@ PLAIN_WORDS = [("Device name", "name", "Give the Pi a name."),
                ("Wi-Fi password", "wifi_password", "Wi-Fi password must be 8-63 characters."),
                ("Timezone", "adv", None), ("Static IP", "adv", None), ("Gateway", "adv", None)]
 WIRED_HINT = "leave blank for a wired Pi"
-LOCATION_HINT = "turn on Location in Windows Settings to list networks"
+SCANNING_HINT = "Looking for networks..."
+LOCATION_HINT = host.NO_SCAN_HINT  # connected, yet the scan is empty (Windows 11 with Location off)
 TIMEZONES = ["America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York", "America/Phoenix",
              "America/Anchorage", "Pacific/Honolulu", "America/Toronto", "America/Vancouver", "America/Mexico_City",
              "America/Sao_Paulo", "Europe/London", "Europe/Dublin", "Europe/Paris", "Europe/Berlin", "Europe/Madrid",
@@ -77,35 +80,21 @@ TIMEZONES = ["America/Los_Angeles", "America/Denver", "America/Chicago", "Americ
 PLAYER_EXCLUDE = ("__pycache__", ".venv", ".pytest_cache", "tests")
 
 
-# ---------------------------------------------------------------- elevation
+# ---------------------------------------------------------------- elevation (Windows; macOS asks per flash)
 
 def work_area(root) -> tuple:
-    """(top, bottom) of the Windows work area in px: the screen without the taskbar. The whole screen elsewhere."""
-    try:
-        r = (ctypes.c_long * 4)()
-        if ctypes.windll.user32.SystemParametersInfoW(0x30, 0, r, 0):  # SPI_GETWORKAREA
-            return r[1], r[3]
-    except (AttributeError, OSError):
-        pass
-    return 0, root.winfo_screenheight()
+    """(top, bottom) of the work area in px: the screen without the taskbar (Windows) or the menu bar (macOS)."""
+    return host.work_area(root)
 
 
 def is_admin() -> bool:
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
+    """True when this process may write a card (elevated on Windows; always on macOS, where authopen asks)."""
+    return host.is_admin()
 
 
-def relaunch_elevated() -> bool:
-    """ShellExecuteW 'runas' this program with --elevated. False when the UAC prompt was declined."""
-    if getattr(sys, "frozen", False):
-        exe, params = sys.executable, "--elevated"
-    else:
-        exe, params = sys.executable, f'"{os.path.abspath(__file__)}" --elevated'
-    # Values <= 32 are errors (5 = SE_ERR_ACCESSDENIED: the user declined the UAC prompt).
-    rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
-    return rc > 32
+def relaunch_elevated(argv=()) -> bool:
+    """Windows: 'runas' this program with --elevated and the same arguments; False when UAC was declined."""
+    return host.relaunch_elevated(argv)
 
 
 def not_admin_message() -> None:
@@ -120,7 +109,7 @@ def ensure_admin(argv) -> bool:
     """True when we may continue. Otherwise the elevated copy is running (or the user declined)."""
     if is_admin():
         return True
-    if "--elevated" not in argv and relaunch_elevated():
+    if "--elevated" not in argv and relaunch_elevated(argv):
         return False
     not_admin_message()
     return False
@@ -173,76 +162,42 @@ def append_log(line: str) -> None:
 # ---------------------------------------------------------------- operator config (sign-in token)
 
 def operator_config_path() -> Path:
-    base = os.environ.get("APPDATA") or str(Path.home())
-    return Path(base) / "Projection5000" / "flasher.json"
+    return host.config_dir() / "flasher.json"
 
 
-class _DataBlob(ctypes.Structure):
-    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.c_void_p)]
-
-
-def _dpapi(data: bytes, protect: bool) -> bytes:
-    """CryptProtectData / CryptUnprotectData (user-scoped DPAPI: only this Windows account can read it back).
-    win32crypt (pywin32) when it is installed, else the same crypt32 calls through ctypes."""
-    try:
-        import win32crypt
-    except ImportError:
-        return _dpapi_ctypes(data, protect)
-    if protect:
-        return win32crypt.CryptProtectData(data, None, None, None, None, 0)
-    return win32crypt.CryptUnprotectData(data, None, None, None, 0)[1]
-
-
-def _dpapi_ctypes(data: bytes, protect: bool) -> bytes:
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32")
-    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-    buf = ctypes.create_string_buffer(data, len(data))
-    inp = _DataBlob(len(data), ctypes.cast(buf, ctypes.c_void_p))
-    out = _DataBlob()
-    fn = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
-    if not fn(ctypes.byref(inp), None, None, None, None, 0, ctypes.byref(out)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        return ctypes.string_at(out.pbData, out.cbData)
-    finally:
-        kernel32.LocalFree(out.pbData)
-
-
-def load_operator_config() -> dict:
-    """{"console_url", "token", "username"} from %APPDATA%\\Projection5000\\flasher.json; empty strings when absent
-    or unreadable (a DPAPI blob from another account or a damaged file simply means: sign in again)."""
-    out = {"console_url": "", "token": "", "username": ""}
+def _read_operator_config() -> dict:
     try:
         d = json.loads(operator_config_path().read_text("utf-8"))
     except (OSError, ValueError):
-        return out
-    if not isinstance(d, dict):
-        return out
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def load_operator_config() -> dict:
+    """{"console_url", "token", "username"} from flasher.json in host.config_dir(); empty strings when absent or
+    unreadable (a DPAPI blob from another account, a keychain item that was denied or a damaged file simply
+    means: sign in again). The token itself comes from host.open_token (DPAPI / the login keychain)."""
+    out = {"console_url": "", "token": "", "username": ""}
+    d = _read_operator_config()
     for k in ("console_url", "username"):
         if isinstance(d.get(k), str):
             out[k] = d[k].strip()
-    tok = d.get("token")
-    if isinstance(tok, str) and tok:
-        if d.get("token_dpapi"):
-            try:
-                tok = _dpapi(base64.b64decode(tok), protect=False).decode("utf-8")
-            except Exception:
-                tok = ""
-        out["token"] = tok.strip()
+    if d:
+        out["token"] = host.open_token(d)
     return out
 
 
 def save_operator_config(console_url: str, token: str, username: str = "") -> str:
-    """Write the operator config, DPAPI-protecting the token. Returns a warning ('' when protected)."""
+    """Write the operator config with the token sealed by the host (DPAPI blob in the file on Windows, the
+    login keychain on macOS). Returns a warning ('' when sealed; plain text otherwise)."""
     d = {"console_url": console_url.strip().rstrip("/"), "token": token.strip(), "token_dpapi": False,
          "username": username.strip()}
     warning = ""
     try:
-        d["token"] = base64.b64encode(_dpapi(d["token"].encode("utf-8"), protect=True)).decode("ascii")
-        d["token_dpapi"] = True
+        d.update(host.seal_token(d["token"]))
     except Exception as e:
-        warning = f"WARNING: DPAPI is not available ({e}); the operator token is stored in plain text in {operator_config_path()}."
+        warning = (f"WARNING: {host.SEAL_NAME} is not available ({e}); the operator token is stored in plain text "
+                   f"in {operator_config_path()}.")
     p = operator_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(d, indent=2), "utf-8")
@@ -251,6 +206,7 @@ def save_operator_config(console_url: str, token: str, username: str = "") -> st
 
 def clear_operator_config() -> None:
     """Sign out: forget the token (the console keeps the api_tokens row until it is revoked there)."""
+    host.forget_token(_read_operator_config())
     operator_config_path().unlink(missing_ok=True)
 
 
@@ -279,7 +235,7 @@ def build_player_archive(out=None) -> bytes:
 
 
 def resource_path(name: str) -> Path:
-    """A file build.ps1 bundled with --add-data (frozen), or the same name next to this script (source)."""
+    """A file the build bundled with --add-data (frozen), or the same name next to this script (source)."""
     base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
     return base / name
 
@@ -350,7 +306,7 @@ PHOSPHOR, INK, BODY, MUTED, DIM = "#FFFFFF", "#E6E6E6", "#C9C9C9", "#7A7A7A", "#
 RULE_2, RULE_3, RULE_STRONG = "#242424", "#3A3A3A", "#727272"
 FONT_FILES = ("Silkscreen-Regular.ttf", "Silkscreen-Bold.ttf", "IBMPlexMono-Regular.ttf", "IBMPlexMono-Medium.ttf",
               "SpaceGrotesk[wght].ttf")
-FR_PRIVATE = 0x10  # gdi32: visible to this process only, never installed
+FAMILIES = {"display": "Silkscreen", "mono": "IBM Plex Mono", "sans": "Space Grotesk"}
 BRACKET = 14  # px arm of the panel's corner brackets
 
 
@@ -359,25 +315,17 @@ def font_paths() -> list:
 
 
 def load_fonts() -> list:
-    """Register the bundled TTFs for this process (AddFontResourceExW FR_PRIVATE). Call before the first widget;
-    returns the files that loaded. The fallbacks in font_families() cover a failed load (the App logs the
-    families in use)."""
-    loaded = []
-    for path in font_paths():
-        try:
-            if ctypes.windll.gdi32.AddFontResourceExW(str(path), FR_PRIVATE, 0):
-                loaded.append(path.name)
-        except Exception:
-            pass
-    return loaded
+    """Register the bundled TTFs for this process only (gdi32 on Windows, CoreText on macOS; nothing is
+    installed). Call before the first widget; returns the files that loaded. The fallbacks in font_families()
+    cover a failed load (the App logs the families in use)."""
+    return host.load_fonts(font_paths())
 
 
 def font_families(available=None) -> dict:
-    """display/mono/sans family names, checked against Tk's font list (Consolas / Segoe UI when a load failed)."""
+    """display/mono/sans family names, checked against Tk's font list (the host's fallbacks, Consolas / Segoe UI
+    or Menlo / Helvetica Neue, when a load failed)."""
     have = set(tkfont.families() if available is None else available)
-    return {"display": "Silkscreen" if "Silkscreen" in have else "Consolas",
-            "mono": "IBM Plex Mono" if "IBM Plex Mono" in have else "Consolas",
-            "sans": "Space Grotesk" if "Space Grotesk" in have else "Segoe UI"}
+    return {k: fam if fam in have else host.FALLBACK_FONTS[k] for k, fam in FAMILIES.items()}
 
 
 def apply_theme(root: tk.Tk) -> dict:
@@ -482,10 +430,7 @@ class App:
         self.root = root
         root.title(APP_TITLE)
         root.minsize(700, 460)
-        try:
-            root.iconbitmap(str(resource_path("icon.ico")))
-        except tk.TclError:
-            pass
+        host.set_window_icon(root, resource_path("icon.ico"))  # macOS: the .app bundle carries the icon
         self.fonts = apply_theme(root)
         self.marker = hatch_marker(root)  # the error labels' leading hatch, kept alive here
         self.dry_run_default = dry_run
@@ -631,18 +576,18 @@ class App:
         self.advanced = ttk.Frame(outer, padding=(12, 8, 4, 4))
         self._build_advanced(self.advanced)
         # Hidden values other code reads: the image (a developer's override, else the model decides) and the
-        # locale defaults, always taken from Windows.
+        # locale defaults, always taken from this computer.
         self.bundled = bundle.find_bundle()
         self._var("image_mode", "local" if self.image_override else "bundled" if self.bundled else "latest")
         self._var("image_path", self.image_override)
-        self._var("keymap", winlocale.keymap())
-        self._var("wifi_country", winlocale.country(firstboot.ISO3166))
+        self._var("keymap", defaults.keymap())
+        self._var("wifi_country", defaults.country(firstboot.ISO3166))
 
     def _build_advanced(self, adv):
         adv.columnconfigure(1, weight=1)
         self._err(adv, 0, "adv", column=0, columnspan=3)
         ttk.Label(adv, text="Time zone").grid(row=1, column=0, sticky="w", padx=4, pady=2)
-        ttk.Combobox(adv, textvariable=self._var("timezone", winlocale.timezone()), values=TIMEZONES
+        ttk.Combobox(adv, textvariable=self._var("timezone", defaults.timezone()), values=TIMEZONES
                      ).grid(row=1, column=1, sticky="we", padx=4, pady=2)
         ttk.Checkbutton(adv, text="Hidden Wi-Fi network", variable=self._var("wifi_hidden", False, tk.BooleanVar)
                         ).grid(row=2, column=1, sticky="w", padx=4)
@@ -682,7 +627,7 @@ class App:
                   ).grid(row=8, column=1, columnspan=2, sticky="w", padx=4)
 
     def _fit_to_screen(self):
-        # Never taller than the work area (screen minus taskbar); the window grows when Advanced opens.
+        # Never taller than the work area (screen minus taskbar / menu bar); the window grows when Advanced opens.
         self.root.update_idletasks()
         self._size_to(max(self.root.winfo_reqwidth(), 700), max(self.root.winfo_reqheight(), 460))
 
@@ -695,7 +640,7 @@ class App:
 
     def _size_to(self, w: int, h: int):
         """Resize to w x h (client px) inside the work area: no taller than it, and moved up when the bottom
-        would hang behind the taskbar (Windows opens the window at a cascade position, then it grows)."""
+        would hang off the screen (Windows opens the window at a cascade position, then it grows)."""
         top, bottom = work_area(self.root)
         chrome = (self.root.winfo_rooty() - self.root.winfo_y() or 31) + 8  # title bar and bottom border
         h = min(h, bottom - top - chrome)
@@ -895,7 +840,7 @@ class App:
 
         def work():
             try:
-                disks = windisk.list_disks()
+                disks = disk.list_disks()
             except Exception as e:
                 disks, err = [], str(e)
             else:
@@ -923,9 +868,9 @@ class App:
             if previous:
                 self.log(f"Target reset to {disks[0]['label']} (the previous selection is gone).")
 
-    # ----- Wi-Fi networks this PC sees (netsh, in a thread; the box stays editable for any other name)
+    # ----- Wi-Fi networks this computer sees (netsh / system_profiler, in a thread; the box stays editable)
     def refresh_networks(self):
-        self.ssid_hint.configure(text="scanning ...")
+        self.ssid_hint.configure(text=SCANNING_HINT)
 
         def work():
             nets, current = wifi.scan_networks(), wifi.current_ssid()
@@ -941,7 +886,7 @@ class App:
         self.ssid_box["values"] = names
         if names:
             hint = WIRED_HINT
-        elif current:  # Windows 11 hides scan results from desktop apps while Location access is off
+        elif current:  # connected, yet nothing listed (Windows 11 hides scans from desktop apps without Location)
             hint = LOCATION_HINT
         else:
             hint = "type the network name"
@@ -951,14 +896,14 @@ class App:
         ssid = self.v["ssid"].get()
 
         def work():
-            pw = wifi.saved_password(ssid)  # None without a profile on this PC; never logged
+            pw = wifi.saved_password(ssid)  # None without a saved password on this computer; never logged
             if pw:
                 self.post(lambda: self._fill_password(ssid, pw))
 
         threading.Thread(target=work, daemon=True).start()
 
     def _fill_password(self, ssid: str, pw: str):
-        if self.v["ssid"].get() != ssid:  # the operator moved on while netsh ran
+        if self.v["ssid"].get() != ssid:  # the operator moved on while the lookup ran
             return
         self._setting_pw = True
         try:
@@ -1079,19 +1024,19 @@ class App:
                 problems.setdefault("flash", f"Image file not found: {v['image_path']}")
             else:
                 try:
-                    windisk.check_image_magic(v["image_path"])
-                except windisk.DiskError as e:
+                    disk.check_image_magic(v["image_path"])
+                except disk.DiskError as e:
                     problems.setdefault("flash", str(e))
-        disk = self.selected_disk()
+        target = self.selected_disk()
         if not v["dry_run"]:  # a dry run never touches the card, so none is needed
             if not is_admin():
                 problems.setdefault("flash", "Restart as administrator to write a card (dry run works without).")
-            if disk is None:
+            if target is None:
                 problems["disk"] = "Choose the SD card to write."
-            elif disk["size"] == 0:
+            elif target["size"] == 0:
                 problems["disk"] = "The selected reader has no card inserted."
-            elif disk["size"] > windisk.MAX_CARD_BYTES:
-                problems["disk"] = f"Refusing to write a disk larger than {windisk.human_size(windisk.MAX_CARD_BYTES)}."
+            elif target["size"] > disk.MAX_CARD_BYTES:
+                problems["disk"] = f"Refusing to write a disk larger than {disk.human_size(disk.MAX_CARD_BYTES)}."
         return problems
 
     def validate(self) -> dict:
@@ -1119,7 +1064,7 @@ class App:
             # Rescan so the confirmation names the disk as it is now (cards get swapped, numbers move).
             chosen = v["disk_info"]
             try:
-                self._show_disks(windisk.list_disks(), None)
+                self._show_disks(disk.list_disks(), None)
             except Exception as e:
                 self._show_error("disk", f"Disk scan failed: {e}")
                 return
@@ -1132,7 +1077,7 @@ class App:
                 return
             d = v["disk_info"]
             if not messagebox.askyesno(APP_TITLE, f"Flash {v['name']} ({v['device_id']}) to\n\n{d['label']}\n"
-                                       f"({windisk.human_size(d['size'])})\n\nEverything on that card will be erased. "
+                                       f"({disk.human_size(d['size'])})\n\nEverything on that card will be erased. "
                                        "Continue?", icon="warning", default=messagebox.NO):
                 return
         save_settings(v)
@@ -1157,7 +1102,7 @@ class App:
                 done = DONE_TEXT + f"\n\nDevice id: {v['device_id']}"
                 self.post(lambda: self.set_status(DONE_TEXT))
                 self.post(lambda: messagebox.showinfo(APP_TITLE, done))
-        except (windisk.Cancelled, imagefetch.Cancelled) as e:
+        except (disk.Cancelled, imagefetch.Cancelled) as e:
             msg = f"Cancelled. {e}".rstrip()
             log(msg)
             self.post(lambda: self.set_status(msg))
@@ -1246,29 +1191,29 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     # 2. image
     image, sha256 = obtain_image(v, log, progress, cancel, dry_run, status)
     if cancel.is_set():
-        raise windisk.Cancelled()
+        raise disk.Cancelled()
     if dry_run:
         target = f"Disk {d['number']} ({d['name']})" if d else "the selected card (none chosen)"
-        log(f"Dry run: would write {windisk.source_name(image)} to {target}. Nothing was written.")
+        log(f"Dry run: would write {disk.source_name(image)} to {target}. Nothing was written.")
         return
-    windisk.check_image_magic(image)
-    size = windisk.image_size(image)
+    disk.check_image_magic(image)
+    size = disk.image_size(image)
     if size > d["size"]:
-        raise windisk.DiskError(f"{windisk.source_name(image)} is larger than the card "
-                                f"({windisk.human_size(size)} > {windisk.human_size(d['size'])}); nothing was written")
+        raise disk.DiskError(f"{disk.source_name(image)} is larger than the card "
+                             f"({disk.human_size(size)} > {disk.human_size(d['size'])}); nothing was written")
 
     # 3-5. identity check, clear, write, verify
-    log(f"Checking disk {d['number']} is still {d['name']} ({windisk.human_size(d['size'])}) ...")
-    windisk.check_disk(d)
+    log(f"Checking disk {d['number']} is still {d['name']} ({disk.human_size(d['size'])}) ...")
+    disk.check_disk(d)
     if cancel.is_set():
-        raise windisk.Cancelled()
+        raise disk.Cancelled()
     try:
-        log(f"Removing partitions from disk {d['number']} ...")
-        windisk.clear_disk(d["number"], d.get("unique_id", ""))
-        log(f"Writing {windisk.source_name(image)} to disk {d['number']} ...")
+        log(f"Clearing disk {d['number']} (unmount, old partition table) ...")
+        disk.clear_disk(d["number"], d.get("unique_id", ""))
+        log(f"Writing {disk.source_name(image)} to disk {d['number']} ...")
         status("Writing the card")
-        with windisk.open_physical_drive(d["number"], expect_size=d["size"]) as drive:
-            drive.lock(windisk.volume_paths(d["number"]))
+        with disk.open_physical_drive(d["number"], expect_size=d["size"]) as drive:
+            drive.lock(disk.volume_paths(d["number"]))
             start = time.monotonic()
 
             def on_write(written, consumed, total):
@@ -1276,10 +1221,10 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
                 rate = written / max(time.monotonic() - start, 1e-6) / 1e6
                 progress(pct, f"{written / 1e6:.0f} MB written, {rate:.1f} MB/s")
 
-            written = windisk.write_image(image, drive, on_write, cancel, limit=d["size"],
-                                          sector=d.get("sector") or windisk.SECTOR, expected_sha256=sha256)
+            written = disk.write_image(image, drive, on_write, cancel, limit=d["size"],
+                                       sector=d.get("sector") or disk.SECTOR, expected_sha256=sha256)
             drive.flush()
-            # The partition table is still blank, so Windows cannot mount (and scribble on) anything
+            # The partition table is still blank, so the OS cannot mount (and scribble on) anything
             # while the card is read back. It is written and checked last by commit_head().
             log(f"Wrote {written / 1e6:.0f} MB. Reading the whole card back to verify ...")
             status("Checking the card")
@@ -1287,36 +1232,36 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
             def on_verify(checked, consumed, total):
                 progress(consumed * 100 / total if total else 0, f"verified {checked / 1e6:.0f} MB")
 
-            if not windisk.verify_image(image, drive, on_verify, cancel, skip=windisk.DEFER_FIRST_BYTES):
-                raise windisk.DiskError("read-back verification failed: the card did not store what was written "
-                                        "(worn or counterfeit card?)")
+            if not disk.verify_image(image, drive, on_verify, cancel, skip=disk.DEFER_FIRST_BYTES):
+                raise disk.DiskError("read-back verification failed: the card did not store what was written "
+                                     "(worn or counterfeit card?)")
             drive.commit_head()
             drive.refresh_partitions()
-    except windisk.Cancelled:
-        raise windisk.Cancelled("The card is NOT usable; flash it again.")
+    except disk.Cancelled:
+        raise disk.Cancelled("The card is NOT usable; flash it again.")
     progress(100, "written and verified")
 
     # 6-7. boot volume and first-boot files
     status("Finishing the card")
     try:
         log("Waiting for the boot partition to mount ...")
-        letter = windisk.find_boot_volume(d["number"], cancel_event=cancel, log=log)
-        boot = Path(f"{letter}:/")
-        log(f"Boot partition is {letter}:")
+        mount = disk.find_boot_volume(d["number"], cancel_event=cancel, log=log)  # 'E:/' or '/Volumes/bootfs'
+        boot = Path(mount)
+        log(f"Boot partition is {mount}")
         if cancel.is_set():
-            raise windisk.Cancelled()
+            raise disk.Cancelled()
         write_firstboot_files(boot, firstrun, provision, archive)
-    except windisk.Cancelled:
-        raise windisk.Cancelled("The image is on the card but the first-boot files are NOT; "
-                                "the card will not enroll. Flash it again.")
+    except disk.Cancelled:
+        raise disk.Cancelled("The image is on the card but the first-boot files are NOT; "
+                             "the card will not enroll. Flash it again.")
     except Exception as e:
-        raise windisk.DiskError(f"{e}\n\nThe image was written but the first-boot files were NOT: this card "
-                                "will not enroll. Re-insert it and Flash again.") from e
+        raise disk.DiskError(f"{e}\n\nThe image was written but the first-boot files were NOT: this card "
+                             "will not enroll. Re-insert it and Flash again.") from e
     log("First-boot files written. Ejecting ...")
     try:
-        windisk.eject(letter)
+        disk.eject(mount)
     except Exception as e:
-        log(f"Eject failed ({e}); remove the card safely from Explorer.")
+        log(f"Eject failed ({e}); eject the card yourself before pulling it out.")
 
     # 8. summary
     log("")
@@ -1328,8 +1273,8 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
         "(password login is off)" if cfg["ssh_pubkey"] else f"  Login: {cfg['username']} (no SSH key on the card)")
     log(f"  Console: {cfg['console_url']} ({console_mode(cfg)})")
     log(f"  Pi model: {model.label} ({model.arch})")
-    log(f"  Image: {windisk.source_name(image)}" + (" (bundled in this exe)" if isinstance(image, bundle.BundledImage)
-                                                    else ""))
+    log(f"  Image: {disk.source_name(image)}" + (" (bundled in this program)" if isinstance(image, bundle.BundledImage)
+                                                 else ""))
     log("  The Pi needs internet access on its first boot (apt and pip). Progress is logged on the Pi in")
     log("  /var/log/projection5000-provision.log; firstrun.log and firstrun.ok appear on the boot partition.")
     log("  A card that never booted still carries the enrollment key: keep it safe or rotate the key on the console.")
@@ -1357,7 +1302,7 @@ def obtain_image(v: dict, log, progress, cancel, dry_run: bool = False, status=l
         b = bundle.find_bundle()
         if b is None:
             raise imagefetch.FetchError("this build carries no bundled image; choose another image source")
-        log(f"Using bundled image {b.name} ({windisk.human_size(b.length)} compressed, sha256 {b.sha256[:12]}...)")
+        log(f"Using bundled image {b.name} ({disk.human_size(b.length)} compressed, sha256 {b.sha256[:12]}...)")
         return b, b.sha256
     bits = "64-bit" if model.arch == "arm64" else "32-bit"
     try:
@@ -1403,7 +1348,7 @@ def obtain_image(v: dict, log, progress, cancel, dry_run: bool = False, status=l
 def write_firstboot_files(boot: Path, firstrun: str, provision: str, archive: bytes = b"") -> None:
     cmdline = boot / "cmdline.txt"
     if not cmdline.is_file():
-        raise windisk.DiskError(f"cmdline.txt not found on the boot partition {boot}: is this a Raspberry Pi OS image?")
+        raise disk.DiskError(f"cmdline.txt not found on the boot partition {boot}: is this a Raspberry Pi OS image?")
     patched = firstboot.patch_cmdline(cmdline.read_text("utf-8"))
     (boot / "firstrun.sh").write_bytes(firstrun.encode("utf-8"))
     (boot / "projection5000-provision.sh").write_bytes(provision.encode("utf-8"))
@@ -1437,18 +1382,17 @@ def selfcheck() -> int:
         f"bundled image: {b.name} {b.length} bytes sha256 {b.sha256} (trailer ok)" if b else "bundled image: none",
         console_summary(),
         "pi models (key, image arch, label; the armhf image is downloaded once):", pimodel.table(),
-        f"defaults from Windows: timezone {winlocale.timezone()}, keymap {winlocale.keymap()}, "
-        f"country {winlocale.country(firstboot.ISO3166)}, ssh key {sshkey.private_path()}",
+        f"defaults from {host.NAME}: timezone {defaults.timezone()}, keymap {defaults.keymap()}, "
+        f"country {defaults.country(firstboot.ISO3166)}, ssh key {sshkey.private_path()}",
         "=== firstrun.sh ===", firstboot.render_firstrun(cfg),
         "=== projection5000-provision.sh ===", firstboot.render_provision(cfg),
         "=== cmdline.txt ===", firstboot.patch_cmdline("console=tty1 root=PARTUUID=x rootfstype=ext4 rootwait\n"),
     ])
     if getattr(sys, "frozen", False):
-        # --windowed exe has no console: print when launched from one (AttachConsole succeeds when the
-        # parent process has one), and also leave the output next to the exe (or in %LOCALAPPDATA%).
-        if ctypes.windll.kernel32.AttachConsole(-1):
-            sys.stdout = open("CONOUT$", "w", encoding="utf-8")
-        for out in (Path(sys.executable).with_name("selfcheck.txt"), imagefetch.app_dir() / "selfcheck.txt"):
+        # A windowed program has no console: print when launched from one (the host attaches it), and also
+        # leave the output next to the program (or in the data folder).
+        host.attach_console()
+        for out in host.selfcheck_paths():
             try:
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_bytes(text.encode("utf-8"))  # byte-faithful (LF), like the files written to the card
@@ -1476,13 +1420,12 @@ def main(argv=None) -> int:
         return selfcheck()
     dry_run = "--dry-run" in argv
     image = image_arg(argv)
-    # A dry run never opens the disk, so it does not need (or ask for) elevation.
-    if not dry_run and not ensure_admin(argv):
+    # A dry run never opens the disk, so it does not need (or ask for) elevation. The elevated copy gets the
+    # same arguments, plus --image for a FLASHER_IMAGE it would not inherit.
+    carry = list(argv) + (["--image", image] if image and "--image" not in argv else [])
+    if not dry_run and not ensure_admin(carry):
         return 1
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on high-DPI screens
-    except Exception:
-        pass
+    host.set_dpi_aware()
     load_fonts()  # before any widget: Tk enumerates the families when it starts
     root = tk.Tk()
     App(root, dry_run=dry_run, image=image)

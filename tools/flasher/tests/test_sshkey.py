@@ -1,5 +1,5 @@
-"""The flasher's ed25519 key: RFC 8032 derivation, OpenSSH file formats (checked against ssh-keygen when Windows
-has it), one key per Windows user under %APPDATA%, owner-only ACL."""
+"""The flasher's ed25519 key: RFC 8032 derivation, OpenSSH file formats (checked against ssh-keygen when the
+machine has it), one key per user under host.config_dir(), owner-only (icacls / 0600)."""
 import base64
 import shutil
 import subprocess
@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 import sshkey
+import winhost
 
 # RFC 8032 section 7.1, test 1.
 SEED = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
@@ -39,13 +40,15 @@ def test_public_line_and_private_file_formats():
 
 
 def test_ensure_keypair_creates_once_and_reuses(tmp_path, monkeypatch):
-    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path))  # Windows: %APPDATA%\Projection5000\ssh
+    monkeypatch.setenv("HOME", str(tmp_path))  # macOS: ~/Library/Application Support/Projection5000/ssh
     icacls = []
     monkeypatch.setattr(sshkey, "restrict_acl", lambda path: icacls.append(path) or "")
     logged = []
     line = sshkey.ensure_keypair(logged.append)
-    priv = tmp_path / "Projection5000" / "ssh" / "id_ed25519"
-    assert sshkey.private_path() == priv and priv.is_file() and priv.with_suffix(".pub").read_text() == line + "\n"
+    priv = sshkey.private_path()
+    assert priv.is_relative_to(tmp_path) and priv.parent.name == "ssh" and priv.name == "id_ed25519"
+    assert priv.is_file() and priv.with_suffix(".pub").read_text() == line + "\n"
     assert line.startswith("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI") and line.endswith("projection5000-flasher@" + __import__("socket").gethostname())
     assert icacls == [priv] and logged and "Created the SSH key" in logged[0]
     assert b"\r" not in priv.read_bytes()
@@ -64,16 +67,21 @@ def test_ensure_keypair_creates_once_and_reuses(tmp_path, monkeypatch):
 
 
 def test_restrict_acl_reports_failures(tmp_path, monkeypatch):
+    """The Windows host's icacls call (runnable anywhere: subprocess is faked)."""
     f = tmp_path / "k"
     f.write_text("x")
 
     class R:
         returncode, stdout, stderr = 1, "", "Access is denied."
 
-    monkeypatch.setattr(sshkey.subprocess, "run", lambda *a, **k: R())
-    assert sshkey.restrict_acl(f) == f"WARNING: icacls failed on {f}: Access is denied."
-    monkeypatch.setattr(sshkey.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no icacls")))
-    assert sshkey.restrict_acl(f).startswith("WARNING: could not restrict the ACL")
+    monkeypatch.setenv("USERNAME", "matt")
+    monkeypatch.setattr(winhost.subprocess, "run", lambda *a, **k: R())
+    assert winhost.restrict_file(f) == f"WARNING: icacls failed on {f}: Access is denied."
+    monkeypatch.setattr(winhost.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no icacls")))
+    assert winhost.restrict_file(f).startswith("WARNING: could not restrict the ACL")
+    # sshkey.restrict_acl is the host's restrict_file (icacls on Windows, 0600 on macOS).
+    monkeypatch.setattr(sshkey.host, "restrict_file", lambda path: f"WARNING: nope {path}")
+    assert sshkey.restrict_acl(f) == f"WARNING: nope {f}"
 
 
 @pytest.mark.skipif(shutil.which("icacls") is None, reason="icacls not available")
@@ -89,8 +97,9 @@ def test_restrict_acl_leaves_only_the_user(tmp_path):
 
 @pytest.mark.skipif(SSH_KEYGEN is None, reason="ssh-keygen not available")
 def test_ssh_keygen_accepts_the_generated_key(tmp_path, monkeypatch):
-    """Windows' OpenSSH parses the private key file and derives the same public line (ssh-keygen -y)."""
+    """OpenSSH parses the private key file and derives the same public line (ssh-keygen -y)."""
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
     line = sshkey.ensure_keypair()
     r = subprocess.run([SSH_KEYGEN, "-y", "-f", str(sshkey.private_path())], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr

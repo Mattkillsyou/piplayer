@@ -1,22 +1,23 @@
-"""One ed25519 SSH keypair per Windows user for the flasher (%APPDATA%\\Projection5000\\ssh\\id_ed25519).
+"""One ed25519 SSH keypair per user for the flasher (host.config_dir()/ssh/id_ed25519:
+%APPDATA%\\Projection5000\\ssh on Windows, ~/Library/Application Support/Projection5000/ssh on macOS).
 
-Pure Python (RFC 8032 key derivation, OpenSSH key file formats), no third-party package and no ssh-keygen.exe:
+Pure Python (RFC 8032 key derivation, OpenSSH key file formats), no third-party package and no ssh-keygen:
 `cryptography` would make the build depend on a native wheel the build machine may not have, and Windows' OpenSSH
 client is an optional feature that can be removed, so ssh-keygen could only be a second generator beside a
 pure-Python fallback. Key generation from a 32-byte seed is ~40 lines of arithmetic; the tests check it against
 an RFC 8032 vector and against ssh-keygen -y / -l when present.
 
-The private key is a plain OpenSSH file (ssh.exe must read it, so DPAPI is out) with its ACL cut down to the
-current user via icacls, which is what ssh.exe demands before it uses a key ("UNPROTECTED PRIVATE KEY FILE").
+The private key is a plain OpenSSH file (ssh must read it, so DPAPI is out) made owner-only by the host (icacls
+on Windows, 0600 on macOS), which is what ssh demands before it uses a key ("UNPROTECTED PRIVATE KEY FILE").
 """
 import base64
 import hashlib
-import os
 import secrets
 import socket
 import struct
-import subprocess
 from pathlib import Path
+
+from sysplat import host
 
 KEY_NAME = "id_ed25519"
 KEY_TYPE = b"ssh-ed25519"
@@ -78,8 +79,7 @@ def private_file(seed: bytes, pub: bytes, comment: str) -> str:
 
 
 def key_dir() -> Path:
-    base = os.environ.get("APPDATA") or str(Path.home())
-    return Path(base) / "Projection5000" / "ssh"
+    return host.config_dir() / "ssh"
 
 
 def private_path() -> Path:
@@ -87,21 +87,13 @@ def private_path() -> Path:
 
 
 def restrict_acl(path: Path) -> str:
-    """Owner-only ACL through icacls (the file is created by the elevated flasher, read by the user's ssh.exe).
-    Returns '' or a warning; a failed icacls is not fatal (ssh.exe then says which file to fix)."""
-    user = os.environ.get("USERNAME") or os.getlogin()
-    try:
-        r = subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"], capture_output=True,
-                           text=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except (OSError, subprocess.SubprocessError) as e:
-        return f"WARNING: could not restrict the ACL of {path} ({e}); ssh may refuse the key until you do."
-    if r.returncode:
-        return f"WARNING: icacls failed on {path}: {(r.stderr or r.stdout).strip()}"
-    return ""
+    """Owner-only (icacls on Windows, chmod 0600 on macOS). Returns '' or a warning; a failure is not fatal
+    (ssh then says which file to fix)."""
+    return host.restrict_file(path)
 
 
 def ensure_keypair(log=None) -> str:
-    """Create %APPDATA%\\Projection5000\\ssh\\id_ed25519(.pub) on first use; returns the public key line."""
+    """Create key_dir()/id_ed25519(.pub) on first use; returns the public key line."""
     priv, pub_path = private_path(), private_path().with_suffix(".pub")
     if priv.is_file() and pub_path.is_file():
         line = pub_path.read_text("utf-8").strip()

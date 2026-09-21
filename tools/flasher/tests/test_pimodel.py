@@ -72,7 +72,7 @@ def test_table_order_and_arch():
 
 
 def test_model_row_sits_under_device_name_and_updates_the_hint(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
     form = app.model_box.master
@@ -95,7 +95,7 @@ def test_model_row_sits_under_device_name_and_updates_the_hint(monkeypatch):
 
 
 def test_model_is_remembered_and_a_bad_value_falls_back(monkeypatch):
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
     app.baked_key = "form-enrollment-key_0123456789abcdef"
@@ -160,7 +160,7 @@ def test_armhf_model_offline_is_plain_words_under_the_row(monkeypatch, tmp_path)
     assert str(e.value) == flasher.OFFLINE_TEXT
     assert "Connect to the internet once (about 530 MB) and press FLASH again." in flasher.OFFLINE_TEXT
     # In the GUI the worker puts it under the model row, no dialog.
-    monkeypatch.setattr(flasher.windisk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: pytest.fail("dialog shown"))
     root = _root()
     app = flasher.App(root)

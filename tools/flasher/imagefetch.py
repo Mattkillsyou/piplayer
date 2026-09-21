@@ -1,11 +1,12 @@
 """Download and cache Raspberry Pi OS images (stdlib urllib only)."""
 import hashlib
-import os
 import shutil
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+from sysplat import host
 
 LATEST_URLS = {"arm64": "https://downloads.raspberrypi.com/raspios_lite_arm64_latest",
                "armhf": "https://downloads.raspberrypi.com/raspios_lite_armhf_latest"}
@@ -26,8 +27,8 @@ def _request(url: str) -> urllib.request.Request:
 
 
 def app_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    return Path(base) / "Projection5000"
+    """The data folder: %LOCALAPPDATA%\\Projection5000 or ~/Library/Application Support/Projection5000."""
+    return host.data_dir()
 
 
 def cached_path(filename: str) -> Path:

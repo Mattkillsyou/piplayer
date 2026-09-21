@@ -1,7 +1,8 @@
-"""The OS image embedded in the flasher exe.
+"""The OS image embedded in the flasher program.
 
 build.ps1 appends the .img.xz and a fixed 256-byte trailer after PyInstaller's onefile archive (the
-bootloader ignores trailing bytes). At flash time the image is streamed straight out of sys.executable
+bootloader ignores trailing bytes); build_mac.sh writes the same bytes (image plus trailer) to
+Contents/Resources/bundle.bin inside the .app. At flash time the image is streamed straight out of that file
 through a SliceReader, so nothing is downloaded or extracted.
 
 Trailer (last 256 bytes of the file):
@@ -90,12 +91,21 @@ def _pack(name: str, sha256: str, length: int, offset: int) -> bytes:
     return _TRAILER.pack(raw, sha256.encode("ascii"), length, offset, b"\0" * 40, TRAILER_MAGIC)
 
 
+def bundle_paths() -> list:
+    """Where a frozen build carries its image: the exe itself (Windows, the trailer appended by build.ps1) or
+    Contents/Resources/bundle.bin next to the executable inside a macOS .app (build_mac.sh; a Mach-O with bytes
+    appended fails its signature, so the trailer file lives in Resources instead)."""
+    exe = sys.executable
+    return [exe, os.path.join(os.path.dirname(os.path.dirname(exe)), "Resources", "bundle.bin")]
+
+
 def find_bundle(path=None):
-    """The BundledImage in path (default: this exe, only when frozen), or None when there is no valid trailer."""
+    """The BundledImage in path (default: this frozen program's own places, see bundle_paths), or None when
+    there is no valid trailer."""
     if path is None:
         if not getattr(sys, "frozen", False):
             return None
-        path = sys.executable
+        return next((b for b in map(find_bundle, bundle_paths()) if b is not None), None)
     try:
         size = os.path.getsize(path)
         if size < TRAILER_SIZE:
