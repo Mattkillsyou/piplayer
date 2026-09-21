@@ -34,7 +34,7 @@ describe("role matrix", () => {
     expect((await r.viewer.get(`/devices/${w.dev.id}/screenshot`)).status).toBe(404);
   });
 
-  it("viewer never sees a token or the install command; editor and admin do", async () => {
+  it("viewer never sees a token or the install command; editor and admin can act, only admin gets the token", async () => {
     const vw = await (await r.viewer.get("/devices")).text();
     expect(vw).toContain("Lobby One");
     expect(vw).not.toContain(w.dev.token);
@@ -47,15 +47,37 @@ describe("role matrix", () => {
     expect(vw).not.toContain("Delete device");
     expect(vw).not.toContain("Update player");
     expect(vw).not.toContain("Update all players");
+    expect(vw).not.toContain(`action="/devices/${w.dev.id}/rename"`);
     expect(vw).toContain('<span class="help small">Viewer access: read-only.</span>');
     expect(vw).toContain('name="group_id" data-autosubmit disabled');
     expect(vw).toContain('name="playlist_id" data-autosubmit disabled');
+    // the token reads the Wyze login through /api/camera-config, so editors never see it (H3)
+    const ed = await (await r.editor.get("/devices")).text();
+    expect(ed).not.toContain(w.dev.token);
+    expect(ed).not.toContain("DEVICE_TOKEN=");
+    expect(ed).not.toContain("<summary>Token / install</summary>");
+    expect(ed).not.toContain("New token");
+    expect(ed).toContain('<p class="help small">After registering, an administrator opens "Token / install" on the new device and runs that command on the Pi.</p>');
+    expect(ed).toContain("Delete device");
+    const ad = await (await r.admin.get("/devices")).text();
+    expect(ad).toContain('<p class="help small">After registering, open "Token / install" on the new device and run that command on the Pi.</p>');
+    expect(ad).toContain("<summary>Token / install</summary>");
+    expect(ad).toContain(`<code class="token">${w.dev.token}</code>`);
+    expect(ad).toContain("cd piplayer/player");
+    expect(ad).toContain(`DEVICE_ID=${w.dev.device_id}`);
+    expect(ad).toContain(`DEVICE_TOKEN=${w.dev.token}`);
+    expect(ad).toContain("CMS_URL=http://piplayer.test");
+    expect(ad).toContain("deploy/install-player.sh");
+    expect(ad).toContain("CMS_URL is the address your browser is using; edit it if this Pi reaches the CMS another way");
+    expect(ad).toContain(">New token</button>");
     for (const c of [r.editor, r.admin]) {
       const page = await (await c.get("/devices")).text();
       expect(page).toContain('<form method="post" action="/devices" class="head-actions">');
       expect(page).toContain('<button type="submit" class="primary">Register</button>');
-      expect(page).toContain('<p class="help small">After registering, open "Token / install" on the new device and run that command on the Pi.</p>');
       expect(page).not.toContain("Viewer access: read-only.");
+      expect(page).toContain(`<form method="post" action="/devices/${w.dev.id}/rename" class="inline">`);
+      expect(page).toContain('name="name" value="Lobby One" maxlength="120" required');
+      expect(page).toContain("Delete device");
       expect(page).toContain('<button type="submit" class="small primary" title="Tell the Pi to re-sync from the CMS now">Resync</button>');
       expect(page).toContain('<button type="submit" class="small danger">Reboot Pi</button>');
       for (const cmd of ["update-player", "update-os", "update-all"]) expect(page).toContain(`<input type="hidden" name="command" value="${cmd}">`);
@@ -64,14 +86,6 @@ describe("role matrix", () => {
       expect(page).toContain(">Update all</button>");
       expect(page).toContain('<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Queue a player software update (release main) on every device? Playback restarts on each Pi.">');
       expect(page).toContain(">Update all players</button>");
-      expect(page).toContain("<summary>Token / install</summary>");
-      expect(page).toContain(`<code class="token">${w.dev.token}</code>`);
-      expect(page).toContain("cd piplayer/player");
-      expect(page).toContain(`DEVICE_ID=${w.dev.device_id}`);
-      expect(page).toContain(`DEVICE_TOKEN=${w.dev.token}`);
-      expect(page).toContain("CMS_URL=http://piplayer.test");
-      expect(page).toContain("deploy/install-player.sh");
-      expect(page).toContain("CMS_URL is the address your browser is using; edit it if this Pi reaches the CMS another way");
       expect(page).toContain('name="group_id" data-autosubmit>');
       expect(page).not.toContain("onchange");
       expect(page).not.toContain("onsubmit");
@@ -81,7 +95,7 @@ describe("role matrix", () => {
   it("PIPLAYER_PUBLIC_BASE_URL overrides CMS_URL and hides the edit-it note", async () => {
     env.PIPLAYER_PUBLIC_BASE_URL = "https://cms.example.com/";
     try {
-      const page = await (await r.editor.get("/devices")).text();
+      const page = await (await r.admin.get("/devices")).text();
       expect(page).toContain("CMS_URL=https://cms.example.com \\");
       expect(page).not.toContain("CMS_URL=http://piplayer.test");
       expect(page).not.toContain("CMS_URL is the address your browser is using");
@@ -99,7 +113,7 @@ describe("page content", () => {
     await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'r', 1)", w.dev.id, w.pid);
     const page = await (await r.admin.get("/devices")).text();
     expect(page).not.toContain(XSS);
-    expect(page).toContain('data-confirm="Delete device x&#39;);alert(1);//dev?"');
+    expect(page).toContain('data-confirm="Delete device x&#39;);alert(1);//dev? Its schedule');
     expect(page).toContain('data-confirm="Reboot x&#39;);alert(1);//dev?"');
     expect(page).toContain('data-confirm="Update the player software on x&#39;);alert(1);//dev? Playback restarts."');
     expect(page).toContain('<span class="now-label">active now · via schedule: r</span>');   // the rule wins over the default
@@ -160,7 +174,7 @@ describe("page content", () => {
     for (let i = 0; i < 7; i++) await ins("INSERT INTO device_commands (device_id, command) VALUES (?, 'force-sync')", dev.id);
     const rows = await query("SELECT id FROM device_commands WHERE device_id = ? ORDER BY id", dev.id);
     await query("UPDATE device_commands SET delivered_at = datetime('now'), delivery_count = 2 WHERE id = ?", rows[6].id);
-    await query("UPDATE device_commands SET completed_at = datetime('now'), result = 'undeliverable: no result after 5 deliveries', delivery_count = 5 WHERE id = ?", rows[5].id);
+    await query("UPDATE device_commands SET completed_at = datetime('now'), result = 'undeliverable: no result after 5 deliveries', delivery_count = 5, undeliverable = 1 WHERE id = ?", rows[5].id);
     await query("UPDATE device_commands SET completed_at = datetime('now'), result = 'ok <done>' WHERE id = ?", rows[4].id);
     await query("UPDATE device_commands SET completed_at = datetime('now') WHERE id = ?", rows[3].id);
     const page = await (await r.viewer.get("/devices")).text();
@@ -180,7 +194,9 @@ describe("register", () => {
       .toBe("device_id must be lowercase alphanumeric + hyphens, 1-63 chars");
     expect(await detail(await post(r.editor, "/devices", { device_id: "-lead", name: "x" }), 400)).toContain("device_id");
     expect(await detail(await post(r.editor, "/devices", { device_id: "a".repeat(64), name: "x" }), 400)).toContain("device_id");
-    expect(await detail(await post(r.editor, "/devices", { device_id: "ok-1", name: "  " }), 400)).toBe("name required");
+    expect(await detail(await post(r.editor, "/devices", { device_id: "ok-1", name: "  " }), 400)).toBe("name must be 1-120 chars");
+    expect(await detail(await post(r.editor, "/devices", { device_id: "ok-1", name: "n".repeat(121) }), 400)).toBe("name must be 1-120 chars");
+    expect(await one("SELECT id FROM devices WHERE device_id = 'ok-1'")).toBeNull();
     let res = await post(r.editor, "/devices", { device_id: "  NEW-Pi ", name: " New Pi " });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/devices");
@@ -367,22 +383,25 @@ describe("remote updates", () => {
     const [a] = await audits("device_update_all");
     expect(a).toMatchObject({ username: "ed", target_type: "device", target_id: null, details: `{"command": "update-player", "queued": ${before}}` });
     // a second click while every device still waits queues nothing; once one device reports, only it gets a new one
+    // (the banner is a one-shot flash cookie the test client carries to the next page)
     let res = await post(r.editor, "/devices/update-all", { command: "update-player" });
-    expect(res.headers.get("location")).toBe("/devices?queued=0");
+    expect(res.headers.get("location")).toBe("/devices");
+    expect(await (await r.editor.get("/devices")).text())
+      .toContain('<div class="alert warn" role="alert">Nothing new to queue: every device already has this update waiting. It runs when each Pi next checks in.</div>');
+    expect(await (await r.editor.get("/devices")).text()).not.toContain("Nothing new to queue");
     expect((await query("SELECT COUNT(*) AS n FROM device_commands"))[0].n).toBe(before);
     await query("UPDATE device_commands SET completed_at = datetime('now'), result = 'ok' WHERE device_id = ?", w.dev.id);
     res = await post(r.editor, "/devices/update-all", { command: "update-player" });
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/devices?queued=1");
+    expect(res.headers.get("location")).toBe("/devices");
+    expect(await (await r.editor.get("/devices")).text()).toContain('<div class="alert ok" role="alert">Update queued for 1 device.</div>');
     rows = await query("SELECT id FROM device_commands WHERE device_id = ? AND completed_at IS NULL", w.dev.id);
     expect(rows.length).toBe(1);
     // the other fleet commands are allowed too; the banner counts what was queued
     res = await post(r.editor, "/devices/update-all", { command: "update-os" });
-    expect(res.headers.get("location")).toBe(`/devices?queued=${before}`);
-    const page = await (await r.editor.get(`/devices?queued=${before}`)).text();
+    expect(res.headers.get("location")).toBe("/devices");
+    const page = await (await r.editor.get("/devices")).text();
     expect(page).toContain(`<div class="alert ok" role="alert">Update queued for ${before} devices.</div>`);
-    expect(await (await r.editor.get("/devices?queued=1")).text()).toContain("Update queued for 1 device.");
-    expect(await (await r.editor.get("/devices?queued=<x>")).text()).not.toContain("Update queued");
     expect((await post(r.editor, "/devices/update-all", { command: "update-all" })).status).toBe(303);
     await query("DELETE FROM device_commands");
   });

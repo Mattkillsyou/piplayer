@@ -19,7 +19,7 @@ export const CRON = "*/5 * * * *";
 export const KINDS = ["offline", "mpv-down", "screenshot-stale", "sync-error", "update-failed", "camera-error", "projector-error"];
 export const KIND_TEXT = {
   "offline": "offline (no sync)",
-  "mpv-down": "player process down",
+  "mpv-down": "player down",
   "screenshot-stale": "no new screenshot",
   "sync-error": "sync error",
   "update-failed": "remote update failed",

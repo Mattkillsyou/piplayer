@@ -262,26 +262,89 @@ describe("provisioning", () => {
     await roleMatrix(r, "POST", `/devices/${lobby.id}/tunnel`);
     expect(await devRow(lobby.id)).toEqual({ tunnel_id: "tun-1", tunnel_hostname: "lobby-cam.photogen5000.com", camera_live_url: "https://lobby-cam.photogen5000.com/" });
     expect((await audits("device_tunnel_created"))[0]).toMatchObject({ username: "ed", target_id: String(lobby.id) });
+    // the banner is a one-shot flash cookie the test client carries to the next page (audit L24)
+    let page = await (await r.editor.get("/devices")).text();
+    expect(page).toContain('<div class="alert ok" role="alert">Tunnel ready: https://lobby-cam.photogen5000.com/ (the Pi picks up the tunnel key on its next check-in; open the live view logged in to Cloudflare Access).</div>');
+    expect(await (await r.editor.get("/devices")).text()).not.toContain("Tunnel ready");
+    // Recreate tunnel on a device that has one rotates it (audit M8): the old tunnel is deleted,
+    // a new one made under the same name and hostname, so the old connector token stops working
+    fake.calls.length = 0;
     const ok = await post(r.editor, `/devices/${lobby.id}/tunnel`);
-    expect(ok.headers.get("location")).toBe("/devices?tunnel=lobby-cam.photogen5000.com");
-    expect(fake.state.tunnels.length).toBe(1);
-    let page = await (await r.editor.get("/devices?tunnel=lobby-cam.photogen5000.com")).text();
-    expect(page).toContain("Tunnel ready: https://lobby-cam.photogen5000.com/");
+    expect([ok.status, ok.headers.get("location")]).toEqual([303, "/devices"]);
+    expect(shapes(fake.calls).slice(0, 2)).toEqual(["DELETE /accounts/acct1/cfd_tunnel/tun-1/connections", "DELETE /accounts/acct1/cfd_tunnel/tun-1"]);
+    expect(fake.state.tunnels.map((t) => t.id)).toEqual(["tun-5"]);
+    expect(await devRow(lobby.id)).toEqual({ tunnel_id: "tun-5", tunnel_hostname: "lobby-cam.photogen5000.com", camera_live_url: "https://lobby-cam.photogen5000.com/" });
+    expect((await (await sync(lobby)).json()).tunnel.token).toBe("eyJ-token-for-tun-5");
+    expect((await audits("device_tunnel_rotated"))[0]).toMatchObject({ username: "ed", target_id: String(lobby.id) });
+    expect(JSON.parse((await audits("device_tunnel_rotated"))[0].details)).toEqual({ device_id: "lobby", old_tunnel_id: "tun-1", tunnel_id: "tun-5", hostname: "lobby-cam.photogen5000.com" });
+    page = await (await r.editor.get("/devices")).text();
+    expect(page).toContain("Tunnel ready: https://lobby-cam.photogen5000.com/ (the Pi picks up the new tunnel key on its next check-in;");
+    expect(page).toContain(`data-confirm="Recreate the camera tunnel for Lobby? The old tunnel key stops working, the Pi gets the new one on its next check-in, and the live URL is reset to the tunnel."`);
     // a manual live URL is replaced by the tunnel's on a recreate
     await query("UPDATE devices SET camera_live_url = 'https://manual.example/' WHERE id = ?", lobby.id);
     await post(r.editor, `/devices/${lobby.id}/tunnel`);
-    expect((await devRow(lobby.id)).camera_live_url).toBe("https://lobby-cam.photogen5000.com/");
-    // refusal -> banner with the reason, audited, row untouched
-    fake.refuse = { key: "PUT /accounts/acct1/cfd_tunnel/tun-1/configurations", message: "tunnel is locked" };
+    expect((await devRow(lobby.id))).toEqual({ tunnel_id: "tun-6", tunnel_hostname: "lobby-cam.photogen5000.com", camera_live_url: "https://lobby-cam.photogen5000.com/" });
+    // refusal -> banner with the reason, audited, row untouched (the next Recreate finds the half-made tunnel by name)
+    fake.refuse = { key: "PUT /accounts/acct1/cfd_tunnel/tun-7/configurations", message: "tunnel is locked" };
     const bad = await post(r.editor, `/devices/${lobby.id}/tunnel`);
-    expect(bad.status).toBe(303);
-    expect(bad.headers.get("location")).toBe(`/devices?tunnel_error=${encodeURIComponent("Cloudflare API PUT /accounts/.../cfd_tunnel/tun-1/configurations: tunnel is locked")}`);
-    page = await (await r.editor.get(bad.headers.get("location"))).text();
-    expect(page).toContain("Tunnel creation failed: Cloudflare API PUT /accounts/.../cfd_tunnel/tun-1/configurations: tunnel is locked");
+    expect([bad.status, bad.headers.get("location")]).toEqual([303, "/devices"]);
+    page = await (await r.editor.get("/devices")).text();
+    expect(page).toContain('<div class="alert error" role="alert">The camera tunnel could not be recreated: Cloudflare API PUT /accounts/.../cfd_tunnel/tun-7/configurations: tunnel is locked. Click Recreate tunnel on the Devices page to try again.</div>');
     expect((await audits("device_tunnel_failed"))[0]).toMatchObject({ username: "ed", target_id: String(lobby.id) });
-    expect((await devRow(lobby.id)).tunnel_id).toBe("tun-1");
+    expect((await devRow(lobby.id)).tunnel_id).toBe("tun-6");
+    fake.refuse = null;
+    // a first-time failure reads as creation failed
+    await query("UPDATE devices SET tunnel_id = NULL, tunnel_hostname = NULL WHERE id = ?", lobby.id);
+    fake.refuse = { key: "PUT /accounts/acct1/cfd_tunnel/tun-7/configurations", message: "tunnel is locked" };
+    expect((await post(r.editor, `/devices/${lobby.id}/tunnel`)).status).toBe(303);
+    expect(await (await r.editor.get("/devices")).text()).toContain('<div class="alert error" role="alert">Tunnel creation failed: Cloudflare API PUT /accounts/.../cfd_tunnel/tun-7/configurations: tunnel is locked</div>');
+    fake.refuse = null;
     expect((await post(r.editor, "/devices/999999/tunnel")).status).toBe(404);
     expect((await post(r.editor, "/devices/abc/tunnel")).status).toBe(400);
+    await query("UPDATE devices SET tunnel_id = NULL, tunnel_hostname = NULL, camera_live_url = NULL WHERE id = ?", lobby.id);
+    await query("DELETE FROM settings WHERE key = 'alert_email'");
+  });
+
+  it("New token on a device with a tunnel rotates the tunnel too; without one, or unconfigured, only the token changes (audit M8)", async () => {
+    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net')");
+    const hall = await device("hall-tok", "Hall <tok>");
+    const token = () => one("SELECT token FROM devices WHERE id = ?", hall.id).then((x) => x.token);
+    // not configured: the token changes, nothing is called, plain banner
+    let res = await post(r.admin, `/devices/${hall.id}/regen-token`);
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${hall.id}`]);
+    expect(await token()).not.toBe(hall.token);
+    let page = await (await r.admin.get(`/devices?open=${hall.id}`)).text();
+    expect(page).toContain('<div class="alert ok" role="alert">New token made for Hall &lt;tok&gt;: open Token / install and run the install command on the Pi again.</div>');
+    expect(page).toContain(`data-confirm="Make a new token for Hall &lt;tok&gt;? The Pi stops syncing until you run the install command with the new token."`);
+    configure();
+    const fake = fakeCloudflare();
+    await post(r.editor, `/devices/${hall.id}/tunnel`);
+    expect((await devRow(hall.id)).tunnel_id).toBe("tun-1");
+    expect((await (await sync({ ...hall, token: await token() })).json()).tunnel.token).toBe("eyJ-token-for-tun-1");
+    page = await (await r.admin.get("/devices")).text();
+    expect(page).toContain(`data-confirm="Make a new token for Hall &lt;tok&gt;? The Pi stops syncing until you run the install command with the new token; its camera tunnel is recreated too."`);
+    fake.calls.length = 0;
+    const before = await token();
+    res = await post(r.admin, `/devices/${hall.id}/regen-token`);
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${hall.id}`]);
+    expect(await token()).not.toBe(before);
+    expect(shapes(fake.calls).slice(0, 2)).toEqual(["DELETE /accounts/acct1/cfd_tunnel/tun-1/connections", "DELETE /accounts/acct1/cfd_tunnel/tun-1"]);
+    expect((await devRow(hall.id)).tunnel_id).toBe("tun-5");
+    expect((await (await sync({ ...hall, token: await token() })).json()).tunnel.token).toBe("eyJ-token-for-tun-5");
+    expect((await audits("device_tunnel_rotated"))[0]).toMatchObject({ username: "admin", target_id: String(hall.id) });
+    page = await (await r.admin.get(`/devices?open=${hall.id}`)).text();
+    expect(page).toContain('<div class="alert ok" role="alert">New token made for Hall &lt;tok&gt;: open Token / install and run the install command on the Pi again. Its camera tunnel was recreated too.</div>');
+    // the API refusing: the token still changed, the banner says the tunnel did not
+    fake.refuse = { key: "DELETE /accounts/acct1/cfd_tunnel/tun-5", message: "tunnel has active connections" };
+    const mid = await token();
+    res = await post(r.admin, `/devices/${hall.id}/regen-token`);
+    expect(res.status).toBe(303);
+    expect(await token()).not.toBe(mid);
+    page = await (await r.admin.get(`/devices?open=${hall.id}`)).text();
+    expect(page).toContain('<div class="alert error" role="alert">New token made for Hall &lt;tok&gt;: open Token / install and run the install command on the Pi again. The camera tunnel could not be recreated: Cloudflare API DELETE /accounts/.../cfd_tunnel/tun-5: tunnel has active connections. Click Recreate tunnel on the Devices page to try again.</div>');
+    expect((await devRow(hall.id)).tunnel_id).toBe("tun-5");
+    expect((await audits("device_tunnel_failed"))[0]).toMatchObject({ username: "admin", target_id: String(hall.id) });
+    await query("DELETE FROM devices WHERE id = ?", hall.id);
     await query("DELETE FROM settings WHERE key = 'alert_email'");
   });
 });

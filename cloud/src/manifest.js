@@ -146,7 +146,7 @@ export async function pending_commands(env, deviceRowId) {
   for (const r of rows) {
     if (r.delivery_count >= MAX_COMMAND_DELIVERIES) {
       updates.push([
-        `UPDATE device_commands SET completed_at = datetime('now'), result = ?
+        `UPDATE device_commands SET completed_at = datetime('now'), undeliverable = 1, result = ?
           WHERE id = ? AND completed_at IS NULL`,
         `undeliverable: no result after ${MAX_COMMAND_DELIVERIES} deliveries`, r.id]);
       console.warn(`command ${r.id} (${r.command}) for device ${deviceRowId} closed as undeliverable`);

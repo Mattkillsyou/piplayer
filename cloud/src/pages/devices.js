@@ -11,7 +11,7 @@ import * as secrets from "../secrets.js";
 import {
   ageSeconds, ageText, esc, fail, HttpError, idParam, intField, localTime, randomToken, redirect, str, wallClock,
 } from "../util.js";
-import { alertBox, csrfInput, emptyState, layout } from "./layout.js";
+import { csrfInput, emptyState, layout } from "./layout.js";
 
 export const COMMANDS = ["reboot", "force-sync", "restart-mpv", "update-player", "update-os", "update-all", "projector-on", "projector-off"];
 // Plus ir-learn:<name> for each manifest.IR_CODE_NAMES entry (the "Learn ..." buttons).
@@ -22,10 +22,14 @@ export const BROADLINK_HOST_RE = /^[A-Za-z0-9._:-]{1,253}$/;
 // The fleet "Update all players" button queues one of these for every device (POST /devices/update-all).
 export const FLEET_COMMANDS = ["update-player", "update-os", "update-all"];
 const DEVICE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+// Register / rename share the cap /api/enroll enforces (api.js imports it).
+export const MAX_DEVICE_NAME = 120;
 // A player that has not synced for this long is shown as offline (it polls every 30 s and
 // backs off to at most 300 s when the CMS is unreachable, in which case it cannot reach us anyway).
 export const OFFLINE_AFTER_SECONDS = 180;
 const LAMP_STATES = ["playing", "paused", "idle", "mpv-down"];
+// The pill text: the states are CSS classes, and "mpv-down" is a program name to the owner.
+const lampText = (s) => (s === "mpv-down" ? "player down" : s);
 // A failed remote update (last_update_ok = 0, api.storeUpdateStatus) is a fault until the next report.
 export const isFault = (d) => d.lamp === "mpv-down" || d.lamp === "offline" || d.last_update_ok === 0;
 
@@ -175,12 +179,20 @@ export function wyzeCameraName(device, settings) {
 // The GET /api/camera-config body for a devices row (camera_source, camera_rtsp_url,
 // camera_wyze_name, name, device_id): {source: "none"} | {source: "rtsp", rtsp_url} |
 // {source: "wyze", wyze: {email, password, api_id, api_key, camera}}, each with the
-// camera_config_version it was built from. wyze falls back to none when the account is unset.
+// camera_config_version it was built from. wyze falls back to none when the account is unset;
+// camera_supported = 0 (a board that cannot run the bridge) always yields none, so the Wyze
+// login never reaches it. The RTSP URL is stored encrypted like the Wyze values (it carries
+// the camera's password); a plaintext row from before that is served as is until re-saved.
 export async function cameraConfig(env, device, settings) {
   const version = settings.camera_config_version || 0;
+  if (device.camera_supported === 0) return { source: "none", version };
   let source = device.camera_source || (await secrets.wyzeConfigured(env) ? "wyze" : "none");
-  if (source === "rtsp" && !device.camera_rtsp_url) source = "none";
-  if (source === "rtsp") return { source, rtsp_url: device.camera_rtsp_url, version };
+  if (source === "rtsp") {
+    const stored = device.camera_rtsp_url || "";
+    const url = stored.startsWith("v1:") ? await secrets.decrypt(env, `rtsp:${device.device_id}`, stored) : stored;
+    if (url) return { source, rtsp_url: url, version };
+    source = "none";
+  }
   if (source === "wyze") {
     const w = await secrets.getMany(env, secrets.WYZE_NAMES);
     if (w.wyze_email && w.wyze_password) {
@@ -191,7 +203,7 @@ export async function cameraConfig(env, device, settings) {
   return { source: "none", version };
 }
 
-export const statusLamp = (d) => `<span class="status status-${esc(d.lamp)}"><span class="lamp"></span>${esc(d.lamp)}</span>`;
+export const statusLamp = (d) => `<span class="status status-${esc(d.lamp)}"><span class="lamp"></span>${esc(lampText(d.lamp))}</span>`;
 
 function optionList(rows, selected) {
   return rows.map((r) =>
@@ -201,7 +213,8 @@ function optionList(rows, selected) {
 function commandLine(c, tz) {
   let state;
   if (c.completed_at) {
-    if (c.result && c.result.startsWith("undeliverable")) state = `<span class="badge badge-stale">${esc(c.result)}</span>`;
+    // the console's own close (manifest.pending_commands), never a result the player posted
+    if (c.undeliverable) state = `<span class="badge badge-stale">${esc(c.result)}</span>`;
     else state = `done${c.result ? ` · ${esc(c.result)}` : ""}`;
   } else if (c.delivered_at) {
     state = `delivered ×${c.delivery_count}, no result yet`;
@@ -240,11 +253,22 @@ export function updateStatus(d, tz) {
 // per code, the state lamp the player reported and its last error.
 const IR_CODE_LABELS = { power_on: "Power On", power_off: "Power Off", input_hdmi1: "Input HDMI1" };
 
+// What the banner calls a command after the button is clicked.
+const COMMAND_TEXT = {
+  reboot: "Reboot", "force-sync": "Resync", "restart-mpv": "Restart mpv", "update-player": "Player update",
+  "update-os": "OS update", "update-all": "Player and OS update", "projector-on": "Projector on", "projector-off": "Projector off",
+};
+const commandText = (c) => COMMAND_TEXT[c] || `Learn ${IR_CODE_LABELS[c.slice("ir-learn:".length)]}`;
+
 export function projectorState(d) {
   const state = manifest.PROJECTOR_STATES.includes(d.projector_power_state) ? d.projector_power_state : "unknown";
   const cls = { on: "playing", off: "offline", unknown: "idle" }[state];
   return `<span class="status status-${cls} projector-state" title="Reported by the player on its last sync"><span class="lamp"></span>projector ${state}</span>`;
 }
+
+// Only admins can open /settings (schedule.js does the same), so the help mentions the page by
+// name for everyone else.
+const settingsRef = (ctx) => (ctx.user.role === "admin" ? '<a href="/settings">Settings</a>' : "Settings");
 
 function projectorBlock(ctx, d, canEdit, dis) {
   const control = d.projector_control || "none";
@@ -279,7 +303,7 @@ function projectorBlock(ctx, d, canEdit, dis) {
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          <p class="help small">broadlink drives an RM4 mini over IR with the learned codes below; cec uses HDMI-CEC. In auto mode the player switches the projector on when a playlist is active or a schedule starts within the lead time, and off after the idle delay (<a href="/settings">Settings</a>).</p>
+          <p class="help small">broadlink drives an RM4 mini over IR with the learned codes below; cec uses HDMI-CEC. In auto mode the player switches the projector on when a playlist is active or a schedule starts within the lead time, and off after the idle delay (${settingsRef(ctx)}).</p>
           ${control === "none" || !canEdit ? "" : `<div class="action-buttons">
             ${commandForm(ctx, d, "projector-on", "Projector on", "small primary", "Switch the projector on now")}
             ${commandForm(ctx, d, "projector-off", "Projector off", "small", "Switch the projector off now")}
@@ -296,18 +320,19 @@ function projectorBlock(ctx, d, canEdit, dis) {
 
 // Auto tunnel (G): the device's tunnel hostname badge and, with the Cloudflare secrets set, the
 // "Create tunnel" / "Recreate tunnel" button (POST /devices/:id/tunnel); the token itself is
-// never on this page (only the device's own sync gets it).
+// never on this page (only the device's own sync gets it). Recreate replaces the tunnel, so a
+// Pi (or anyone) holding the old tunnel key is cut off.
 function tunnelBlock(ctx, d, canEdit, tunnelOn) {
   const badge = d.tunnel_hostname
     ? `<span class="badge badge-active" title="Cloudflare Tunnel ${esc(cloudflare.tunnelName(d.device_id))}">tunnel · ${esc(d.tunnel_hostname)}</span>`
     : '<span class="badge badge-muted">no tunnel</span>';
-  const button = canEdit && tunnelOn ? `<form method="post" action="/devices/${d.id}/tunnel" class="inline"${d.tunnel_hostname ? ` data-confirm="Recreate the tunnel for ${esc(d.name)}? Existing Cloudflare objects are reused; the live URL is reset to the tunnel."` : ""}>
+  const button = canEdit && tunnelOn ? `<form method="post" action="/devices/${d.id}/tunnel" class="inline"${d.tunnel_hostname ? ` data-confirm="Recreate the camera tunnel for ${esc(d.name)}? The old tunnel key stops working, the Pi gets the new one on its next check-in, and the live URL is reset to the tunnel."` : ""}>
             ${csrfInput(ctx)}
             <button type="submit" class="small${d.tunnel_hostname ? "" : " primary"}" title="Cloudflare Tunnel + DNS + Access app for this device's camera">${d.tunnel_hostname ? "Recreate tunnel" : "Create tunnel"}</button>
           </form>` : "";
   const help = tunnelOn
     ? `Creates the Cloudflare Tunnel <code>${esc(cloudflare.tunnelName(d.device_id))}</code>, the name <code>${esc(cloudflare.hostnameFor(ctx.env, d.device_id))}</code> and an Access app for the operator emails, and sets the live URL to it; the Pi receives the tunnel token on its next sync. New devices get this at enrollment.`
-    : 'Automatic tunnels are not configured (<a href="/settings">Settings</a>): paste a live URL above.';
+    : `Automatic tunnels are not configured (${settingsRef(ctx)}): paste a live URL above.`;
   return `<div class="action-buttons tunnel-block">
             ${badge}
             ${button}
@@ -323,7 +348,9 @@ function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
         </form>`;
 }
 
-function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wyzeOn, tunnelOn) {
+// `isAdmin` shows the Token / install block (the token is admin-only, like the operator token
+// and /authorize); `openToken` opens it, right after New token.
+function deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, openToken, tz, install, settings, wyzeOn, tunnelOn) {
   const dis = canEdit ? "" : " disabled";
   const live = liveUrl(d.camera_live_url);
   return `<div class="device-row${isFault(d) ? " is-fault" : ""}">
@@ -333,6 +360,11 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
       <span class="device-name">${esc(d.name)}</span>
       <span class="device-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}${d.pi_model ? ` · ${esc(d.pi_model)}` : ""}</span>
       ${statusLamp(d)}
+      ${canEdit ? `<form method="post" action="/devices/${d.id}/rename" class="inline">
+        ${csrfInput(ctx)}
+        <input type="text" name="name" value="${esc(d.name)}" maxlength="${MAX_DEVICE_NAME}" required aria-label="Device name">
+        <button type="submit" class="small">Rename</button>
+      </form>` : ""}
     </div>
 
     <div class="device-detail">
@@ -362,7 +394,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
         <span class="now-label">active now${d.active_playlist_name ? ` · via ${esc(d.active_source)}` : ""}</span>
         <span class="now-playlist">${d.active_playlist_name ? esc(d.active_playlist_name) : "no playlist"}</span>
         ${d.current_filename
-    ? `<span class="now-file">#${(d.current_position || 0) + 1} ${esc(d.current_filename)}${d.player_status ? ` · ${esc(d.player_status)}` : ""}</span>`
+    ? `<span class="now-file">#${(d.current_position || 0) + 1} ${esc(d.current_filename)}${d.player_status ? ` · ${esc(lampText(d.player_status))}` : ""}</span>`
     : ""}
       </div>
 
@@ -375,10 +407,21 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
       ${d.last_error ? `<div class="alert error" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
       ${updateStatus(d, tz)}
 
-      <details class="camera-block">
+      ${d.camera_supported === 0 ? `<details class="camera-block">
+        <summary>Camera · not supported</summary>
+        <div class="token-block">
+          <p class="help small">Camera is not supported on this Pi model.</p>
+          ${d.camera_source ? `<form method="post" action="/devices/${d.id}/camera-source" class="row">
+            ${csrfInput(ctx)}
+            <input type="hidden" name="camera_source" value="">
+            <button type="submit" class="small"${dis}>Clear camera setting</button>
+          </form>
+          <p class="help small">A camera setting (${esc(d.camera_source)}) is still stored from before; it does nothing on this Pi.</p>` : ""}
+        </div>
+      </details>` : `<details class="camera-block">
         <summary>Camera${live ? " · live URL set" : ""}${d.tunnel_hostname ? " · tunnel" : ""}${d.camera_source ? ` · ${esc(d.camera_source)}` : ""}</summary>
         <div class="token-block">
-          ${d.camera_supported === 0 ? `<p class="help small">Camera is not supported on this Pi model.</p>` : `<form method="post" action="/devices/${d.id}/camera-source" class="row">
+          <form method="post" action="/devices/${d.id}/camera-source" class="row">
             ${csrfInput(ctx)}
             <label>Camera source
               <select name="camera_source"${dis}>
@@ -394,7 +437,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          <p class="help small">The player fetches this on start and whenever it changes (<code>GET /api/camera-config</code>) and (re)starts its Wyze bridge with the account from <a href="/settings">Settings</a>${wyzeOn ? "" : " (no Wyze account set yet)"}. Leave the name empty to use the Settings pattern shown.</p>`}
+          <p class="help small">The player fetches this on start and whenever it changes (<code>GET /api/camera-config</code>) and (re)starts its Wyze bridge with the account from ${settingsRef(ctx)}${wyzeOn ? "" : " (no Wyze account set yet)"}. Leave the name empty to use the Settings pattern shown.</p>
           <form method="post" action="/devices/${d.id}/camera-url" class="row">
             ${csrfInput(ctx)}
             <label>Camera live URL
@@ -402,7 +445,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          <p class="help small">Page the console embeds for the live view (e.g. a Cloudflare Tunnel hostname to the Wyze bridge player). Snapshots come from the Pi on their own; see docs/camera.md.</p>
+          <p class="help small">Page the console embeds for the live view (e.g. a Cloudflare Tunnel hostname to the Wyze bridge player). Snapshots come from the Pi on their own.</p>
           ${tunnelBlock(ctx, d, canEdit, tunnelOn)}
           ${live ? `<div class="action-buttons">
             <a href="${esc(live)}" target="_blank" rel="noopener noreferrer" class="button small">Live</a>
@@ -410,7 +453,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
           </div>
           <iframe id="live-frame-${d.id}" class="live-frame" data-src="${esc(live)}" title="Live camera: ${esc(d.name)}" sandbox="allow-same-origin allow-scripts" referrerpolicy="no-referrer" hidden></iframe>` : ""}
         </div>
-      </details>
+      </details>`}
 
       ${projectorBlock(ctx, d, canEdit, dis)}
 
@@ -426,7 +469,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
       <span class="label">Actions</span>
       ${canEdit ? `<div class="action-buttons">
         ${commandForm(ctx, d, "force-sync", "Resync", "small primary", "Tell the Pi to re-sync from the CMS now")}
-        ${commandForm(ctx, d, "restart-mpv", "Restart mpv", "small", "Restart the mpv playback process")}
+        ${commandForm(ctx, d, "restart-mpv", "Restart mpv", "small", "Restart the mpv playback process", ` data-confirm="Restart playback on ${esc(d.name)}? The screen goes blank for a few seconds."`)}
         ${commandForm(ctx, d, "reboot", "Reboot Pi", "small danger", "", ` data-confirm="Reboot ${esc(d.name)}?"`)}
       </div>
       <div class="action-buttons">
@@ -434,7 +477,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wy
         ${commandForm(ctx, d, "update-os", "Update OS", "small", "apt-get upgrade on the Pi; reboots if the OS asks for it", ` data-confirm="Update OS packages on ${esc(d.name)}? The Pi may reboot."`)}
         ${commandForm(ctx, d, "update-all", "Update all", "small", "Player software, then OS packages", ` data-confirm="Update player and OS on ${esc(d.name)}? The Pi may reboot."`)}
       </div>
-      <details>
+      ${isAdmin ? `<details${openToken ? " open" : ""}>
         <summary>Token / install</summary>
         <div class="token-block">
           <code class="token">${esc(d.token)}</code>
@@ -446,17 +489,19 @@ CMS_URL=${esc(install.base)} \\
 sudo -E bash deploy/install-player.sh</pre>
           ${install.configured ? "" : `<p class="muted small">CMS_URL is the address your browser is using; edit it if this Pi reaches the CMS another way (e.g. a LAN address instead of Tailscale).</p>`}
           <div class="action-buttons">
-            <form method="post" action="/devices/${d.id}/regen-token" class="inline" data-confirm="Regenerate token? The Pi will need the new token.">
+            <form method="post" action="/devices/${d.id}/regen-token" class="inline" data-confirm="Make a new token for ${esc(d.name)}? The Pi stops syncing until you run the install command with the new token${d.tunnel_id ? "; its camera tunnel is recreated too" : ""}.">
               ${csrfInput(ctx)}
               <button type="submit" class="small">New token</button>
             </form>
-            <form method="post" action="/devices/${d.id}/delete" class="inline" data-confirm="Delete device ${esc(d.name)}?">
-              ${csrfInput(ctx)}
-              <button type="submit" class="danger small">Delete device</button>
-            </form>
           </div>
         </div>
-      </details>` : '<span class="help small">Viewer access: read-only.</span>'}
+      </details>` : ""}
+      <div class="action-buttons">
+        <form method="post" action="/devices/${d.id}/delete" class="inline" data-confirm="Delete device ${esc(d.name)}? Its schedule rules, command history and alerts go with it; the Pi keeps playing what it has until it is re-flashed.">
+          ${csrfInput(ctx)}
+          <button type="submit" class="danger small">Delete device</button>
+        </form>
+      </div>` : '<span class="help small">Viewer access: read-only.</span>'}
     </div>
   </div>`;
 }
@@ -464,6 +509,7 @@ sudo -E bash deploy/install-player.sh</pre>
 async function devicesPage(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = auth.roleRank(user.role) >= auth.roleRank("editor");
+  const isAdmin = user.role === "admin";
   const settings = await ctx.settings();
   const tz = settings.timezone;
   const env = ctx.env;
@@ -490,10 +536,11 @@ async function devicesPage(ctx) {
   // each (SQLite window function for the per-device LIMIT) rather than three per device.
   const counts = new Map((await db.all(env, "SELECT device_id, COUNT(*) AS n FROM device_schedules GROUP BY device_id"))
     .map((r) => [r.device_id, r.n]));
-  // Tokens are only shown to people who may install a player (editor+).
-  const tokens = canEdit ? new Map((await db.all(env, "SELECT id, token FROM devices")).map((r) => [r.id, r.token])) : null;
+  // Tokens are admin-only: a device token reads the Wyze login through /api/camera-config,
+  // which editors cannot see on Settings (same rule as the operator token).
+  const tokens = isAdmin ? new Map((await db.all(env, "SELECT id, token FROM devices")).map((r) => [r.id, r.token])) : null;
   const recent = await db.all(env,
-    `SELECT id, device_id, command, issued_at, delivered_at, completed_at, result, delivery_count
+    `SELECT id, device_id, command, issued_at, delivered_at, completed_at, result, delivery_count, undeliverable
        FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY id DESC) AS rn FROM device_commands)
       WHERE rn <= 5 ORDER BY device_id, id DESC`);
   const byId = new Map(devices.map((d) => [d.id, d]));
@@ -504,9 +551,8 @@ async function devicesPage(ctx) {
   }
   for (const c of recent) byId.get(c.device_id)?.recent_commands.push(c);
   const install = installBaseUrl(env, ctx.url);
-  const queued = ctx.url.searchParams.get("queued");
-  const tunnelDone = ctx.url.searchParams.get("tunnel") || "";
-  const tunnelError = ctx.url.searchParams.get("tunnel_error") || "";
+  // ?open=<row id>: New token lands here with that device's Token / install block open.
+  const open = /^\d+$/.test(ctx.url.searchParams.get("open") || "") ? Number(ctx.url.searchParams.get("open")) : null;
   const wyzeOn = await secrets.wyzeConfigured(env);
   const tunnelOn = cloudflare.configured(env);
 
@@ -518,7 +564,7 @@ async function devicesPage(ctx) {
       <input type="text" name="device_id" placeholder="lobby-projector" pattern="[a-z0-9][a-z0-9-]{0,62}" required>
     </label>
     <label>name
-      <input type="text" name="name" placeholder="Lobby Projector" required>
+      <input type="text" name="name" placeholder="Lobby Projector" maxlength="${MAX_DEVICE_NAME}" required>
     </label>
     <button type="submit" class="primary">Register</button>
   </form>
@@ -528,15 +574,13 @@ async function devicesPage(ctx) {
     <button type="submit" title="Queue update-player on every device that is not already waiting for one">Update all players</button>
   </form>` : ""}` : ""}
 </div>
-${canEdit ? '<p class="help small">After registering, open "Token / install" on the new device and run that command on the Pi.</p>' : ""}
-${/^\d+$/.test(queued || "") ? alertBox(`Update queued for ${queued} device${queued === "1" ? "" : "s"}.`, "ok") : ""}
-${tunnelDone ? alertBox(`Tunnel ready: https://${tunnelDone}/ (the Pi picks up the token on its next sync; open the live view logged in to Cloudflare Access).`, "ok") : ""}
-${tunnelError ? alertBox(`Tunnel creation failed: ${tunnelError}`) : ""}
+${isAdmin ? '<p class="help small">After registering, open "Token / install" on the new device and run that command on the Pi.</p>'
+    : canEdit ? '<p class="help small">After registering, an administrator opens "Token / install" on the new device and runs that command on the Pi.</p>' : ""}
 
 ${!devices.length
     ? emptyState("NO SIGNAL", `No devices yet.${canEdit ? " Register one above." : ""}`)
     : `<div class="device-rows">
-  ${devices.map((d) => deviceRow(ctx, d, playlists, groups, canEdit, tz, install, settings, wyzeOn, tunnelOn)).join("\n  ")}
+  ${devices.map((d) => deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, d.id === open, tz, install, settings, wyzeOn, tunnelOn)).join("\n  ")}
 </div>`}`;
   return layout(ctx, { title: "Devices", content });
 }
@@ -547,7 +591,7 @@ async function devicesCreate(ctx) {
   const deviceId = str(form, "device_id").trim().toLowerCase();
   const name = str(form, "name").trim();
   if (!DEVICE_ID_RE.test(deviceId)) fail(400, "device_id must be lowercase alphanumeric + hyphens, 1-63 chars");
-  if (!name) fail(400, "name required");
+  if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `name must be 1-${MAX_DEVICE_NAME} chars`);
   const token = randomToken(32);
   let id;
   try {
@@ -558,6 +602,23 @@ async function devicesCreate(ctx) {
   }
   await audit.log(ctx, "register_device", "device", id, { device_id: deviceId, name });
   return redirect("/devices");
+}
+
+// Rename in place (the flasher's name is otherwise only changed by re-flashing the card). The
+// Wyze camera name may derive from {device_name}, so the players refetch their camera config.
+async function devicesRename(ctx) {
+  auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const name = str(await ctx.form(), "name").trim();
+  if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `name must be 1-${MAX_DEVICE_NAME} chars`);
+  const row = await db.first(ctx.env, "SELECT name FROM devices WHERE id = ?", deviceId);
+  if (!row) fail(404, "Device not found");
+  if (row.name !== name) {
+    await db.run(ctx.env, "UPDATE devices SET name = ? WHERE id = ?", name, deviceId);
+    await db.bumpCameraConfigVersion(ctx.env);
+  }
+  await audit.log(ctx, "device_rename", "device", deviceId, { name });
+  return auth.flashRedirect(ctx, "/devices", `Renamed to ${name}.`);
 }
 
 async function devicesAssign(ctx) {
@@ -582,13 +643,22 @@ async function devicesSetGroup(ctx) {
   return redirect("/devices");
 }
 
+// The tunnel token travels in every sync response, so a leaked device token means a leaked
+// tunnel key: a device with a tunnel gets a fresh one too (the old key stops working).
 async function devicesRegenToken(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
-  await requireRow(ctx.env, "devices", deviceId, "Device");
+  const row = await db.first(ctx.env, "SELECT id, device_id, name, tunnel_id FROM devices WHERE id = ?", deviceId);
+  if (!row) fail(404, "Device not found");
   await db.run(ctx.env, "UPDATE devices SET token = ? WHERE id = ?", randomToken(32), deviceId);
   await audit.log(ctx, "device_regen_token", "device", deviceId);
-  return redirect("/devices");
+  let message = `New token made for ${row.name}: open Token / install and run the install command on the Pi again.`;
+  if (row.tunnel_id && cloudflare.configured(ctx.env)) {
+    const tunnel = await rotateTunnelBanner(ctx, row);
+    if (tunnel.error) return auth.flashRedirect(ctx, `/devices?open=${deviceId}`, `${message} ${tunnel.error}`, "error");
+    message += " Its camera tunnel was recreated too.";
+  }
+  return auth.flashRedirect(ctx, `/devices?open=${deviceId}`, message);
 }
 
 async function devicesDelete(ctx) {
@@ -597,22 +667,34 @@ async function devicesDelete(ctx) {
   const row = await db.first(ctx.env, "SELECT device_id, name FROM devices WHERE id = ?", deviceId);
   if (!row) fail(404, "Device not found");
   await db.run(ctx.env, "DELETE FROM devices WHERE id = ?", deviceId);
-  await media.deleteScreenshot(ctx.env, row.device_id);
-  await media.deleteCamera(ctx.env, row.device_id);
+  // R2 trouble must not undo the delete: the row is gone, the audit and the banner still happen.
+  try {
+    await media.deleteScreenshot(ctx.env, row.device_id);
+    await media.deleteCamera(ctx.env, row.device_id);
+  } catch (e) {
+    console.error(`snapshots of deleted device ${row.device_id} not removed: ${e && e.message || e}`);
+  }
   await audit.log(ctx, "device_delete", "device", deviceId, { device_id: row.device_id, name: row.name });
-  return redirect("/devices");
+  return auth.flashRedirect(ctx, "/devices", `Device ${row.name} deleted.`);
 }
 
+// One queued row per (device, command) until the player reports on it, as the fleet action
+// does: a second click while the first is still waiting (nothing visibly happened) must not
+// reboot or upgrade the Pi twice.
 async function devicesSendCommand(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const command = str(await ctx.form(), "command");
   if (!isCommand(command)) fail(400, "unknown command");
-  await requireRow(ctx.env, "devices", deviceId, "Device");
-  const id = (await db.run(ctx.env,
-    "INSERT INTO device_commands (device_id, command, issued_by) VALUES (?, ?, ?)", deviceId, command, user.id)).last_row_id;
+  const row = await db.first(ctx.env, "SELECT name FROM devices WHERE id = ?", deviceId);
+  if (!row) fail(404, "Device not found");
+  const { changes, last_row_id: id } = await db.run(ctx.env,
+    `INSERT INTO device_commands (device_id, command, issued_by)
+     SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM device_commands WHERE device_id = ? AND command = ? AND completed_at IS NULL)`,
+    deviceId, command, user.id, deviceId, command);
+  if (!changes) return auth.flashRedirect(ctx, "/devices", `${commandText(command)} is already waiting for ${row.name}; the Pi picks it up on its next check-in.`, "warn");
   await audit.log(ctx, "device_send_command", "device", deviceId, { command, command_id: id });
-  return redirect("/devices");
+  return auth.flashRedirect(ctx, "/devices", `${commandText(command)} queued for ${row.name}; the Pi picks it up on its next check-in.`);
 }
 
 // Fleet action: queue one update command for every device that is not already waiting for
@@ -628,7 +710,8 @@ async function devicesUpdateAll(ctx) {
                          WHERE c.device_id = d.id AND c.command = ? AND c.completed_at IS NULL)`,
     command, user.id, command);
   await audit.log(ctx, "device_update_all", "device", null, { command, queued: changes });
-  return redirect(`/devices?queued=${changes}`);
+  if (!changes) return auth.flashRedirect(ctx, "/devices", "Nothing new to queue: every device already has this update waiting. It runs when each Pi next checks in.", "warn");
+  return auth.flashRedirect(ctx, "/devices", `Update queued for ${changes} device${changes === 1 ? "" : "s"}.`);
 }
 
 // Latest screenshot, session users only (never cached: the URL carries ?t= but the
@@ -680,12 +763,14 @@ async function devicesSetCameraSource(ctx) {
   const form = await ctx.form();
   const source = str(form, "camera_source").trim() || null;
   if (source !== null && !CAMERA_SOURCES.includes(source)) fail(400, `camera_source must be one of ${CAMERA_SOURCES.join(", ")} or empty for the site default`);
-  const row = await db.first(ctx.env, "SELECT camera_source, camera_rtsp_url, camera_wyze_name FROM devices WHERE id = ?", deviceId);
+  const row = await db.first(ctx.env, "SELECT device_id, camera_source, camera_rtsp_url, camera_wyze_name FROM devices WHERE id = ?", deviceId);
   if (!row) fail(404, "Device not found");
-  // The RTSP URL carries credentials and is never rendered back: an empty field keeps the stored
-  // one while the source stays rtsp (switching the source away clears it).
-  const rtsp = str(form, "camera_rtsp_url").trim() || (source === "rtsp" ? row.camera_rtsp_url : null);
-  if (rtsp !== null && !RTSP_URL_RE.test(rtsp)) fail(400, "camera_rtsp_url must be an rtsp:// or rtsps:// URL");
+  // The RTSP URL carries credentials: stored encrypted (secrets.js, keyed to the device_id) and
+  // never rendered back; an empty field keeps the stored one while the source stays rtsp
+  // (switching the source away clears it).
+  const posted = str(form, "camera_rtsp_url").trim();
+  if (posted && !RTSP_URL_RE.test(posted)) fail(400, "camera_rtsp_url must be an rtsp:// or rtsps:// URL");
+  const rtsp = posted ? await secrets.encrypt(ctx.env, `rtsp:${row.device_id}`, posted) : (source === "rtsp" ? row.camera_rtsp_url : null);
   if (source === "rtsp" && rtsp === null) fail(400, "camera_rtsp_url required when camera_source is rtsp");
   const wyzeName = str(form, "camera_wyze_name").trim() || null;
   if (wyzeName !== null && ([...wyzeName].length > MAX_WYZE_NAME || /[\x00-\x1f\x7f]/.test(wyzeName))) fail(400, `camera_wyze_name must be at most ${MAX_WYZE_NAME} printable chars`);
@@ -697,19 +782,36 @@ async function devicesSetCameraSource(ctx) {
   return redirect("/devices");
 }
 
+// cloudflare.rotateTunnel for a devices row ({id, device_id, tunnel_id}) that never throws:
+// {hostname} with audit device_tunnel_rotated, or {error} in plain English with audit
+// device_tunnel_failed (as tryProvisionDevice does for a first-time tunnel).
+async function rotateTunnelBanner(ctx, row) {
+  try {
+    const { tunnel_id, hostname } = await cloudflare.rotateTunnel(ctx, row);
+    await audit.log(ctx, "device_tunnel_rotated", "device", row.id, { device_id: row.device_id, old_tunnel_id: row.tunnel_id, tunnel_id, hostname });
+    return { hostname };
+  } catch (e) {
+    const error = String(e && e.message || e).slice(0, 200);
+    console.error(`tunnel rotation for ${row.device_id} failed: ${error}`);
+    await audit.log(ctx, "device_tunnel_failed", "device", row.id, { device_id: row.device_id, error });
+    return { error: `The camera tunnel could not be recreated: ${error}. Click Recreate tunnel on the Devices page to try again.` };
+  }
+}
+
 // "Create tunnel" (editor+): tunnel + DNS + ingress + Access app through the Cloudflare API
 // (cloudflare.provisionDevice), tunnel_id / tunnel_hostname / camera_live_url stored, audit
 // device_tunnel_created; a refusal comes back as a banner (audit device_tunnel_failed), never
-// a 500. 400 when the secrets are not set (the button is not rendered then).
+// a 500. "Recreate tunnel" (the device already has one) replaces the tunnel so the old key
+// stops working. 400 when the secrets are not set (the button is not rendered then).
 async function devicesCreateTunnel(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   if (!cloudflare.configured(ctx.env)) fail(400, `automatic tunnels are not configured (${cloudflare.missing(ctx.env).join(", ")} not set)`);
-  const row = await db.first(ctx.env, "SELECT id, device_id FROM devices WHERE id = ?", deviceId);
+  const row = await db.first(ctx.env, "SELECT id, device_id, tunnel_id FROM devices WHERE id = ?", deviceId);
   if (!row) fail(404, "Device not found");
-  const done = await cloudflare.tryProvisionDevice(ctx, row);
-  if (done.error) return redirect(`/devices?tunnel_error=${encodeURIComponent(done.error)}`);
-  return redirect(`/devices?tunnel=${encodeURIComponent(done.hostname)}`);
+  const done = row.tunnel_id ? await rotateTunnelBanner(ctx, row) : await cloudflare.tryProvisionDevice(ctx, row);
+  if (done.error) return auth.flashRedirect(ctx, "/devices", row.tunnel_id ? done.error : `Tunnel creation failed: ${done.error}`, "error");
+  return auth.flashRedirect(ctx, "/devices", `Tunnel ready: https://${done.hostname}/ (the Pi picks up the ${row.tunnel_id ? "new " : ""}tunnel key on its next check-in; open the live view logged in to Cloudflare Access).`);
 }
 
 // Projector block form: control none | broadlink | cec, power mode manual | auto, optional RM4
@@ -735,6 +837,7 @@ export function register(router) {
   router.get("/devices", devicesPage);
   router.post("/devices/:device_id/projector", devicesSetProjector);
   router.post("/devices", devicesCreate);
+  router.post("/devices/:device_id/rename", devicesRename);
   router.post("/devices/:device_id/assign", devicesAssign);
   router.post("/devices/:device_id/group", devicesSetGroup);
   router.post("/devices/:device_id/regen-token", devicesRegenToken);

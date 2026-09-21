@@ -194,14 +194,17 @@ describe("Devices page: camera source", () => {
 
     const rtsp = "rtsp://user:pw@10.0.0.5:554/stream1";
     expect((await post(r.editor, `/devices/${dev.id}/camera-source`, { camera_source: "rtsp", camera_rtsp_url: rtsp })).status).toBe(303);
-    expect(await row()).toEqual({ camera_source: "rtsp", camera_rtsp_url: rtsp, camera_wyze_name: null });
+    // stored encrypted (audit L8): the row never carries the camera's password; the device endpoint decrypts it
+    expect(await row()).toEqual({ camera_source: "rtsp", camera_rtsp_url: expect.stringMatching(/^v1:/), camera_wyze_name: null });
+    const stored = (await row()).camera_rtsp_url;
+    expect(stored).not.toContain("pw");
     expect(await (await config(dev)).json()).toEqual({ source: "rtsp", rtsp_url: rtsp, version: v0 + 2 });
     expect(JSON.parse((await audits("device_set_camera_source"))[0].details)).toEqual({ camera_source: "rtsp", camera_rtsp_url: "set" });
     expect((await audits("device_set_camera_source"))[0].details).not.toContain("user:pw");
 
     // the URL is never rendered back, so an empty field keeps it (and is not a change)
     expect((await post(r.editor, `/devices/${dev.id}/camera-source`, { camera_source: "rtsp", camera_rtsp_url: "" })).status).toBe(303);
-    expect(await row()).toEqual({ camera_source: "rtsp", camera_rtsp_url: rtsp, camera_wyze_name: null });
+    expect(await row()).toEqual({ camera_source: "rtsp", camera_rtsp_url: stored, camera_wyze_name: null });
     expect(await version()).toBe(v0 + 2);
 
     // switching the source away clears it
@@ -241,15 +244,16 @@ describe("Devices page: camera source", () => {
     expect(page).not.toContain("<Lobby>");
   });
 
-  it("camera_supported = 0 replaces the source picker with one sentence; 1 or NULL keep it; the API still accepts config", async () => {
-    const picker = `action="/devices/${dev.id}/camera-source"`;
+  it("camera_supported = 0 replaces the camera block with one sentence; 1 or NULL keep it; the API still accepts config", async () => {
+    const picker = '<select name="camera_source"';
     const sentence = '<p class="help small">Camera is not supported on this Pi model.</p>';
     for (const [flag, want] of [[null, true], [1, true], [0, false]]) {
       await query("UPDATE devices SET camera_supported = ? WHERE id = ?", flag, dev.id);
-      const page = await (await r.editor.get("/devices")).text();
+      const whole = await (await r.editor.get("/devices")).text();
+      const page = whole.slice(whole.indexOf("<code>cam-a</code>"), whole.indexOf(`action="/devices/${dev.id}/projector"`)); // this device's row only
       expect(page.includes(picker), String(flag)).toBe(want);
       expect(page.includes(sentence), String(flag)).toBe(!want);
-      expect(page).toContain(`action="/devices/${dev.id}/camera-url"`); // live URL form stays
+      expect(page.includes(`action="/devices/${dev.id}/camera-url"`), String(flag)).toBe(want); // the live URL form goes too (audit L23)
     }
     expect((await post(r.editor, `/devices/${dev.id}/camera-source`, { camera_source: "none" })).status).toBe(303);
     await query("UPDATE devices SET camera_supported = NULL WHERE id = ?", dev.id);

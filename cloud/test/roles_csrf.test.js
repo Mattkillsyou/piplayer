@@ -124,19 +124,20 @@ describe("authorization matrix", () => {
     });
   }
 
-  it("viewers never see device tokens or the install command; editors and admins do", async () => {
-    const v = await (await r.viewer.get("/devices")).text();
-    expect(v).toContain("Matrix Dev");
-    expect(v).not.toContain(dev.token);
-    expect(v).not.toContain("DEVICE_TOKEN=");
-    for (const c of [r.editor, r.admin]) {
-      const t = await (await c.get("/devices")).text();
-      expect(t).toContain(dev.token);
-      expect(t).toContain("cd piplayer/player");
-      expect(t).toContain(`DEVICE_ID=${dev.device_id}`);
-      expect(t).toContain("deploy/install-player.sh");
-      expect(t).toMatch(/CMS_URL=https?:\/\//);
+  it("viewers and editors never see device tokens or the install command; admins do", async () => {
+    // a device token reads the Wyze login through /api/camera-config, so it is admin-only like the operator token
+    for (const c of [r.viewer, r.editor]) {
+      const v = await (await c.get("/devices")).text();
+      expect(v).toContain("Matrix Dev");
+      expect(v).not.toContain(dev.token);
+      expect(v).not.toContain("DEVICE_TOKEN=");
     }
+    const t = await (await r.admin.get("/devices")).text();
+    expect(t).toContain(dev.token);
+    expect(t).toContain("cd piplayer/player");
+    expect(t).toContain(`DEVICE_ID=${dev.device_id}`);
+    expect(t).toContain("deploy/install-player.sh");
+    expect(t).toMatch(/CMS_URL=https?:\/\//);
   });
 
   it("nav shows Users/Settings only to admins", async () => {

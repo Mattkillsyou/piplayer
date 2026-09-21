@@ -8,7 +8,7 @@ import * as db from "./db.js";
 import * as manifest from "./manifest.js";
 import * as media from "./media.js";
 import * as secrets from "./secrets.js";
-import { installBaseUrl } from "./pages/devices.js";
+import { installBaseUrl, MAX_DEVICE_NAME } from "./pages/devices.js";
 import { envInt, fail, HttpError, json, jsonObject, nowUtc, randomToken } from "./util.js";
 import { cameraConfig } from "./pages/devices.js";
 
@@ -16,7 +16,6 @@ export const MAX_SYNC_ERROR_LEN = 200;
 const MAX_PI_MODEL_LEN = 64;
 export const MAX_UPDATE_REF_LEN = 100;
 export const DEVICE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/; // same rule as the Devices page
-export const MAX_DEVICE_NAME = 120;
 // Successful enrollments of NEW device ids are capped fleet-wide (the key is on every card and
 // flasher PC; each new device is a row, an audit row and, with the secrets set, a tunnel).
 export const MAX_NEW_DEVICES_PER_HOUR = 20;

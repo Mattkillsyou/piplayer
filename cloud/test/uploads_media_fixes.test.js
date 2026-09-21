@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as auth from "../src/auth.js";
+import { SCHEMA_VERSION } from "../src/db.js";
 import worker from "../src/index.js";
 import { BASE, Client, query, setupAdmin } from "./helpers.js";
 
@@ -174,8 +175,8 @@ describe("L10: library delete survives an R2 delete failure", () => {
 });
 
 describe("L11 / L13: schema-level dedupe (migration 0006)", () => {
-  it("media.sha256 is UNIQUE, one open alert per (device, kind), schema_version is 6", async () => {
-    expect(await query("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual([{ value: "6" }]);
+  it("media.sha256 is UNIQUE, one open alert per (device, kind), schema_version matches db.js", async () => {
+    expect(await query("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual([{ value: String(SCHEMA_VERSION) }]);
     await env.DB.prepare("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('u1.mp4', 'u1', 'video', 1, ?)").bind("c".repeat(64)).run();
     await expect(env.DB.prepare("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('u2.mp4', 'u2', 'video', 1, ?)").bind("c".repeat(64)).run())
       .rejects.toThrow(/UNIQUE constraint failed: media.sha256/);

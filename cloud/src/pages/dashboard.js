@@ -86,9 +86,9 @@ async function dashboard(ctx) {
 
 <div class="cards">
   <div class="card">
-    <span class="card-label">media on disk</span>
+    <span class="card-label">media files</span>
     <span class="card-value">${media.n}</span>
-    <span class="card-sub">${(media.bytes / 1024 / 1024).toFixed(1)} MB on disk</span>
+    <span class="card-sub">${(media.bytes / 1024 / 1024).toFixed(1)} MB total</span>
   </div>
   <div class="card">
     <span class="card-label">playlists</span>

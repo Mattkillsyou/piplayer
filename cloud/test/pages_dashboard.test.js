@@ -20,7 +20,7 @@ describe("dashboard", () => {
     expect(page).toContain("No devices yet. Register one to start the wall.");
     expect(page).toContain('<a href="/devices" class="button small">Register a device</a>');
     expect(page).not.toContain('id="wall-filters"');
-    expect(page).toContain("0.0 MB on disk");
+    expect(page).toContain("0.0 MB total");
     expect(page).toContain("0 playing · 0 faults");
     expect(page).toContain("Monitor wall · 0 devices");
     expect(page).toContain('<ul class="log-lines">');
@@ -42,7 +42,7 @@ describe("dashboard", () => {
     await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'Always on', 3)", c.id, gpl);
     const page = await (await r.viewer.get("/dashboard")).text();
     expect(page).toContain('<span class="card-value">2</span>');   // media
-    expect(page).toContain("3.5 MB on disk");
+    expect(page).toContain("3.5 MB total");
     expect(page).toContain('<span class="card-value">3</span>');   // devices (and 2 playlists -> "2" already asserted)
     // A last synced in 2020 so it is offline (lamp beats the reported "playing"); B and C never synced
     expect(page).toContain("0 playing · 3 faults");
