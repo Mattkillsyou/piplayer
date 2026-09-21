@@ -34,7 +34,7 @@ describe("audit page", () => {
     const at = (s) => page.indexOf(s);
     expect(at("tie-2")).toBeLessThan(at("tie-1"));
     expect(at("tie-1")).toBeLessThan(at("tie-0"));
-    expect(at("tie-0")).toBeLessThan(at("create_playlist"));
+    expect(at("tie-0")).toBeLessThan(at("<code>create_playlist</code>")); // the filter select lists it first
     const names = [4, 3, 2, 1, 0].map((i) => at(`audit-${i}`));
     expect(names).toEqual([...names].sort((a, b) => a - b));
     expect(page).not.toContain(XSS);

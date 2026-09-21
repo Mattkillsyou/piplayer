@@ -79,7 +79,7 @@ ${items.map((v) => row(v, tz, editor, ctx)).join("\n")}
 </div>` : emptyState("NO MEDIA", `No media yet.${editor ? " Drop a file above." : ""}`);
   const content = `<div class="page-head">
   <h1>Library</h1>
-  <span class="page-meta">${items.length} file${items.length === 1 ? "" : "s"} · ${round1(totalBytes / 1024 / 1024 / 1024)} GB on disk</span>
+  <span class="page-meta">${items.length} file${items.length === 1 ? "" : "s"} · ${round1(totalBytes / 1024 / 1024 / 1024)} GB in total</span>
 </div>
 
 ${editor ? uploadGrid(maxBytes, ctx) : ""}

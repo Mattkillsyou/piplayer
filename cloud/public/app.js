@@ -13,13 +13,37 @@
     }
   });
 
+  // Auto-submitting selects. A mouse or touch pick fires one change event and submits at once.
+  // Arrow keys on a focused select fire change on every press (Chrome, Firefox), so a change
+  // made with the keyboard is held until Enter or until focus leaves the select, and is only
+  // submitted when the value actually moved from what the page loaded with.
+  function isAutosubmit(el) {
+    return !!(el && el.form && el.dataset && el.dataset.autosubmit !== undefined);
+  }
+  function autosubmit(el) {
+    // requestSubmit fires the submit event (so data-confirm applies); the hidden csrf_token
+    // input is rendered into every form server-side.
+    if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit();
+  }
+  var keyed = null;      // the select the keyboard has touched since it took focus, if any
+  var loadedValue = '';  // its value when it took focus
+  function commitKeyed() {
+    var el = keyed;
+    keyed = null;
+    if (el && el.value !== loadedValue) autosubmit(el);
+  }
+  document.addEventListener('focusin', function (e) {
+    if (isAutosubmit(e.target)) loadedValue = e.target.value;
+  });
+  document.addEventListener('keydown', function (e) {
+    if (!isAutosubmit(e.target)) return;
+    if (e.key === 'Enter') { keyed = e.target; commitKeyed(); } else keyed = e.target;
+  });
   document.addEventListener('change', function (e) {
-    var el = e.target;
-    if (el && el.form && el.dataset && el.dataset.autosubmit !== undefined) {
-      // requestSubmit fires the submit event (so data-confirm applies); the hidden csrf_token
-      // input is rendered into every form server-side.
-      if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit();
-    }
+    if (isAutosubmit(e.target) && e.target !== keyed) autosubmit(e.target);
+  });
+  document.addEventListener('focusout', function (e) {
+    if (e.target === keyed) commitKeyed();
   });
 
   // Masked secrets (the enrollment key): <button data-reveal="<input id>"> toggles the
@@ -93,11 +117,11 @@
       });
       postJson('/playlists/' + playlistId + '/items/reorder', { order: ids }).then(function (r) {
         if (!r.ok) {
-          alert('Reorder not saved (HTTP ' + r.status + '); reloading');
+          alert('The new order was not saved. Reloading the page.');
           window.location.reload();
         }
       }).catch(function (err) {
-        alert('Reorder error: ' + err.message);
+        alert('The new order was not saved: ' + err.message + ' Reloading the page.');
         window.location.reload();
       });
     }
