@@ -102,7 +102,8 @@ async function usersPage(ctx, created = null) {
 
 <div class="table-wrap">
 <table class="data">
-  <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Change role</th><th>Reset password</th><th></th></tr></thead>
+  <caption class="sr-only">Users</caption>
+  <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Created</th><th scope="col">Change role</th><th scope="col">Set password</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
   <tbody>
     ${rows.filter(Boolean).join("\n    ")}
   </tbody>

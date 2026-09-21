@@ -11,7 +11,8 @@ const RECENT_LIMIT = 100;
 function table(rows, tz, closed) {
   return `<div class="table-wrap">
   <table class="data">
-    <thead><tr><th>Device</th><th>Alert</th><th>Opened</th><th>${closed ? "Closed" : "Open for"}</th><th>Last notified</th></tr></thead>
+    <caption class="sr-only">${closed ? "Recently recovered alerts" : "Open alerts"}</caption>
+    <thead><tr><th scope="col">Device</th><th scope="col">Alert</th><th scope="col">Opened</th><th scope="col">${closed ? "Closed" : "Open for"}</th><th scope="col">Last notified</th></tr></thead>
     <tbody>
     ${rows.map((a) => `<tr>
       <td class="name">${esc(a.name)} <code class="muted small">${esc(a.device_id)}</code></td>

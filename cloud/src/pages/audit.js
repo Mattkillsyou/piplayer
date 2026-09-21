@@ -55,7 +55,7 @@ async function auditPage(ctx) {
     </tr>`;
   const content = `<div class="page-head">
   <h1>Audit log</h1>
-  <span class="page-meta">last ${entries.length} entr${entries.length === 1 ? "y" : "ies"} · times in ${esc(zoneName(tz))} (database stores UTC)</span>
+  <span class="page-meta">last ${entries.length} entr${entries.length === 1 ? "y" : "ies"} · times in ${esc(zoneName(tz))}</span>
 </div>
 
 <div class="terminal">
@@ -73,8 +73,9 @@ async function auditPage(ctx) {
   </div>
   ${!entries.length ? '<div class="terminal-foot">no entries yet <span class="cursor-blink" aria-hidden="true"></span></div>' : `<div class="table-wrap">
   <table class="data">
+    <caption class="sr-only">Audit log entries</caption>
     <thead>
-      <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr>
+      <tr><th scope="col">When</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Details</th><th scope="col">IP</th></tr>
     </thead>
     <tbody>
       ${entries.map(row).join("\n      ")}

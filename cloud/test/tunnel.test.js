@@ -476,7 +476,7 @@ describe("manifest tunnel block", () => {
     page = await (await r.editor.get("/devices")).text();
     expect(page).toContain(`action="/devices/${lobby.id}/tunnel"`);
     expect(page).toContain(">Recreate tunnel</button>");
-    expect(page).toContain("<code>p5k-lobby</code>");
+    expect(page).toContain("Creates a private web address for this device's camera (<code>lobby-cam.photogen5000.com</code>)");
     expect(page).not.toContain("eyJ");
     expect(fake.calls.length).toBe(0); // rendering never calls the API
     const viewer = await (await r.viewer.get("/devices")).text();

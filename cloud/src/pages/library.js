@@ -69,8 +69,9 @@ async function libraryPage(ctx) {
   const totalBytes = items.reduce((n, v) => n + (v.size_bytes || 0), 0);
   const table = items.length ? `<div class="table-wrap">
 <table class="data">
+  <caption class="sr-only">Media</caption>
   <thead>
-    <tr><th>Type</th><th>Name</th><th>Size</th><th>Duration</th><th>Resolution</th><th>Codec</th><th>Uploaded</th><th></th></tr>
+    <tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Size</th><th scope="col">Duration</th><th scope="col">Resolution</th><th scope="col">Codec</th><th scope="col">Uploaded</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
   </thead>
   <tbody>
 ${items.map((v) => row(v, tz, editor, ctx)).join("\n")}

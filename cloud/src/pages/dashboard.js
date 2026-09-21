@@ -115,7 +115,7 @@ async function dashboard(ctx) {
   </div>` : ""}
 </div>
 ${!n
-    ? emptyState("NO SIGNAL", "No devices yet. Register one to start the wall.", '<a href="/devices" class="button small">Register a device</a>')
+    ? emptyState("NO DEVICES", "No devices yet. Add one to start the wall.", '<a href="/devices" class="button small">Add a device</a>')
     : `<div class="device-grid" id="monitor-wall">
   ${devices.map((d) => deviceCard(ctx, d, tz, canEdit)).join("\n  ")}
 </div>`}

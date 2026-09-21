@@ -35,7 +35,7 @@ describe("groups", () => {
     expect(page).not.toContain("new group");
     expect(page).not.toContain("data-confirm");
     page = await (await r.editor.get("/groups")).text();
-    expect(page).toContain('data-confirm="Delete x&#39;);alert(1);//grp? Devices in the group will lose this fallback."');
+    expect(page).toContain('data-confirm="Delete x&#39;);alert(1);//grp? Devices in the group will lose this default playlist."');
     expect(page).toContain("new group");
     expect(page).not.toContain("onchange");
   });

@@ -41,7 +41,7 @@ describe("role matrix", () => {
     expect(vw).not.toContain("DEVICE_TOKEN=");
     expect(vw).not.toContain("Token / install");
     expect(vw).not.toContain('action="/devices" class="head-actions"');
-    expect(vw).not.toContain("After registering");
+    expect(vw).not.toContain("After adding the device");
     expect(vw).not.toContain("Reboot Pi");
     expect(vw).not.toContain("New token");
     expect(vw).not.toContain("Delete device");
@@ -57,10 +57,10 @@ describe("role matrix", () => {
     expect(ed).not.toContain("DEVICE_TOKEN=");
     expect(ed).not.toContain("<summary>Token / install</summary>");
     expect(ed).not.toContain("New token");
-    expect(ed).toContain('<p class="help small">After registering, an administrator opens "Token / install" on the new device and runs that command on the Pi.</p>');
+    expect(ed).toContain('<p class="help small">Device ID: lowercase letters, digits and hyphens, e.g. lobby-projector. After adding the device, an administrator opens "Token / install" on it and runs that command on the Pi.</p>');
     expect(ed).toContain("Delete device");
     const ad = await (await r.admin.get("/devices")).text();
-    expect(ad).toContain('<p class="help small">After registering, open "Token / install" on the new device and run that command on the Pi.</p>');
+    expect(ad).toContain('<p class="help small">Device ID: lowercase letters, digits and hyphens, e.g. lobby-projector. After adding the device, open "Token / install" on it and run that command on the Pi.</p>');
     expect(ad).toContain("<summary>Token / install</summary>");
     expect(ad).toContain(`<code class="token">${w.dev.token}</code>`);
     expect(ad).toContain("cd piplayer/player");
@@ -73,7 +73,7 @@ describe("role matrix", () => {
     for (const c of [r.editor, r.admin]) {
       const page = await (await c.get("/devices")).text();
       expect(page).toContain('<form method="post" action="/devices" class="head-actions">');
-      expect(page).toContain('<button type="submit" class="primary">Register</button>');
+      expect(page).toContain('<button type="submit" class="primary">Add device</button>');
       expect(page).not.toContain("Viewer access: read-only.");
       expect(page).toContain(`<form method="post" action="/devices/${w.dev.id}/rename" class="inline">`);
       expect(page).toContain('name="name" value="Lobby One" maxlength="120" required');
@@ -84,7 +84,7 @@ describe("role matrix", () => {
       expect(page).toContain(">Update player</button>");
       expect(page).toContain(">Update OS</button>");
       expect(page).toContain(">Update all</button>");
-      expect(page).toContain('<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Queue a player software update (release main) on every device? Playback restarts on each Pi.">');
+      expect(page).toContain('<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Update the player software (release main) on every device? Playback restarts on each Pi.">');
       expect(page).toContain(">Update all players</button>");
       expect(page).toContain('name="group_id" data-autosubmit>');
       expect(page).not.toContain("onchange");
@@ -122,7 +122,7 @@ describe("page content", () => {
     expect(page).toContain('<div class="alert error" title="Reported by the player on its last sync">Sync problem: download failed: &lt;b&gt;a.mp4&lt;/b&gt;</div>');
     expect(page).toContain('<span class="label">last seen</span><span class="value">1 min ago<br>');
     expect(page).toContain('<span class="label">ip</span><span class="value">10.0.0.7</span>');
-    expect(page).toContain('<span class="label">agent</span><span class="value">v1.2.3</span>');
+    expect(page).toContain('<span class="label">player version</span><span class="value">v1.2.3</span>');
     expect(page).toContain('<span class="now-file">#3 clip.mp4 · playing</span>');
     expect(page).toContain('<span class="status status-playing"><span class="lamp"></span>playing</span>');
     expect(page).toContain('<div class="device-row">');
@@ -182,7 +182,8 @@ describe("page content", () => {
     expect(page).toContain("delivered ×2, no result yet");
     expect(page).toContain('<span class="badge badge-stale">undeliverable: no result after 5 deliveries</span>');
     expect(page).toContain("done · ok &lt;done&gt;");
-    expect(page).toContain("<code>force-sync</code> →");
+    expect(page).toContain("Resync →"); // the button's label, never the queue id
+    expect(page).not.toContain("force-sync</code>");
     expect((page.match(/<li>/g) || []).length).toBe(5);
     expect(page).toContain("queued");
   });
@@ -191,9 +192,9 @@ describe("page content", () => {
 describe("register", () => {
   it("validates device_id and name, lowercases, 409 on duplicate, audits", async () => {
     expect(await detail(await post(r.editor, "/devices", { device_id: "Bad_ID!", name: "x" }), 400))
-      .toBe("device_id must be lowercase alphanumeric + hyphens, 1-63 chars");
-    expect(await detail(await post(r.editor, "/devices", { device_id: "-lead", name: "x" }), 400)).toContain("device_id");
-    expect(await detail(await post(r.editor, "/devices", { device_id: "a".repeat(64), name: "x" }), 400)).toContain("device_id");
+      .toBe("Device ID must be 1-63 lowercase letters, digits or hyphens, starting with a letter or digit");
+    expect(await detail(await post(r.editor, "/devices", { device_id: "-lead", name: "x" }), 400)).toContain("Device ID");
+    expect(await detail(await post(r.editor, "/devices", { device_id: "a".repeat(64), name: "x" }), 400)).toContain("Device ID");
     expect(await detail(await post(r.editor, "/devices", { device_id: "ok-1", name: "  " }), 400)).toBe("name must be 1-120 chars");
     expect(await detail(await post(r.editor, "/devices", { device_id: "ok-1", name: "n".repeat(121) }), 400)).toBe("name must be 1-120 chars");
     expect(await one("SELECT id FROM devices WHERE device_id = 'ok-1'")).toBeNull();
@@ -204,7 +205,7 @@ describe("register", () => {
     expect(row.name).toBe("New Pi");
     expect(row.token.length).toBeGreaterThanOrEqual(32);
     res = await post(r.editor, "/devices", { device_id: "new-pi", name: "again" });
-    expect(await detail(res, 409)).toBe("A device with that device_id already exists");
+    expect(await detail(res, 409)).toBe("A device with that ID already exists");
     expect((await audits("register_device"))[0]).toMatchObject({ username: "ed", target_type: "device", details: '{"device_id": "new-pi", "name": "New Pi"}' });
   });
 });

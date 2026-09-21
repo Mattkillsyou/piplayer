@@ -67,7 +67,7 @@ describe("list page", () => {
     await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'r', 1)", dev.id, pid);
     const page = await (await r.admin.get("/playlists")).text();
     expect(page).not.toContain(XSS);
-    expect(page).toContain(`data-confirm="Delete playlist x&#39;);alert(1);//-list? 1 schedule rule(s) will be deleted; 1 device default(s) will be cleared; 1 group default(s) will be cleared."`);
+    expect(page).toContain(`data-confirm="Delete playlist x&#39;);alert(1);//-list? 1 schedule rule(s) will be deleted; 1 device(s) will lose it as their default playlist; 1 group(s) will lose it as their default playlist."`);
     expect(page).toContain(`data-confirm="Delete playlist Lobby?"`);
     expect(page).toContain("1 device</span>");
     expect(page).toContain("· 1 group");

@@ -127,7 +127,7 @@ curl -s https://projectors.photogen5000.com/openapi.json    # {"detail":"Not Fou
 
 Open `https://projectors.photogen5000.com/setup?token=<SETUP_TOKEN>` and create the admin
 (username, password twice, min 6 chars). The form logs you in and `/setup` is gone from then
-on (404). Then `/settings`: set the site timezone (IANA name, e.g. `America/Los_Angeles`) —
+on (404). Then `/settings`: set the site timezone (a name from the list, e.g. `America/Los_Angeles`; short names like EST are refused) —
 schedules and every displayed timestamp use it — plus the screenshot interval and default
 image duration.
 

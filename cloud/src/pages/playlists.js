@@ -30,14 +30,14 @@ async function playlistsPage(ctx) {
   const rowHtml = (p) => {
     const parts = [];
     if (p.schedule_count) parts.push(`${p.schedule_count} schedule rule(s) will be deleted`);
-    if (p.device_count) parts.push(`${p.device_count} device default(s) will be cleared`);
-    if (p.group_count) parts.push(`${p.group_count} group default(s) will be cleared`);
+    if (p.device_count) parts.push(`${p.device_count} device(s) will lose it as their default playlist`);
+    if (p.group_count) parts.push(`${p.group_count} group(s) will lose it as their default playlist`);
     const confirm = `Delete playlist ${p.name}?` + (parts.length ? ` ${parts.join("; ")}.` : "");
     return `<tr>
       <td class="name"><a href="/playlists/${p.id}">${esc(p.name)}</a></td>
       <td>${p.item_count}</td>
       <td class="muted">
-        <span title="devices with this as their default">${plural(p.device_count, "device")}</span>
+        <span title="devices with this as their default playlist">${plural(p.device_count, "device")}</span>
         ${p.group_count ? ` · ${plural(p.group_count, "group")}` : ""}
         ${p.schedule_count ? ` · ${plural(p.schedule_count, "schedule rule")}` : ""}
       </td>
@@ -66,8 +66,9 @@ async function playlistsPage(ctx) {
 
 ${!rows.length ? emptyState("NO PLAYLISTS", `No playlists yet.${canEdit ? " Create one above." : ""}`) : `<div class="table-wrap">
 <table class="data">
+  <caption class="sr-only">Playlists</caption>
   <thead>
-    <tr><th>Name</th><th>Items</th><th>Used by</th><th>Updated</th><th></th></tr>
+    <tr><th scope="col">Name</th><th scope="col">Items</th><th scope="col">Used by</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
   </thead>
   <tbody>
     ${rows.map(rowHtml).join("\n    ")}
@@ -161,8 +162,9 @@ async function playlistsEdit(ctx) {
 <p class="help small">Empty duration = play natural length for videos, ${esc(defaultImageDuration)}s default for images.</p>
 ${!items.length ? emptyState("EMPTY REEL", `Nothing queued.${canEdit ? " Add media below." : ""}`) : `<div class="table-wrap">
 <table class="data sortable-table" id="playlist-items">
+  <caption class="sr-only">Playlist items</caption>
   <thead>
-    <tr><th></th><th>#</th><th>Type</th><th>Name</th><th>Natural</th><th>Override</th><th></th></tr>
+    <tr><th scope="col"><span class="sr-only">Drag handle</span></th><th scope="col">#</th><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Natural</th><th scope="col">Override</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
   </thead>
   <tbody id="sortable-body" data-playlist-id="${playlist.id}"${canEdit ? "" : ' data-readonly="1"'}>
     ${items.map(itemRow).join("\n    ")}

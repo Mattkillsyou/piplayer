@@ -74,7 +74,8 @@ export function tokenTable(ctx, tokens, tz, revokePath) {
     </tr>`).join("\n    ");
   return `<div class="table-wrap">
   <table class="data">
-    <thead><tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+    <caption class="sr-only">API tokens</caption>
+    <thead><tr><th scope="col">Name</th><th scope="col">Created</th><th scope="col">Last used</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
     <tbody>
     ${rows}
     </tbody>
@@ -106,7 +107,7 @@ async function wyzePanel(ctx, s) {
   const configured = have.has("wyze_email") && have.has("wyze_password");
   return `<div class="panel">
   <h2>Wyze account (camera zero-config)</h2>
-  <p class="muted small">Players fetch these credentials over their own device token (<code>GET /api/camera-config</code>) and run the Wyze bridge with them, so a freshly flashed Pi shows its camera without any per-device setup. Stored encrypted; never shown again. Status: <strong>${configured ? "configured" : "not configured"}</strong>${configured ? "" : " (the flasher's provision script only installs the bridge once an email and password are set)"}.</p>
+  <p class="muted small">Every Pi fetches this Wyze login on its own and uses it to show its camera, so a freshly flashed Pi needs no per-device setup. Stored encrypted; never shown again. Status: <strong>${configured ? "configured" : "not configured"}</strong>${configured ? "" : " (the flasher's provision script only installs the bridge once an email and password are set)"}.</p>
   <form method="post" action="/settings/wyze">
     ${csrfInput(ctx)}
     <div class="form-grid">
@@ -117,7 +118,7 @@ async function wyzePanel(ctx, s) {
         <input type="text" name="wyze_camera_pattern" value="${esc(s.wyze_camera_pattern)}" placeholder="${esc(db.DEFAULT_WYZE_CAMERA_PATTERN)}" maxlength="100" required>
       </label>
     </div>
-    <p class="help small">The API key id and key come from the Wyze developer portal. The pattern names each device's camera in the Wyze app: <code>{device_name}</code> and <code>{device_id}</code> are substituted; a device can override it on the Devices page. Saving any change bumps <code>camera_config_version</code> (now ${s.camera_config_version}) so every player refetches on its next sync.</p>
+    <p class="help small">The API key id and key come from the Wyze developer portal. The pattern names each device's camera in the Wyze app: <code>{device_name}</code> and <code>{device_id}</code> are substituted; a device can override it on the Devices page. Saving any change makes every player pick up the new camera settings on its next sync.</p>
     <div class="row">
       <button type="submit" class="primary">Save Wyze settings</button>
     </div>
@@ -132,7 +133,7 @@ async function wyzePanel(ctx, s) {
 // Alert channels: thresholds, addresses, webhook, Twilio (password inputs: filled replaces,
 // empty keeps, like the Wyze panel) and one Send test button per channel.
 const TWILIO_FIELDS = [["twilio_account_sid", "Twilio account SID"], ["twilio_auth_token", "Twilio auth token"],
-  ["twilio_from", "From number (E.164)"], ["twilio_to", "To number (E.164)"]];
+  ["twilio_from", "Text messages from (phone number with country code, e.g. +15551234567)"], ["twilio_to", "Text messages to (phone number with country code, e.g. +15551234567)"]];
 
 async function alertsPanel(ctx, s) {
   const have = await secrets.names(ctx.env);
@@ -146,7 +147,7 @@ async function alertsPanel(ctx, s) {
     </form>`;
   return `<div class="panel">
   <h2>Alerts</h2>
-  <p class="muted small">Every 5 minutes the console checks each device for: ${alerts.KINDS.map((k) => `<code>${k}</code>`).join(", ")}. An alert opens once per device and condition, is sent again while it stays open (repeat interval), and a recovery message follows when it clears. <a href="/alerts">Open and recent alerts</a>.</p>
+  <p class="muted small">Every 5 minutes the console checks each device for: ${alerts.KINDS.map((k) => esc(alerts.KIND_TEXT[k] || k)).join(", ")}. An alert opens once per device and condition, is sent again while it stays open (repeat interval), and a recovery message follows when it clears. <a href="/alerts">Open and recent alerts</a>.</p>
   <form method="post" action="/settings/alerts">
     ${csrfInput(ctx)}
     <div class="form-grid">
@@ -193,7 +194,7 @@ async function tunnelPanel(ctx, s) {
   const n = (await db.first(ctx.env, "SELECT COUNT(*) AS n FROM devices WHERE tunnel_id IS NOT NULL")).n;
   return `<div class="panel">
   <h2>Camera tunnels (Cloudflare) ${badge(on, on ? "configured" : "not configured")}</h2>
-  <p class="muted small">With the worker secrets set, every device gets its own Cloudflare Tunnel at enrollment (or from "Create tunnel" on the Devices page): <code>p5k-&lt;device_id&gt;</code>, the name <code>&lt;device_id&gt;-cam.${esc(cloudflare.zoneName(ctx.env))}</code> pointing at the Wyze bridge on the Pi, and an Access application so only the operators below can open it. The Pi receives the tunnel token on its next sync; nothing is stored here.${on ? "" : ` Missing: ${cloudflare.missing(ctx.env).map((k) => `<code>${k}</code>`).join(", ")} (<code>wrangler secret put</code>; the API token needs Account &gt; Cloudflare Tunnel: Edit, Zone &gt; DNS: Edit, Account &gt; Access: Apps and Policies: Edit). Until then, paste a live URL per device.`}</p>
+  <p class="muted small">With the worker secrets set, every device gets its own private camera address when it enrolls (or from "Create tunnel" on the Devices page): <code>&lt;device_id&gt;-cam.${esc(cloudflare.zoneName(ctx.env))}</code>, which only the operators below can open (Cloudflare Access). The Pi receives the tunnel key on its next sync; nothing is stored here.${on ? "" : ` Missing: ${cloudflare.missing(ctx.env).map((k) => `<code>${k}</code>`).join(", ")} (set as worker secrets by whoever deploys the console; the API token needs Account &gt; Cloudflare Tunnel: Edit, Zone &gt; DNS: Edit, Account &gt; Access: Apps and Policies: Edit). Until then, paste a live URL per device.`}</p>
   <p class="muted small">Operator emails (Access policy): ${emails ? emails.map((e) => `<code>${esc(e)}</code>`).join(", ") : '<span class="badge badge-stale">none</span> set the alert email addresses above (or make an admin username an email address) before creating a tunnel'}. Devices with a tunnel: ${n}.</p>
 </div>`;
 }
@@ -212,7 +213,7 @@ async function settingsPage(ctx, newToken = "") {
   <form method="post" action="/settings">
     ${csrfInput(ctx)}
     <div class="form-grid">
-      <label>Site timezone (IANA name)
+      <label>Site timezone (e.g. America/New_York)
         <input type="text" name="timezone" value="${esc(s.timezone)}" list="tz-list" placeholder="America/Los_Angeles" required>
         <datalist id="tz-list">
           ${timeZoneOptions().map((tz) => `<option value="${esc(tz)}">`).join("\n          ")}
@@ -240,10 +241,10 @@ async function settingsPage(ctx, newToken = "") {
         </select>
       </label>
     </div>
-    <p class="help small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot; the camera interval works the same way for room camera snapshots. The image duration applies to images without a per-item override. The group and playlist are applied when a device enrolls for the first time (<code>POST /api/enroll</code>); re-enrolling a known device keeps its current assignment.</p>
+    <p class="help small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot; the camera interval works the same way for room camera snapshots. The image duration applies to images without a per-item override. The group and playlist are applied when a new Pi enrolls for the first time; a known device that enrolls again keeps its current assignment.</p>
     <h3>Player updates</h3>
     <div class="form-grid">
-      <label>Player release (git tag, branch or sha)
+      <label>Player software version (release name)
         <input type="text" name="player_release" value="${esc(s.player_release)}" placeholder="main" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9._/-]{0,99}" required>
       </label>
       <label>Auto-update
@@ -274,15 +275,15 @@ async function settingsPage(ctx, newToken = "") {
 
 <div class="panel">
   <h2>Device enrollment</h2>
-  <p class="muted small">The flasher fetches this key with an API token (below) and writes it to every card; a Pi presents it on first boot (<code>POST /api/enroll</code>) and receives its own device token. Rotate it if a card is lost: cards flashed with the old key that have not booted yet stop working.</p>
+  <p class="muted small">The flasher fetches this key with an API token (below) and writes it to every card; a Pi presents it on first boot and receives its own device token. Rotate it if a card is lost: cards flashed with the old key that have not booted yet stop working.</p>
   <div class="enrollment-key">
     <label for="enrollment-key" class="small">Enrollment key</label>
     <input type="password" id="enrollment-key" value="${esc(s.enrollment_key)}" readonly spellcheck="false" autocomplete="off">
     <button type="button" class="small" data-reveal="enrollment-key">Show</button>
   </div>
-  <form method="post" action="/settings/enrollment/rotate" class="inline" data-confirm="Rotate the enrollment key? Cards flashed with the old key that have not booted yet will fail to enroll.">
+  <form method="post" action="/settings/enrollment/rotate" class="inline" data-confirm="Make a new enrollment key? Cards flashed with the old key that have not booted yet will fail to enroll.">
     ${csrfInput(ctx)}
-    <button type="submit" class="danger">Rotate key</button>
+    <button type="submit" class="danger">New key</button>
   </form>
 </div>
 
@@ -319,7 +320,7 @@ async function settingsSave(ctx) {
   // only post the four site fields never lose it.
   const current = await ctx.settings();
   const release = str(form, "player_release").trim() || current.player_release;
-  if (!db.isGitRef(release)) fail(400, "player_release must be a git tag, branch or sha (letters, digits, . _ / -; at most 100 chars)");
+  if (!db.isGitRef(release)) fail(400, "Player software version must be a release name (letters, digits, . _ / -; at most 100 characters)");
   const autoUpdate = str(form, "auto_update").trim() || current.auto_update;
   if (!db.AUTO_UPDATE_MODES.includes(autoUpdate)) fail(400, `auto_update must be one of ${db.AUTO_UPDATE_MODES.join(", ")}`);
   const window = str(form, "auto_update_window").trim() || current.auto_update_window;

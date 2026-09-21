@@ -69,8 +69,9 @@ async function schedulePage(ctx) {
 <p class="help small">When multiple rules match, the one with the highest priority wins. If no rule matches, the device's default playlist (set on the Devices page) plays. A window that crosses midnight (e.g. 22:00–02:00) belongs to the day it starts on, so "Fri 22:00–02:00" runs until Saturday 02:00.</p>
 ${!rules.length ? emptyState("NO RULES", "The device plays its default playlist always.") : `<div class="table-wrap">
 <table class="data">
+  <caption class="sr-only">Schedule rules</caption>
   <thead>
-    <tr><th>Prio</th><th>Name</th><th>Playlist</th><th>When</th><th>State</th><th></th></tr>
+    <tr><th scope="col">Prio</th><th scope="col">Name</th><th scope="col">Playlist</th><th scope="col">When</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
   </thead>
   <tbody>
     ${rules.map(ruleRow).join("\n    ")}

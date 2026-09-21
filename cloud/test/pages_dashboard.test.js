@@ -16,9 +16,9 @@ describe("dashboard", () => {
     const page = await (await r.viewer.get("/dashboard")).text();
     expect(page).toContain("<h1>Dashboard</h1>");
     expect(page).toMatch(/<span class="page-meta">server \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC · UTC<\/span>/);
-    expect(page).toContain('<span class="empty-title">NO SIGNAL</span>');
-    expect(page).toContain("No devices yet. Register one to start the wall.");
-    expect(page).toContain('<a href="/devices" class="button small">Register a device</a>');
+    expect(page).toContain('<span class="empty-title">NO DEVICES</span>');
+    expect(page).toContain("No devices yet. Add one to start the wall.");
+    expect(page).toContain('<a href="/devices" class="button small">Add a device</a>');
     expect(page).not.toContain('id="wall-filters"');
     expect(page).toContain("0.0 MB total");
     expect(page).toContain("0 playing · 0 faults");

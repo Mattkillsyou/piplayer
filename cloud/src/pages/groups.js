@@ -30,7 +30,7 @@ async function groupsPage(ctx) {
         </form>
       </td>
       <td>
-        ${canEdit ? `<form method="post" action="/groups/${g.id}/delete" class="inline" data-confirm="Delete ${esc(g.name)}? Devices in the group will lose this fallback.">
+        ${canEdit ? `<form method="post" action="/groups/${g.id}/delete" class="inline" data-confirm="Delete ${esc(g.name)}? Devices in the group will lose this default playlist.">
           ${csrfInput(ctx)}
           <button type="submit" class="danger small">Delete</button>
         </form>` : ""}
@@ -46,12 +46,13 @@ async function groupsPage(ctx) {
     <button type="submit" class="primary">Create</button>
   </form>` : ""}
 </div>
-<p class="help small">Devices in a group use the group's playlist as their fallback (when the device has no default and no schedule matches).</p>
+<p class="help small">Devices in a group use the group's playlist as their default playlist (when the device has none of its own and no schedule matches).</p>
 
 ${!groups.length ? emptyState("NO GROUPS", `No groups yet.${canEdit ? " Create one above." : ""}`) : `<div class="table-wrap">
 <table class="data">
+  <caption class="sr-only">Device groups</caption>
   <thead>
-    <tr><th>Name</th><th>Devices</th><th>Default playlist</th><th></th></tr>
+    <tr><th scope="col">Name</th><th scope="col">Devices</th><th scope="col">Default playlist</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
   </thead>
   <tbody>
     ${groups.map(row).join("\n    ")}

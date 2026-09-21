@@ -213,7 +213,7 @@ capped at 5 unanswered polls):
 | `update-all` | `sudo -n /opt/piplayer/player/deploy/update-player.sh <ref> --then-os` (the player update chains into `update-os.sh`) |
 
 Buttons for all three sit under Actions on each device card, next to Resync /
-Restart mpv / Reboot Pi (editor and above). The Devices
+Restart playback / Reboot Pi (editor and above). The Devices
 page header has **Update all players** (editor and above, with a confirm),
 which queues `update-player` for every device using the release ref from
 Settings. Each issue is audited.

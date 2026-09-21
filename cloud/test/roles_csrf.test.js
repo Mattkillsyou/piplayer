@@ -1,9 +1,15 @@
-// Cross-cutting authorization matrix: every spec route x {anonymous, viewer, editor, admin},
+// Cross-cutting authorization matrix: every web route x {anonymous, viewer, editor, admin},
 // plus the CSRF contract (8) on /login, /logout and every web POST/PUT. Mirrors the
-// black-box table in e2e/run_e2e.py so the same expectations run inside workerd.
+// black-box table in e2e/run_e2e.py so the same expectations run inside workerd. The
+// completeness test at the end derives the route list from the modules' register() calls,
+// so a route added later without a row here fails the sweep instead of going untested.
 import { beforeAll, describe, expect, it } from "vitest";
+import { isApiPath, Router } from "../src/router.js";
 import { Client, SETUP_TOKEN } from "./helpers.js";
 import { NOPE, device, playlist, post, postJson, roles } from "./pages_common.js";
+
+// Every src module (index.js's MODULES list, without copying it): the ones with register() are the routes.
+const modules = Object.values(import.meta.glob(["../src/*.js", "../src/pages/*.js"], { eager: true }));
 
 const CSRF_DETAIL = "CSRF token missing or invalid";
 const FORM_RX = /<form\b[^>]*method=["']post["'][^>]*>([\s\S]*?)<\/form>/gi;
@@ -77,6 +83,13 @@ function table() {
     ["POST", `/devices/${NOPE}/regen-token`, {}, "form", E(404)],
     ["POST", `/devices/${NOPE}/delete`, {}, "form", E(404)],
     ["POST", `/devices/${NOPE}/command`, { command: "reboot" }, "form", E(404)],
+    ["POST", `/devices/${NOPE}/rename`, { name: "x" }, "form", E(404)],
+    ["POST", `/devices/${NOPE}/projector`, { projector_control: "cec", projector_power_mode: "auto" }, "form", E(404)],
+    ["POST", "/devices/update-all", { command: "nope" }, "form", E(400)],
+    ["GET", `/devices/${NOPE}/camera`, null, null, ALL(404)],
+    ["POST", `/devices/${NOPE}/camera-url`, { camera_live_url: "https://x" }, "form", E(404)],
+    ["POST", `/devices/${NOPE}/camera-source`, { camera_source: "none" }, "form", E(404)],
+    ["POST", `/devices/${NOPE}/tunnel`, {}, "form", E(400)],
     ["POST", `/devices/${NOPE}/schedule`, { name: "r", playlist_id: String(pid), priority: "1" }, "form", E(404)],
     ["POST", `/devices/${NOPE}/schedule/${NOPE}/delete`, {}, "form", E(404)],
     ["POST", "/groups", { name: " " }, "form", E(400)],
@@ -94,6 +107,11 @@ function table() {
     ["POST", "/settings/alerts/test", { channel: "nope" }, "form", AD(400)],
     ["POST", "/settings/alerts/twilio/clear", {}, "form", AD(303)],
     ["POST", `/settings/tokens/${NOPE}/revoke`, {}, "form", AD(404)],
+    ["POST", "/settings/enrollment/rotate", {}, "form", AD(303)],
+    ["POST", "/settings/wyze", { wyze_camera_pattern: "\u0001" }, "form", AD(400)],
+    ["POST", "/settings/wyze/clear", {}, "form", AD(303)],
+    ["GET", "/authorize", null, null, AD(200)],
+    ["POST", "/authorize", { code: "ZZZZZZ", action: "deny" }, "form", AD(400)],
     ["GET", `/setup?token=${SETUP_TOKEN}`, null, null, ALL(404)],
     ["POST", "/setup", { token: SETUP_TOKEN, username: "x", password: "pw123456", password2: "pw123456" }, "form", ALL(404)],
   ];
@@ -146,6 +164,23 @@ describe("authorization matrix", () => {
       expect(t.includes('href="/users"')).toBe(has);
       expect(t.includes('href="/settings"')).toBe(has);
     }
+  });
+
+  // /, /login and /logout are covered by the root check above and the csrf block below;
+  // /api/* is bearer-authenticated (api.test.js and friends), not a web route.
+  it("table() has a row for every web route the modules register", () => {
+    const router = new Router();
+    for (const m of modules) if (m.register) m.register(router);
+    const registered = router.routes.map((rt) => `${rt.method} ${rt.pattern}`)
+      .filter((k) => !isApiPath(k.split(" ")[1]) && !["GET /", "GET /login", "POST /login", "POST /logout"].includes(k));
+    expect(registered.length).toBeGreaterThan(50);
+    const covered = new Set();
+    for (const [method, path] of table()) {
+      const m = router.match(method, path.split("?")[0]);
+      expect(m && m.pattern, `${method} ${path} matches no registered route`).toBeTruthy();
+      covered.add(`${method} ${m.pattern}`);
+    }
+    expect([...covered].sort()).toEqual([...new Set(registered)].sort());
   });
 });
 
@@ -222,6 +257,11 @@ describe("csrf (contract 8)", () => {
       const html = await res.text();
       const meta = META_RX.exec(html);
       expect(meta, `${p} meta`).not.toBeNull();
+      // the phone layout itself needs a browser; the markup app.js and the breakpoints rely on
+      // comes from the one layout()/navHtml(), so this guards every page at once
+      expect(html, `${p} viewport`).toContain('<meta name="viewport" content="width=device-width, initial-scale=1">');
+      expect(html, `${p} nav toggle`).toContain('class="nav-toggle" aria-label="Menu" aria-expanded="false" aria-controls="site-nav"');
+      expect(html, `${p} nav id`).toContain('<nav id="site-nav"');
       const forms = [...html.matchAll(FORM_RX)].map((m) => m[1]);
       expect(forms.length, `${p} has at least one POST form`).toBeGreaterThan(0);
       for (const body of forms) expect(body, `${p} form lacks csrf_token`).toMatch(HIDDEN_RX);

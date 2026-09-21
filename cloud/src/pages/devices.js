@@ -223,7 +223,7 @@ function commandLine(c, tz) {
   }
   return `<li>
             <span class="muted">${esc(localTime(c.issued_at, tz))}</span>
-            <code>${esc(c.command)}</code> →
+            ${esc(commandText(c.command))} →
             ${state}
           </li>`;
 }
@@ -253,9 +253,10 @@ export function updateStatus(d, tz) {
 // per code, the state lamp the player reported and its last error.
 const IR_CODE_LABELS = { power_on: "Power On", power_off: "Power Off", input_hdmi1: "Input HDMI1" };
 
-// What the banner calls a command after the button is clicked.
+// What the banner and the Recent commands list call a command: the button's own label, so the
+// owner never meets the queue id (force-sync, restart-mpv); the audit log keeps the id, it is a record.
 const COMMAND_TEXT = {
-  reboot: "Reboot", "force-sync": "Resync", "restart-mpv": "Restart mpv", "update-player": "Player update",
+  reboot: "Reboot", "force-sync": "Resync", "restart-mpv": "Restart playback", "update-player": "Player update",
   "update-os": "OS update", "update-all": "Player and OS update", "projector-on": "Projector on", "projector-off": "Projector off",
 };
 const commandText = (c) => COMMAND_TEXT[c] || `Learn ${IR_CODE_LABELS[c.slice("ir-learn:".length)]}`;
@@ -277,7 +278,7 @@ function projectorBlock(ctx, d, canEdit, dis) {
     ? `<span class="badge badge-active" title="Learned">${esc(IR_CODE_LABELS[n])}</span>`
     : `<span class="badge badge-muted" title="Not learned yet">${esc(IR_CODE_LABELS[n])}</span>`)).join("\n            ");
   const learn = manifest.IR_CODE_NAMES.map((n) => commandForm(ctx, d, `ir-learn:${n}`, `Learn ${IR_CODE_LABELS[n]}`, "small",
-    "Puts the RM4 into learn mode for 30 s: point the projector remote at it and press the button")).join("\n            ");
+    "Puts the Broadlink into learn mode for 30 seconds: point the projector remote at it and press the button")).join("\n            ");
   return `<details class="projector-block">
         <summary>Projector${control === "none" ? "" : ` · ${esc(control)} · ${esc(d.projector_power_mode || "manual")}`}${d.projector_error ? " · error" : ""}</summary>
         <div class="token-block">
@@ -298,12 +299,12 @@ function projectorBlock(ctx, d, canEdit, dis) {
                 ${manifest.PROJECTOR_MODES.map((v) => `<option value="${v}"${v === (d.projector_power_mode || "manual") ? " selected" : ""}>${v}</option>`).join("\n                ")}
               </select>
             </label>
-            <label>Broadlink host (optional)
-              <input type="text" name="broadlink_host" value="${esc(d.broadlink_host || "")}" placeholder="discover on the LAN" maxlength="${MAX_BROADLINK_HOST}"${dis}>
+            <label>Broadlink address (optional)
+              <input type="text" name="broadlink_host" value="${esc(d.broadlink_host || "")}" placeholder="found automatically on the local network" maxlength="${MAX_BROADLINK_HOST}"${dis}>
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          <p class="help small">broadlink drives an RM4 mini over IR with the learned codes below; cec uses HDMI-CEC. In auto mode the player switches the projector on when a playlist is active or a schedule starts within the lead time, and off after the idle delay (${settingsRef(ctx)}).</p>
+          <p class="help small">broadlink sends the learned remote-control codes below through a Broadlink IR blaster; cec switches the projector through the HDMI cable. In auto mode the player switches the projector on when a playlist is active or a schedule starts within the lead time, and off after the idle delay (${settingsRef(ctx)}).</p>
           ${control === "none" || !canEdit ? "" : `<div class="action-buttons">
             ${commandForm(ctx, d, "projector-on", "Projector on", "small primary", "Switch the projector on now")}
             ${commandForm(ctx, d, "projector-off", "Projector off", "small", "Switch the projector off now")}
@@ -328,10 +329,10 @@ function tunnelBlock(ctx, d, canEdit, tunnelOn) {
     : '<span class="badge badge-muted">no tunnel</span>';
   const button = canEdit && tunnelOn ? `<form method="post" action="/devices/${d.id}/tunnel" class="inline"${d.tunnel_hostname ? ` data-confirm="Recreate the camera tunnel for ${esc(d.name)}? The old tunnel key stops working, the Pi gets the new one on its next check-in, and the live URL is reset to the tunnel."` : ""}>
             ${csrfInput(ctx)}
-            <button type="submit" class="small${d.tunnel_hostname ? "" : " primary"}" title="Cloudflare Tunnel + DNS + Access app for this device's camera">${d.tunnel_hostname ? "Recreate tunnel" : "Create tunnel"}</button>
+            <button type="submit" class="small${d.tunnel_hostname ? "" : " primary"}" title="Set up a private web address for this device's camera">${d.tunnel_hostname ? "Recreate tunnel" : "Create tunnel"}</button>
           </form>` : "";
   const help = tunnelOn
-    ? `Creates the Cloudflare Tunnel <code>${esc(cloudflare.tunnelName(d.device_id))}</code>, the name <code>${esc(cloudflare.hostnameFor(ctx.env, d.device_id))}</code> and an Access app for the operator emails, and sets the live URL to it; the Pi receives the tunnel token on its next sync. New devices get this at enrollment.`
+    ? `Creates a private web address for this device's camera (<code>${esc(cloudflare.hostnameFor(ctx.env, d.device_id))}</code>) that only the operator emails from Settings can open, and sets the live URL to it; the Pi picks up the tunnel key on its next check-in. New devices get this when they are added.`
     : `Automatic tunnels are not configured (${settingsRef(ctx)}): paste a live URL above.`;
   return `<div class="action-buttons tunnel-block">
             ${badge}
@@ -401,7 +402,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, openToken, tz, i
       <div class="facts">
         <div><span class="label">last seen</span><span class="value">${d.last_seen_at ? `${esc(d.seen_age)}<br>${esc(localTime(d.last_seen_at, tz))}` : "never"}</span></div>
         <div><span class="label">ip</span><span class="value">${d.last_ip ? esc(d.last_ip) : "—"}</span></div>
-        <div><span class="label">agent</span><span class="value">${d.player_version ? `v${esc(d.player_version)}` : "—"}</span></div>
+        <div><span class="label">player version</span><span class="value">${d.player_version ? `v${esc(d.player_version)}` : "—"}</span></div>
       </div>
 
       ${d.last_error ? `<div class="alert error" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
@@ -432,12 +433,12 @@ function deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, openToken, tz, i
             <label>Wyze camera name
               <input type="text" name="camera_wyze_name" value="${esc(d.camera_wyze_name || "")}" placeholder="${esc(wyzeCameraName({ ...d, camera_wyze_name: "" }, settings))}" maxlength="${MAX_WYZE_NAME}"${dis}>
             </label>
-            <label>RTSP URL
+            <label>Stream address (for the rtsp source)
               <input type="password" name="camera_rtsp_url" value="" autocomplete="off" placeholder="${d.camera_rtsp_url ? "set (leave empty to keep)" : "rtsp://user:pass@10.0.0.5:554/stream"}" maxlength="2048"${dis}>
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          <p class="help small">The player fetches this on start and whenever it changes (<code>GET /api/camera-config</code>) and (re)starts its Wyze bridge with the account from ${settingsRef(ctx)}${wyzeOn ? "" : " (no Wyze account set yet)"}. Leave the name empty to use the Settings pattern shown.</p>
+          <p class="help small">The Pi picks this up on start and whenever it changes, and restarts its camera feed with the account from ${settingsRef(ctx)}${wyzeOn ? "" : " (no Wyze account set yet)"}. Leave the name empty to use the Settings pattern shown.</p>
           <form method="post" action="/devices/${d.id}/camera-url" class="row">
             ${csrfInput(ctx)}
             <label>Camera live URL
@@ -445,7 +446,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, openToken, tz, i
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          <p class="help small">Page the console embeds for the live view (e.g. a Cloudflare Tunnel hostname to the Wyze bridge player). Snapshots come from the Pi on their own.</p>
+          <p class="help small">The page shown in the live view (usually the device's camera address from "Create tunnel" below, or any https page that shows the camera). Snapshots come from the Pi on their own.</p>
           ${tunnelBlock(ctx, d, canEdit, tunnelOn)}
           ${live ? `<div class="action-buttons">
             <a href="${esc(live)}" target="_blank" rel="noopener noreferrer" class="button small">Live</a>
@@ -469,12 +470,12 @@ function deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, openToken, tz, i
       <span class="label">Actions</span>
       ${canEdit ? `<div class="action-buttons">
         ${commandForm(ctx, d, "force-sync", "Resync", "small primary", "Tell the Pi to re-sync from the CMS now")}
-        ${commandForm(ctx, d, "restart-mpv", "Restart mpv", "small", "Restart the mpv playback process", ` data-confirm="Restart playback on ${esc(d.name)}? The screen goes blank for a few seconds."`)}
+        ${commandForm(ctx, d, "restart-mpv", "Restart playback", "small", "Restart the video player on the Pi", ` data-confirm="Restart playback on ${esc(d.name)}? The screen goes blank for a few seconds."`)}
         ${commandForm(ctx, d, "reboot", "Reboot Pi", "small danger", "", ` data-confirm="Reboot ${esc(d.name)}?"`)}
       </div>
       <div class="action-buttons">
-        ${commandForm(ctx, d, "update-player", "Update player", "small", "Check out the Settings release on the Pi and reinstall the player", ` data-confirm="Update the player software on ${esc(d.name)}? Playback restarts."`)}
-        ${commandForm(ctx, d, "update-os", "Update OS", "small", "apt-get upgrade on the Pi; reboots if the OS asks for it", ` data-confirm="Update OS packages on ${esc(d.name)}? The Pi may reboot."`)}
+        ${commandForm(ctx, d, "update-player", "Update player", "small", "Reinstall the player software at the release set in Settings", ` data-confirm="Update the player software on ${esc(d.name)}? Playback restarts."`)}
+        ${commandForm(ctx, d, "update-os", "Update OS", "small", "Update the Pi's operating system packages; it may reboot", ` data-confirm="Update OS packages on ${esc(d.name)}? The Pi may reboot."`)}
         ${commandForm(ctx, d, "update-all", "Update all", "small", "Player software, then OS packages", ` data-confirm="Update player and OS on ${esc(d.name)}? The Pi may reboot."`)}
       </div>
       ${isAdmin ? `<details${openToken ? " open" : ""}>
@@ -560,25 +561,25 @@ async function devicesPage(ctx) {
   <h1>Devices</h1>
   ${canEdit ? `<form method="post" action="/devices" class="head-actions">
     ${csrfInput(ctx)}
-    <label>device_id
-      <input type="text" name="device_id" placeholder="lobby-projector" pattern="[a-z0-9][a-z0-9-]{0,62}" required>
+    <label>Device ID
+      <input type="text" name="device_id" placeholder="lobby-projector" pattern="[a-z0-9][a-z0-9-]{0,62}" required title="Lowercase letters, digits and hyphens, e.g. lobby-projector">
     </label>
-    <label>name
+    <label>Name
       <input type="text" name="name" placeholder="Lobby Projector" maxlength="${MAX_DEVICE_NAME}" required>
     </label>
-    <button type="submit" class="primary">Register</button>
+    <button type="submit" class="primary">Add device</button>
   </form>
-  ${devices.length ? `<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Queue a player software update (release ${esc(settings.player_release)}) on every device? Playback restarts on each Pi.">
+  ${devices.length ? `<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Update the player software (release ${esc(settings.player_release)}) on every device? Playback restarts on each Pi.">
     ${csrfInput(ctx)}
     <input type="hidden" name="command" value="update-player">
-    <button type="submit" title="Queue update-player on every device that is not already waiting for one">Update all players</button>
+    <button type="submit" title="Update the player software on every device that is not already waiting for an update">Update all players</button>
   </form>` : ""}` : ""}
 </div>
-${isAdmin ? '<p class="help small">After registering, open "Token / install" on the new device and run that command on the Pi.</p>'
-    : canEdit ? '<p class="help small">After registering, an administrator opens "Token / install" on the new device and runs that command on the Pi.</p>' : ""}
+${isAdmin ? '<p class="help small">Device ID: lowercase letters, digits and hyphens, e.g. lobby-projector. After adding the device, open "Token / install" on it and run that command on the Pi.</p>'
+    : canEdit ? '<p class="help small">Device ID: lowercase letters, digits and hyphens, e.g. lobby-projector. After adding the device, an administrator opens "Token / install" on it and runs that command on the Pi.</p>' : ""}
 
 ${!devices.length
-    ? emptyState("NO SIGNAL", `No devices yet.${canEdit ? " Register one above." : ""}`)
+    ? emptyState("NO DEVICES", `No devices yet.${canEdit ? " Add one above." : ""}`)
     : `<div class="device-rows">
   ${devices.map((d) => deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, d.id === open, tz, install, settings, wyzeOn, tunnelOn)).join("\n  ")}
 </div>`}`;
@@ -590,14 +591,14 @@ async function devicesCreate(ctx) {
   const form = await ctx.form();
   const deviceId = str(form, "device_id").trim().toLowerCase();
   const name = str(form, "name").trim();
-  if (!DEVICE_ID_RE.test(deviceId)) fail(400, "device_id must be lowercase alphanumeric + hyphens, 1-63 chars");
+  if (!DEVICE_ID_RE.test(deviceId)) fail(400, "Device ID must be 1-63 lowercase letters, digits or hyphens, starting with a letter or digit");
   if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `name must be 1-${MAX_DEVICE_NAME} chars`);
   const token = randomToken(32);
   let id;
   try {
     id = (await db.run(ctx.env, "INSERT INTO devices (device_id, name, token) VALUES (?, ?, ?)", deviceId, name, token)).last_row_id;
   } catch (e) {
-    if (db.isConstraintError(e)) fail(409, "A device with that device_id already exists");
+    if (db.isConstraintError(e)) fail(409, "A device with that ID already exists");
     throw e;
   }
   await audit.log(ctx, "register_device", "device", id, { device_id: deviceId, name });

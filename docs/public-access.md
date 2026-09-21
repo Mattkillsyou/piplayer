@@ -218,7 +218,7 @@ install and restarting changes nothing — the CMS logs nothing about it and
 the old password keeps working.
 
 To change a password on an existing install: log in as an admin, open
-**Users**, type the new password in the **Reset password** box on that user's
+**Users**, type the new password in the **Set password** box on that user's
 row and click **Set**. This works on your own account too. Do this for the
 `admin` user before going public if it still has the generated password from
 the install log (that password was printed to the journal, which anyone with
@@ -226,7 +226,7 @@ the install log (that password was printed to the journal, which anyone with
 
 ## Security checklist before going public
 
-- [ ] Change the admin password via **Users → Reset password** (not the env
+- [ ] Change the admin password via **Users → Set password** (not the env
       var — it only seeds the first admin)
 - [ ] `PIPLAYER_SECRET_KEY` is set in `/etc/projector-cms/env` (the install
       script generates one; without it sessions don't survive a restart)

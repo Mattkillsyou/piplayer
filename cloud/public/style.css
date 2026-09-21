@@ -310,6 +310,10 @@ body::after { background: var(--p5k-vignette-page); }
 a { color: var(--p5k-phosphor); text-decoration: none; }
 a:hover { color: var(--p5k-phosphor); text-shadow: var(--p5k-text-glow); text-decoration: underline; text-underline-offset: 3px; }
 :focus-visible { outline: 1px solid var(--p5k-rule-max); outline-offset: 2px; box-shadow: var(--p5k-glow-focus); }
+/* Keyboard users: the skip link sits off-screen until it is tabbed to; .sr-only is text for screen readers only (table captions). */
+.skip-link { position: absolute; left: -9999px; padding: 6px 10px; background: var(--p5k-fill-tint-2); color: var(--p5k-phosphor); }
+.skip-link:focus { position: static; display: inline-block; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 h1, h2, h3 { margin: 0; font-weight: 400; line-height: var(--p5k-leading-tight); }
 h1 {

@@ -36,7 +36,7 @@ afterwards applies only migrations newer than the dump. Sessions in the dump are
 `DELETE FROM sessions` after a restore forces everyone to log in again, which is what you want
 if the restore was security-motivated.
 
-If a dump may have leaked, also: Settings > Rotate key (enrollment), Devices > New token on
+If a dump may have leaked, also: Settings > New key (enrollment), Devices > New token on
 every device, re-enter the alert webhook URL, and delete unclaimed device codes
 (`DELETE FROM device_codes`; the housekeeping does it within the hour anyway). If the worker
 was recreated with a new `SESSION_SECRET`, Wyze and Twilio show as not set after the restore

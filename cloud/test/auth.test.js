@@ -100,6 +100,9 @@ describe("csrf", () => {
     expect([r.status, r.headers.get("location")]).toEqual([303, "/login?expired=1"]);
     const page = await (await anon.get("/login?expired=1")).text();
     expect(page).toContain("Your session expired; please sign in again");
+    // a neutral notice, not the ACCESS DENIED line a wrong password gets
+    expect(page).toContain('<div class="alert warn" role="alert">Your session expired; please sign in again</div>');
+    expect(page).not.toContain("ACCESS DENIED");
     expect(await (await anon.get("/login")).text()).not.toContain("session expired");
   });
 

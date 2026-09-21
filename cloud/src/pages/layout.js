@@ -99,8 +99,9 @@ export function layout(ctx, { title, content, status = 200, message = "", messag
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="${esc(bodyClass)}">
-  ${ctx.user ? navHtml(ctx) : ""}
-  <main class="container">
+  ${ctx.user ? `<a class="skip-link" href="#main">Skip to content</a>
+  ${navHtml(ctx)}` : ""}
+  <main id="main" class="container">
     ${alertBox(message, messageKind)}
     ${content}
   </main>

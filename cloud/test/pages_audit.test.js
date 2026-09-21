@@ -42,7 +42,7 @@ describe("audit page", () => {
     expect(page).toContain("<code>2030-01-01 00:00 UTC</code>");
     expect(page).toContain('<span class="muted small">x</span> 1');
     expect(page).toContain("1.2.3.4");
-    expect(page).toContain("times in UTC (database stores UTC)");
+    expect(page).toContain("times in UTC</span>");
     expect(page).toContain(`<span class="badge badge-viewer">viewer</span>`);
 
     page = await (await r.viewer.get("/audit?limit=2")).text();

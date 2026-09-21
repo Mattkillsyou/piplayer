@@ -39,10 +39,13 @@ function nextPath(ctx, v) {
   } catch { return ""; }
 }
 
-function loginPage(ctx, error, status = 200, locked = false, next = "") {
+// `expired` is the "session expired" notice from ?expired=1: a neutral warning, not the
+// ACCESS DENIED line a wrong password gets.
+function loginPage(ctx, error, status = 200, locked = false, next = "", expired = false) {
   const alert = !error ? "" : locked
     ? `<div class="alert warn" role="alert">TERMINAL LOCKED: ${esc(error)} · <a href="/login">retry</a></div>`
-    : `<div class="alert error" role="alert">ACCESS DENIED: ${esc(error)}</div>`;
+    : expired ? `<div class="alert warn" role="alert">${esc(error)}</div>`
+      : `<div class="alert error" role="alert">ACCESS DENIED: ${esc(error)}</div>`;
   const dis = locked ? " disabled" : "";
   const card = `<div class="auth-card${locked ? " is-locked" : ""}">
     ${authBrand()}
@@ -102,7 +105,7 @@ async function logout(ctx) {
 export function register(router) {
   router.get("/", (ctx) => redirect(ctx.user ? "/dashboard" : "/login"));
   router.get("/login", (ctx) => loginPage(ctx, ctx.url.searchParams.get("expired") ? "Your session expired; please sign in again" : null,
-    200, false, nextPath(ctx, ctx.url.searchParams.get("next"))));
+    200, false, nextPath(ctx, ctx.url.searchParams.get("next")), Boolean(ctx.url.searchParams.get("expired"))));
   router.post("/login", loginSubmit);
   router.post("/logout", logout);
 }

@@ -337,7 +337,7 @@ instead, which means the same thing.) Check these in order:
 - `sudo systemctl restart projector-mpv.service`. The daemon notices the new
   mpv process (its pid changes) and re-pushes the playlist on its next loop.
 
-**Reboot / Restart mpv buttons in the CMS do nothing:**
+**Reboot / Restart playback buttons in the CMS do nothing:**
 
 - Expand **Recent commands** for the device on the Devices page (last 5 commands
   with their result). A command is delivered on up to 5 polls; if the player
