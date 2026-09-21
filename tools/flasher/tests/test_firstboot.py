@@ -150,7 +150,10 @@ def test_firstrun_key_only_ssh():
     assert 'run chmod 0600 "$HOME_DIR/.ssh/authorized_keys"' in s
     assert ('printf "%s\\n" "PasswordAuthentication no" "KbdInteractiveAuthentication no" '
             ">/etc/ssh/sshd_config.d/projection5000.conf") in s
-    assert s.index("# user") < s.index("# key-only login") < s.index("# wifi")
+    assert s.index("# user") < s.index("# sudo without a password") < s.index("# key-only login") < s.index("# wifi")
+    # The admin user can run sudo without the (never shown) password: current Pi OS images ship no 010_pi-nopasswd.
+    assert 'printf "%s ALL=(ALL) NOPASSWD: ALL\\n" projector-admin >/etc/sudoers.d/010_projection5000-nopasswd' in s
+    assert "run chmod 0440 /etc/sudoers.d/010_projection5000-nopasswd" in s
     # Without a key: the previous behaviour (password login), nothing about sshd_config.d.
     plain = firstboot.render_firstrun(cfg())
     assert "authorized_keys" not in plain and "sshd_config.d" not in plain
@@ -541,6 +544,7 @@ def _run_firstrun(tmp_path, c, stubs=()):
          .replace("/opt/", tmp + "/opt-")
          .replace("/etc/systemd/system/", tmp + "/unit-")
          .replace("/etc/ssh/", tmp + "/etc-ssh/")
+         .replace("/etc/sudoers.d", tmp + "/etc-sudoers")
          .replace("/etc/NetworkManager/", tmp + "/etc-nm/")
          .replace("run systemctl enable", "run true systemctl enable"))
     (boot / "firstrun.sh").write_bytes(s.encode())
@@ -597,6 +601,9 @@ def test_firstrun_key_and_static_ip_under_bash(tmp_path):
     assert (home / ".ssh" / "authorized_keys").read_text() == PUBKEY + "\n"
     assert "install -d -> rc=0" in log and "chown projector-admin:projector-admin -> rc=0" in log, log
     assert "chmod 0600 -> rc=0" in log
+    # sudo without a password for the admin user: the drop-in is written and made 0440
+    assert (tmp_path / "etc-sudoers" / "010_projection5000-nopasswd").read_text() == "projector-admin ALL=(ALL) NOPASSWD: ALL\n"
+    assert "chmod 0440 -> rc=0" in log
     assert (tmp_path / "chown.log").read_text() == f"chown projector-admin:projector-admin {msys_home}/.ssh/authorized_keys\n"
     assert (tmp_path / "etc-ssh" / "sshd_config.d" / "projection5000.conf").read_text() == (
         "PasswordAuthentication no\nKbdInteractiveAuthentication no\n")

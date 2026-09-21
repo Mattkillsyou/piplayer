@@ -60,7 +60,8 @@ UNSTRIPPED = ("wifi_password",)
 CONSOLE_JSON = "console.json"  # {"console_url": ..., "enrollment_key": ...}, written by build.ps1 (key optional)
 DEFAULT_CONSOLE_URL = "https://projectors.photogen5000.com"
 # The Pi's login: one fixed user, SSH by key only (the flasher's key, see sshkey.py). The OS still needs a
-# password to create the user: a random one per flash that is never shown or saved (sudo needs none on Pi OS).
+# password to create the user: a random one per flash that is never shown or saved (firstrun.sh writes a
+# sudoers drop-in, so sudo needs none).
 PI_USERNAME = "projector-admin"
 # validate_cfg problems -> (form field, plain words; None keeps the rule's own text). Unlisted problems go under
 # the Flash button.

@@ -90,8 +90,9 @@ warning in the details log when its name carries the other architecture.
   (`~/.ssh/authorized_keys` plus `PasswordAuthentication no` in
   `/etc/ssh/sshd_config.d/projection5000.conf`). The OS still needs a password
   to create the user, so `firstrun.sh` sets a random 32-character one that is
-  never shown or saved anywhere; `sudo` works without it, as for any Pi OS
-  first user. Log in with `ssh projector-admin@<device-id>.local` from the PC
+  never shown or saved anywhere; `sudo` works without it because `firstrun.sh`
+  writes `/etc/sudoers.d/010_projection5000-nopasswd` (Pi OS images from
+  April 2026 no longer make the first user passwordless). Log in with `ssh projector-admin@<device-id>.local` from the PC
   that flashed the card (ssh.exe finds the key when you pass
   `-i %APPDATA%\Projection5000\ssh\id_ed25519`, or copy it to `~/.ssh/`).
   The `.pub` file next to it is the line for any other machine's

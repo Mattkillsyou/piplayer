@@ -286,6 +286,11 @@ def render_firstrun(cfg: dict) -> str:
         "  systemctl disable userconfig 2>/dev/null",
         "  rm -f /etc/xdg/autostart/piwiz.desktop",
         "fi",
+        "# sudo without a password: the SSH key is the credential. Pi OS images from 2026-04-13 on no longer",
+        "# ship 010_pi-nopasswd, and the random password above is never shown to anyone.",
+        "install -d -m 0755 /etc/sudoers.d",
+        f'printf "%s ALL=(ALL) NOPASSWD: ALL\\n" {user} >/etc/sudoers.d/010_projection5000-nopasswd',
+        "run chmod 0440 /etc/sudoers.d/010_projection5000-nopasswd",
         "",
     ]
     if c["ssh"]:
