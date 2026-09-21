@@ -5,6 +5,7 @@
 #   sudo /opt/piplayer/player/deploy/update-player.sh v6.0
 #   sudo /opt/piplayer/player/deploy/update-player.sh main --then-os   # then update-os.sh
 #   sudo /opt/piplayer/player/deploy/update-player.sh --postcheck      # run by the timer, see below
+#   /opt/piplayer/player.prev/deploy/update-player.sh --recover        # projector-player.service ExecStartPre
 #
 # Order: clone into /opt/piplayer/src-<ts> (tarball via curl if git is missing),
 # check player/player/__init__.py, compare the sha with /opt/piplayer/player/RELEASE
@@ -103,6 +104,30 @@ postcheck() {
     systemctl restart "${SERVICE}"
 }
 
+# --recover: run by projector-player.service (ExecStartPre, as root) when the
+# install tree has no venv python, i.e. power was lost between the mv to .prev
+# and the end of install-player.sh. Puts .prev back so the player starts
+# instead of failing with 203/EXEC every 5 s for good. Leaves everything alone
+# while an update is still running (a daemon restart inside that window).
+recover() {
+    if [[ -f "${INSTALL_DIR}/RELEASE" && -e "${INSTALL_DIR}/.venv/bin/python" ]]; then
+        return 0
+    fi
+    if [[ "$(systemctl is-active projector-player-update.service 2>/dev/null)" == active ]]; then
+        log "recover: an update is running; leaving ${INSTALL_DIR} alone"
+        return 0
+    fi
+    if [[ ! -d "${PREV_DIR}" ]]; then
+        log "recover: ${INSTALL_DIR} is incomplete and there is no ${PREV_DIR} to restore"
+        return 0
+    fi
+    log "recover: ${INSTALL_DIR} is incomplete (power lost during an update?); restoring ${PREV_DIR}"
+    REF="$(cat "${INSTALL_DIR}/RELEASE" 2>/dev/null || echo unknown)"
+    restore_prev
+    PREV_VERSION="$(cat "${INSTALL_DIR}/RELEASE" 2>/dev/null || echo unknown)"
+    write_status false "restored the previous version: the last update was interrupted before it finished (power lost?)"
+}
+
 fail() {
     trap - ERR
     log "FAILED: $*"
@@ -169,6 +194,12 @@ main() {
     if [[ "${REF}" == "--postcheck" ]]; then
         exec >> "${LOG_FILE}" 2>&1
         postcheck
+        exit 0
+    fi
+    if [[ "${REF}" == "--recover" ]]; then
+        mkdir -p "${DATA_DIR}"
+        exec >> "${LOG_FILE}" 2>&1
+        recover
         exit 0
     fi
     # Detach from the caller's cgroup (see the header). The unit name doubles as

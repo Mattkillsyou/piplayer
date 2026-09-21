@@ -278,7 +278,13 @@ service and writes a failed status with the reason, so the Devices page shows
 the rollback and the Pi keeps playing on the previous code. The console does
 nothing on its own: it only records what the Pi reports. To roll back by
 hand, set `player_release` to the previous tag or sha and issue
-`update-player` again.
+`update-player` again. Power lost in the middle of an update (after the
+running code moved to `.prev`, before the new venv exists) is caught at the
+next boot: `projector-player.service` runs
+`/opt/piplayer/player.prev/deploy/update-player.sh --recover` before
+starting, which puts `.prev` back and reports "restored the previous
+version: the last update was interrupted before it finished (power lost?)"
+as the update status.
 
 **`update-os`.** `update-os.sh` (detached the same way) runs `apt-get
 update`, `apt-get -y -o Dpkg::Options::=--force-confold upgrade` (existing

@@ -197,6 +197,7 @@ D="${PIPLAYER_ROOT}/opt/piplayer/player"
 mkdir -p "$D/deploy"
 cp -r "$SRC/player" "$D/"
 cp "$SRC"/deploy/*.sh "$D/deploy/"
+mkdir -p "$D/.venv/bin" && : > "$D/.venv/bin/python"
 echo "${PIPLAYER_RELEASE_SHA}" > "$D/RELEASE"
 echo "stub install-player.sh --upgrade ${PIPLAYER_RELEASE_SHA}"
 """
@@ -233,6 +234,8 @@ def fake_pi(tmp_path):
     install = root / "opt" / "piplayer" / "player"
     (install / "deploy").mkdir(parents=True)
     (install / "RELEASE").write_text(git(repo, "rev-parse", "HEAD") + "\n")
+    (install / ".venv" / "bin").mkdir(parents=True)
+    (install / ".venv" / "bin" / "python").write_text("")
     shutil.copy(DEPLOY / "update-os.sh", install / "deploy" / "update-os.sh")
     shim_log = tmp_path / "shim.log"
     shim_log.write_text("")
@@ -332,6 +335,42 @@ def test_update_player_script_end_to_end_in_a_fake_root(fake_pi):
     assert fake_pi.run("update-player.sh", "no-such-ref").returncode == 1
     assert fake_pi.status()["message"] == "ref not found: no-such-ref"
     assert "Unknown argument" in fake_pi.run("update-player.sh", "main", "--bogus").stderr
+
+
+@needs_tools
+def test_power_loss_mid_update_is_recovered_at_boot(fake_pi):
+    """Power lost after the running code moved to .prev and before install-player.sh finished leaves no
+    venv (projector-player.service would fail with 203/EXEC forever). The unit's ExecStartPre runs
+    update-player.sh --recover from .prev: it restores the old tree, tells the console, and is a no-op
+    while an update is running or once the tree is complete."""
+    prev = fake_pi.install.with_name("player.prev")
+    sha1 = (fake_pi.install / "RELEASE").read_text().strip()
+    unit = (DEPLOY / "projector-player.service").read_text()
+    assert ("ExecStartPre=-+/bin/sh -c 'test -e /opt/piplayer/player/.venv/bin/python || "
+            "exec /opt/piplayer/player.prev/deploy/update-player.sh --recover'") in unit
+    assert unit.index("ExecStartPre=") < unit.index("ExecStart=/opt")
+    # the installer dies the way a power cut kills it: mid-way, with update-player.sh taken along
+    commit(fake_pi.repo, "two", installer=INSTALLER_STUB % 'kill -9 "$PPID"; kill -9 $$')
+    res = fake_pi.run("update-player.sh", "main")
+    assert res.returncode != 0
+    assert not fake_pi.install.exists() and (prev / "RELEASE").read_text().strip() == sha1
+    # an update still running: hands off
+    res = fake_pi.run("update-player.sh", "--recover", FAKE_ACTIVE="active")
+    assert res.returncode == 0, res.stderr
+    assert "recover: an update is running" in fake_pi.log() and not fake_pi.install.exists()
+    # next boot: .prev goes back and the console hears why
+    res = fake_pi.run("update-player.sh", "--recover", FAKE_ACTIVE="inactive")
+    assert res.returncode == 0, res.stderr
+    assert (fake_pi.install / "RELEASE").read_text().strip() == sha1 and not prev.exists()
+    assert (fake_pi.install / ".venv" / "bin" / "python").exists()
+    st = fake_pi.status()
+    assert st["ok"] is False and st["previous_version"] == sha1
+    assert st["message"] == "restored the previous version: the last update was interrupted before it finished (power lost?)"
+    assert "power lost during an update?" in fake_pi.log()
+    # a complete tree: nothing to do, status untouched
+    marker = fake_pi.log()
+    assert fake_pi.run("update-player.sh", "--recover", FAKE_ACTIVE="inactive").returncode == 0
+    assert fake_pi.log() == marker and fake_pi.status() == st
 
 
 @needs_tools
