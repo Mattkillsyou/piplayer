@@ -226,7 +226,7 @@ def test_run_wraps_netsh_hidden_with_timeout_and_swallows_errors(monkeypatch):
 
     P.stdout = PROFILE.encode("oem", "replace")
     assert wifi.saved_password("Venue") == "p4ss: word 1"
-    assert calls[-1][0][2:] == ["show", "profile", 'name="Venue"', "key=clear"]
+    assert calls[-1][0][2:] == ["show", "profile", "name=Venue", "key=clear"]  # no inner quotes: netsh rejects them
     assert wifi.saved_password("") is None
 
     P.stdout = CONNECTED.encode("oem", "replace")

@@ -2,8 +2,8 @@
 # Usage (from any directory):  powershell -ExecutionPolicy Bypass -File tools\flasher\build.ps1 [-ConsoleUrl <url>] [-Key <key>]
 # Set $env:FLASHER_PYTHON to pick the interpreter (default: python on PATH, must be 3.11+ with tkinter; no
 # third-party package is needed, the SSH key is generated in pure Python).
-# -ConsoleUrl (or FLASHER_CONSOLE_URL) bakes the console the exe talks to (shown as a fixed header, never a
-# field; without it the product default https://projectors.photogen5000.com applies). No key is baked in: the
+# -ConsoleUrl (or FLASHER_CONSOLE_URL) bakes the console the exe talks to (never shown on the screen; without it
+# the product default https://projectors.photogen5000.com applies). No key is baked in: the
 # operator signs in through the browser and the flasher fetches the enrollment key at flash time. -Key (or
 # FLASHER_ENROLL_KEY) bakes one anyway for offline builds (LAN-only cms sites); the UI never mentions it.
 param(
@@ -32,20 +32,22 @@ if ($LASTEXITCODE -ne 0) { throw "selfcheck failed before build" }
 $stage = Join-Path $env:TEMP 'projection5000-flasher-build'
 New-Item -ItemType Directory -Force $stage | Out-Null
 $archive = Join-Path $stage 'player.tar.gz'
-& $python -c "import flasher; flasher.build_player_archive(r'$archive')"
+$env:PLAYER_ARCHIVE_OUT = $archive  # through the environment: a %TEMP% with an apostrophe (O'Brien) is no Python literal
+& $python -c "import os, flasher; flasher.build_player_archive(os.environ['PLAYER_ARCHIVE_OUT'])"
 if ($LASTEXITCODE -ne 0) { throw "could not build player.tar.gz" }
 $commit = 'unknown'
 try {
     $c = git -C $PSScriptRoot rev-parse --short HEAD 2>$null
     if ($LASTEXITCODE -eq 0 -and $c) { $commit = $c.Trim() }
-    # Mark builds from an uncommitted tree so the stamp never claims a commit it does not match.
-    $dirty = git -C $PSScriptRoot status --porcelain -- . 2>$null
+    # Mark builds from an uncommitted tree so the stamp never claims a commit it does not match (the exe carries
+    # tools/flasher and player/).
+    $dirty = git -C $PSScriptRoot status --porcelain -- . ../../player 2>$null
     if ($LASTEXITCODE -eq 0 -and $dirty) { $commit = "$commit+dirty" }
 } catch {}
 $info = Join-Path $stage 'build_info.txt'
 [IO.File]::WriteAllText($info, "built $(Get-Date -Format s) from commit $commit with $(& $python --version)")
 
-# Console defaults baked into the exe (optional): -ConsoleUrl becomes console.json (the fixed header);
+# Console defaults baked into the exe (optional): -ConsoleUrl becomes console.json (never shown);
 # -Key adds an enrollment key for offline builds (otherwise the flasher fetches it after the browser sign-in).
 $consoleJson = Join-Path $stage 'console.json'
 Remove-Item -Force $consoleJson -ErrorAction SilentlyContinue
@@ -91,6 +93,9 @@ if not image:
             seen.add(int(pct) // 10); print("  " + text, flush=True)
     image, _ = flasher.obtain_image({"image_mode": "latest"}, print, progress, threading.Event())
 windisk.check_image_magic(image)
+if "armhf" in os.path.basename(image).lower():
+    raise SystemExit(f"refusing to embed {os.path.basename(image)}: the bundled image serves the 64-bit models "
+                     "(arm64); the 32-bit image is downloaded at flash time")
 bundle.strip_bundle(exe)
 b = bundle.append_bundle(exe, image, os.path.basename(image))
 print(f"embedded {b.name}: {b.length} bytes at offset {b.offset}, sha256 {b.sha256}")

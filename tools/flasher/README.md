@@ -94,6 +94,12 @@ warning in the details log when its name carries the other architecture.
   The `.pub` file next to it is the line for any other machine's
   `authorized_keys`. (On a Mac the key is
   `~/Library/Application Support/Projection5000/ssh/id_ed25519`, mode 0600.)
+  The key, like every file under "Files on this PC", belongs to the Windows
+  account that answered the UAC prompt: a standard user who typed an
+  administrator's password finds it under that administrator's profile (the
+  details log names the path: "Created the SSH key ..."). A lost or damaged
+  `.pub` is derived from the private key again; the private key is never
+  replaced (an unreadable one is set aside as `id_ed25519.bak`).
 - **Time zone, keyboard, Wi-Fi country**: taken from Windows (the registry's
   time zone key mapped to an IANA name, the input locale, the region setting;
   fallbacks `America/Los_Angeles`, `us`, `US`). `--selfcheck` prints what this
@@ -292,9 +298,14 @@ modules on any system with `diskutil`, `authopen`, `system_profiler`,
 1. Re-reads the target disk and refuses if it is not the disk that was
    confirmed (same reader slot, size and partition signature: a swapped card or
    a renumbered drive is caught), removes every partition (`Clear-Disk`,
-   skipped when the disk is already RAW), locks the disk, streams the image to
-   `\\.\PhysicalDriveN` with Win32 `WriteFile`, flushes, asks Windows to
-   re-read the partition table and reads the whole card back to verify.
+   skipped when the disk is already RAW), locks the disk, streams the image
+   (all but its first MiB) to `\\.\PhysicalDriveN` with Win32 `WriteFile`,
+   flushes, reads the written image back to verify (the blank first MiB
+   skipped; the unused rest of the card is not read), then writes and re-reads
+   the first MiB (the partition table) and asks Windows to re-read it. The
+   table lands last because Windows mounts the new boot partition and starts
+   writing its own files there the moment it sees one. On a Mac the same
+   order, with `diskutil` and `/dev/rdiskN` (see "On a Mac").
 2. Writes `firstrun.sh`, `projection5000-provision.sh`,
    `projection5000-player.tar.gz` (the `player/` tree) and a patched
    `cmdline.txt` to the FAT boot partition, then ejects the card.

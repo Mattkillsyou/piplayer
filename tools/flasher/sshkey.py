@@ -92,13 +92,46 @@ def restrict_acl(path: Path) -> str:
     return host.restrict_file(path)
 
 
+def read_private(path: Path):
+    """(seed, comment) from an unencrypted openssh-key-v1 ed25519 file (what private_file writes), else None."""
+    try:
+        lines = path.read_text("utf-8").splitlines()
+        blob = base64.b64decode("".join(lines[1:-1]))
+        i = blob.rfind(b"\0\0\0\x40")  # the 64-byte seed+pub field of the private section
+        if not lines or lines[0] != "-----BEGIN OPENSSH PRIVATE KEY-----" or i < 0:
+            return None
+        seed, pub = blob[i + 4:i + 36], blob[i + 36:i + 68]
+        if public_key(seed) != pub:
+            return None
+        n = struct.unpack(">I", blob[i + 68:i + 72])[0]
+        return seed, blob[i + 72:i + 72 + n].decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
 def ensure_keypair(log=None) -> str:
-    """Create key_dir()/id_ed25519(.pub) on first use; returns the public key line."""
+    """Create key_dir()/id_ed25519(.pub) on first use; returns the public key line. An existing private key is
+    never replaced: a lost or damaged .pub is derived from it again (every Pi flashed so far trusts that key);
+    an unreadable private file is set aside as id_ed25519.bak before a new pair is made."""
     priv, pub_path = private_path(), private_path().with_suffix(".pub")
     if priv.is_file() and pub_path.is_file():
         line = pub_path.read_text("utf-8").strip()
-        if line.startswith("ssh-ed25519 "):
+        if line.startswith("ssh-ed25519 ") and read_private(priv) is not None:
             return line
+    if priv.is_file():
+        found = read_private(priv)
+        if found:
+            seed, comment = found
+            line = public_line(public_key(seed), comment)
+            pub_path.write_text(line + "\n", "utf-8")
+            if log:
+                log(f"Restored {pub_path.name} from the private key {priv}.")
+            return line
+        bak = priv.with_suffix(".bak")
+        priv.replace(bak)
+        if log:
+            log(f"WARNING: {priv} could not be read; moved to {bak} and a new key was made. Pis flashed before "
+                "need the old key or a fresh card.")
     seed = secrets.token_bytes(32)
     pub = public_key(seed)
     comment = f"projection5000-flasher@{socket.gethostname()}"

@@ -31,10 +31,13 @@ WINDOWS_TZ = {
     "South Africa Standard Time": "Africa/Johannesburg", "Egypt Standard Time": "Africa/Cairo",
     "UTC": "UTC", "Coordinated Universal Time": "UTC",
 }
-# Windows primary language id (low byte of the input locale) -> Pi OS keymap; the sublanguage picks gb/br/ie.
-LANG_KEYMAP = {0x07: "de", 0x0c: "fr", 0x0a: "es", 0x10: "it", 0x13: "nl", 0x1d: "se", 0x14: "no", 0x06: "dk",
+# Windows primary language id (low byte of the keyboard layout's language) -> Pi OS keymap; LANGID_KEYMAP picks
+# the sublanguage's layout first (gb/ie/br/ch/at/be, French Canada, Latin America). Spanish outside Spain is
+# the "Latin American" keyboard (latam), not Spain's; English (Canada) is the plain US keyboard.
+LANG_KEYMAP = {0x07: "de", 0x0c: "fr", 0x0a: "latam", 0x10: "it", 0x13: "nl", 0x1d: "se", 0x14: "no", 0x06: "dk",
                0x0b: "fi", 0x16: "pt", 0x11: "jp", 0x15: "pl", 0x05: "cz", 0x19: "ru", 0x0e: "hu", 0x1f: "tr"}
-LANGID_KEYMAP = {0x0809: "gb", 0x1809: "ie", 0x0416: "br", 0x1009: "ca", 0x0807: "ch", 0x100c: "ch", 0x0c07: "at"}
+LANGID_KEYMAP = {0x0809: "gb", 0x1809: "ie", 0x0416: "br", 0x0807: "ch", 0x100c: "ch", 0x0c07: "at", 0x0c0c: "ca",
+                 0x0813: "be", 0x080c: "be", 0x0c0a: "es", 0x040a: "es"}
 DEFAULT_TIMEZONE = "America/Los_Angeles"
 DEFAULT_KEYMAP = "us"
 DEFAULT_COUNTRY = "US"
@@ -55,11 +58,14 @@ def timezone(name: str = None) -> str:
 
 
 def input_langid() -> int:
-    """LANGID of the current keyboard layout (0 when unavailable)."""
+    """LANGID of the current keyboard layout (0 when unavailable): the HKL's high word when it is a plain
+    language id (a German keyboard under an English Windows is 0x04070409), the low word otherwise."""
     try:
-        return ctypes.windll.user32.GetKeyboardLayout(0) & 0xFFFF
+        hkl = ctypes.windll.user32.GetKeyboardLayout(0) & 0xFFFFFFFF
     except Exception:
         return 0
+    high = (hkl >> 16) & 0xFFFF
+    return high if 0 < high < 0xF000 else hkl & 0xFFFF
 
 
 def keymap(langid: int = None) -> str:

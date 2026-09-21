@@ -701,9 +701,15 @@ class App:
         else:
             self.connect()
 
+    def busy(self) -> bool:
+        """A flash is running: the buttons that would start another action stay off until it ends."""
+        return bool(self.worker and self.worker.is_alive())
+
     def connect(self, then=None):
         """Open the browser for approval; `then` runs on the Tk thread once the token is in hand (FLASH passes
         itself so the card is made with no further click). Cancel puts the UI back to Ready."""
+        if self.busy():
+            return
         self.account_btn.configure(state="disabled")
         self.flash_btn.configure(state="disabled")
         self.cancel_btn.grid()
@@ -712,6 +718,9 @@ class App:
         threading.Thread(target=self._connect_work, args=(self._signin_cancel, then), daemon=True).start()
 
     def _connect_work(self, cancel: threading.Event, then):
+        """The sign-in thread. Every step checks `cancel`: a cancelled sign-in opens no browser, keeps no token
+        and never fires `then`. A network hiccup while polling is retried until the code expires; only the
+        console's own answer (denied, expired) ends the wait early."""
         url = self.console_url
         try:
             r = console.request_device_code(url, socket.gethostname())
@@ -719,11 +728,10 @@ class App:
             msg = f"Could not reach the console: {e}"
             self.post(lambda: self._connect_failed(msg))
             return
+        if cancel.is_set():
+            return
         link = f"{r['verification_url']}?code={urllib.parse.quote(r['user_code'])}"
-        try:
-            opened = webbrowser.open(link)
-        except Exception:
-            opened = False
+        opened = console.same_site(url, r["verification_url"]) and self._open_browser(link)
         self.post(lambda: self._show_code(console.display_code(r["user_code"]), link, opened))
         deadline = time.monotonic() + r["expires_in"]
         while time.monotonic() < deadline and not cancel.is_set():
@@ -735,13 +743,25 @@ class App:
             except console.Pending:
                 continue
             except console.ConsoleError as e:
+                if e.code is None or e.code >= 500:  # the network or the console hiccuped: keep polling
+                    hiccup = f"Still waiting for the approval ({e})."
+                    self.post(lambda: self.log(hiccup))
+                    continue
                 msg = f"Not approved: {e}"
                 self.post(lambda: self._connect_failed(msg))
                 return
-            self.post(lambda: self._connected(url, tok, then))
+            if not cancel.is_set():
+                self.post(lambda: self._connected(url, tok, then))
             return
         if not cancel.is_set():
             self.post(lambda: self._connect_failed("The approval took too long (10 minutes). Press FLASH again."))
+
+    @staticmethod
+    def _open_browser(link: str) -> bool:
+        try:
+            return bool(webbrowser.open(link))
+        except Exception:
+            return False
 
     def _show_code(self, code: str, link: str, opened: bool):
         if opened:
@@ -757,15 +777,19 @@ class App:
         self.set_status(msg)
 
     def _connect_done(self):
-        self.flash_btn.configure(state="normal")
-        self.cancel_btn.grid_remove()
+        if not self.busy():  # a running flash keeps FLASH off and Cancel on until it ends
+            self.flash_btn.configure(state="normal")
+            self.cancel_btn.grid_remove()
         self._show_account()
 
     def _connected(self, url: str, tok: dict, then):
-        warning = save_operator_config(url, tok["token"], tok["username"])
+        self.op = {"token": tok["token"], "username": tok["username"]}  # in hand even if the file cannot be written
+        try:
+            warning = save_operator_config(url, tok["token"], tok["username"])
+        except OSError as e:
+            warning = f"WARNING: could not save the sign-in ({e}); it lasts until this program is closed."
         if warning:
             self.log(warning)
-        self.op = {"token": tok["token"], "username": tok["username"]}
         self.log(f"Signed in as {tok['username'] or 'operator'}.")
         self._connect_done()
         self.set_status(READY_TEXT)
@@ -788,9 +812,7 @@ class App:
                 console.fetch_enrollment(url, token)
             except console.ConsoleError as e:
                 if e.code == 401:
-                    self.post(lambda: (clear_operator_config(), self.op.update(token="", username=""),
-                                       self._show_account(),
-                                       self.log("The stored sign-in was rejected by the console: FLASH connects again.")))
+                    self.post(lambda: self._token_rejected(token))
                 else:
                     msg = f"Console check failed ({e}); the stored sign-in is kept."
                     self.post(lambda: self.log(msg))
@@ -799,6 +821,15 @@ class App:
             self.post(lambda: self.log(msg))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _token_rejected(self, token: str):
+        """The console answered 401 for `token` (revoked): forget it, unless a newer sign-in replaced it meanwhile."""
+        if self.op["token"] != token:
+            return
+        clear_operator_config()
+        self.op = {"token": "", "username": ""}
+        self._show_account()
+        self.log("The stored sign-in was rejected by the console: FLASH connects again.")
 
     def disconnect(self):
         self._signin_cancel.set()
@@ -1053,6 +1084,8 @@ class App:
         return v
 
     def on_flash(self):
+        if self.busy():
+            return
         v = self.validate()
         if not v:
             return
@@ -1083,6 +1116,7 @@ class App:
         save_settings(v)
         self.cancel.clear()
         self.flash_btn.configure(state="disabled")
+        self.account_btn.configure(state="disabled")  # no Connect/Disconnect under a running flash
         self.cancel_btn.grid()
         self.set_progress(0, "")
         self.set_phase("Preparing")
@@ -1110,6 +1144,17 @@ class App:
             msg = str(e)
             log(f"FAILED: {msg}")
             self.post(lambda: (self._show_error("pi_model", msg), self.set_status("Could not get the image.")))
+        except console.ConsoleError as e:
+            msg = str(e)
+            log(f"FAILED: {msg}")
+            if e.code == 401:  # the sign-in was revoked on the console: the next FLASH connects again
+                token = v.get("operator_token") or ""
+                self.post(lambda: (self._token_rejected(token),
+                                   self.set_status("The console no longer accepts this computer's sign-in. "
+                                                   "Press FLASH to approve it again.")))
+            else:
+                self.post(lambda: self.set_status(f"Failed: {msg.splitlines()[0]}"))
+                self.post(lambda: messagebox.showerror(APP_TITLE, msg))
         except Exception as e:
             msg = str(e)  # bound now: the except variable is gone by the time the Tk thread runs the lambda
             if "[5]" in msg:
@@ -1124,6 +1169,7 @@ class App:
     def _finished(self):
         self.flash_btn.configure(state="normal")
         self.cancel_btn.grid_remove()
+        self._show_account()  # Connect/Disconnect come back
         self._password = secrets.token_urlsafe(24)  # never reuse a Pi password across cards
 
 
@@ -1307,13 +1353,26 @@ def obtain_image(v: dict, log, progress, cancel, dry_run: bool = False, status=l
     bits = "64-bit" if model.arch == "arm64" else "32-bit"
     try:
         log(f"Resolving latest Raspberry Pi OS Lite ({bits}) ...")
-        url, name = imagefetch.resolve_latest(imagefetch.LATEST_URLS[model.arch])
-        expected = imagefetch.fetch_sha256(url)
+        try:
+            url, name = imagefetch.resolve_latest(imagefetch.LATEST_URLS[model.arch])
+            expected = imagefetch.fetch_sha256(url)
+        except imagefetch.FetchError as e:
+            # Offline: the image downloaded last time (its sha256 was kept alongside) still serves.
+            cached = imagefetch.newest_cached(model.arch)
+            if cached is None:
+                raise
+            dest, expected = cached
+            log(f"Could not reach raspberrypi.com ({e}); checking the cached {dest.name} ...")
+            if not imagefetch.verify_sha256(dest, expected):
+                raise imagefetch.FetchError(f"the cached {dest.name} is corrupt; connect to the internet") from e
+            log("Cached image is valid (offline).")
+            return str(dest), expected
         dest = imagefetch.cached_path(name)
         if dest.exists():
             log(f"Checking cached {name} ...")
             if imagefetch.verify_sha256(dest, expected):
                 log("Cached image is valid.")
+                imagefetch.remember_sha256(dest, expected)
                 return str(dest), expected
             log("Cached image is stale or corrupt, downloading again.")
         if dry_run:
@@ -1342,6 +1401,7 @@ def obtain_image(v: dict, log, progress, cancel, dry_run: bool = False, status=l
         dest.unlink(missing_ok=True)
         raise imagefetch.FetchError("downloaded image failed sha256 verification")
     log("Download verified.")
+    imagefetch.remember_sha256(dest, expected)  # so the next flash can use it offline
     return str(dest), expected
 
 

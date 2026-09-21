@@ -360,8 +360,8 @@ def volume_paths(number: int) -> list:
     """'\\\\?\\Volume{guid}\\' access paths of every partition on disk N (what PhysicalDrive.lock needs)."""
     paths = []
     for p in _partitions(number):
-        for ap in p.get("AccessPaths") or []:
-            if ap.startswith("\\\\?\\Volume{"):
+        for ap in p.get("AccessPaths") or []:  # @($null) serialises as [null]: a partition with no path
+            if ap and ap.startswith("\\\\?\\Volume{"):
                 paths.append(ap)
     return paths
 
@@ -487,6 +487,11 @@ def iter_image(src, chunk: int = CHUNK, hasher=None):
                 buf = buf.lstrip(b"\0")
                 if not buf:
                     continue
+                if len(buf) < len(XZ_MAGIC):  # the next header straddles the read boundary
+                    more = f.read(1024 * 1024)
+                    if hasher:
+                        hasher.update(more)
+                    buf += more
                 if not buf.startswith(XZ_MAGIC):
                     raise DiskError("trailing data after the xz stream (corrupt image?)")
                 dec = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)

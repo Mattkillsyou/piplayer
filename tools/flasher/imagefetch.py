@@ -37,6 +37,33 @@ def cached_path(filename: str) -> Path:
     return d / Path(filename).name
 
 
+def remember_sha256(path, expected: str) -> None:
+    """Keep the published sha256 next to a verified download (<name>.sha256), so the image can be checked and
+    used again without the network. Never raises."""
+    try:
+        Path(path).with_name(Path(path).name + ".sha256").write_text(f"{expected.strip().lower()}  {Path(path).name}\n")
+    except OSError:
+        pass
+
+
+def newest_cached(arch: str):
+    """(path, sha256) of the newest cached Raspberry Pi OS image for arch ('arm64' / 'armhf') that has its
+    sha256 alongside, else None. Newest by the date in the official file name (2026-09-15-raspios-...)."""
+    d = app_dir() / "images"
+    try:
+        files = sorted(p for p in d.iterdir() if p.suffix == ".xz" and f"_{arch}" in p.name.replace("-", "_"))
+    except OSError:
+        return None
+    for p in reversed(files):
+        try:
+            sha = p.with_name(p.name + ".sha256").read_text().split()[0].lower()
+        except (OSError, IndexError):
+            continue
+        if len(sha) == 64:
+            return p, sha
+    return None
+
+
 def resolve_latest(url: str = LATEST_URL) -> tuple:
     """Follow redirects and return (final_url, filename). The redirect must stay on the same origin:
     the .sha256 is fetched from the final URL too, so a hop to another host or to http:// would let
@@ -95,7 +122,10 @@ def download(url: str, dest, progress_cb=None, cancel_event=None) -> Path:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise Cancelled()
-                buf = resp.read(1024 * 1024)
+                try:
+                    buf = resp.read(1024 * 1024)
+                except (OSError, ValueError) as e:  # a reset or stalled connection mid-download
+                    raise FetchError(f"download interrupted after {done / 1e6:.0f} MB: {e}") from e
                 if not buf:
                     break
                 out.write(buf)

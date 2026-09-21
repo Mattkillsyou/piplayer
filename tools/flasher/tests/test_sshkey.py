@@ -24,6 +24,15 @@ def test_public_key_matches_rfc_8032():
     assert sshkey.public_key(seed2).hex() == "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
 
 
+def test_read_private_round_trips(tmp_path):
+    f = tmp_path / "id_ed25519"
+    f.write_text(sshkey.private_file(SEED, PUB, "me@pc"))
+    assert sshkey.read_private(f) == (SEED, "me@pc")
+    f.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n")
+    assert sshkey.read_private(f) is None
+    assert sshkey.read_private(tmp_path / "missing") is None
+
+
 def test_public_line_and_private_file_formats():
     line = sshkey.public_line(PUB, "me@pc")
     kind, blob, comment = line.split(" ")
@@ -55,10 +64,19 @@ def test_ensure_keypair_creates_once_and_reuses(tmp_path, monkeypatch):
     # Second call: the same key, nothing regenerated, nothing logged.
     logged.clear()
     assert sshkey.ensure_keypair(logged.append) == line and icacls == [priv] and logged == []
-    # A damaged .pub is regenerated together with the private key.
+    # A damaged or missing .pub is derived from the private key again: the key every Pi so far trusts stays.
+    before = priv.read_bytes()
     priv.with_suffix(".pub").write_text("junk\n")
-    line2 = sshkey.ensure_keypair()
-    assert line2 != line and priv.with_suffix(".pub").read_text() == line2 + "\n"
+    assert sshkey.ensure_keypair(logged.append) == line and priv.read_bytes() == before
+    assert priv.with_suffix(".pub").read_text() == line + "\n" and "Restored id_ed25519.pub" in logged[-1]
+    priv.with_suffix(".pub").unlink()
+    assert sshkey.ensure_keypair() == line and priv.read_bytes() == before
+    assert sshkey.read_private(priv)[1] == line.split(" ")[2]
+    # An unreadable private key is set aside, never silently overwritten.
+    priv.write_text("not a key\n")
+    line2 = sshkey.ensure_keypair(logged.append)
+    assert line2 != line and priv.with_suffix(".bak").read_text() == "not a key\n"
+    assert "moved to" in logged[-2] and sshkey.read_private(priv)[0] is not None
     # An icacls warning is passed to the log, not raised.
     monkeypatch.setattr(sshkey, "restrict_acl", lambda path: "WARNING: icacls failed")
     priv.unlink()

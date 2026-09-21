@@ -234,7 +234,8 @@ def test_find_boot_volume_assigns_letter_then_returns(monkeypatch):
 def test_volume_paths(monkeypatch):
     monkeypatch.setattr(windisk, "_partitions", lambda number: [
         {"PartitionNumber": 1, "AccessPaths": ["E:\\", "\\\\?\\Volume{19adc575-6bdf-4c12-8ab6-8589f39a5267}\\"]},
-        {"PartitionNumber": 2, "AccessPaths": None}])
+        {"PartitionNumber": 2, "AccessPaths": [None]},  # an MSR or bare Linux partition: @($null) -> [null]
+        {"PartitionNumber": 3, "AccessPaths": []}])
     assert windisk.volume_paths(2) == ["\\\\?\\Volume{19adc575-6bdf-4c12-8ab6-8589f39a5267}\\"]
 
 

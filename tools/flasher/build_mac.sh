@@ -42,8 +42,9 @@ archive="$stage/player.tar.gz"
 commit=unknown
 if c=$(git rev-parse --short HEAD 2>/dev/null) && [ -n "$c" ]; then
     commit="$c"
-    # Mark builds from an uncommitted tree so the stamp never claims a commit it does not match.
-    if [ -n "$(git status --porcelain -- . 2>/dev/null)" ]; then commit="$commit+dirty"; fi
+    # Mark builds from an uncommitted tree so the stamp never claims a commit it does not match (the app carries
+    # tools/flasher and player/).
+    if [ -n "$(git status --porcelain -- . ../../player 2>/dev/null)" ]; then commit="$commit+dirty"; fi
 fi
 info="$stage/build_info.txt"
 printf 'built %s from commit %s with %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$commit" "$("$python" --version)" >"$info"
@@ -112,6 +113,9 @@ if not image:
             seen.add(int(pct) // 10); print("  " + text, flush=True)
     image, _ = flasher.obtain_image({"image_mode": "latest"}, print, progress, threading.Event())
 windisk.check_image_magic(image)
+if "armhf" in os.path.basename(image).lower():
+    raise SystemExit(f"refusing to embed {os.path.basename(image)}: the bundled image serves the 64-bit models "
+                     "(arm64); the 32-bit image is downloaded at flash time")
 open(out, "wb").close()  # the trailer file starts empty: the image lands at offset 0
 b = bundle.append_bundle(out, image, os.path.basename(image))
 print(f"embedded {b.name}: {b.length} bytes in {out}, sha256 {b.sha256}")

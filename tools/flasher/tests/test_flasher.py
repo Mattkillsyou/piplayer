@@ -556,7 +556,7 @@ def test_validate_shows_plain_words_inline(monkeypatch, tmp_path):
     assert app.advanced.winfo_manager() == "pack"
     # Static IP: the gateway must sit in the network; a good pair renders manual addressing.
     _fill(app, image_mode="latest", static_ip="192.168.1.50/24", gateway="10.0.0.1")
-    assert app.validate() is None and _shown_errors(app)["adv"].startswith("Gateway must be an IPv4 address in 192.168.1.0/24")
+    assert app.validate() is None and _shown_errors(app)["adv"].startswith("Gateway must be another IPv4 address in 192.168.1.0/24")
     _fill(app, image_mode="latest", static_ip="192.168.1.50/24", gateway="192.168.1.1")
     v = app.validate()
     assert v is not None and "address1=192.168.1.50/24,192.168.1.1" in firstboot.render_firstrun(flasher.card_cfg(v))
