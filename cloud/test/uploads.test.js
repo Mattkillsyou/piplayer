@@ -249,7 +249,7 @@ describe("upload protocol", () => {
     // SELF.fetch serves one request at a time, so the handler is called directly: the three
     // invocations interleave at every await exactly as three worker requests would.
     const racer = () => worker.fetch(new Request(`${BASE}/library/upload/${upload_id}/part/1`, {
-      method: "PUT", body: part1, headers: { "X-CSRF-Token": editorCsrf, cookie: editor.cookie },
+      method: "PUT", body: part1, headers: { "X-CSRF-Token": editorCsrf, cookie: editor.cookie, "content-length": String(part1.byteLength) },
     }), env, createExecutionContext());
     const results = await Promise.all([1, 2, 3].map(racer));
     const statuses = await Promise.all(results.map((x) => x.status));

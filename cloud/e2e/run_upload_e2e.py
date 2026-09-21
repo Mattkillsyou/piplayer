@@ -129,9 +129,9 @@ def check_uploads(base):
 
     # oversize -> 413 before anything is created
     r = s.post(base + "/library/upload/init", json=dict(init_body, size=5 * 1024 * MiB + 1))
-    assert r.status_code == 413 and r.json()["detail"].startswith("File exceeds"), (r.status_code, r.text[:200])
+    assert r.status_code == 413 and r.json()["detail"].startswith("This file is"), (r.status_code, r.text[:200])
     r = s.post(base + "/library/upload/init", json=dict(init_body, name="x.exe"))
-    assert r.status_code == 400 and "Unsupported extension" in r.json()["detail"], r.text[:200]
+    assert r.status_code == 400 and "is not supported" in r.json()["detail"], r.text[:200]
     assert d1("SELECT COUNT(*) AS n FROM uploads")[0]["n"] == 0
 
     # init, part 1, then "the tab was closed": status + a second init hand back the same upload
@@ -190,7 +190,7 @@ def check_uploads(base):
     # duplicate content -> 409 with the existing name, no upload row
     r = s.post(base + "/library/upload/init", json=dict(init_body, name="renamed copy.mp4"))
     assert r.status_code == 409, (r.status_code, r.text[:200])
-    assert r.json()["detail"] == "Duplicate of '%s' (sha256 match)" % init_body["name"], r.text
+    assert r.json()["detail"] == "Already in the library as '%s'." % init_body["name"], r.text
     assert d1("SELECT COUNT(*) AS n FROM uploads")[0]["n"] == 0
 
     # library page lists it
@@ -421,7 +421,7 @@ def check_browser_upload(base, chrome):
         stop(proc)
 
     assert out["status"] == "2 of 3 file(s) uploaded; see the errors above. Reload the page to see them in the list.", out
-    assert out["rows"] == ["Done.", "Done.", "Error: Duplicate of 'browser clip.mp4' (sha256 match)"], out["rows"]
+    assert out["rows"] == ["Done.", "Done.", "Error: Already in the library as 'browser clip.mp4'."], out["rows"]
     assert out["files"] == 0 and out["disabled"] is False, out   # picker cleared, button re-enabled
     assert 'class="alert error"' in page, page[:800]
     rows = [[v, t] for i, v, t in out["log"] if i == 1]      # the 12 MiB file

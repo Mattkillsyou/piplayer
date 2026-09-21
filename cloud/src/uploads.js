@@ -201,7 +201,7 @@ async function uploadPart(ctx) {
   if (row.parts.some((p) => p.partNumber === n && p.etag)) return json({ received: row.received });
   const expected = expectedPartSize(row.size, n);
   const declared = parseInt(ctx.request.headers.get("content-length") || "", 10);
-  if (Number.isFinite(declared) && declared !== expected) fail(400, `part ${n} must be ${expected} bytes`);
+  if (declared !== expected) fail(400, `part ${n} must be ${expected} bytes`); // a missing Content-Length fails before the body is read
   // The body is read before the claim so a tab closed mid-transfer never leaves a claim
   // behind; only a worker dying inside uploadPart can, and that one goes stale.
   const body = await ctx.request.arrayBuffer();

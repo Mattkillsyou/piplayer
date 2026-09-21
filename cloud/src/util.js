@@ -251,6 +251,16 @@ export function utf8Len(s) {
   return new TextEncoder().encode(s).length;
 }
 
+// Throttle key for a client address: IPv4 as is, IPv6 collapsed to its /64 (home and mobile
+// users hold at least a /64, so rotating inside it must not reset a rate limit).
+export function ipBucket(ip) {
+  if (!ip || !ip.includes(":")) return ip || "-";
+  const [head, tail = ""] = ip.split("::");
+  const h = head ? head.split(":") : [], t = tail ? tail.split(":") : [];
+  const groups = [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t];
+  return groups.slice(0, 4).map((g) => g.padStart(4, "0")).join(":") + "::/64";
+}
+
 export function envInt(env, name, fallback) {
   const n = parseInt(env[name], 10);
   return Number.isFinite(n) ? n : fallback;

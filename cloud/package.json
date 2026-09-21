@@ -9,7 +9,7 @@
     "migrate": "wrangler d1 migrations apply piplayer-cloud-db",
     "migrate:local": "wrangler d1 migrations apply piplayer-cloud-db --local",
     "migrate:remote": "wrangler d1 migrations apply piplayer-cloud-db --remote",
-    "deploy": "wrangler deploy",
+    "deploy": "npm run migrate:remote && wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run --outdir dist"
   },
   "devDependencies": {

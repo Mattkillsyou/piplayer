@@ -2,7 +2,7 @@
 // roles, the failed-login throttle and device bearer auth. Port of cms/app/auth.py.
 import * as audit from "./audit.js";
 import * as db from "./db.js";
-import { b64url, fail, fromB64url, HttpError, randomToken, redirect, sha256Hex, utf8Len } from "./util.js";
+import { b64url, fail, fromB64url, HttpError, ipBucket, randomToken, redirect, sha256Hex, utf8Len } from "./util.js";
 
 export const SESSION_COOKIE = "piplayer_session";
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 14;
@@ -262,7 +262,7 @@ export async function loginLockedFor(env, ip, username, max = LOGIN_MAX_FAILURES
   const now = unix();
   const rows = await db.all(env,
     "SELECT username, at FROM login_failures WHERE ip = ? AND at > ? ORDER BY at",
-    ip || "-", now - seconds);
+    ipBucket(ip), now - seconds);
   const mine = rows.filter((r) => r.username === username);
   if (mine.length >= max || rows.length >= LOGIN_IP_MAX_FAILURES) {
     const last = rows[rows.length - 1].at;
@@ -279,14 +279,14 @@ export async function loginLockedFor(env, ip, username, max = LOGIN_MAX_FAILURES
 export async function recordLoginFailure(env, ip, username) {
   const now = unix();
   await db.batch(env, [
-    ["INSERT INTO login_failures (ip, username, at) VALUES (?, ?, ?)", ip || "-", username, now],
+    ["INSERT INTO login_failures (ip, username, at) VALUES (?, ?, ?)", ipBucket(ip), username, now],
     // Keep the table bounded if someone sprays usernames.
     ["DELETE FROM login_failures WHERE at <= ?", now - MAX_LOCK_SECONDS],
   ]);
 }
 
 export function clearLoginFailures(env, ip, username) {
-  return db.run(env, "DELETE FROM login_failures WHERE ip = ? AND username = ?", ip || "-", username);
+  return db.run(env, "DELETE FROM login_failures WHERE ip = ? AND username = ?", ipBucket(ip), username);
 }
 
 // ---------------------------------------------------------------------------

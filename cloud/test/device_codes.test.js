@@ -7,6 +7,7 @@ import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as auth from "../src/auth.js";
 import * as dc from "../src/device_codes.js";
+import { ipBucket } from "../src/util.js";
 import { BASE, Client, query } from "./helpers.js";
 import { audits, detail, post, roleMatrix, roles } from "./pages_common.js";
 
@@ -74,9 +75,9 @@ describe("POST /api/operator/device-code", () => {
     expect((await api("device-code", {}, { "cf-connecting-ip": "2001:db8:1:3::1" })).status).toBe(200);
     expect((await query("SELECT DISTINCT ip FROM device_codes WHERE ip LIKE '2001%' ORDER BY ip")).map((x) => x.ip))
       .toEqual(["2001:0db8:0001:0002::/64", "2001:0db8:0001:0003::/64"]);
-    expect(dc.ipBucket("::1")).toBe("0000:0000:0000:0000::/64");
-    expect(dc.ipBucket("10.0.0.1")).toBe("10.0.0.1");
-    expect(dc.ipBucket(null)).toBe("-");
+    expect(ipBucket("::1")).toBe("0000:0000:0000:0000::/64");
+    expect(ipBucket("10.0.0.1")).toBe("10.0.0.1");
+    expect(ipBucket(null)).toBe("-");
   });
 });
 
