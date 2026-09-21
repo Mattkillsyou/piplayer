@@ -90,6 +90,25 @@ elif stage == "app-threads":
     flasher.App.refresh_networks = lambda self: None
     app = flasher.App(root)
     pump(root, "app-threads")
+elif stage in ("idle", "geom", "geompos", "minsize-geom", "reqsize", "update-geom"):
+    flasher.apply_theme(root)
+    ttk.Label(root, text="x").pack()
+    if stage == "idle":
+        root.update_idletasks()
+    elif stage == "geom":
+        root.geometry("700x460")
+    elif stage == "geompos":
+        root.geometry("700x460+50+100")
+    elif stage == "minsize-geom":
+        root.minsize(700, 460)
+        root.geometry("700x460")
+    elif stage == "reqsize":
+        root.update_idletasks()
+        print(f"  req {root.winfo_reqwidth()}x{root.winfo_reqheight()} rooty={root.winfo_rooty()} y={root.winfo_y()} viewable={root.winfo_viewable()}", flush=True)
+    elif stage == "update-geom":
+        root.update_idletasks()
+        root.geometry(f"{max(root.winfo_reqwidth(), 700)}x{max(root.winfo_reqheight(), 460)}")
+    pump(root, stage)
 elif stage == "twice":
     app = flasher.App(root)
     pump(root, "first app", 5)
