@@ -109,6 +109,30 @@ elif stage in ("idle", "geom", "geompos", "minsize-geom", "reqsize", "update-geo
         root.update_idletasks()
         root.geometry(f"{max(root.winfo_reqwidth(), 700)}x{max(root.winfo_reqheight(), 460)}")
     pump(root, stage)
+elif stage.startswith("appfit-"):
+    flasher.App._fit_to_screen = lambda self: None
+    app = flasher.App(root)
+    root.update_idletasks()
+    w, h = max(root.winfo_reqwidth(), 700), max(root.winfo_reqheight(), 460)
+    top, bottom = flasher.work_area(root)
+    chrome = (root.winfo_rooty() - root.winfo_y() or 31) + 8
+    print(f"  req {root.winfo_reqwidth()}x{root.winfo_reqheight()} screen {root.winfo_screenwidth()}x{root.winfo_screenheight()} "
+          f"work {top}-{bottom} chrome {chrome} cap {bottom - top - chrome}", flush=True)
+    what = stage[len("appfit-"):]
+    if what == "idle":
+        pass
+    elif what == "geom":
+        root.geometry(f"{w}x{h}")
+    elif what == "cap":
+        root.geometry(f"{w}x{min(h, bottom - top - chrome)}")
+    elif what == "fixed":
+        root.geometry("700x460")
+    elif what == "small":
+        root.geometry("700x300")  # below minsize
+    elif what == "real":
+        app._fit_to_screen = flasher.App._fit_to_screen.__get__(app)  # noqa
+        flasher.App._size_to(app, w, h)
+    pump(root, stage, 8)
 elif stage == "twice":
     app = flasher.App(root)
     pump(root, "first app", 5)

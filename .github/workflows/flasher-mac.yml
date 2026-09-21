@@ -64,8 +64,8 @@ jobs:
 
       - name: Probe which part of the window hangs Tk update() on this runner (temporary)
         run: |
-          for mode in toplevel second; do
-            for stage in idle geom geompos minsize-geom reqsize update-geom; do
+          for mode in toplevel root; do
+            for stage in appfit-idle appfit-geom appfit-cap appfit-fixed appfit-small appfit-real; do
               timeout 40 python tests/probe_tk.py $stage $mode 2>&1 | grep -v "_pump\|after\|invalid command\|while executing\|^$"
               echo "stage $stage mode $mode: exit ${PIPESTATUS[0]}"
             done
