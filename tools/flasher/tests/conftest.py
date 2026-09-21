@@ -22,6 +22,15 @@ def _operator_config_sandbox(monkeypatch, tmp_path, request):
         monkeypatch.setattr(flasher.sshkey, "ensure_keypair", lambda log=None: PUBKEY)
     # No netsh from the GUI tests: a PC with no Wi-Fi (test_wifi drives the real module with a fake netsh).
     monkeypatch.setattr(flasher, "wifi", fake_wifi())
+    # On a Mac the host keeps the sign-in in the login keychain through `security`, which can put up a dialog
+    # and wait: an in-memory keychain instead (test_machost drives the real module with a fake `security`).
+    if sys.platform == "darwin" and request.module.__name__ != "test_machost":
+        import machost
+        vault = {}
+        monkeypatch.setattr(machost, "seal_token", lambda token: vault.update(token=token) or {"token": "", "token_keychain": True})
+        monkeypatch.setattr(machost, "open_token", lambda d: vault.get("token", "") if d.get("token_keychain")
+                            else (d.get("token") or "").strip() if isinstance(d.get("token"), str) else "")
+        monkeypatch.setattr(machost, "forget_token", lambda d: vault.clear())
 
 
 def fake_wifi(networks=(), current=None, passwords=None):
