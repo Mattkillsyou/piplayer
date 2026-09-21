@@ -4,7 +4,6 @@ import http.server
 import ipaddress
 import lzma
 import os
-import socket
 import threading
 import time
 import tkinter as tk
@@ -15,7 +14,6 @@ import console
 import firstboot
 import flasher
 import imagefetch
-import sshkey  # noqa: F401  (imported so the conftest sandbox applies to the key path)
 import wifi
 import windisk
 import winlocale
@@ -95,7 +93,9 @@ def test_keymap_reads_the_layout_word_of_the_hkl(monkeypatch):
                         raising=False)
     assert winlocale.input_langid() == 0x0407 and winlocale.keymap() == "de"
     monkeypatch.setattr(winlocale.ctypes.windll.user32, "GetKeyboardLayout", staticmethod(lambda n: 0xF0010409))
-    assert winlocale.input_langid() == 0x0409 and winlocale.keymap() == "us"  # an IME handle: the low word
+    assert winlocale.input_langid() == 0x0409 and winlocale.keymap() == "us"  # a special layout: the low word
+    monkeypatch.setattr(winlocale.ctypes.windll.user32, "GetKeyboardLayout", staticmethod(lambda n: 0xE0010411))
+    assert winlocale.input_langid() == 0x0411 and winlocale.keymap() == "jp"  # a Japanese IME: the input language
     assert winlocale.keymap(0x1009) == "us"  # English (Canada) is the plain US keyboard
     assert winlocale.keymap(0x0c0c) == "ca"  # French (Canada)
     assert winlocale.keymap(0x0813) == "be" and winlocale.keymap(0x080c) == "be"

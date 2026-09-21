@@ -418,7 +418,7 @@ def test_wifi_dropdown_lists_the_networks_and_fills_a_saved_password(monkeypatch
     app.ssid_box.set("Venue")
     app.ssid_box.event_generate("<<ComboboxSelected>>")
     assert _pump(root, app, lambda: app.v["wifi_password"].get() == "p4ss: word 1")
-    assert app.pw_hint.cget("text") == "password from this PC"
+    assert app.pw_hint.cget("text") == "password from this computer"
     assert "p4ss" not in _log(app)
     # Editing the password drops the hint; picking a network without a profile leaves the field alone.
     app.v["wifi_password"].set("p4ss: word 2")

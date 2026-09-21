@@ -92,19 +92,41 @@ def restrict_acl(path: Path) -> str:
     return host.restrict_file(path)
 
 
+def _fields(blob: bytes, start: int = 0):
+    """The length-prefixed strings of an SSH wire blob, from `start`."""
+    pos = start
+    while pos < len(blob):
+        n = struct.unpack(">I", blob[pos:pos + 4])[0]
+        yield blob[pos + 4:pos + 4 + n]
+        pos += 4 + n
+
+
 def read_private(path: Path):
-    """(seed, comment) from an unencrypted openssh-key-v1 ed25519 file (what private_file writes), else None."""
+    """(seed, comment) from an unencrypted openssh-key-v1 ed25519 file (what private_file writes), else None.
+    Walks the file's structure (cipher, kdf, options, count, public blob, private blob; then the two check
+    values, key type, public key, seed+public, comment), so no field is mistaken for another."""
     try:
         lines = path.read_text("utf-8").splitlines()
+        if not lines or lines[0] != "-----BEGIN OPENSSH PRIVATE KEY-----":
+            return None
         blob = base64.b64decode("".join(lines[1:-1]))
-        i = blob.rfind(b"\0\0\0\x40")  # the 64-byte seed+pub field of the private section
-        if not lines or lines[0] != "-----BEGIN OPENSSH PRIVATE KEY-----" or i < 0:
+        if not blob.startswith(b"openssh-key-v1\0"):
             return None
-        seed, pub = blob[i + 4:i + 36], blob[i + 36:i + 68]
-        if public_key(seed) != pub:
+        outer = _fields(blob, len(b"openssh-key-v1\0"))
+        cipher, kdf, _options = next(outer), next(outer), next(outer)
+        if cipher != b"none" or kdf != b"none":
+            return None  # encrypted: not ours
+        pos = len(b"openssh-key-v1\0") + 12 + len(cipher) + len(kdf) + len(_options)
+        if struct.unpack(">I", blob[pos:pos + 4])[0] != 1:
             return None
-        n = struct.unpack(">I", blob[i + 68:i + 72])[0]
-        return seed, blob[i + 72:i + 72 + n].decode("utf-8", "replace")
+        inner = _fields(blob, pos + 4)
+        next(inner)  # the public key blob
+        private = next(inner)
+        inner = _fields(private, 8)  # after the two check values
+        key_type, pub, seed_pub, comment = next(inner), next(inner), next(inner), next(inner)
+        if key_type != KEY_TYPE or len(seed_pub) != 64 or seed_pub[32:] != pub or public_key(seed_pub[:32]) != pub:
+            return None
+        return seed_pub[:32], comment.decode("utf-8", "replace")
     except Exception:
         return None
 

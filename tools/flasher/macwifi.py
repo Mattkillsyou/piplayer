@@ -2,9 +2,10 @@
 
 `system_profiler SPAirPortDataType -json` lists the networks in range and the current one without any
 Location permission; it takes a few seconds, so the flasher calls it from a thread and one answer serves both
-scan_networks() and current_ssid() (a short cache). The saved password comes from the login keychain through
-`security find-generic-password` (macOS puts up its own Allow/Deny prompt; a refusal just means no password).
-Never log what saved_password returns.
+scan_networks() and current_ssid() (a short cache). The saved password is the "AirPort network password" item
+in the System keychain, read through `security find-generic-password`: macOS asks for an administrator name and
+password on behalf of `security`; a cancelled prompt just means no password. Never log what saved_password
+returns.
 """
 import json
 import re
@@ -113,7 +114,7 @@ def saved_password(ssid: str):
     if not ssid:
         return None
     out = _run([SECURITY, "find-generic-password", "-D", "AirPort network password", "-a", ssid, "-w"],
-               timeout=180)  # the Allow/Deny prompt waits for the user
+               timeout=180)  # the administrator prompt waits for the user
     return out.rstrip("\n") or None
 
 

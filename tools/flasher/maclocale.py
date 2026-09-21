@@ -16,7 +16,10 @@ TIMEZONE_RE = re.compile(r"UTC|[A-Za-z_]+(/[A-Za-z0-9_+-]+){1,2}")
 LAYOUT_KEYMAP = {"us": "us", "abc": "us", "usextended": "us", "usinternational-pc": "us", "australian": "us",
                  "british": "gb", "british-pc": "gb", "irish": "ie", "irishextended": "ie",
                  "german": "de", "austrian": "at", "swissgerman": "ch", "swissfrench": "ch",
-                 "french": "fr", "french-pc": "fr", "french-numerical": "fr", "canadian": "ca", "canadian-csa": "ca",
+                 "french": "fr", "french-pc": "fr", "french-numerical": "fr",
+                 "canadian": "us", "canadian-csa": "ca", "canadianfrench": "ca", "canadianfrench-pc": "ca",
+                 "canadian-french": "ca", "canadianfrench-csa": "ca",  # Apple's "Canadian" is Canadian English
+                 "belgian": "be", "latinamerican": "latam",
                  "spanish": "es", "spanish-iso": "es", "italian": "it", "italian-pro": "it", "dutch": "nl",
                  "swedish": "se", "swedish-pro": "se", "norwegian": "no", "danish": "dk", "finnish": "fi",
                  "portuguese": "pt", "brazilian": "br", "brazilian-pro": "br", "polish": "pl", "polishpro": "pl",

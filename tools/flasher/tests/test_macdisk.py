@@ -242,7 +242,10 @@ def test_eject_cleans_the_volume_first(monkeypatch, tmp_path):
     (boot / ".Trashes").mkdir()
     removed = macdisk.clean_volume(boot)
     assert sorted(removed) == [".DS_Store", ".Spotlight-V100", ".Trashes", "._cmdline.txt", ".fseventsd"]
-    assert [p.name for p in boot.iterdir()] == ["cmdline.txt"]
+    # What stays: the file we wrote and the two empty markers that keep macOS from writing again at unmount.
+    assert sorted(p.name for p in boot.iterdir()) == [".fseventsd", ".metadata_never_index", "cmdline.txt"]
+    assert [p.name for p in (boot / ".fseventsd").iterdir()] == ["no_log"]
+    assert (boot / ".fseventsd" / "no_log").stat().st_size == 0 == (boot / ".metadata_never_index").stat().st_size
     assert macdisk.clean_volume(tmp_path / "missing") == []
     macdisk.eject(str(boot))
     assert du.calls[-1] == ["eject", str(boot)]
@@ -310,6 +313,7 @@ def test_rawdisk_over_a_file_defers_the_head_like_windows(tmp_path, monkeypatch)
     card = _card_file(tmp_path)
     with open(card, "r+b") as f:  # an old partition table on the card
         f.write(b"OLDTABLE" * 64)
+    du = FakeDiskutil(monkeypatch)
     opened = _fake_open(monkeypatch, card)
     writes = []
     real_write = macdisk.RawDisk.write
@@ -349,6 +353,12 @@ def test_rawdisk_over_a_file_defers_the_head_like_windows(tmp_path, monkeypatch)
     # A card that is not the size confirmed (swapped between the dialog and the open) is refused and closed.
     with pytest.raises(macdisk.DiskError, match="not the 8 MiB confirmed"):
         macdisk.open_physical_drive(4, expect_size=8 * 1024 * 1024)
+    # The SD adapter's lock switch: said in words, before any password prompt.
+    du.infos["disk4"] = dict(_info("disk4"), WritableMedia=False)
+    opened.clear()
+    with pytest.raises(macdisk.DiskError, match="write-protected: slide the lock switch"):
+        macdisk.open_physical_drive(4)
+    assert opened == []
 
 
 def test_rawdisk_errors_in_plain_words(tmp_path, monkeypatch):
@@ -440,7 +450,8 @@ def test_run_flash_on_macos_writes_the_card_byte_for_byte(tmp_path, monkeypatch)
     assert (boot / "cmdline.txt").read_bytes() == b"console=tty1 root=PARTUUID=abc rootwait " + \
         flasher.firstboot.CMDLINE_ARGS.encode() + b"\n"
     assert (boot / flasher.firstboot.PLAYER_ARCHIVE).stat().st_size > 1000
-    assert sorted(p.name for p in boot.iterdir()) == ["cmdline.txt", "firstrun.sh", "projection5000-player.tar.gz",
+    assert sorted(p.name for p in boot.iterdir()) == [".fseventsd", ".metadata_never_index", "cmdline.txt",
+                                                       "firstrun.sh", "projection5000-player.tar.gz",
                                                        "projection5000-provision.sh"]
     text = "\n".join(lines)
     assert f"Boot partition is {boot}" in text and "Writing os.img.xz to disk 4" in text and "SUMMARY" in text
@@ -452,7 +463,7 @@ def test_run_flash_on_macos_writes_the_card_byte_for_byte(tmp_path, monkeypatch)
                           "when asked, then flash again")))
     with pytest.raises(macdisk.DiskError, match="enter your Mac password"):
         flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
-    assert [c[0] for c in du.calls] == ["list", "info", "unmountDisk"]
+    assert [c[0] for c in du.calls] == ["list", "info", "unmountDisk", "info"]  # the last: the write-protect check
 
 
 def test_gui_lists_mac_cards_through_the_same_screen(monkeypatch):

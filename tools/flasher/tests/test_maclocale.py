@@ -26,6 +26,11 @@ def test_keymap_from_the_layout_id():
     assert maclocale.keymap("com.apple.keylayout.French-PC") == "fr"
     assert maclocale.keymap("com.apple.keylayout.Spanish-ISO") == "es"
     assert maclocale.keymap("com.apple.keylayout.Brazilian") == "br"
+    assert maclocale.keymap("com.apple.keylayout.Canadian") == "us"  # Canadian English, not the French one
+    assert maclocale.keymap("com.apple.keylayout.Canadian-CSA") == "ca"
+    assert maclocale.keymap("com.apple.keylayout.CanadianFrench-PC") == "ca"
+    assert maclocale.keymap("com.apple.keylayout.LatinAmerican") == "latam"
+    assert maclocale.keymap("com.apple.keylayout.Belgian") == "be"
     assert maclocale.keymap("com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese") == "us"  # an input method, not a layout
     assert maclocale.keymap("") == "us" and maclocale.keymap("com.apple.keylayout.Dvorak") == "us"
     for km in maclocale.LAYOUT_KEYMAP.values():

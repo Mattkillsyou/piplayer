@@ -13,6 +13,9 @@ import sys
 from pathlib import Path
 
 NAME = "macOS"
+SIGNIN_FILE = "signin.json"  # in config_dir(), which is the settings folder too: not flasher.json (the form)
+FILES_DENIED_HINT = ("macOS did not let the flasher write to the card. Open System Settings, Privacy & Security, "
+                     "Files and Folders, allow Projection5000 SD Flasher to access Removable Volumes, then flash again.")
 FALLBACK_FONTS = {"display": "Menlo", "mono": "Menlo", "sans": "Helvetica Neue"}
 # system_profiler needs no Location permission, so an empty scan just means: nothing in range.
 NO_SCAN_HINT = "type the network name"

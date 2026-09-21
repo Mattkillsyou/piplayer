@@ -83,10 +83,18 @@ You'll need:
 > screen and the button are the same as on Windows; the only extra step is
 > that macOS asks for your Mac password once per flash when the card is
 > written (Apple's standard prompt, as Raspberry Pi Imager shows it), and
-> may ask **Allow** when the flasher reads a Wi-Fi password from your
-> keychain. Cards are listed as `disk4  SanDisk  32 GB`. The log and the
-> remembered form live in `~/Library/Application Support/Projection5000`,
-> the SSH key in `ssh/id_ed25519` there (`ssh -i "~/Library/Application
+> may put up the keychain prompt (your Mac user name and password, then
+> **Allow**) when the flasher reads a saved Wi-Fi password; Cancel just
+> leaves the password field for you to type. Cards are listed as
+> `disk4  SanDisk  32 GB`. Two more one-time boxes can appear: "would like
+> to access files on a removable volume" (click **Allow**; it is how the
+> first-boot files get onto the card), and, on some Macs, "is damaged and
+> can't be opened" at the very first start instead of the Open box; then
+> paste this line into Terminal once and open the app again:
+> `xattr -d com.apple.quarantine "/Applications/Projection5000 SD Flasher.app"`.
+> The log and the remembered form live in
+> `~/Library/Application Support/Projection5000`, the SSH key in
+> `ssh/id_ed25519` there (`ssh -i ~/"Library/Application
 > Support/Projection5000/ssh/id_ed25519" projector-admin@<device-id>.local`).
 > Making the first open silent needs an Apple Developer account for
 > notarization; see `tools/flasher/README.md`, "On a Mac".

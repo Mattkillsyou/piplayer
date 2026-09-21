@@ -89,8 +89,11 @@ def test_flasher_operator_config_keeps_no_secret_in_the_file_on_macos(monkeypatc
     monkeypatch.setattr(flasher, "host", machost)
     monkeypatch.setattr(machost, "config_dir", lambda: tmp_path / "Projection5000")
     sec = FakeSecurity(monkeypatch)
-    path = tmp_path / "Projection5000" / "flasher.json"
+    path = tmp_path / "Projection5000" / "signin.json"  # not flasher.json: that is the remembered form, same folder
     assert flasher.operator_config_path() == path
+    monkeypatch.setattr(machost, "data_dir", lambda: tmp_path / "Projection5000")
+    monkeypatch.setattr(flasher.imagefetch, "host", machost)
+    assert flasher.settings_path() == tmp_path / "Projection5000" / "flasher.json" != path
     assert flasher.load_operator_config() == {"console_url": "", "token": "", "username": ""}
     assert flasher.save_operator_config("https://c.example/", " " + OPERATOR_TOKEN + " ", " matt ") == ""
     text = path.read_text("utf-8")
@@ -105,7 +108,7 @@ def test_flasher_operator_config_keeps_no_secret_in_the_file_on_macos(monkeypatc
     # The keychain refusing: plain text with a warning that names it.
     sec.deny = True
     warning = flasher.save_operator_config("https://c.example", OPERATOR_TOKEN)
-    assert warning.startswith("WARNING: the keychain is not available") and "flasher.json" in warning
+    assert warning.startswith("WARNING: the keychain is not available") and "signin.json" in warning
     assert OPERATOR_TOKEN in path.read_text("utf-8")
     sec.deny = False
     assert flasher.load_operator_config()["token"] == OPERATOR_TOKEN

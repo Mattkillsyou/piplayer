@@ -65,7 +65,7 @@ def input_langid() -> int:
     except Exception:
         return 0
     high = (hkl >> 16) & 0xFFFF
-    return high if 0 < high < 0xF000 else hkl & 0xFFFF
+    return high if 0 < high < 0xE000 else hkl & 0xFFFF  # 0xE0xx: an IME, 0xF0xx: a special layout
 
 
 def keymap(langid: int = None) -> str:

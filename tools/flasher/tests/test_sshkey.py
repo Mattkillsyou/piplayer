@@ -28,6 +28,11 @@ def test_read_private_round_trips(tmp_path):
     f = tmp_path / "id_ed25519"
     f.write_text(sshkey.private_file(SEED, PUB, "me@pc"))
     assert sshkey.read_private(f) == (SEED, "me@pc")
+    for n in (0, 63, 64, 65, 200):  # a comment of exactly 64 bytes must not be mistaken for the seed field
+        f.write_text(sshkey.private_file(SEED, PUB, "c" * n))
+        assert sshkey.read_private(f) == (SEED, "c" * n), n
+    f.write_text(sshkey.private_file(SEED, PUB, "me@pc").replace("AAAAB", "AAAAC", 1))  # a flipped byte
+    assert sshkey.read_private(f) is None
     f.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n")
     assert sshkey.read_private(f) is None
     assert sshkey.read_private(tmp_path / "missing") is None

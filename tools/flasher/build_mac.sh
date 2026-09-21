@@ -8,9 +8,13 @@
 #   FLASHER_ENROLL_KEY   bakes an enrollment key for an offline build (needs the URL); never for a public release
 #   FLASHER_IMAGE        a local .img.xz to embed instead of downloading the latest Raspberry Pi OS Lite (64-bit)
 #   FLASHER_NO_BUNDLE=1  build without an embedded image (every model's image is then downloaded at flash time)
+#   FLASHER_SIGN_IDENTITY  "-" (default: ad hoc) or a "Developer ID Application: ..." identity from the keychain;
+#                        with a real identity the signature carries the hardened runtime and a timestamp, as
+#                        notarization requires (then: xcrun notarytool submit <dmg> --wait; xcrun stapler staple)
 # The image goes to Contents/Resources/bundle.bin (a Mach-O with bytes appended fails its signature), the .app
-# is signed ad hoc (not notarized: see README "On a Mac" for the first-open steps), --selfcheck must pass, and
-# the DMG is dist/Projection5000-SD-Flasher-mac-arm64.dmg or -intel.dmg after the CPU this runs on.
+# is signed (ad hoc unless FLASHER_SIGN_IDENTITY says otherwise; not notarized: see README "On a Mac" for the
+# first-open steps), --selfcheck must pass, and the DMG is dist/Projection5000-SD-Flasher-mac-arm64.dmg or
+# -intel.dmg after the CPU this runs on.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -122,8 +126,14 @@ print(f"embedded {b.name}: {b.length} bytes in {out}, sha256 {b.sha256}")
 PY
 fi
 
-# Ad hoc signature over the finished bundle (Apple Silicon refuses unsigned code; Gatekeeper still asks on first open).
-codesign --force --deep --sign - "$app"
+# Signature over the finished bundle (Apple Silicon refuses unsigned code; Gatekeeper still asks on first open of
+# an unnotarized app). A Developer ID identity gets the hardened runtime and a timestamp, what notarization needs.
+identity="${FLASHER_SIGN_IDENTITY:--}"
+if [ "$identity" = "-" ]; then
+    codesign --force --deep --sign - "$app"
+else
+    codesign --force --deep --options runtime --timestamp --sign "$identity" "$app"
+fi
 codesign --verify --deep --strict "$app"
 
 # Smoke test the app: --selfcheck needs no rights, starts Tk once, checks the bundled player archive and writes
@@ -142,7 +152,8 @@ echo "$bundled"
 console_line=$(grep '^console: ' "$out" | head -1)
 if [ -n "${FLASHER_CONSOLE_URL:-}" ]; then
     key_state="fetched with the operator token"; [ -n "${FLASHER_ENROLL_KEY:-}" ] && key_state=set
-    want="console: ${FLASHER_CONSOLE_URL%/} (enrollment key: $key_state)"
+    url=$(CONSOLE_JSON_URL="$FLASHER_CONSOLE_URL" "$python" -c "import os; print(os.environ['CONSOLE_JSON_URL'].strip().rstrip('/'))")
+    want="console: $url (enrollment key: $key_state)"
     [ "$console_line" = "$want" ] || { echo "app does not see its console.json: '$console_line'" >&2; exit 1; }
 fi
 echo "$console_line"
@@ -155,5 +166,10 @@ mkdir -p "$dmgroot"
 cp -R "$app" "$dmgroot/"
 ln -s /Applications "$dmgroot/Applications"
 rm -f "$dmg"
-hdiutil create -volname "$name" -srcfolder "$dmgroot" -ov -format UDZO "$dmg" >/dev/null
+for attempt in 1 2 3; do  # "Resource busy" happens now and then on busy machines (CI runners): try again
+    if hdiutil create -volname "$name" -srcfolder "$dmgroot" -ov -format UDZO "$dmg" >/dev/null; then break; fi
+    [ "$attempt" -lt 3 ] || { echo "hdiutil create failed three times" >&2; exit 1; }
+    echo "hdiutil create failed (attempt $attempt), retrying ..." >&2
+    sleep 10
+done
 echo "OK: $dmg ($(du -h "$dmg" | cut -f1)), selfcheck output in $out"

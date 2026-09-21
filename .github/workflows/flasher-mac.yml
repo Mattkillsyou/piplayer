@@ -53,6 +53,7 @@ jobs:
         run: |
           brew list gnu-sed >/dev/null 2>&1 || brew install gnu-sed
           brew list coreutils >/dev/null 2>&1 || brew install coreutils
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
           echo "$(brew --prefix)/opt/gnu-sed/libexec/gnubin" >> "$GITHUB_PATH"
           echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
           echo "$(brew --prefix)/opt/openssl@3/bin" >> "$GITHUB_PATH"

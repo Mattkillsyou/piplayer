@@ -12,6 +12,9 @@ import sys
 from pathlib import Path
 
 NAME = "Windows"
+SIGNIN_FILE = "flasher.json"  # in config_dir(): the sign-in (%APPDATA%, apart from the settings in %LOCALAPPDATA%)
+# What to say when the boot files could not be written for lack of permission ('' : nothing platform-specific).
+FILES_DENIED_HINT = ""
 # Tk font families used when a bundled face did not register.
 FALLBACK_FONTS = {"display": "Consolas", "mono": "Consolas", "sans": "Segoe UI"}
 # Shown under the network box when this PC is connected to Wi-Fi but the scan comes back empty:

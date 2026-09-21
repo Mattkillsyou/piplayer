@@ -25,8 +25,8 @@ account; all of that is under Advanced.
 2. **Wi-Fi network and password**. The network box lists the networks this
    PC currently sees (strongest first, the one it is connected to at the top;
    Refresh rescans). Picking one that this PC has a saved profile for fills
-   the password too ("password from this PC" in grey; the hint goes away as
-   soon as you edit it). A network that is not listed can be typed in as
+   the password too ("password from this computer" in grey; the hint goes
+   away as soon as you edit it). A network that is not listed can be typed in as
    before. Leave both blank for a wired Pi.
 3. **SD card**: pick the reader (Refresh rescans), press **FLASH**, confirm
    the erase warning. The first time on a PC the status line says "Approve
@@ -219,8 +219,11 @@ are:
 3. Enter your Mac password, then click **Open** in the box that follows.
 
 After that it opens like any other app. (Removing this step needs an Apple
-Developer account, US$99 a year, to notarize each release; the build is ready
-for it, only the signing identity is missing.)
+Developer account, US$99 a year: `build_mac.sh` signs with
+`FLASHER_SIGN_IDENTITY="Developer ID Application: ..."` when it is set
+(hardened runtime and timestamp included), after which the DMG is sent to
+`xcrun notarytool submit --wait` and stapled with `xcrun stapler staple`;
+without the account the ad hoc signature and the first-open step stay.)
 
 Then it is the same screen: name the Pi, pick the model, pick the Wi-Fi,
 pick the card, press **FLASH**, confirm the erase warning. What differs:
@@ -239,8 +242,9 @@ pick the card, press **FLASH**, confirm the erase warning. What differs:
 - **Wi-Fi**: the network list comes from `system_profiler` (no Location
   permission needed; it takes a few seconds, the box says "Looking for
   networks..." meanwhile). Picking a network this Mac knows reads its password
-  from the login keychain: macOS asks **Allow** or **Deny** for the flasher;
-  Deny just leaves the field empty.
+  from the keychain: macOS puts up its keychain prompt (your Mac user name and
+  password, then **Allow**); Cancel or Deny just leaves the field empty for
+  you to type.
 - **Time zone, keyboard, Wi-Fi country** come from macOS (`/etc/localtime`,
   the keyboard layout in System Settings, the region of the language setting).
 - **The sign-in** (first FLASH, browser approval) is the same; the token is
@@ -256,10 +260,25 @@ pick the card, press **FLASH**, confirm the erase warning. What differs:
   done.
 
 Files on this Mac (all under `~/Library/Application Support/Projection5000`):
-`flasher.json` (the remembered form, never a secret), `flasher.log` (the
-technical log), `images/` (downloaded images) and `ssh/id_ed25519` plus `.pub`
-(the SSH key, mode 0600; `ssh -i "~/Library/Application Support/Projection5000/ssh/id_ed25519" projector-admin@<device-id>.local`).
-The sign-in lives in the keychain; **Disconnect** under Advanced deletes it.
+`flasher.json` (the remembered form, never a secret), `signin.json` (the
+console URL and your user name; the token itself is in the keychain),
+`flasher.log` (the technical log), `images/` (downloaded images) and
+`ssh/id_ed25519` plus `.pub` (the SSH key, mode 0600;
+`ssh -i ~/"Library/Application Support/Projection5000/ssh/id_ed25519" projector-admin@<device-id>.local`,
+the `~` outside the quotes so the shell expands it). **Disconnect** under
+Advanced deletes the keychain item and `signin.json`.
+
+Two more one-time prompts can appear on a Mac. Writing the first-boot files
+to the card may trigger "Projection5000 SD Flasher would like to access
+files on a removable volume": click **Allow** (declining fails the flash with
+the words "macOS did not let the flasher write to the card ..."; the fix is
+System Settings, Privacy & Security, Files and Folders, allow the flasher
+under Removable Volumes, then flash again). And if macOS says the app "is
+damaged and can't be opened" instead of offering Open (some versions say
+this about downloaded apps that are signed but not notarized), clear the
+download flag once in Terminal and open the app again:
+`xattr -d com.apple.quarantine "/Applications/Projection5000 SD Flasher.app"`.
+Both go away with notarization.
 
 Run from source on a Mac: `python3 flasher.py` from `tools/flasher` (Python
 3.11+ with tkinter; python.org's installer has it, Homebrew's needs
@@ -421,8 +440,10 @@ cms\.venv\Scripts\python.exe -m pytest tools\flasher\tests -q
 ```
 
 On a Mac: `python3 -m pytest -q` from `tools/flasher` (the first-boot script
-tests that run bash need GNU `sed` and `stat`, `brew install gnu-sed coreutils`
-with their `gnubin` folders first on PATH; otherwise they skip). The same
+tests that run bash need GNU `sed` and `stat` and an `openssl` with
+`passwd -6`: `brew install gnu-sed coreutils openssl@3` with their `gnubin`
+and `bin` folders first on PATH, as the CI workflow does; without GNU tools
+they skip). The same
 suite runs on Windows and macOS: the Windows-only tests (live PowerShell,
 DPAPI, gdi32, netsh) skip on a Mac and the macOS layer's tests run everywhere
 with the tools faked.

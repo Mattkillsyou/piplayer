@@ -162,7 +162,7 @@ def append_log(line: str) -> None:
 # ---------------------------------------------------------------- operator config (sign-in token)
 
 def operator_config_path() -> Path:
-    return host.config_dir() / "flasher.json"
+    return host.config_dir() / host.SIGNIN_FILE
 
 
 def _read_operator_config() -> dict:
@@ -836,7 +836,7 @@ class App:
         clear_operator_config()
         self.op = {"token": "", "username": ""}
         self._show_account()
-        self.log("Signed out. Revoke the token on the console's Settings page too if this PC changes hands.")
+        self.log("Signed out. Revoke the token on the console's Settings page too if this computer changes hands.")
 
     def _apply_settings(self, s: dict):
         for k in SETTINGS_KEYS:
@@ -941,7 +941,7 @@ class App:
             self.v["wifi_password"].set(pw)
         finally:
             self._setting_pw = False
-        self.pw_hint.configure(text="password from this PC")
+        self.pw_hint.configure(text="password from this computer")
 
     def _password_edited(self, *_):
         if not getattr(self, "_setting_pw", False):
@@ -1090,7 +1090,7 @@ class App:
         if not v:
             return
         if not v["enrollment_key"] and not self.connected():
-            # First use on this PC: approve it in the browser, then the flash continues by itself.
+            # First use on this computer: approve it in the browser, then the flash continues by itself.
             self.connect(then=self.on_flash)
             return
         if not v["dry_run"]:
@@ -1259,6 +1259,8 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
         log(f"Writing {disk.source_name(image)} to disk {d['number']} ...")
         status("Writing the card")
         with disk.open_physical_drive(d["number"], expect_size=d["size"]) as drive:
+            if cancel.is_set():  # pressed while the card was opened (macOS: during the password prompt)
+                raise disk.Cancelled()
             drive.lock(disk.volume_paths(d["number"]))
             start = time.monotonic()
 
@@ -1300,6 +1302,11 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     except disk.Cancelled:
         raise disk.Cancelled("The image is on the card but the first-boot files are NOT; "
                              "the card will not enroll. Flash it again.")
+    except PermissionError as e:
+        if host.FILES_DENIED_HINT:
+            raise disk.DiskError(f"{e}\n\n{host.FILES_DENIED_HINT}") from e
+        raise disk.DiskError(f"{e}\n\nThe image was written but the first-boot files were NOT: this card "
+                             "will not enroll. Re-insert it and Flash again.") from e
     except Exception as e:
         raise disk.DiskError(f"{e}\n\nThe image was written but the first-boot files were NOT: this card "
                              "will not enroll. Re-insert it and Flash again.") from e

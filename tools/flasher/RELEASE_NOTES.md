@@ -28,8 +28,13 @@ Applications. The app is signed but not notarized, so the very first open needs 
   **Privacy & Security**, scroll down to the line saying the app was blocked, click **Open Anyway**, enter
   your Mac password and click **Open**.
 
+If macOS instead says the app "is damaged and can't be opened", paste this line into Terminal once and open the
+app again: `xattr -d com.apple.quarantine "/Applications/Projection5000 SD Flasher.app"`.
+
 After that it opens normally. macOS asks for your Mac password once per flash (the standard prompt) when the
-card is written, and may ask **Allow** when the flasher reads a saved Wi-Fi password from your keychain.
+card is written, asks once to "access files on a removable volume" (click **Allow**), and may put up the
+keychain prompt (your Mac user name and password, then **Allow**) when the flasher reads a saved Wi-Fi
+password; Cancel just leaves the password field for you to type.
 
 (The extra first-open step goes away once releases are notarized, which needs an Apple Developer account,
 US$99 a year: a Developer ID certificate in the build, then `notarytool submit` and `stapler`. Everything

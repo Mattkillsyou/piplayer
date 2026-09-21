@@ -222,8 +222,10 @@ def find_boot_volume(number: int, timeout: float = 30.0, cancel_event=None, log=
 
 
 def clean_volume(mount) -> list:
-    """Remove what macOS wrote on the boot partition (AppleDouble ._* files, .fseventsd, .Spotlight-V100 ...).
-    Returns the names removed; errors are ignored (junk is harmless on the Pi, a failed flash is not)."""
+    """Remove what macOS wrote on the boot partition (AppleDouble ._* files, .fseventsd, .Spotlight-V100 ...), then
+    leave the two empty markers that tell fseventsd and Spotlight not to write again at unmount
+    (.fseventsd/no_log, .metadata_never_index). Returns the names removed; errors are ignored (junk is harmless
+    on the Pi, a failed flash is not)."""
     removed = []
     root = Path(mount)
     try:
@@ -240,6 +242,12 @@ def clean_volume(mount) -> list:
                 removed.append(p.name)
             except OSError:
                 pass
+    for marker in (root / ".fseventsd" / "no_log", root / ".metadata_never_index"):
+        try:
+            marker.parent.mkdir(exist_ok=True)
+            marker.write_bytes(b"")
+        except OSError:
+            pass
     return removed
 
 
@@ -297,6 +305,13 @@ class RawDisk(PhysicalDrive):
         self.volumes = []
         self.handle = None
         self.deferred_head = b""
+        try:
+            info = _plist("info", "-plist", f"disk{self.number}")
+        except DiskError:
+            info = {}
+        if info.get("WritableMedia") is False or info.get("Writable") is False:  # the SD adapter's lock switch
+            raise DiskError("The card is write-protected: slide the lock switch on the SD adapter to the unlocked "
+                            "position, re-insert it and flash again")
         fd = _authopen(self.path, os.O_RDWR)
         self.handle = os.fdopen(fd, "r+b", buffering=0)
         if expect_size:
