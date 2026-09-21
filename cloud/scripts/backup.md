@@ -1,9 +1,11 @@
 # Backups — PiPlayer Cloud
 
-Two things hold state: D1 `piplayer-cloud-db` (users, devices, playlists, schedules, audit
-log, settings) and R2 `piplayer-cloud-media` (`media/<filename>` objects and
-`screenshots/<device_id>.jpg`). Back them up together; a media row without its object is
-exactly the "download failed" condition the player reports as `sync_error`.
+Two things hold state: D1 `piplayer-cloud-db` (users, devices (incl. camera RTSP URLs),
+playlists, schedules, audit log, settings (incl. the enrollment key and alert webhook URL),
+api_tokens, alerts, device_codes and secrets) and R2 `piplayer-cloud-media` (`media/<filename>`
+objects, `screenshots/<device_id>.jpg` and `camera/<device_id>.jpg`). Back them up together; a
+media row without its object is exactly the "download failed" condition the player reports as
+`sync_error`.
 
 ## D1: SQL dump
 
@@ -14,8 +16,13 @@ npx wrangler d1 export piplayer-cloud-db --remote --output=./backup/db-$(date +%
 
 `--remote` targets the production database (omit it, or pass `--local --persist-to <dir>`,
 for a local dev copy). The file is plain SQL (schema + data); `--no-schema` / `--no-data` /
-`--table <name>` narrow it. Keep it private: it contains password hashes (PBKDF2, salted),
-device bearer tokens and session rows.
+`--table <name>` narrow it. Keep it private: it holds password hashes (PBKDF2, salted), device
+bearer tokens (each one also fetches the Wyze password and the device's Cloudflare Tunnel token
+on sync), the enrollment key, the alert webhook URL, up to an hour of unclaimed operator tokens
+in `device_codes`, and session rows. The `secrets` table (Wyze, Twilio) and the per-device
+camera RTSP URLs (`devices.camera_rtsp_url`, which carry the camera's password; a URL saved
+before they were encrypted stays plain until it is re-saved) are encrypted with a key derived
+from `SESSION_SECRET` and are unreadable without it.
 
 Restore into an empty database:
 
@@ -28,6 +35,13 @@ The dump includes the `d1_migrations` bookkeeping table, so `npm run migrate:rem
 afterwards applies only migrations newer than the dump. Sessions in the dump are stale by then;
 `DELETE FROM sessions` after a restore forces everyone to log in again, which is what you want
 if the restore was security-motivated.
+
+If a dump may have leaked, also: Settings > Rotate key (enrollment), Devices > New token on
+every device, re-enter the alert webhook URL, and delete unclaimed device codes
+(`DELETE FROM device_codes`; the housekeeping does it within the hour anyway). If the worker
+was recreated with a new `SESSION_SECRET`, Wyze and Twilio show as not set after the restore
+and every RTSP camera reads as `none`: re-enter them on Settings and in each device's Camera
+block.
 
 ## R2: media and screenshots
 
@@ -66,8 +80,9 @@ npx wrangler d1 execute piplayer-cloud-db --remote --json --command "SELECT file
 
 Restore one object with `npx wrangler r2 object put piplayer-cloud-media/media/<filename> --remote --file backup/media/<filename> --content-type video/mp4`
 (the worker serves the stored content type as `Content-Type`; set it to match the extension).
-Screenshots (`screenshots/<device_id>.jpg`) are transient — the player re-uploads one every
-`screenshot_interval` seconds — so they are not worth backing up.
+Screenshots and camera snapshots (`screenshots/`, `camera/`) are transient — the player
+re-uploads them every `screenshot_interval` / `camera_interval` seconds — so they are not worth
+backing up.
 
 ## Verify a backup
 

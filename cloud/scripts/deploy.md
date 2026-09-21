@@ -11,8 +11,9 @@ the **Workers Paid** plan (dashboard → Workers & Pages → Plans): Workers Fre
 per request and one PBKDF2 password derivation (100 000 iterations) needs ≈ 15 ms, so login
 and user creation would fail with error 1102; D1/R2 calls are subrequests (Free: 50 external +
 1 000 to Cloudflare services per invocation, Paid: 10 000) and the Devices/Dashboard pages
-issue several per device. `wrangler deploy` does not check the plan — a Free-plan deploy only
-breaks at the first login. See README "Limits and design notes".
+use a fixed handful of statements regardless of fleet size (see README "Limits and design
+notes"). `wrangler deploy` does not check the plan — a Free-plan deploy only
+breaks at the first login.
 
 ## 0. Verify the build first
 
@@ -22,15 +23,16 @@ npm run e2e                 # black-box suites against wrangler dev (see README)
 npm run deploy:dry          # wrangler deploy --dry-run --outdir dist: bundles, uploads nothing
 ```
 
-## 1. Create the storage and record the D1 id
+## 1. Create the storage (first deployment only)
 
 ```sh
 npx wrangler d1 create piplayer-cloud-db
 npx wrangler r2 bucket create piplayer-cloud-media
 ```
 
-`d1 create` prints a `database_id`; put it in `wrangler.toml` under `[[d1_databases]]`
-(replace `TBD-set-at-deploy`). The bucket name already matches `[[r2_buckets]]`.
+Skip this if `wrangler.toml` already carries a `database_id` under `[[d1_databases]]` (it does
+for the live worker). On a brand-new account `d1 create` prints the id; paste it there. The
+bucket name already matches `[[r2_buckets]]`.
 
 ## 2. Apply the schema to the remote database
 
@@ -39,11 +41,16 @@ npm run migrate:remote      # = npx wrangler d1 migrations apply piplayer-cloud-
 ```
 
 Wrangler lists the pending files in `migrations/` and asks for confirmation. Re-running is
-safe: only unapplied migrations run.
+safe: only unapplied migrations run. Until the database is at the version the code expects
+(`meta.schema_version`, `db.SCHEMA_VERSION`), the worker refuses every request, `/api/health`
+included, with a plain-English 500 naming `npm run migrate:remote`; `npm run deploy` runs it
+first for that reason. `0006_indexes.sql` adds two unique indexes and fails on a database that
+already holds duplicates; the file's header comment has the SELECTs to find them.
 
 ## 3. Secrets (generated, never chosen by hand)
 
-`SESSION_SECRET` signs the session cookie (HMAC-SHA256); `SETUP_TOKEN` guards the one-time
+`SESSION_SECRET` signs the session cookie (HMAC-SHA256) and encrypts the Wyze account and
+Twilio values saved on the Settings page and each device's RTSP camera URL; `SETUP_TOKEN` guards the one-time
 first-admin page. Generate them and pipe them straight into wrangler so they never land in
 shell history or a file:
 
@@ -52,15 +59,27 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))" |
 node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))" | npx wrangler secret put SETUP_TOKEN
 ```
 
+Optional: the automatic camera tunnels need three more secrets, `CF_API_TOKEN`,
+`CF_ACCOUNT_ID`, `CF_ZONE_ID`; see `../docs/automation.md` (section G, Worker secrets) for
+their values and permissions. Without them the Settings page just shows the feature as not
+configured.
+
 You will need the SETUP_TOKEN value once, in step 5, so print it to the terminal instead of
 piping if you prefer (`node -e ...` alone, then paste it at the `wrangler secret put` prompt).
 `npx wrangler secret list` shows the names (never the values). Rotating `SESSION_SECRET`
-later logs every browser out; rotating `SETUP_TOKEN` is harmless once the first admin exists
-(`/setup` answers 404 after that).
+later logs every browser out and makes the saved Wyze and Twilio values (and the per-device
+RTSP URLs) unreadable: the Settings page shows them as not set, cameras and SMS alerts stop
+until you re-enter them there and in each device's Camera block (re-entering pushes the new
+camera config to every player). Rotating `SETUP_TOKEN` is harmless
+once the first admin exists (`/setup` answers 404 after that).
 
 `wrangler secret put` targets the deployed worker; if the worker has never been deployed,
 wrangler offers to create it — answer yes (an empty worker with secrets is fine, step 4
 overwrites its code).
+
+The login throttle (README "First-run setup and accounts") is enforced in D1; a Cloudflare WAF
+rate-limiting rule on `POST /login` (dashboard → Security → WAF → Rate limiting rules) is the
+backstop in front of it, so a flood never reaches the worker at all.
 
 ## 4. Move the custom domain, then deploy
 
@@ -89,11 +108,12 @@ Then deploy; `wrangler.toml` carries
 attaches the hostname (DNS record + certificate) to `piplayer-cloud`:
 
 ```sh
-npm run deploy              # = npx wrangler deploy
+npm run deploy              # = npm run migrate:remote && npx wrangler deploy
 ```
 
-Wrangler prints the version id and the bindings (DB, MEDIA, ASSETS, the `PIPLAYER_*` vars,
-the cron `0 3 * * *`). Expect a minute or two before the certificate is active.
+Wrangler prints the version id and the bindings (DB, MEDIA, ASSETS, ALERT_MAIL, the
+`PIPLAYER_*` vars, the two crons `0 3 * * *` (housekeeping) and `*/5 * * * *` (alerts)).
+Expect a minute or two before the certificate is active.
 
 Smoke check:
 
@@ -126,9 +146,14 @@ the printed command on the Pi
   (dashboard → that worker → Domains & Routes → Add custom domain, or a `wrangler deploy` of
   that worker with the same `routes` entry). Its D1/R2 data was never touched.
 - Data: restore from the backups in `scripts/backup.md` (`wrangler d1 execute --remote --file`
-  for the SQL dump, `rclone copy` back into the bucket for media).
+  for the SQL dump, `rclone copy` back into the bucket for media). A restore onto a worker
+  with a new `SESSION_SECRET` loses the Wyze/Twilio secrets and the RTSP camera URLs; re-enter
+  them on Settings and in each device's Camera block.
 
 ## Later deploys
 
-`npm run migrate:remote` (if `migrations/` gained files), then `npm run deploy`. The cron
-handler (audit retention, abandoned uploads, expired sessions) needs nothing else.
+`npm run deploy` (it runs `npm run migrate:remote` first, which applies any files
+`migrations/` gained; until that has run the worker answers every request with the 500 from
+step 2). The cron handler (audit retention, abandoned uploads, expired sessions, closed alerts
+after 90 days, hour-old enrollment codes; full per-module list in MODULES.md) needs nothing
+else.

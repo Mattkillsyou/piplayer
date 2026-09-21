@@ -34,7 +34,8 @@ You'll need:
 > The first time you press Flash on a PC, the flasher needs to be connected
 > to your Projection5000 account. The status line says "Approve this computer
 > in the browser window that just opened", a browser page opens with a code
-> already filled in, and you click Approve (as an editor or admin). The
+> already filled in, and you click Approve (as an admin; the page also shows
+> which computer asked and from where). The
 > flasher then carries on and makes the card by itself; nothing more to click.
 > From then on the PC stays connected and Flash just flashes. If the browser
 > does not open, the status line shows the web address and the code to type.
@@ -57,9 +58,10 @@ You'll need:
 > (about 530 MB) and kept for later flashes (developers can point the flasher
 > at another image with `--image <path>` or the `FLASHER_IMAGE` environment
 > variable). Re-flashing a card with the same device id re-enrolls the same
-> device (same token, same playlist). Rotate the key on the Settings page if
-> a flashed card is lost: the next flash fetches the new key, no rebuild
-> needed. If the Settings page names a default group and playlist ("New
+> device: the new card gets a new token and keeps the same playlist and
+> group, and the old card stops syncing. Rotate the key on the Settings page
+> when a card or a flasher PC is lost: the next flash fetches the new key,
+> no rebuild needed. If the Settings page names a default group and playlist ("New
 > devices join group" / "New devices get playlist"), the device gets them on
 > its first enrollment only; see [automation.md](automation.md) sections A
 > and B. Both consoles enroll: the cloud console and the Python console
@@ -166,8 +168,9 @@ Fill in:
 - **name:** friendly label, e.g. "Lobby Projector". Shown in the UI.
 
 After creating, find the device's row and expand **Token / install** under
-the **Actions** column. It shows the token and the exact install command
-(including the `cd` and the CMS URL the browser is using) — copy it.
+the **Actions** column (on the cloud console only an admin sees it). It
+shows the token and the exact install command (including the `cd` and the
+CMS URL the browser is using) — copy it.
 
 ## 5. Clone the repo onto the Pi and run the install script
 
@@ -321,10 +324,12 @@ instead, which means the same thing.) Check these in order:
 
 - 401: the token in `config.toml` doesn't match what's in the CMS. 403: the
   token belongs to a different `device_id`. Regenerate the token in the CMS
-  (Devices page → Token / install → **New token**), then either re-run the
+  (Devices page → Token / install → **New token**; admin), then either re-run the
   install script with the new token (step 5 command) or just edit
   `config.toml` and `sudo systemctl restart projector-player.service`. The
-  old token stops working the moment you click New token.
+  old token stops working the moment you click New token (on the cloud
+  console a device with an automatic camera tunnel gets a new tunnel key
+  too; the Pi picks it up on its next sync).
 
 **Player syncs but mpv doesn't switch:**
 
@@ -336,7 +341,9 @@ instead, which means the same thing.) Check these in order:
 
 - Expand **Recent commands** for the device on the Devices page (last 5 commands
   with their result). A command is delivered on up to 5 polls; if the player
-  never reports back it is marked `undeliverable`. On the Pi, check that
+  never reports back it is marked `undeliverable`. Clicking the same button
+  again while the first is still waiting queues nothing new (the cloud
+  console says so at the top of the page). On the Pi, check that
   `/etc/sudoers.d/projector-player` exists and `sudo -n -l -U projector`
   lists `/sbin/reboot` and `systemctl restart projector-mpv.service`; re-run
   the install script if not.
@@ -348,8 +355,9 @@ instead, which means the same thing.) Check these in order:
 
 ## Removing a Pi
 
-In the CMS, click **Delete device** (Devices page → Token / install) next to
-the device. Then on the Pi, from a clone of the repo (the installed copy under
+In the CMS, click **Delete device** (Devices page, at the bottom of the
+device's Actions; editor or admin) next to the device. Then on the Pi, from a
+clone of the repo (the installed copy under
 `/opt/piplayer/player` has no `deploy/` directory):
 
 ```bash

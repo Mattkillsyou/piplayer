@@ -285,7 +285,7 @@ most once every 10 minutes (`journalctl -u projector-player.service | grep
 | `cannot run ffmpeg: ...` | ffmpeg missing (player installed before the camera feature). | `sudo apt-get install -y ffmpeg`, or re-run the installer. |
 | `ffmpeg produced no JPEG frame` | Stream connected but sent no decodable video within the timeout (audio-only URL, very long keyframe interval). | Use the camera's sub-stream, or a URL that starts with video. |
 | `snapshot too large (... bytes, max 2097152)` | Frame larger than 2 MiB (a 4K main stream at `-q:v 5`). | Use the sub-stream or a lower resolution profile. |
-| `upload failed: HTTP 401` / `403` | Device token rejected (same as for screenshots). | Devices page → Token / install → **New token**, update `config.toml`. |
+| `upload failed: HTTP 401` / `403` | Device token rejected (same as for screenshots). | Devices page → Token / install → **New token** (admin), update `config.toml`. |
 | `upload failed: HTTP 413` | The console rejected the size. | Same as "snapshot too large". |
 | `upload failed: HTTP 404` | Console without the camera endpoint. | Upgrade the console. |
 | `HTTPSConnectionPool(host='console.example.com', port=443): Max retries exceeded with url: /api/camera/...` or `...: Read timed out. (read timeout=15)` (a requests connection/timeout message naming the console host; no `ConnectionError:` prefix) | Console unreachable from the Pi. | Same fix as for a player that is not syncing (see adding-a-pi.md, Troubleshooting). |

@@ -137,7 +137,7 @@ there is none.
    reads "Approve this computer in the browser window that just opened, then
    the card is made automatically." If no browser could be opened the status
    line shows the URL and the code to type. On the console (signed in as an
-   editor or admin) you approve "Sign in the SD Flasher on <hostname>?".
+   admin) you approve "Sign in the SD Flasher on <hostname>?".
    Cancel (or closing the window) stops the wait and puts the line back to
    "Ready.".
 3. The flasher polls `POST /api/operator/device-token` every few seconds for
@@ -354,7 +354,7 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
 ## Troubleshooting
 
 - **"Approve this computer in the browser window that just opened ..."** and
-  nothing happens: the browser page must be approved by an editor or admin
+  nothing happens: the browser page must be approved by an admin
   within 10 minutes; a viewer account cannot approve. If no browser opened the
   status line shows the URL and the code; open it on any device that can
   reach the console.

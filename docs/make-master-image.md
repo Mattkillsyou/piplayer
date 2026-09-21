@@ -171,7 +171,7 @@ Use Raspberry Pi Imager (or balenaEtcher):
 ## Step 5: Configure each Pi after flashing
 
 You have two options. In both cases the values come from the CMS: on the
-**Devices** page, expand **Token / install** under Actions for the device you
+**Devices** page (signed in as an admin), expand **Token / install** for the device you
 registered for this Pi.
 
 ### Option A: SSH in and edit (simpler, requires monitor or known IP)

@@ -44,10 +44,13 @@ the Settings page when you delete one.
   than from an operator. The Devices page shows only the resulting
   assignment.
 - **Re-enrollment** (same device id, for example a re-flashed card): the
-  device keeps its current group and playlist. The defaults are never
-  re-applied, so whatever you set on the Devices page after the first boot
-  survives a re-flash. The `device_reenrolled` audit entry is written as
-  before.
+  device gets a new token and keeps its current group and playlist; the old
+  card (and anything that learned the old token) stops syncing. The defaults
+  are never re-applied, so whatever you set on the Devices page after the
+  first boot survives a re-flash. The `device_reenrolled` audit entry is
+  written as before (with `renamed_from` when the name changed). Rotate the
+  key on the Settings page when a card or a flasher PC is lost: the key alone
+  can re-enroll any device id.
 
 **Python console.** `cms/` gains the same `POST /api/enroll` contract as the
 cloud (body `{key, device_id, name}`, 401 on a bad key, returns
@@ -96,11 +99,16 @@ scripts and for anything that is not the flasher.
   verification_url, expires_in: 600, interval: 3}`: `user_code` is 6
   characters from an alphabet without vowels or 0/O/1/I look-alikes, shown
   as `XXXX-XX`; `verification_url` is `https://<console>/authorize`. Only
-  the SHA-256 hash of `device_code` is stored, with the hostname and the
-  caller's IP; more than 20 codes from one IP in an hour is a 429.
-  `GET /authorize` (any signed-in editor or admin; there is no menu item,
-  the flasher opens `verification_url?code=<user_code>`) shows "Sign in the
-  SD Flasher on <hostname>?" with Approve and Deny (or a box to type the
+  the SHA-256 hash of `device_code` is stored, with the hostname (stripped
+  of invisible and format characters, so it cannot be made to read as
+  something else) and the caller's address; more than 20 codes in an hour
+  from one address (an IPv4 address or an IPv6 /64) is a 429, and codes that
+  were already claimed, denied or expired keep counting until an hour has
+  passed. `GET /authorize` (any signed-in admin; editors cannot approve,
+  because the token unlocks the enrollment key; there is no menu item, the
+  flasher opens `verification_url?code=<user_code>`) shows "Sign in the
+  SD Flasher on <hostname>?" with the requesting computer's address, how
+  long ago it asked, and Approve and Deny (or a box to type the
   code when the link did not carry one; case and the hyphen do not matter).
   Approve creates an `api_tokens` row named `SD Flasher on <hostname>` for
   the signed-in user and audits `api_token_created` with `source:
@@ -116,8 +124,9 @@ scripts and for anything that is not the flasher.
   playlists: [{id, name}], timezone, wyze_configured}`. `wyze_configured` is
   `true` once the Wyze email and password of section D are set, so the
   flasher's provision script passes `--with-wyze`; `false` otherwise. The endpoint is read-only, answers only tokens whose user
-  is an admin or editor, and returns 401 for anything else: a missing or
-  malformed header, an unknown or revoked token, or a viewer's token. The
+  is an admin (the key it returns can enroll any device id), and returns 401
+  for anything else: a missing or malformed header, an unknown or revoked
+  token, or an editor's or viewer's token. The
   token's `last_used_at` is refreshed and an `api_token_used` audit entry is
   written at most once per hour per token, so the audit log shows who is flashing
   without filling up on every launch.
@@ -151,26 +160,32 @@ paste-a-device-token path still bypasses enrollment. See
 
 1. Start the flasher and click **Sign in**. The browser opens the console's
    `/authorize` page with the code filled in (if the console asks you to sign
-   in first, do so; it returns to the code afterwards. Any editor or admin
-   account works).
+   in first, do so; it returns to the code afterwards. An admin account is
+   needed: the token the flasher gets fetches the enrollment key).
 2. Check that the page names your PC ("Sign in the SD Flasher on
-   <hostname>?") and click **Approve**. The flasher picks the token up by
-   itself within a few seconds and shows "Signed in as <username>".
+   <hostname>?") and that the address it shows is yours, then click
+   **Approve**. The flasher picks the token up by itself within a few
+   seconds and shows "Signed in as <username>".
 
 Nothing is copied or pasted. The token appears under "My API tokens" on
-Settings (and under the user on the Users page) as `SD Flasher on
+Settings and under the admin's name on the Users page as `SD Flasher on
 <hostname>`, where it can be revoked like any other. Creating a token by
 hand there is still the way for scripts and other tools.
 
 **Rotation.** Two independent secrets are involved.
 
-- *Enrollment key* (Settings page): rotate it when a flashed but unbooted
-  card is lost. Cards written with the old key fail enrollment with a 401;
-  cards flashed after the rotation pick up the new key automatically. No
-  rebuild, no operator action.
+- *Enrollment key* (Settings page): rotate it when a card, a flasher PC or an
+  operator token is lost (a re-flashed card gets a new device token and the
+  old card stops syncing, but the key alone can re-enroll any device id, so
+  a leaked key is worth rotating). Cards written with the old key fail
+  enrollment with a 401; cards flashed after the rotation pick up the new
+  key automatically. Rotating the key does not affect device tokens already
+  issued. No rebuild, no operator action.
 - *Operator token*: revoke it under "My API tokens" or on the Users page when
   an operator leaves or a laptop is lost; the flasher on that PC then shows
-  Sign in again, and a fresh Sign in mints a new token. Both places show each token's last use, so a token that has
+  Sign in again, and a fresh Sign in mints a new token. Only an admin's token
+  can fetch the enrollment key (an editor's token gets 401), and only an
+  admin can approve a flasher sign-in on `/authorize`. Both places show each token's last use, so a token that has
   not been used in months is easy to spot and revoke. The audit log's
   `api_token_used` entries name the token behind every flashing session.
 
@@ -197,7 +212,8 @@ capped at 5 unanswered polls):
 | `update-os` | `sudo -n /opt/piplayer/player/deploy/update-os.sh` |
 | `update-all` | `sudo -n /opt/piplayer/player/deploy/update-player.sh <ref> --then-os` (the player update chains into `update-os.sh`) |
 
-Buttons for all three sit in each device's Recent commands area. The Devices
+Buttons for all three sit under Actions on each device card, next to Resync /
+Restart mpv / Reboot Pi (editor and above). The Devices
 page header has **Update all players** (editor and above, with a confirm),
 which queues `update-player` for every device using the release ref from
 Settings. Each issue is audited.
@@ -213,9 +229,9 @@ Settings. Each issue is audited.
 The cloud console takes the same three env vars as defaults when a setting has
 not been saved yet: `PIPLAYER_PLAYER_RELEASE` (default `main`),
 `PIPLAYER_AUTO_UPDATE` (`off` or `nightly`) and `PIPLAYER_AUTO_UPDATE_WINDOW`
-(`HH:MM-HH:MM`, default `03:00-05:00`), set as `[vars]` in
-`cloud/wrangler.toml`; invalid values fall back to the defaults
-(`cloud/src/db.js` `defaultSettings`).
+(`HH:MM-HH:MM`, default `03:00-05:00`), which may be set as `[vars]` in
+`cloud/wrangler.toml` (none are set today, so the code defaults apply);
+invalid values fall back to the defaults (`cloud/src/db.js` `defaultSettings`).
 
 The manifest gains an optional `update: {release, auto, window}` key. A player
 that never sees it (older console, or the Python console without the env vars
@@ -375,9 +391,12 @@ encrypted with AES-GCM under a key derived (HKDF, info `p5k-secrets`) from
 the worker's existing `SESSION_SECRET`, so nothing readable sits in the
 database and no new worker secret is needed. The console never renders a
 stored value back: each field shows only **set** or **not set**, and a
-Replace form overwrites it. There is no "reveal". Rotating `SESSION_SECRET`
+Replace form overwrites it. There is no "reveal". The per-device RTSP URL
+below is stored the same way (encrypted, keyed to the device, never shown
+again; an empty field keeps it). Rotating `SESSION_SECRET`
 makes the stored values undecryptable: re-enter the four Wyze fields
-afterwards (the page shows them as not set once decryption fails).
+afterwards (the page shows them as not set once decryption fails) and the
+RTSP URL of each device that has one (it reads as `none` until then).
 
 **Camera name pattern.** `{device_name}` is replaced with the device's name
 as shown on the Devices page; `{device_id}` is the device id. With the
@@ -413,16 +432,17 @@ token returns `{source: "none", version: 3}`,
 Every answer carries `version`, the `camera_config_version` it was built
 from. This is
 the only route that ever sends the Wyze credentials anywhere, and only to a
-device that authenticates as itself; it answers 401 to anything else. A
+device that authenticates as itself: 401 without a valid device token (or
+with a browser session), 403 when the token belongs to a different device. A
 `camera_config_fetched` audit entry is written at most once per device per
 day, so the log shows which Pis picked the configuration up without filling
 on every boot.
 
 The manifest gains an optional integer `camera_config_version`. The console
 bumps it whenever anything that feeds the endpoint changes: a Wyze secret,
-the pattern, or a device's source, URL or camera name. Renaming a device
-(re-enrolling under a new name) does not bump it: a camera named after the
-device is picked up on the next bump or daemon restart.
+the pattern, or a device's source, URL or camera name. Re-enrolling a device
+under a new name also bumps it, so a camera named after the device is picked
+up on the Pi's next sync; re-enrolling with the same name does not.
 
 **What the Pi does.** On daemon start, and on any sync where the manifest's
 `camera_config_version` differs from the version it applied last (kept in
@@ -589,8 +609,8 @@ leaves the stored codes alone. Learning blocks the player's poll for up to
 1. Set Control to `broadlink` on the device and save. Fill in the Broadlink
    host if the RM4 mini sits on another subnet than the Pi: discovery is a
    LAN broadcast and does not cross routers.
-2. Click **Learn Power On**. The console queues `ir-learn:power_on` and
-   shows a 30 s countdown hint; the player picks the command up on its next
+2. Click **Learn Power On**. The console queues `ir-learn:power_on` (the
+   button's tooltip says the RM4 listens for 30 s); the player picks the command up on its next
    poll (within 30 s) and the RM4 mini's indicator lights while it listens.
 3. Hold the projector's own remote in front of the RM4 mini and press its
    power button once, inside the 30 s. Some remotes have separate on and
@@ -744,7 +764,7 @@ have several open at once.
 |---|---|---|
 | `offline` | `last_seen` is older than **Offline after** (`alert_offline_minutes`, default 10) | the device syncs again |
 | `mpv-down` | the last sync reported `player_status = mpv-down` | any other status is reported |
-| `screenshot-stale` | the device is online but its last screenshot upload is older than 3 × the site's screenshot interval (Settings) | a screenshot arrives |
+| `screenshot-stale` | the device is online but its last screenshot is more than 3 × the screenshot interval (Settings) older than its last sync | a screenshot arrives |
 | `sync-error` | `last_error` is set (the "Sync problem" line on the Devices page) | the player reports a clean sync |
 | `update-failed` | the last remote update reported `ok = 0` (section C) | the next update reports ok |
 | `camera-error` | `camera_error` is set (section D) | it clears |
@@ -773,16 +793,17 @@ recovered or is still open past the repeat interval in that run goes out
 together, so five projectors going offline together is one message with
 five lines. A run with nothing to say sends nothing. The digest is plain
 text in three blocks, each headed by a count and listing one line per
-alert as `<device name> (<device_id>): <kind text> since <opened_at> UTC`:
+alert as `<device name> (<device_id>): <kind text> since <opened_at>`, the
+time in the site timezone (Settings) like every console page:
 
 ```
 ALERT 2
-Lobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41:00 UTC
-Bar (pi-bar): camera error since 2026-09-16 09:41:00 UTC
+Lobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41 PDT
+Bar (pi-bar): camera error since 2026-09-16 09:41 PDT
 RECOVERED 1
-Foyer (pi-foyer): player process down since 2026-09-16 08:10:00 UTC
+Foyer (pi-foyer): player process down since 2026-09-16 08:10 PDT
 STILL OPEN 1
-Roof (pi-roof): no new screenshot since 2026-09-15 22:00:00 UTC
+Roof (pi-roof): no new screenshot since 2026-09-15 22:00 PDT
 ```
 
 The kind texts are `offline (no sync)`, `player process down`, `no new
@@ -793,13 +814,18 @@ the zero parts left out. Opening and closing are audited per alert
 (`alert_opened`, `alert_closed`, target the device, details `{kind}`); a
 channel that fails is audited `alert_notify_failed` (target the channel,
 details the error) and not retried, the next reminder covers it, so
-`/audit` answers "did the SMS go?".
+`/audit` answers "did the SMS go?". An alert's `notified_at` is stamped once
+the run's digest has been sent (whether or not a channel failed); a run that
+throws before the digest leaves its rows unstamped and the next run announces
+them as ALERT.
 
 **Cron.** `wrangler.toml` `[triggers]` now carries two schedules,
 `"0 3 * * *"` (the existing daily housekeeping) and `"*/5 * * * *"`; the
 worker's `scheduled()` dispatches on `event.cron`, so the alert evaluator
 runs every five minutes and housekeeping still runs once a night. 8,640
-extra invocations a month, well inside the free plan. In local development
+extra invocations a month, negligible against the Workers Paid plan's
+included requests (the account must be on Paid anyway; see README "Limits
+and design notes"). In local development
 run `npx wrangler dev --test-scheduled` and hit
 `http://localhost:8787/__scheduled?cron=*/5+*+*+*+*` to force a run.
 
@@ -809,7 +835,7 @@ run `npx wrangler dev --test-scheduled` and hit
 |---|---|---|
 | Offline after | setting `alert_offline_minutes` | minutes without a sync before `offline` opens; default 10, range 1-1440 |
 | Repeat while open | setting `alert_repeat_minutes` | minutes between reminders for an alert that is still open; default 240, range 0-10080; 0 = open and recovered only |
-| Email to | setting `alert_email` | comma-separated recipients; every one must be a verified Email Routing destination (below); empty = channel off |
+| Email to | setting `alert_email` | comma-separated recipients; every one must be a verified Email Routing destination (below); empty = channel off. Also the list of people allowed to open the live camera pages (section G): saving a changed list updates every device's camera access at once |
 | Webhook URL | setting `alert_webhook_url` | an `https://` URL that accepts a JSON POST; empty = channel off |
 | Twilio Account SID | secret `twilio_account_sid` | `AC...` from the Twilio console |
 | Twilio Auth Token | secret `twilio_auth_token` | the account's auth token (or an API key secret) |
@@ -819,7 +845,8 @@ run `npx wrangler dev --test-scheduled` and hit
 The four Twilio values sit in the same encrypted `secrets` table as the Wyze
 account (section D: AES-GCM under a key derived from `SESSION_SECRET`,
 shown only as **set** / **not set**, replaced by re-entering, all four lost
-if `SESSION_SECRET` is rotated). SMS is off until all four are set. Saving
+if `SESSION_SECRET` is rotated, as are the Wyze values and the per-device
+RTSP URLs). SMS is off until all four are set. Saving
 the section is audited `alert_settings_update` (credentials logged as
 `set`, never their values). Each channel has a **Send test** button next to
 it (disabled until that channel is configured) that sends a plain test
@@ -855,9 +882,9 @@ worrying about at fleet-alert volumes.
 {
   "site": "Projection5000",
   "title": "Projection5000: 1 opened, 1 recovered",
-  "text": "Projection5000: 1 opened, 1 recovered\nALERT 1\nLobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41:00 UTC\nRECOVERED 1\nBar (pi-bar): camera error since 2026-09-16 08:10:00 UTC",
-  "content": "Projection5000: 1 opened, 1 recovered\nALERT 1\nLobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41:00 UTC\nRECOVERED 1\nBar (pi-bar): camera error since 2026-09-16 08:10:00 UTC",
-  "message": "ALERT 1\nLobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41:00 UTC\nRECOVERED 1\nBar (pi-bar): camera error since 2026-09-16 08:10:00 UTC"
+  "text": "Projection5000: 1 opened, 1 recovered\nALERT 1\nLobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41 PDT\nRECOVERED 1\nBar (pi-bar): camera error since 2026-09-16 08:10 PDT",
+  "content": "Projection5000: 1 opened, 1 recovered\nALERT 1\nLobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41 PDT\nRECOVERED 1\nBar (pi-bar): camera error since 2026-09-16 08:10 PDT",
+  "message": "ALERT 1\nLobby projector (pi-lobby): offline (no sync) since 2026-09-16 09:41 PDT\nRECOVERED 1\nBar (pi-bar): camera error since 2026-09-16 08:10 PDT"
 }
 ```
 
@@ -958,7 +985,9 @@ independent.
    message with the trial notice; upgrade the account for a real fleet.
 3. Settings, "Alerts": enter the SID, Auth Token, From and To, Save (the
    four show as **set**), **Send test**. Twilio's error text is shown on the
-   page if the send fails; `21608` means the To number is not verified on a
+   page if the send fails (a phone number quoted in it is replaced by
+   "(number hidden)", since the page's address and the audit log carry the
+   text); `21608` means the To number is not verified on a
    trial account, `21211` a malformed To, `21606` a From number the account
    does not own.
 
@@ -1049,11 +1078,20 @@ that are email addresses; if neither gives a list, tunnel creation stops
 with a message asking you to fill in **Email to** first, and nothing is
 created (the hostname must never go up without a policy in front of it,
 because the bridge player has no login of its own). The policy is rewritten
-on every provision, so after changing the list click **Recreate tunnel**
-(the button's label once a device has a tunnel; it asks for confirmation,
-reuses the existing objects and resets the live URL to the tunnel) on each
-device, or edit the policy in Zero Trust. The button needs the editor or
-admin role.
+on every provision and, since the list can change without one, whenever
+**Email to** is saved with a different list or a user is created, deleted or
+given another role: the console then updates every device's policy at once
+(audited `camera_access_updated`) and, if Cloudflare refuses, says so on the
+page ("Saved, but the camera access list could not be updated on every
+device ...") so you can click **Recreate tunnel** on each device or edit the
+policy in Zero Trust. **Recreate tunnel** (the button's label once a device
+has a tunnel; it asks for confirmation) really recreates it: the old tunnel
+and its connections are deleted and a new one made, so the old connector
+key stops working and the Pi picks up the new one on its next sync; the DNS
+record and Access application are reused and the live URL is reset to the
+tunnel (audited `device_tunnel_rotated`). **New token** on a device with a
+tunnel does the same, because the tunnel key travels in every sync. The
+buttons need the editor or admin role (New token: admin).
 
 **What the console stores.** `devices.tunnel_id` and
 `devices.tunnel_hostname`, shown in the Camera block, plus
@@ -1078,8 +1116,9 @@ token it already has. Creation is audited against the device as
 `device_tunnel_created` (details: `device_id`, `tunnel_id`, `hostname`,
 the number of emails in the policy) and a failed creation as
 `device_tunnel_failed` (details: the Cloudflare error, prefixed with the
-API call that was refused), so `/audit` answers "why is there no tunnel
-for the bar Pi". On the Devices page the same outcome is a banner:
+API call that was refused, account and zone ids left out), so `/audit`
+answers "why is there no tunnel for the bar Pi". On the Devices page the
+same outcome is a notice after the click:
 **Tunnel ready: https://...** or **Tunnel creation failed: ...**. A device
 that re-enrolls (a reflashed card) without a tunnel gets one then, like a
 first enrollment.
