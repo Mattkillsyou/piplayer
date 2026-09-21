@@ -14,12 +14,18 @@ describe("first-run setup", () => {
     expect(await (await c.get("/api/health")).json()).toEqual({ ok: true });
   });
 
-  it("refuses /setup without the right token", async () => {
+  it("refuses /setup without the right token: a friendly page on GET, plain 403 on POST", async () => {
     const c = new Client();
     expect((await c.get("/setup")).status).toBe(403);
     const r = await c.get("/setup?token=nope");
     expect(r.status).toBe(403);
-    expect(await r.json()).toEqual({ detail: "invalid setup token" });
+    expect(r.headers.get("content-type")).toContain("text/html");
+    const text = await r.text();
+    expect(text).toContain("This console has not been set up yet");
+    expect(text).not.toContain('name="token"');
+    const p = await c.post("/setup", { token: "nope", username: "admin", password: "test1234", password2: "test1234", csrf_token: await c.csrf("/setup?token=nope") });
+    expect(p.status).toBe(403);
+    expect(await p.json()).toEqual({ detail: "invalid setup token" });
   });
 
   it("shows the form with csrf + hidden token, validates, creates the admin and logs in", async () => {

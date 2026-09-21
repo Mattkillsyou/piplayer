@@ -32,10 +32,12 @@ export function redirect(location, status = 303) {
   return new Response(null, { status, headers: { location } });
 }
 
+// no-store by default: pages show secrets (enrollment key, device tokens, a fresh API token),
+// so the back/forward cache must not restore one after Log out.
 export function html(body, status = 200, headers = {}) {
   return new Response(body, {
     status,
-    headers: { "content-type": "text/html; charset=utf-8", ...headers },
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...headers },
   });
 }
 

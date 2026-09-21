@@ -3,7 +3,7 @@
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
-import { esc, fail, redirect, str } from "../util.js";
+import { esc, fail, HttpError, redirect, str } from "../util.js";
 import { csrfInput } from "./layout.js";
 import { authBrand, authPage } from "./login.js";
 
@@ -37,7 +37,18 @@ async function gate(ctx, token) {
 
 async function setupForm(ctx) {
   const token = ctx.url.searchParams.get("token");
-  await gate(ctx, token);
+  try {
+    await gate(ctx, token);
+  } catch (e) {
+    // Wrong or missing token on the page itself (first visit before setup lands here): a
+    // friendly card, not a JSON blob. The POST keeps the plain 403.
+    if (!(e instanceof HttpError) || e.status !== 403) throw e;
+    const card = `<div class="auth-card">
+    ${authBrand()}
+    <div class="alert error" role="alert">This console has not been set up yet. Open the setup link from your deployment notes.</div>
+  </div>`;
+    return authPage(ctx, { title: "Setup", card, status: 403 });
+  }
   return setupPage(ctx, token, null);
 }
 

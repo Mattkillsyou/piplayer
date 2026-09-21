@@ -19,11 +19,17 @@ export const PASSWORD_TOO_SHORT_MSG = `password must be at least ${MIN_PASSWORD_
 export const CSRF_ERROR = "CSRF token missing or invalid";
 export const LOGIN_MAX_FAILURES = 5;
 export const LOGIN_LOCK_SECONDS = 30;
+// Two ceilings on top of the ip+username pair: one ip rotating usernames, and one username
+// hit from rotating ips (each ip would otherwise get a fresh 5-attempt budget).
+export const LOGIN_IP_MAX_FAILURES = 20;
+export const LOGIN_USER_MAX_FAILURES = 20;
+export const LOGIN_USER_WINDOW_SECONDS = 600;
+export const MAX_USERNAME_CHARS = 64;
 // POST /api/enroll shares the login_failures table, keyed by ip + ENROLL_KEY.
 export const ENROLL_KEY = "enroll";
 export const ENROLL_MAX_FAILURES = 10;
 export const ENROLL_LOCK_SECONDS = 60;
-const MAX_LOCK_SECONDS = Math.max(LOGIN_LOCK_SECONDS, ENROLL_LOCK_SECONDS);
+const MAX_LOCK_SECONDS = Math.max(LOGIN_LOCK_SECONDS, ENROLL_LOCK_SECONDS, LOGIN_USER_WINDOW_SECONDS);
 export const ROLES = ["viewer", "editor", "admin"];
 
 const enc = new TextEncoder();
@@ -120,12 +126,21 @@ export async function verifiedSessionId(request, env) {
   return timingSafeEqual(raw.slice(dot + 1), expected) ? id : null;
 }
 
-function cookieHeader(ctx, value, maxAge) {
+export function cookieHeader(ctx, value, maxAge, name = SESSION_COOKIE) {
   // Always Secure (the spec's cookie). Plain-http `wrangler dev` is the one exception: browsers
   // and python-requests drop Secure cookies there, so the dev/e2e command lines pass
   // --var PIPLAYER_INSECURE_COOKIES:1. Never set it in production.
   const secure = ctx.env.PIPLAYER_INSECURE_COOKIES === "1" ? "" : "; Secure";
-  return `${SESSION_COOKIE}=${value}; HttpOnly${secure}; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+  return `${name}=${value}; HttpOnly${secure}; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+}
+
+// One-shot notice for the page after a redirect (Flask's flash()): a 60 s cookie holding
+// {m: message, k: 'ok' | 'error' | 'warn'} that layout() shows once and clears.
+export const FLASH_COOKIE = "piplayer_flash";
+
+export function flashRedirect(ctx, location, message, kind = "ok") {
+  ctx.cookies.push(cookieHeader(ctx, encodeURIComponent(JSON.stringify({ m: message, k: kind })), 60, FLASH_COOKIE));
+  return redirect(location);
 }
 
 // Insert a session row (user_id may be null = anonymous) and queue its cookie on ctx.
@@ -134,7 +149,12 @@ export async function createSession(ctx, userId) {
   const csrf = randomToken(32);
   const maxAge = userId ? SESSION_MAX_AGE : ANON_SESSION_MAX_AGE;
   const expires = new Date(Date.now() + maxAge * 1000).toISOString().slice(0, 19).replace("T", " ");
-  await db.run(ctx.env, "INSERT INTO sessions (id, user_id, csrf, expires_at) VALUES (?, ?, ?, ?)", id, userId, csrf, expires);
+  // Prune expired rows in the same batch (as recordLoginFailure does), so anonymous GET /login
+  // traffic keeps the table to about an hour of rows without waiting for the daily cron.
+  await db.batch(ctx.env, [
+    ["INSERT INTO sessions (id, user_id, csrf, expires_at) VALUES (?, ?, ?, ?)", id, userId, csrf, expires],
+    ["DELETE FROM sessions WHERE expires_at <= datetime('now')"],
+  ]);
   ctx.session = { id, user_id: userId, csrf, expires_at: expires };
   ctx.csrf = csrf;
   ctx.cookies.push(cookieHeader(ctx, `${id}.${await sign(sessionSecret(ctx.env), id)}`, maxAge));
@@ -228,21 +248,32 @@ export async function requireCsrf(ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Failed-login throttle (per ip+username, in D1)
+// Failed-login throttle (in D1)
 // ---------------------------------------------------------------------------
 
 const unix = () => Math.floor(Date.now() / 1000);
 
-// Seconds remaining on the lock for this ip+username, 0 when not locked. `max` failures
-// within `seconds` lock it (login: 5 / 30 s; enroll: 10 / 60 s).
+// Seconds remaining on the lock, 0 when not locked. `max` failures for this ip+username within
+// `seconds` lock it (login: 5 / 30 s; enroll: 10 / 60 s), as do LOGIN_IP_MAX_FAILURES from the
+// ip under any username in the same window, or LOGIN_USER_MAX_FAILURES for the username from
+// anywhere in 10 minutes. The last ceiling skips the shared enroll key: twenty stale Pis would
+// otherwise lock enrollment for the whole fleet, and a 32-char random key is not guessable.
 export async function loginLockedFor(env, ip, username, max = LOGIN_MAX_FAILURES, seconds = LOGIN_LOCK_SECONDS) {
   const now = unix();
   const rows = await db.all(env,
-    "SELECT at FROM login_failures WHERE ip = ? AND username = ? AND at > ? ORDER BY at",
-    ip || "-", username, now - seconds);
-  if (rows.length < max) return 0;
-  const last = rows[rows.length - 1].at;
-  return Math.max(1, seconds - (now - last) + 1);
+    "SELECT username, at FROM login_failures WHERE ip = ? AND at > ? ORDER BY at",
+    ip || "-", now - seconds);
+  const mine = rows.filter((r) => r.username === username);
+  if (mine.length >= max || rows.length >= LOGIN_IP_MAX_FAILURES) {
+    const last = rows[rows.length - 1].at;
+    return Math.max(1, seconds - (now - last) + 1);
+  }
+  if (username === ENROLL_KEY) return 0;
+  const all = await db.all(env,
+    "SELECT at FROM login_failures WHERE username = ? AND at > ? ORDER BY at",
+    username, now - LOGIN_USER_WINDOW_SECONDS);
+  if (all.length < LOGIN_USER_MAX_FAILURES) return 0;
+  return Math.max(1, LOGIN_USER_WINDOW_SECONDS - (now - all[all.length - 1].at) + 1);
 }
 
 export async function recordLoginFailure(env, ip, username) {

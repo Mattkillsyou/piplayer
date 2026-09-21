@@ -29,8 +29,14 @@ export function authBrand() {
 
 // Where to land after login (?next= on GET, the hidden next field on POST): a same-origin path
 // only, so the flasher's /authorize?code=... link survives the sign-in; anything else is dropped.
-function nextPath(v) {
-  return typeof v === "string" && /^\/(?![\/\\])/.test(v) ? v : "";
+// Re-serialised through the URL parser: a tab or newline ("/\t/evil.example") would otherwise
+// resolve off-origin in the browser, and a raw newline is not a valid Location header at all.
+function nextPath(ctx, v) {
+  if (typeof v !== "string" || !/^\/(?![\/\\])/.test(v)) return "";
+  try {
+    const u = new URL(v, ctx.url.origin);
+    return u.origin === ctx.url.origin ? u.pathname + u.search : "";
+  } catch { return ""; }
 }
 
 function loginPage(ctx, error, status = 200, locked = false, next = "") {
@@ -61,7 +67,9 @@ async function loginSubmit(ctx) {
   const form = await ctx.form();
   const username = str(form, "username").trim();
   const password = str(form, "password");
-  const next = nextPath(str(form, "next"));
+  const next = nextPath(ctx, str(form, "next"));
+  // Before the throttle and any PBKDF2: the audit and login_failures rows stay bounded.
+  if (username.length > auth.MAX_USERNAME_CHARS) return loginPage(ctx, "Username too long", 400, false, next);
   const ip = audit.clientIp(ctx);
   const wait = await auth.loginLockedFor(ctx.env, ip, username);
   if (wait) return loginPage(ctx, `Too many failed attempts; try again in ${wait} s`, 429, true, next);
@@ -70,11 +78,12 @@ async function loginSubmit(ctx) {
     "SELECT id, username, password_hash, role FROM users WHERE username = ?", username);
   if (!row) await auth.burnPasswordCheck(password);
   if (!row || !(await auth.verifyPassword(password, row.password_hash))) {
-    // Collapse anything outside printable ASCII (whitespace, control chars, newlines) so an
-    // attacker-chosen username cannot plant a fake "ip=" token; the real ip= stays last.
-    const safeUser = username.replace(/[^!-~]+/g, "_").slice(0, 64);
-    console.warn(`login failed for user=${safeUser} ip=${ip}`);
-    await audit.log(ctx, "login_failed", "user", null, { username }, null);
+    // Only a real account's name reaches the log and the audit row (viewers can read /audit):
+    // whatever was typed into the box, often a password, is never stored. Collapse anything
+    // outside printable ASCII so a username cannot plant a fake "ip=" token; the real ip= stays last.
+    const who = row ? row.username : "(no such user)";
+    console.warn(`login failed for user=${who.replace(/[^!-~]+/g, "_").slice(0, 64)} ip=${ip}`);
+    await audit.log(ctx, "login_failed", "user", row ? row.id : null, { username: who }, null);
     await auth.recordLoginFailure(ctx.env, ip, username);
     return loginPage(ctx, "Invalid username or password", 200, false, next);
   }
@@ -93,7 +102,7 @@ async function logout(ctx) {
 export function register(router) {
   router.get("/", (ctx) => redirect(ctx.user ? "/dashboard" : "/login"));
   router.get("/login", (ctx) => loginPage(ctx, ctx.url.searchParams.get("expired") ? "Your session expired; please sign in again" : null,
-    200, false, nextPath(ctx.url.searchParams.get("next"))));
+    200, false, nextPath(ctx, ctx.url.searchParams.get("next"))));
   router.post("/login", loginSubmit);
   router.post("/logout", logout);
 }

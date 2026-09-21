@@ -131,10 +131,14 @@ describe("login / logout", () => {
     expect(rows[0].username).toBeNull();
   });
 
-  it("unknown user gets the same answer", async () => {
+  it("unknown user gets the same answer, and what was typed never reaches the audit row", async () => {
     const r = await new Client().login("ghost", "whatever1");
     expect(r.status).toBe(200);
     expect(await r.text()).toContain("Invalid username or password");
+    const rows = await query("SELECT details, target_id FROM audit_log WHERE action = 'login_failed' ORDER BY id DESC LIMIT 1");
+    expect(rows[0].details).not.toContain("ghost");
+    expect(rows[0].details).toContain("(no such user)");
+    expect(rows[0].target_id).toBeNull();
   });
 
   it("over-long password is 400, never 500", async () => {
@@ -261,7 +265,10 @@ describe("roles and routing", () => {
       expect(r.status, p).toBe(404);
       expect(await r.json()).toEqual({ detail: "Not Found" });
     }
-    expect((await c.get("/logout")).status).toBe(405);
+    const logout = await c.get("/logout");
+    expect(logout.status).toBe(405);
+    expect(logout.headers.get("allow")).toBe("POST");
+    expect((await c.fetch("/login", { method: "PUT" })).headers.get("allow")).toBe("GET, HEAD, POST");
     for (const p of ["/playlists/%E0", "/api/media/%E0%A4%A", "/library/upload/%zz"]) {
       const r = await c.get(p);
       expect(r.status, p).toBe(400);

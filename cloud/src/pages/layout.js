@@ -1,5 +1,6 @@
 // Port of templates/base.html. Pages build their content string (every value through esc())
 // and call layout(ctx, {title, content}) to get the HTML Response.
+import { cookieHeader, FLASH_COOKIE, readCookie } from "../auth.js";
 import { esc, html } from "../util.js";
 
 export const APP_NAME = "Projection5000";
@@ -77,6 +78,15 @@ function navHtml(ctx) {
 // {title, content (already-escaped HTML), status, message, messageKind, scripts (extra
 // <script src> paths under /static), bodyClass} -> Response.
 export function layout(ctx, { title, content, status = 200, message = "", messageKind = "error", scripts = [], bodyClass = "" } = {}) {
+  // A flashRedirect() notice from the previous request fills an empty message slot, once.
+  const flash = !message && readCookie(ctx.request, FLASH_COOKIE);
+  if (flash) {
+    try {
+      const { m, k } = JSON.parse(decodeURIComponent(flash));
+      if (typeof m === "string") { message = m; messageKind = typeof k === "string" ? k : "ok"; }
+    } catch { /* not ours: just clear it */ }
+    ctx.cookies.push(cookieHeader(ctx, "", 0, FLASH_COOKIE));
+  }
   const fullTitle = title ? `${title} — ${APP_NAME}` : APP_NAME;
   const extra = scripts.map((s) => `<script src="${esc(s)}"></script>`).join("\n  ");
   const page = `<!doctype html>

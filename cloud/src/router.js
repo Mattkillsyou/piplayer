@@ -20,16 +20,17 @@ export class Router {
   post(pattern, handler) { return this.add("POST", pattern, handler); }
   put(pattern, handler) { return this.add("PUT", pattern, handler); }
 
-  // {handler, params} for the first route matching method + path; {status: 405} when only the
-  // method differs (FastAPI does the same); null when nothing matches.
+  // {handler, params} for the first route matching method + path; {status: 405, allow} when only
+  // the method differs (FastAPI does the same; `allow` is the Allow header); null when nothing matches.
   match(method, path) {
     method = method.toUpperCase();
-    let pathMatched = false;
+    const allowed = new Set();
     for (const r of this.routes) {
       const m = r.re.exec(path);
       if (!m) continue;
       if (r.method !== method && !(r.method === "GET" && method === "HEAD")) {
-        pathMatched = true;
+        allowed.add(r.method);
+        if (r.method === "GET") allowed.add("HEAD");
         continue;
       }
       const params = {};
@@ -39,7 +40,7 @@ export class Router {
       });
       return { handler: r.handler, params, pattern: r.pattern };
     }
-    return pathMatched ? { status: 405 } : null;
+    return allowed.size ? { status: 405, allow: [...allowed].join(", ") } : null;
   }
 }
 

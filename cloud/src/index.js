@@ -23,8 +23,9 @@ import * as schedule from "./pages/schedule.js";
 import * as settings from "./pages/settings.js";
 import * as setup from "./pages/setup.js";
 import * as users from "./pages/users.js";
+import { layout } from "./pages/layout.js";
 import { isApiPath, Router } from "./router.js";
-import { fail, HttpError, json, redirect } from "./util.js";
+import { esc, fail, HttpError, json, redirect } from "./util.js";
 
 const MODULES = [
   login, setup, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings,
@@ -35,6 +36,22 @@ const router = new Router();
 for (const m of MODULES) if (m.register) m.register(router);
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+// On every response, pages and JSON alike. frame-src stays "https:" because the Devices page
+// frames any operator-pasted live camera URL; img-src needs data: for style.css's select arrow.
+const SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "same-origin",
+  "content-security-policy": "default-src 'self'; img-src 'self' data:; frame-src https:; frame-ancestors 'none'",
+  "strict-transport-security": "max-age=31536000",
+};
+
+function withSecurityHeaders(res) {
+  const out = new Response(res.body, res);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) out.headers.set(k, v);
+  return out;
+}
 
 function makeCtx(request, env, exec, url, params) {
   let formPromise = null;
@@ -66,6 +83,19 @@ function withCookies(res, ctx) {
   return out;
 }
 
+// A browser (page navigation or form post: Accept has text/html) gets the message in the
+// normal layout with a Back link; the device API, app.js/upload.js and scripts keep the JSON.
+function errorResponse(ctx, status, detail, headers) {
+  const wantsHtml = !isApiPath(ctx.url.pathname) && (ctx.request.headers.get("accept") || "").includes("text/html");
+  if (!wantsHtml) return json({ detail }, status, headers);
+  // The CSP allows no inline script, so Back is the same-origin referer (the page with the form).
+  const referer = ctx.request.headers.get("referer") || "";
+  const back = referer.startsWith(ctx.url.origin + "/") ? referer : "/dashboard";
+  const res = layout(ctx, { title: "Something went wrong", status, message: detail, content: `<p><a href="${esc(back)}" class="back">← Back</a></p>` });
+  for (const [k, v] of Object.entries(headers || {})) res.headers.set(k, v);
+  return res;
+}
+
 async function handle(request, env, exec) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -78,7 +108,7 @@ async function handle(request, env, exec) {
 
   const m = router.match(request.method, path);
   if (!m) fail(404, "Not Found");
-  if (m.status) fail(m.status, "Method Not Allowed");
+  if (m.status) throw new HttpError(m.status, "Method Not Allowed", { allow: m.allow });
 
   const ctx = makeCtx(request, env, exec, url, m.params);
   try {
@@ -89,8 +119,9 @@ async function handle(request, env, exec) {
     } else {
       // Only the two anonymous forms start a session (they need a CSRF token); everything
       // else just reads the cookie, so a cookieless GET /dashboard redirects without a write.
+      // /setup after setup is a 404, so it gets no row either (hasUsers is memoised once true).
       const anonForm = path === "/login" || path === "/setup";
-      await auth.loadSession(ctx, { create: anonForm && request.method === "GET" });
+      await auth.loadSession(ctx, { create: anonForm && request.method === "GET" && !(path === "/setup" && await auth.hasUsers(env)) });
       if (!SAFE_METHODS.has(request.method)) {
         // Session gone (expired, logged out elsewhere, user deleted): the handler would answer
         // 303 -> /login anyway; do not leave a form on a JSON 403. A stale /login form (no
@@ -106,11 +137,11 @@ async function handle(request, env, exec) {
     return withCookies(await m.handler(ctx), ctx);
   } catch (e) {
     if (e instanceof Response) return withCookies(e, ctx);
-    if (e instanceof HttpError) return withCookies(json({ detail: e.detail }, e.status, e.headers), ctx);
+    if (e instanceof HttpError) return withCookies(errorResponse(ctx, e.status, e.detail, e.headers), ctx);
     if (db.isConstraintError(e)) {
       // A constraint violation no route mapped itself: never a bare 500, never the sqlite text.
       console.error(`integrity error on ${request.method} ${path}: ${e.message}`);
-      return withCookies(json({ detail: "conflicts with an existing record or references one that does not exist" }, 409), ctx);
+      return withCookies(errorResponse(ctx, 409, "conflicts with an existing record or references one that does not exist"), ctx);
     }
     throw e;
   }
@@ -118,13 +149,18 @@ async function handle(request, env, exec) {
 
 export default {
   async fetch(request, env, exec) {
+    let res;
     try {
-      return await handle(request, env, exec);
+      res = await handle(request, env, exec);
     } catch (e) {
-      if (e instanceof HttpError) return json({ detail: e.detail }, e.status, e.headers);
-      console.error(`unhandled error on ${request.method} ${new URL(request.url).pathname}:`, e && e.stack || e);
-      return json({ detail: "internal server error" }, 500);
+      if (e instanceof HttpError) {
+        res = json({ detail: e.detail }, e.status, e.headers);
+      } else {
+        console.error(`unhandled error on ${request.method} ${new URL(request.url).pathname}:`, e && e.stack || e);
+        res = json({ detail: "internal server error" }, 500);
+      }
     }
+    return withSecurityHeaders(res);
   },
 
   // wrangler.toml [triggers]: the */5 cron evaluates alerts; the daily one runs every
