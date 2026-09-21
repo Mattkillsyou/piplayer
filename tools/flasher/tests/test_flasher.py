@@ -263,7 +263,8 @@ def test_operator_config_falls_back_to_plain_text_with_a_warning(monkeypatch, tm
 
     monkeypatch.setattr(flasher.host, "seal_token", no_seal)
     warning = flasher.save_operator_config("https://c.example", OPERATOR_TOKEN)
-    assert warning.startswith(f"WARNING: {flasher.host.SEAL_NAME} is not available") and "flasher.json" in warning
+    assert warning.startswith(f"WARNING: {flasher.host.SEAL_NAME} is not available")
+    assert flasher.host.SIGNIN_FILE in warning  # flasher.json on Windows, signin.json on a Mac
     text = flasher.operator_config_path().read_text("utf-8")
     assert OPERATOR_TOKEN in text and '"token_dpapi": false' in text
     assert flasher.load_operator_config()["token"] == OPERATOR_TOKEN
@@ -449,7 +450,8 @@ def test_wifi_dropdown_lists_the_networks_and_fills_a_saved_password(monkeypatch
 def test_window_grows_inside_the_work_area(monkeypatch):
     """Windows opens the window low on the screen (cascade); Advanced + details grow it. It never hangs behind
     the taskbar: capped to the work area and moved up when needed. Under --dry-run the dry-run box appears."""
-    monkeypatch.setattr(flasher, "work_area", lambda root: (0, 700))  # a short work area
+    top = 25 if sys.platform == "darwin" else 0  # macOS keeps every window under the menu bar
+    monkeypatch.setattr(flasher, "work_area", lambda root: (top, 700))  # a short work area
     root = _root()
     app = flasher.App(root, dry_run=True)
     assert [w.cget("text") for w in _widgets(app.advanced, flasher.ttk.Checkbutton)][-1].startswith("Dry run")

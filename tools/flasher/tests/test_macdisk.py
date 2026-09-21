@@ -468,8 +468,11 @@ def test_run_flash_on_macos_writes_the_card_byte_for_byte(tmp_path, monkeypatch)
 
 def test_gui_lists_mac_cards_through_the_same_screen(monkeypatch):
     """The App with macdisk behind flasher.disk: the same combobox, the same label shape, the same confirm text."""
+    import maclocale
     monkeypatch.setattr(flasher, "disk", macdisk)
-    FakeDiskutil(monkeypatch)
+    FakeDiskutil(monkeypatch)  # every subprocess.run is diskutil's: the Mac's own `defaults` must not be asked
+    monkeypatch.setattr(maclocale, "_defaults", lambda *a: "")
+    monkeypatch.setattr(maclocale, "localtime_target", lambda: "")
     root = new_root()
     try:
         app = flasher.App(root)
