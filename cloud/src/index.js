@@ -74,6 +74,11 @@ async function handle(request, env, exec) {
     const assetUrl = new URL(path.slice("/static".length) + url.search, url);
     return env.ASSETS.fetch(new Request(assetUrl, request));
   }
+  if (path === "/download" && (request.method === "GET" || request.method === "HEAD")) {
+    // The SD flasher downloads: a public page (no login, no session) for the people who make cards.
+    // Workers Assets maps /download to public/download.html itself (and 307s /download.html to /download).
+    return env.ASSETS.fetch(request);
+  }
   await db.assertMigrated(env);
 
   const m = router.match(request.method, path);

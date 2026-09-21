@@ -271,6 +271,17 @@ describe("roles and routing", () => {
     expect(css.status).toBe(200);
     expect(css.headers.get("content-type")).toContain("text/css");
     expect((await c.get("/static/app.js")).status).toBe(200);
+    // The SD flasher download page is public: no login, the three release links, nothing else.
+    const dl = await c.get("/download");
+    expect(dl.status).toBe(200);
+    expect(dl.headers.get("content-type")).toContain("text/html");
+    const page = await dl.text();
+    for (const f of ["Projection5000-SD-Flasher.exe", "Projection5000-SD-Flasher-mac-arm64.dmg", "Projection5000-SD-Flasher-mac-intel.dmg"]) {
+      expect(page).toContain(`https://github.com/Mattkillsyou/piplayer/releases/download/v0.5.0/${f}`);
+    }
+    expect(page).not.toContain("/login");
+    expect((await c.get("/download.html")).status).toBe(404);
+    expect((await c.post("/download", {})).status).toBe(404);
   });
 
   it("every route is registered for a logged-in admin (pages 200, unknown rows 404, device api 401)", async () => {

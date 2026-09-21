@@ -6,7 +6,10 @@ network, takes its hostname, installs the Projection5000 player (a copy of
 `player/` travels on the card; the Pi never needs GitHub access) and enrolls
 itself with the console. One screen, one button, nothing to copy and paste.
 The screen, the words and the flow are the same on both systems; the Windows
-exe is described first, "On a Mac" below lists what differs on a Mac.
+exe is described first, "On a Mac" below lists what differs on a Mac. The
+download page to send people is <https://projectors.photogen5000.com/download>
+(the console serves `cloud/public/download.html`; its three buttons point at
+the GitHub release assets).
 
 ## The screen
 
