@@ -61,6 +61,8 @@ main() {
     trap 'fail "apt failed at line ${LINENO} (see ${LOG_FILE})"' ERR
     log "== update-os"
     export DEBIAN_FRONTEND=noninteractive
+    # a power cut mid-apt leaves dpkg interrupted and every later apt-get refuses to run: repair first
+    dpkg --configure -a || true
     apt-get update
     apt-get -y -o Dpkg::Options::=--force-confold upgrade
     apt-get -y autoremove

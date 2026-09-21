@@ -108,6 +108,15 @@ def test_setup_screen_survives_a_missing_tty_and_draws_centred(tmp_path):
     assert SRC.index('screen "Setting up this projector" "Step 4 of 4: connecting to the console"') < SRC.index('echo "==> Starting services"')
 
 
+def test_apt_repairs_an_interrupted_dpkg_before_installing():
+    """A power cut mid-apt (first boot or a nightly upgrade) leaves dpkg interrupted, and every later apt-get
+    refuses to run; both scripts repair first and never wait on a debconf prompt (they run unattended)."""
+    assert SRC.index("export DEBIAN_FRONTEND=noninteractive") < SRC.index("dpkg --configure -a || true") < SRC.index("apt-get update")
+    assert SRC.index("apt-get -y -f install || true") < SRC.index("apt-get update")
+    os_src = (DEPLOY / "update-os.sh").read_text()
+    assert os_src.index("export DEBIAN_FRONTEND=noninteractive") < os_src.index("dpkg --configure -a || true") < os_src.index("\n    apt-get update")
+
+
 def test_uninstall_unmasks_getty_before_enabling_it(tmp_path):
     """firstrun.sh masks getty@tty1 (no login prompt on the HDMI console); --uninstall must unmask it first,
     since enable/start are refused on a masked unit."""

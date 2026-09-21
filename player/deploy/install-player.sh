@@ -173,6 +173,11 @@ if [[ "${UPGRADE}" == 0 ]]; then
     screen_init
     screen "Setting up this projector" "Step 3 of 4: installing the player (about 10 minutes)"
 fi
+# Runs unattended (provision service on first boot, systemd-run on updates): never wait on a prompt.
+export DEBIAN_FRONTEND=noninteractive
+# A power cut mid-apt leaves dpkg interrupted and every later apt-get refuses to run: repair first.
+dpkg --configure -a || true
+apt-get -y -f install || true
 apt-get update
 # git and rsync are not part of Raspberry Pi OS Lite; both are needed here.
 # ffmpeg grabs the room-camera snapshots ([camera] in config.toml).
