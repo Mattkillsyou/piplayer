@@ -277,7 +277,7 @@ describe("roles and routing", () => {
     expect(dl.headers.get("content-type")).toContain("text/html");
     const page = await dl.text();
     for (const f of ["Projection5000-SD-Flasher.exe", "Projection5000-SD-Flasher-mac-arm64.dmg", "Projection5000-SD-Flasher-mac-intel.dmg"]) {
-      expect(page).toContain(`https://github.com/Mattkillsyou/piplayer/releases/download/v0.5.0/${f}`);
+      expect(page).toContain(`https://github.com/Mattkillsyou/piplayer/releases/download/v0.6.0/${f}`);
     }
     expect(page).not.toContain("/login");
     expect((await c.get("/download.html")).status).toBe(404);
