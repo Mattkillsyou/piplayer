@@ -47,9 +47,10 @@ _shared_tk = []
 
 
 def new_root():
-    """A withdrawn window for one GUI test, skipping when there is no display. A fresh tk.Tk() on Windows; on
-    macOS a Toplevel of one hidden Tk kept for the whole session, because Tk/Aqua hangs in update() once a
-    second Tk() is made after the first was destroyed (seen on the GitHub macOS runners)."""
+    """A window for one GUI test, skipping when there is no display. Windows: a fresh, withdrawn tk.Tk(). macOS:
+    a Toplevel of one Tk kept for the whole session, left on screen: Tk/Aqua never returns from update() on a
+    hidden window that is not the process's first once its geometry is set and its labels change (seen on the
+    GitHub macOS runners; the real app has one window and is not affected)."""
     try:
         if sys.platform == "darwin":
             if not _shared_tk:
@@ -57,9 +58,10 @@ def new_root():
                 base.withdraw()
                 _shared_tk.append(base)
             root = tk.Toplevel(_shared_tk[0])
+            root.geometry("+0+0")
         else:
             root = tk.Tk()
+            root.withdraw()
     except tk.TclError as e:
         pytest.skip(f"no display: {e}")
-    root.withdraw()
     return root
