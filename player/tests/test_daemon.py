@@ -457,15 +457,20 @@ def test_mpv_idle_for_four_cycles_shows_player_fault(cfg, cms, mpv, client, scre
     loads = mpv.commands("loadfile")[n:]
     assert [c["flags"] for c in loads[:2]] == ["replace", "append"]   # the one re-push after two idle cycles
     assert [x for x in screen_loads(mpv) if x != "syncing.png"] == ["error.png"]   # (cycle 1 verified the unindexed files)
-    assert screens.current.reason == "player" and "mpv could not start any of 2 items" in screen_texts(screens)
+    assert screens.current.reason == "player" and "the player could not start any of 2 items" in screen_texts(screens)
     assert sum("player fault screen" in r.getMessage() for r in caplog.records) == 1
     m = len(mpv.commands("loadfile"))
     run_cycle(cfg, client, state, screens=screens)       # stays on the fault screen, no more re-pushes
     assert len(mpv.commands("loadfile")) == m
+    # the fault reaches the console as the device's sync error (the console shows a healthy idle device otherwise)
+    assert cms.sync_calls[-1]["sync_error"] == "the player could not start any of 2 items"
+    assert cms.sync_calls[-1]["player_status"] == "idle"
     cms.files["c.mp4"] = b"C" * 10                       # a playlist change pushes content again
     cms.set_playlist(["c.mp4"])
     run_cycle(cfg, client, state, screens=screens)
     assert names(mpv) == ["c.mp4"] and screens.current is None
+    run_cycle(cfg, client, state, screens=screens)       # and the console's error clears on the next sync
+    assert cms.sync_calls[-1]["sync_error"] == ""
 
 
 def test_unassign_then_reassign_same_playlist_resumes_content(cfg, cms, mpv, client, screens):

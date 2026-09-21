@@ -190,7 +190,7 @@ def _details(state: ScreenState) -> tuple[list[str], str]:
             return ["the console refused this device's token", state.device_id,
                     "regenerate the token on the Devices page and re-run the installer"], ""
         if state.reason == "player":
-            return [state.message, "restart mpv from the console or reboot"], ""
+            return [state.message, "check the projector is on, then restart the player from the console"], ""
         if state.reason == "storage":
             return [state.message, "free space on the SD card or shrink the playlist"], ""
         return [state.message], ""
