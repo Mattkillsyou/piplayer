@@ -17,6 +17,9 @@ const MAX_PI_MODEL_LEN = 64;
 export const MAX_UPDATE_REF_LEN = 100;
 export const DEVICE_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/; // same rule as the Devices page
 export const MAX_DEVICE_NAME = 120;
+// Successful enrollments of NEW device ids are capped fleet-wide (the key is on every card and
+// flasher PC; each new device is a row, an audit row and, with the secrets set, a tunnel).
+export const MAX_NEW_DEVICES_PER_HOUR = 20;
 
 async function ownDevice(ctx) {
   const device = await auth.deviceFromHeader(ctx);
@@ -58,10 +61,16 @@ async function sync(ctx) {
   // projector control); projector_error clears like camera_error.
   const projectorState = manifest.PROJECTOR_STATES.includes(q.get("projector_state")) ? q.get("projector_state") : null;
   const projectorError = (q.get("projector_error") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
-  // pi_model / camera_supported: kept like player_version when the player does not send them
-  // (old players); "" model = unreadable on the Pi, stored as NULL (unknown).
+  // pi_model / camera_supported: kept like player_version when the player omits them (old
+  // players) or sends "" / a value other than 0|1; a device can never clear them back to NULL
+  // (unknown).
   const piModel = (q.get("pi_model") || "").trim().slice(0, MAX_PI_MODEL_LEN) || null;
   const cameraSupported = ["0", "1"].includes(q.get("camera_supported")) ? Number(q.get("camera_supported")) : null;
+  // What the player reports about itself is capped like its error strings (it lands on every
+  // Devices / Dashboard card).
+  const currentFilename = (q.get("current_filename") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
+  const playerStatus = (q.get("player_status") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
+  const playerVersion = (q.get("player_version") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
   await db.run(ctx.env,
     `UPDATE devices SET
         last_seen_at = datetime('now'),
@@ -79,9 +88,9 @@ async function sync(ctx) {
       WHERE id = ?`,
     ctx.ip,
     intQuery(q, "current_position"),
-    q.get("current_filename"),
-    q.get("player_status"),
-    q.get("player_version"),
+    currentFilename,
+    playerStatus,
+    playerVersion,
     lastError,
     cameraError,
     projectorState,
@@ -94,7 +103,9 @@ async function sync(ctx) {
 
   const settings = await ctx.settings();
   const body = await manifest.manifest_for_device(ctx.env, device, ctx.url.origin, settings);
-  body.tunnel = await tunnelBlock(ctx.env, device);
+  // A board that cannot run the camera bridge (Zero / Pi 1, camera_supported=0) never runs
+  // cloudflared either: no point fetching a connector token for it on every sync.
+  body.tunnel = cameraSupported === 0 ? null : await tunnelBlock(ctx.env, device);
   return new Response(manifest.manifest_json(body), { headers: { "content-type": "application/json" } });
 }
 
@@ -189,11 +200,14 @@ async function storeLearnedCode(ctx, device, command, body) {
 async function receiveJpeg(ctx, what, maxBytes, store) {
   const device = await ownDevice(ctx);
   const tooLarge = () => fail(413, `File exceeds ${maxBytes} bytes`);
-  // Same wording as web._receive_upload, which streams the body and rejects as it goes.
+  // Same wording as web._receive_upload. That one streams the body and rejects as it goes;
+  // this port parses the whole body in memory (ctx.form), so the declared length is enforced
+  // up front and a body without one (chunked) is refused before anything is read.
   if (!/^multipart\/form-data\s*;.*boundary=/i.test(ctx.request.headers.get("content-type") || "")) {
     fail(400, "expected a multipart/form-data upload");
   }
   const declared = parseInt(ctx.request.headers.get("content-length") || "", 10);
+  if (!Number.isFinite(declared)) fail(411, "Content-Length is required");
   if (declared > maxBytes + 64 * 1024) tooLarge();
 
   let form;
@@ -237,11 +251,14 @@ async function enrollDefaults(env, settings) {
 }
 
 // Zero-touch enrollment: a freshly flashed Pi trades the site's enrollment key for its device
-// token. Re-enrolling an existing device_id returns the existing token so a re-flashed card
-// keeps the console's view of that device (group/playlist untouched; only a FIRST enrollment
-// applies the Settings defaults, and the audit row says which). Throttled per ip like login;
-// the token is never logged or audited. With the Cloudflare secrets set, a device without a
-// tunnel gets one here (cloudflare.tryProvisionDevice: a failure is audited, never fatal).
+// token. Re-enrolling an existing device_id issues a NEW token: the re-flashed card works, the
+// old card and anything that learned the old token stop (the key alone must never hand out a
+// live token). The console's view of that device is kept (group/playlist untouched; only a
+// FIRST enrollment applies the Settings defaults, and the audit row says which; a rename is
+// audited as renamed_from). Wrong keys are throttled per ip like login and new device ids are
+// capped per hour fleet-wide; the token is never logged or audited. With the Cloudflare
+// secrets set, a device without a tunnel gets one here (cloudflare.tryProvisionDevice: a
+// failure is audited, never fatal).
 async function enroll(ctx) {
   const wait = await auth.loginLockedFor(ctx.env, ctx.ip, auth.ENROLL_KEY, auth.ENROLL_MAX_FAILURES, auth.ENROLL_LOCK_SECONDS);
   if (wait) throw new HttpError(429, `Too many failed attempts; try again in ${wait} s`, { "Retry-After": String(wait) });
@@ -260,6 +277,11 @@ async function enroll(ctx) {
   const existing = () => db.first(ctx.env, "SELECT id, name, token, tunnel_id FROM devices WHERE device_id = ?", deviceId);
   let row = await existing();
   if (!row) {
+    const { n } = await db.first(ctx.env, "SELECT COUNT(*) AS n FROM devices WHERE created_at > datetime('now', '-1 hour')");
+    if (n >= MAX_NEW_DEVICES_PER_HOUR) {
+      await audit.log(ctx, "device_enroll_capped", "device", null, { device_id: deviceId, name }, null);
+      throw new HttpError(429, "Too many new projectors enrolled in the last hour; try again later", { "Retry-After": "3600" });
+    }
     const token = randomToken(32);
     const { group_id, playlist_id } = await enrollDefaults(ctx.env, settings);
     try {
@@ -275,25 +297,26 @@ async function enroll(ctx) {
       if (!row) throw e;
     }
   }
-  if (row.name !== name) {
-    await db.run(ctx.env, "UPDATE devices SET name = ? WHERE id = ?", name, row.id);
-    // The Wyze camera name can derive from the device name (wyze_camera_pattern), so a rename
-    // must make the Pi refetch its camera config.
-    await db.bumpCameraConfigVersion(ctx.env);
-  }
-  await audit.log(ctx, "device_reenrolled", "device", row.id, { device_id: deviceId, name }, null);
+  const token = randomToken(32);
+  await db.run(ctx.env, "UPDATE devices SET token = ?, name = ? WHERE id = ?", token, name, row.id);
+  // The Wyze camera name can derive from the device name (wyze_camera_pattern), so a rename
+  // must make the Pi refetch its camera config.
+  if (row.name !== name) await db.bumpCameraConfigVersion(ctx.env);
+  await audit.log(ctx, "device_reenrolled", "device", row.id,
+    { device_id: deviceId, name, renamed_from: row.name !== name ? row.name : undefined }, null);
   if (!row.tunnel_id && cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id: row.id, device_id: deviceId });
-  return json({ device_id: deviceId, token: row.token, cms_url: ctx.url.origin });
+  return json({ device_id: deviceId, token, cms_url: ctx.url.origin });
 }
 
 // Operator endpoint for the flasher (tools/flasher): `Authorization: Bearer p5k_...` (Settings
-// page "My API tokens", editor+ user) -> the live enrollment key plus what the operator needs
-// to sanity-check the console. Audited as api_token_used at most once per hour per token.
+// page "My API tokens", admin user: the key it returns can enroll any device id) -> the live
+// enrollment key plus what the operator needs to sanity-check the console. Audited as
+// api_token_used at most once per hour per token.
 // wyze_configured is true once the Settings page holds a Wyze email + password (the
 // provision script then passes --with-wyze).
 async function operatorEnrollment(ctx) {
   const op = await auth.operatorFromHeader(ctx);
-  if (auth.roleRank(op.role) < auth.roleRank("editor")) fail(401, "API token's user is not an editor or admin");
+  if (op.role !== "admin") fail(401, "API token's user is not an admin");
   if (await auth.touchApiToken(ctx.env, op.token_id)) {
     await audit.log(ctx, "api_token_used", "api_token", op.token_id, { name: op.token_name }, { id: op.id, username: op.username });
   }
@@ -316,7 +339,7 @@ async function operatorEnrollment(ctx) {
 // camera_config_fetched at most once a day per device (the player fetches on every start).
 async function getCameraConfig(ctx) {
   const device = await ownDevice(ctx);
-  const row = await db.first(ctx.env, "SELECT camera_source, camera_rtsp_url, camera_wyze_name FROM devices WHERE id = ?", device.id);
+  const row = await db.first(ctx.env, "SELECT camera_source, camera_rtsp_url, camera_wyze_name, camera_supported FROM devices WHERE id = ?", device.id);
   const settings = await ctx.settings();
   const body = await cameraConfig(ctx.env, { ...device, ...row }, settings);
   const r = await db.run(ctx.env,

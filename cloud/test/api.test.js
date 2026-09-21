@@ -97,6 +97,11 @@ describe("sync", () => {
     // omitted player_version keeps the old one (COALESCE)
     await sync(ids.dev, { player_status: "idle" });
     expect(await one("SELECT player_version, player_status FROM devices WHERE id = ?", ids.dev.id)).toEqual({ player_version: "test-0.0.1", player_status: "idle" });
+    // the three self-reported strings are capped like the error strings (they land on every card)
+    await sync(ids.dev, { current_filename: "f".repeat(1000), player_status: "s".repeat(1000), player_version: "v".repeat(1000) });
+    expect(await one("SELECT LENGTH(current_filename) AS f, LENGTH(player_status) AS s, LENGTH(player_version) AS v FROM devices WHERE id = ?", ids.dev.id))
+      .toEqual({ f: 200, s: 200, v: 200 });
+    await sync(ids.dev, { current_filename: "i.png", player_status: "playing", player_version: "test-0.0.1" });
   });
 
   it("stores pi_model (trimmed, 64 chars) and camera_supported; omitted or empty keeps the old values (migration 0005)", async () => {
@@ -298,9 +303,15 @@ describe("screenshots", () => {
     r = await SELF.fetch(`${BASE}/api/screenshots/dev-1`, { method: "POST", body: fd, headers: bearer("tok-1") });
     expect(r.status).toBe(200);
     expect(await r.json()).toEqual({ ok: true, size_bytes: JPEG.length });
-    // oversize: declared length past max + 64 KiB, or the file itself past max
+    // oversize: declared length past max + 64 KiB, or the file itself past max; a body with no
+    // length at all (chunked) is refused before it is read, since this port parses in memory
     r = await postShot(ids.dev, JPEG, { "content-length": String(6 * 1024 * 1024) });
     expect(r.status).toBe(413);
+    const chunked = new ReadableStream({ start(c) { c.enqueue(new Uint8Array(1024)); c.close(); } });
+    r = await SELF.fetch(`${BASE}/api/screenshots/dev-1`, { method: "POST", body: chunked, duplex: "half",
+      headers: { ...bearer("tok-1"), "content-type": "multipart/form-data; boundary=xyz" } });
+    expect(r.status).toBe(411);
+    expect(await r.json()).toEqual({ detail: "Content-Length is required" });
     const big = new Uint8Array(5 * 1024 * 1024 + 1);
     big.set(JPEG);
     r = await postShot(ids.dev, big);

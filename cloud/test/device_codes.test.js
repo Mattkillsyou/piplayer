@@ -1,6 +1,7 @@
 // Device-code sign-in for the SD flasher (device_codes.js, migration 0004): POST
-// /api/operator/device-code, GET/POST /authorize (editor+, CSRF), POST /api/operator/device-token
-// (pending / one-shot token / expired / denied), the per-IP cap, housekeeping and the audit row.
+// /api/operator/device-code, GET/POST /authorize (admin, CSRF, shows where the request came
+// from), POST /api/operator/device-token (pending / one-shot token / expired / denied), the
+// per-IP (/64 for IPv6) cap that counts closed rows too, housekeeping and the audit row.
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -51,42 +52,65 @@ describe("POST /api/operator/device-code", () => {
     const [row] = await query("SELECT hostname FROM device_codes WHERE user_code = ?", d.user_code);
     expect(row.hostname).toBe(("evilname" + "x".repeat(80)).slice(0, dc.MAX_HOSTNAME));
     expect((dc.TOKEN_NAME_PREFIX + row.hostname).length).toBeLessThanOrEqual(60);
+    // bidi override, zero-width space, soft hyphen, private use: gone; letters and spaces stay
+    expect(dc.cleanHostname("Matt\u202es laptop\u200b\u00ad\ue000 (IT)")).toBe("Matts laptop (IT)");
   });
 
-  it("caps codes per IP per hour", async () => {
+  it("caps codes per IP per hour; expired codes that were polled still count; IPv6 counts per /64", async () => {
     const ip = { "cf-connecting-ip": "203.0.113.9" };
-    for (let i = 0; i < dc.MAX_CODES_PER_IP_HOUR; i++) await start("pc", ip);
+    const codes = [];
+    for (let i = 0; i < dc.MAX_CODES_PER_IP_HOUR; i++) codes.push(await start("pc", ip));
     expect(await detail(await api("device-code", {}, ip), 429)).toMatch(/too many/);
     expect((await api("device-code", {}, { "cf-connecting-ip": "203.0.113.10" })).status).toBe(200);
+    // letting the codes expire and polling each one closes the rows but keeps them for the count
+    await query("UPDATE device_codes SET created_at = datetime('now', '-11 minutes') WHERE ip = '203.0.113.9'");
+    for (const c of codes) expect((await poll(c.device_code)).status).toBe(410);
+    expect((await query("SELECT COUNT(*) AS n FROM device_codes WHERE ip = '203.0.113.9'"))[0].n).toBe(dc.MAX_CODES_PER_IP_HOUR);
+    expect((await api("device-code", {}, ip)).status).toBe(429);
+    // an IPv6 client rotating inside its /64 shares one budget; the next /64 has its own
+    for (let i = 0; i < dc.MAX_CODES_PER_IP_HOUR; i++) await start("pc", { "cf-connecting-ip": `2001:db8:1:2::${i + 1}` });
+    expect((await api("device-code", {}, { "cf-connecting-ip": "2001:db8:1:2::ffff" })).status).toBe(429);
+    expect((await api("device-code", {}, { "cf-connecting-ip": "2001:db8:1:2:abcd::1" })).status).toBe(429);
+    expect((await api("device-code", {}, { "cf-connecting-ip": "2001:db8:1:3::1" })).status).toBe(200);
+    expect((await query("SELECT DISTINCT ip FROM device_codes WHERE ip LIKE '2001%' ORDER BY ip")).map((x) => x.ip))
+      .toEqual(["2001:0db8:0001:0002::/64", "2001:0db8:0001:0003::/64"]);
+    expect(dc.ipBucket("::1")).toBe("0000:0000:0000:0000::/64");
+    expect(dc.ipBucket("10.0.0.1")).toBe("10.0.0.1");
+    expect(dc.ipBucket(null)).toBe("-");
   });
 });
 
 describe("/authorize", () => {
-  it("editor or admin only, GET and POST", async () => {
-    await roleMatrix(r, "GET", "/authorize", { minRole: "editor" });
-    await roleMatrix(r, "POST", "/authorize", { minRole: "editor", fields: { code: "ZZZZZZ", action: "deny" }, ok: 400 });
+  it("admin only, GET and POST (the token it mints fetches the enrollment key)", async () => {
+    await roleMatrix(r, "GET", "/authorize", { minRole: "admin" });
+    await roleMatrix(r, "POST", "/authorize", { minRole: "admin", fields: { code: "ZZZZZZ", action: "deny" }, ok: 400 });
+    // the form tells the admin where the token is listed and revoked
+    expect(await (await r.admin.get("/authorize")).text()).toContain("under your name on the Users page, where you can revoke it.");
   });
 
-  it("happy path: prefilled code, approve, one-shot token that works, audited", async () => {
+  it("happy path: prefilled code with the requester's address and age, approve, one-shot token that works, audited", async () => {
     await query("DELETE FROM audit_log WHERE action = 'api_token_created'");
-    const d = await start("matts-laptop");
+    const d = await start("matts-laptop", { "cf-connecting-ip": "203.0.113.5" });
     expect((await poll(d.device_code)).status).toBe(428);
     expect(await (await poll(d.device_code)).json()).toEqual({ status: "pending" });
 
     const shown = dc.displayUserCode(d.user_code).toLowerCase();
-    const page = await (await r.editor.get(`/authorize?code=${shown}`)).text();
+    const page = await (await r.admin.fetch(`/authorize?code=${shown}`, { headers: { "cf-connecting-ip": "198.51.100.8" } })).text();
     expect(page).toContain("Sign in the SD Flasher on matts-laptop?");
     expect(page).toContain(`name="code" value="${d.user_code}"`);
+    expect(page).toContain('It asked less than a minute ago from the address <code>203.0.113.5</code>; you are browsing from <code>198.51.100.8</code>.');
+    await query("UPDATE device_codes SET created_at = datetime('now', '-3 minutes') WHERE user_code = ?", d.user_code);
+    expect(await (await r.admin.get(`/authorize?code=${shown}`)).text()).toContain("It asked 3 minute(s) ago from the address <code>203.0.113.5</code>; you are browsing from <code>-</code>.");
 
-    const res = await authorize(r.editor, shown, "approve");
+    const res = await authorize(r.admin, shown, "approve");
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("Approved.");
     const [t] = await tokens();
     expect(t.name).toBe("SD Flasher on matts-laptop");
-    expect(t.user_id).toBe((await query("SELECT id FROM users WHERE username = 'ed'"))[0].id);
+    expect(t.user_id).toBe((await query("SELECT id FROM users WHERE username = 'admin'"))[0].id);
     const [a] = await audits("api_token_created");
-    expect(a).toMatchObject({ username: "ed", target_type: "api_token", target_id: String(t.id),
+    expect(a).toMatchObject({ username: "admin", target_type: "api_token", target_id: String(t.id),
       details: '{"name": "SD Flasher on matts-laptop", "source": "device-code"}' });
     const [row] = await rows();
     expect(row.approved_at).not.toBeNull();
@@ -95,16 +119,17 @@ describe("/authorize", () => {
     const got = await poll(d.device_code);
     expect(got.status).toBe(200);
     const body = await got.json();
-    expect(body).toEqual({ token: row.token_plain_until_claimed, username: "ed" });
+    expect(body).toEqual({ token: row.token_plain_until_claimed, username: "admin" });
     expect(t.token_hash).toBe(await auth.apiTokenHash(body.token));
-    expect((await rows()).length).toBe(0);
+    // the row stays for the per-IP count, without the token
+    expect((await rows()).map((x) => x.token_plain_until_claimed)).toEqual([null]);
     // one shot
     expect((await poll(d.device_code)).status).toBe(410);
     // the token is a normal operator token
     const enr = await SELF.fetch(`${BASE}/api/operator/enrollment`, { headers: { authorization: `Bearer ${body.token}` } });
     expect(enr.status).toBe(200);
-    // an approved code cannot be approved again (it is gone)
-    expect((await authorize(r.editor, d.user_code, "approve")).status).toBe(400);
+    // an approved code cannot be approved again
+    expect((await authorize(r.admin, d.user_code, "approve")).status).toBe(400);
   });
 
   it("anonymous with a code: /login keeps the code in next= and lands back on /authorize", async () => {
@@ -116,7 +141,7 @@ describe("/authorize", () => {
     const form = await (await anon.get(res.headers.get("location"))).text();
     expect(form).toContain(`name="next" value="${next}"`);
     const csrf_token = await anon.csrf(res.headers.get("location"));
-    const login = await anon.post("/login", { username: "ed", password: "editor-pass", csrf_token, next });
+    const login = await anon.post("/login", { username: "admin", password: "test1234", csrf_token, next });
     expect([login.status, login.headers.get("location")]).toEqual([303, next]);
     expect(await (await anon.get(next)).text()).toContain("Sign in the SD Flasher on matts-laptop?");
     // an off-site or scheme-relative next is dropped
@@ -124,7 +149,7 @@ describe("/authorize", () => {
       const c = new Client();
       const t = await c.csrf(`/login?next=${encodeURIComponent(bad)}`);
       expect(await (await c.get(`/login?next=${encodeURIComponent(bad)}`)).text()).not.toContain('name="next"');
-      const l = await c.post("/login", { username: "ed", password: "editor-pass", csrf_token: t, next: bad });
+      const l = await c.post("/login", { username: "admin", password: "test1234", csrf_token: t, next: bad });
       expect(l.headers.get("location")).toBe("/dashboard");
     }
   });
@@ -139,9 +164,9 @@ describe("/authorize", () => {
     expect(await res.text()).toContain("not valid or has expired");
     expect((await tokens()).length).toBe(before);
     // no ?code= shows the empty form; a plain Continue submit lands on the GET
-    expect(await (await r.editor.get("/authorize")).text()).toContain("Enter the code");
+    expect(await (await r.admin.get("/authorize")).text()).toContain("Enter the code");
     const d = await start();
-    const cont = await authorize(r.editor, d.user_code, "");
+    const cont = await authorize(r.admin, d.user_code, "");
     expect(cont.status).toBe(303);
     expect(cont.headers.get("location")).toBe(`/authorize?code=${d.user_code}`);
   });
@@ -156,30 +181,30 @@ describe("/authorize", () => {
     const got = await poll(d.device_code);
     expect(got.status).toBe(410);
     expect(await got.json()).toEqual({ status: "denied" });
-    expect((await query("SELECT 1 FROM device_codes WHERE user_code = ?", d.user_code)).length).toBe(0);
+    expect((await query("SELECT denied FROM device_codes WHERE user_code = ?", d.user_code))).toEqual([{ denied: 1 }]);
     expect((await tokens()).length).toBe(0);
     expect((await authorize(r.admin, d.user_code, "approve")).status).toBe(400);
   });
 
-  it("expired: 410 for the flasher and invalid on the page; an unclaimed token is deleted", async () => {
+  it("expired: 410 for the flasher and invalid on the page; an unclaimed token is deleted, the row stays until pruned", async () => {
     const d = await start("slow-pc");
     await query("UPDATE device_codes SET created_at = datetime('now', '-11 minutes') WHERE user_code = ?", d.user_code);
-    expect((await r.editor.get(`/authorize?code=${d.user_code}`)).status).toBe(200);
-    expect(await (await r.editor.get(`/authorize?code=${d.user_code}`)).text()).toContain("not valid or has expired");
-    expect((await authorize(r.editor, d.user_code, "approve")).status).toBe(400);
+    expect((await r.admin.get(`/authorize?code=${d.user_code}`)).status).toBe(200);
+    expect(await (await r.admin.get(`/authorize?code=${d.user_code}`)).text()).toContain("not valid or has expired");
+    expect((await authorize(r.admin, d.user_code, "approve")).status).toBe(400);
     const got = await poll(d.device_code);
     expect(got.status).toBe(410);
     expect(await got.json()).toEqual({ status: "expired" });
-    expect((await rows()).length).toBe(0);
+    expect((await rows()).map((x) => x.token_plain_until_claimed)).toEqual([null]);
 
-    // approved, then left unclaimed past the expiry: the poll drops the row and the token
+    // approved, then left unclaimed past the expiry: the poll drops the token, the row stays
     const e = await start("slow-pc");
-    expect((await authorize(r.editor, e.user_code, "approve")).status).toBe(200);
+    expect((await authorize(r.admin, e.user_code, "approve")).status).toBe(200);
     expect((await tokens()).length).toBe(1);
     await query("UPDATE device_codes SET created_at = datetime('now', '-11 minutes') WHERE user_code = ?", e.user_code);
     expect((await poll(e.device_code)).status).toBe(410);
     expect((await tokens()).length).toBe(0);
-    expect((await rows()).length).toBe(0);
+    expect((await rows()).map((x) => x.token_plain_until_claimed)).toEqual([null, null]);
   });
 
   it("unknown device_code and bad bodies", async () => {
@@ -190,7 +215,7 @@ describe("/authorize", () => {
 
   it("CSRF is enforced on the approve form", async () => {
     const d = await start();
-    const res = await r.editor.post("/authorize", { code: d.user_code, action: "approve" });
+    const res = await r.admin.post("/authorize", { code: d.user_code, action: "approve" });
     expect(res.status).toBe(403);
     expect((await tokens()).length).toBe(0);
   });

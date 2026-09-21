@@ -1,6 +1,6 @@
 // D1 query helpers. Thin wrappers over env.DB.prepare(...).bind(...) so routes read like
 // the Python cursor code: all()/first()/run()/batch(). Plus the site settings.
-import { envFloat, envInt, HttpError, randomToken } from "./util.js";
+import { envFloat, envInt, HttpError, isValidTimeZone, randomToken } from "./util.js";
 
 // Rows for a SELECT.
 export async function all(env, sql, ...params) {
@@ -31,14 +31,25 @@ export function isConstraintError(e) {
   return /constraint failed|SQLITE_CONSTRAINT/i.test(String(e && e.message));
 }
 
-// Fail loudly (once per isolate) when migrations were never applied.
+// The meta.schema_version the code expects: bump with each new migrations/000N file (the last
+// statement of every migration writes it).
+export const SCHEMA_VERSION = 6;
+
+// Fail loudly (once per isolate) when migrations were never applied or stopped short of this
+// release: a worker deployed before `npm run migrate:remote` must say so on every request
+// (including /api/health, which index.js guards like everything else) instead of answering
+// raw SQL errors on some routes and ok on others.
 let migrated = false;
 export async function assertMigrated(env) {
   if (migrated) return;
+  let v;
   try {
-    await env.DB.prepare("SELECT 1 FROM meta").first();
+    v = await env.DB.prepare("SELECT value FROM meta WHERE key = 'schema_version'").first("value");
   } catch (e) {
-    throw new HttpError(500, "database not migrated: run npm run migrate:local (or migrate:remote)");
+    throw new HttpError(500, "The database has not been set up yet: run npm run migrate:remote (or npm run migrate:local on a dev machine) and try again");
+  }
+  if (Number(v) < SCHEMA_VERSION) {
+    throw new HttpError(500, `The database is behind this version of the console (it is at version ${v}, this release needs ${SCHEMA_VERSION}): run npm run migrate:remote and try again`);
   }
   migrated = true;
 }
@@ -128,7 +139,7 @@ export function defaultSettings(env) {
 export async function loadSettings(env) {
   const s = defaultSettings(env);
   for (const row of await all(env, "SELECT key, value FROM settings")) {
-    if (row.key === "timezone" && row.value) s.timezone = row.value;
+    if (row.key === "timezone" && isValidTimeZone(row.value)) s.timezone = row.value; // a bad zone (D1 edit, restore) falls back to UTC like any other malformed row
     else if (row.key === "screenshot_interval" && Number.isFinite(+row.value)) s.screenshot_interval = parseInt(row.value, 10);
     else if (row.key === "camera_interval" && Number.isFinite(+row.value)) s.camera_interval = parseInt(row.value, 10);
     else if (row.key === "default_image_duration" && Number.isFinite(+row.value)) s.default_image_duration = parseFloat(row.value);

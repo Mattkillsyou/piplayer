@@ -1,22 +1,34 @@
 // Device-code sign-in for the SD flasher (the OAuth device flow shape, no copy/paste):
 //   1. flasher: POST /api/operator/device-code {hostname} (no auth) -> {device_code, user_code,
 //      verification_url, expires_in, interval}; it opens verification_url?code=<user_code>.
-//   2. operator: GET /authorize (session, editor+) shows "Sign in the SD Flasher on <hostname>?";
+//   2. operator: GET /authorize (session, admin: the token can fetch the enrollment key) shows
+//      "Sign in the SD Flasher on <hostname>?" plus where and when the request came from;
 //      POST /authorize approve mints an api_tokens row "SD Flasher on <hostname>" for the
 //      signed-in user (auth.issueApiToken, audited api_token_created source "device-code").
 //   3. flasher: POST /api/operator/device-token {device_code} every `interval` s ->
-//      428 {status: "pending"} | 200 {token, username} once (the row is deleted) |
+//      428 {status: "pending"} | 200 {token, username} once (the pending token is cleared) |
 //      410 {status: "expired" | "denied"}.
 // Table device_codes (migration 0004): only the SHA-256 hex of device_code is stored; the minted
 // token waits in token_plain_until_claimed until the flasher collects it. Codes expire
-// EXPIRES_IN seconds after creation; rows are kept an hour for the per-IP rate limit, then
-// pruned (housekeeping, and on every new code) together with any token nobody claimed.
+// EXPIRES_IN seconds after creation; the row stays an hour whatever happens to it (claimed,
+// denied, expired) so the per-IP rate limit keeps counting it, then it is pruned (housekeeping,
+// and on every new code) together with any token nobody claimed.
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
 import * as db from "./db.js";
 import { installBaseUrl } from "./pages/devices.js";
 import { alertBox, csrfInput, layout } from "./pages/layout.js";
 import { esc, fail, json, jsonObject, randomToken, redirect, sha256Hex, str } from "./util.js";
+
+// Throttle key for a client address: IPv4 as is, IPv6 collapsed to its /64 (home and mobile
+// users hold at least a /64, so rotating inside it must not reset a rate limit).
+export function ipBucket(ip) {
+  if (!ip || !ip.includes(":")) return ip || "-";
+  const [head, tail = ""] = ip.split("::");
+  const h = head ? head.split(":") : [], t = tail ? tail.split(":") : [];
+  const groups = [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t];
+  return groups.slice(0, 4).map((g) => g.padStart(4, "0")).join(":") + "::/64";
+}
 
 export const EXPIRES_IN = 600;
 export const INTERVAL = 3;
@@ -48,8 +60,10 @@ export const normalizeUserCode = (s) => String(s ?? "").toUpperCase().replace(/[
 export const displayUserCode = (c) => `${c.slice(0, 4)}-${c.slice(4)}`;
 
 // Printable, at most MAX_HOSTNAME chars; a missing or empty hostname reads "unknown PC".
+// \p{C} drops control, format (bidi overrides, zero-width), unassigned and private-use characters
+// so the name on /authorize cannot be made to read as something else.
 export function cleanHostname(v) {
-  const s = (typeof v === "string" ? v : "").replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, MAX_HOSTNAME).trim();
+  const s = (typeof v === "string" ? v : "").replace(/\p{C}/gu, "").trim().slice(0, MAX_HOSTNAME).trim();
   return s || "unknown PC";
 }
 
@@ -65,9 +79,10 @@ export async function prune(env) {
 }
 export const housekeeping = prune;
 
-// Delete one row and, when it holds an unclaimed token, that token.
+// Close one row (it stays for the per-IP count until pruned) and, when it holds an unclaimed
+// token, delete that token.
 async function discard(env, row) {
-  const stmts = [["DELETE FROM device_codes WHERE device_code_hash = ?", row.device_code_hash]];
+  const stmts = [["UPDATE device_codes SET token_plain_until_claimed = NULL WHERE device_code_hash = ?", row.device_code_hash]];
   if (row.token) stmts.push(["DELETE FROM api_tokens WHERE token_hash = ?", await auth.apiTokenHash(row.token)]);
   await db.batch(env, stmts);
 }
@@ -82,7 +97,7 @@ async function deviceCode(ctx) {
   try { body = await ctx.request.json(); } catch { /* no body */ }
   const hostname = cleanHostname(body && typeof body === "object" ? body.hostname : "");
   await prune(ctx.env);
-  const ip = ctx.ip || "-";
+  const ip = ipBucket(ctx.ip);
   const { n } = await db.first(ctx.env,
     "SELECT COUNT(*) AS n FROM device_codes WHERE ip = ? AND created_at > datetime('now', '-1 hour')", ip);
   if (n >= MAX_CODES_PER_IP_HOUR) fail(429, `too many sign-in codes from this address; try again in an hour`);
@@ -112,27 +127,29 @@ async function deviceToken(ctx) {
     return json({ status: row.live ? "denied" : "expired" }, 410);
   }
   if (!row.approved_at) return json({ status: "pending" }, 428);
-  // One shot: the DELETE's row count decides who wins a concurrent poll.
-  const r = await db.run(ctx.env, "DELETE FROM device_codes WHERE device_code_hash = ?", hash);
+  // One shot: the UPDATE's row count decides who wins a concurrent poll.
+  const r = await db.run(ctx.env,
+    "UPDATE device_codes SET token_plain_until_claimed = NULL WHERE device_code_hash = ? AND token_plain_until_claimed IS NOT NULL", hash);
   if (!r.changes) return json({ status: "expired" }, 410);
   return json({ token: row.token, username: row.username });
 }
 
 // ---------------------------------------------------------------------------
-// /authorize (session, editor+; reached from the flasher's link, no nav item)
+// /authorize (session, admin; reached from the flasher's link, no nav item)
 // ---------------------------------------------------------------------------
 
 const BAD_CODE = "That code is not valid or has expired. Check the SD Flasher and try again.";
 
 // The live, not yet answered row for a user code, or null.
 const pending = (env, code) => code.length === USER_CODE_LEN ? db.first(env,
-  `SELECT device_code_hash, user_code, hostname FROM device_codes
+  `SELECT device_code_hash, user_code, hostname, ip, CAST((julianday('now') - julianday(created_at)) * 1440 AS INTEGER) AS age_min
+     FROM device_codes
     WHERE user_code = ? AND approved_at IS NULL AND denied = 0 AND ${LIVE}`, code, liveArg()) : null;
 
 function codeForm(ctx, code, error) {
   return `<div class="panel">
   <h2>Enter the code</h2>
-  <p class="muted small">The SD Flasher shows a code when you click Sign in. Enter it here to give that computer a token that acts with your role (${esc(ctx.user.role)}). The token appears under My API tokens on the Settings page and under your name on the Users page, where an admin can revoke it.</p>
+  <p class="muted small">The SD Flasher shows a code when you click Sign in. Enter it here to give that computer a token that acts with your role (${esc(ctx.user.role)}). The token appears under My API tokens on the Settings page and under your name on the Users page, where you can revoke it.</p>
   ${alertBox(error)}
   <form method="get" action="/authorize">
     <div class="row">
@@ -149,6 +166,7 @@ function confirmPanel(ctx, row) {
   return `<div class="panel">
   <h2>Sign in the SD Flasher on ${esc(row.hostname)}?</h2>
   <p>Code <code>${esc(displayUserCode(row.user_code))}</code>. Approve creates an API token named "${esc(TOKEN_NAME_PREFIX + row.hostname)}" for <strong>${esc(ctx.user.username)}</strong>. Only approve if you just clicked Sign in there.</p>
+  <p class="muted small">That computer calls itself "${esc(row.hostname)}". It asked ${row.age_min < 1 ? "less than a minute" : row.age_min + " minute(s)"} ago from the address <code>${esc(row.ip)}</code>; you are browsing from <code>${esc(ipBucket(ctx.ip))}</code>. If those addresses differ and you are sitting at the same computer as the SD Flasher, press Deny.</p>
   <form method="post" action="/authorize">
     ${csrfInput(ctx)}
     <input type="hidden" name="code" value="${esc(row.user_code)}">
@@ -172,14 +190,14 @@ async function authorizePage(ctx) {
   const code = normalizeUserCode(ctx.url.searchParams.get("code"));
   // The flasher's link lands here before the operator has signed in: keep the code across /login.
   if (!ctx.user && code) throw redirect(`/login?next=${encodeURIComponent(`/authorize?code=${code}`)}`);
-  auth.requireRole(ctx, "editor");
+  auth.requireRole(ctx, "admin");
   if (!code) return page(ctx, codeForm(ctx, "", ""));
   const row = await pending(ctx.env, code);
   return page(ctx, row ? confirmPanel(ctx, row) : codeForm(ctx, code, BAD_CODE));
 }
 
 async function authorizeSubmit(ctx) {
-  const me = auth.requireRole(ctx, "editor");
+  const me = auth.requireRole(ctx, "admin");
   const form = await ctx.form();
   const code = normalizeUserCode(str(form, "code"));
   const action = str(form, "action");

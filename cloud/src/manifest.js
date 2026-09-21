@@ -133,14 +133,16 @@ export function projector_block(device, want) {
 // Commands not yet completed, each handed out at most MAX_COMMAND_DELIVERIES times.
 // A command the player never reports on (lost result POST, crash) is closed as
 // undeliverable instead of being re-sent forever (a lost 'reboot' result must not
-// reboot the Pi on every boot).
+// reboot the Pi on every boot). The delivery_count increment is a claim: two syncs in
+// flight for one device (a retried sync, two cards sharing an id) both read the row but
+// only the UPDATE that still sees the old count hands the command out.
 export async function pending_commands(env, deviceRowId) {
   const rows = await db.all(env,
     `SELECT id, command, issued_at, delivery_count FROM device_commands
       WHERE device_id = ? AND completed_at IS NULL
       ORDER BY id ASC`, deviceRowId);
-  const cmds = [];
   const updates = [];
+  const claims = []; // [index into updates, command]
   for (const r of rows) {
     if (r.delivery_count >= MAX_COMMAND_DELIVERIES) {
       updates.push([
@@ -150,15 +152,16 @@ export async function pending_commands(env, deviceRowId) {
       console.warn(`command ${r.id} (${r.command}) for device ${deviceRowId} closed as undeliverable`);
       continue;
     }
+    claims.push([updates.length, { id: r.id, command: r.command, issued_at: r.issued_at }]);
     updates.push([
       `UPDATE device_commands
           SET delivered_at = COALESCE(delivered_at, datetime('now')),
               delivery_count = delivery_count + 1
-        WHERE id = ?`, r.id]);
-    cmds.push({ id: r.id, command: r.command, issued_at: r.issued_at });
+        WHERE id = ? AND delivery_count = ? AND completed_at IS NULL`, r.id, r.delivery_count]);
   }
-  if (updates.length) await db.batch(env, updates);
-  return cmds;
+  if (!updates.length) return [];
+  const results = await db.batch(env, updates);
+  return claims.filter(([i]) => results[i].meta.changes === 1).map(([, c]) => c);
 }
 
 const pad2 = (n) => String(n).padStart(2, "0");

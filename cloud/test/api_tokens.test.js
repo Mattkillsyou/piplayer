@@ -90,7 +90,7 @@ describe("/settings API tokens", () => {
 describe("/users API tokens (admin issues tokens for other users)", () => {
   const user = (username) => query("SELECT id, role FROM users WHERE username = ?", username).then((x) => x[0]);
 
-  it("admin creates a token for an editor: shown once under that user, audited with the username, works on the endpoint", async () => {
+  it("admin creates a token for an editor: shown once under that user, audited with the username, refused by the enrollment endpoint", async () => {
     await query("DELETE FROM audit_log WHERE action LIKE 'api_token_%'");
     const ed = await user("ed");
     const res = await post(r.admin, `/users/${ed.id}/tokens`, { name: " editor laptop " });
@@ -108,7 +108,8 @@ describe("/users API tokens (admin issues tokens for other users)", () => {
     expect(row).toMatchObject({ user_id: ed.id, token_hash: await auth.apiTokenHash(token), last_used_at: null });
     const [a] = await audits("api_token_created");
     expect(a).toMatchObject({ username: "admin", target_type: "api_token", target_id: String(row.id), details: '{"name": "editor laptop", "username": "ed"}' });
-    expect((await fetchEnrollment(bearer(token))).status).toBe(200);
+    // an editor's token cannot fetch the enrollment key (it would enroll any device id): admins only
+    expect(await detail(await fetchEnrollment(bearer(token)), 401)).toBe("API token's user is not an admin");
     // the plaintext is gone on the next render; the token is listed with its revoke form
     const page = await (await r.admin.get("/users")).text();
     expect(page).toContain("editor laptop");
@@ -208,7 +209,7 @@ describe("GET /api/operator/enrollment", () => {
     expect((await audits("api_token_used")).length).toBe(2);
   });
 
-  it("a token whose user was demoted to viewer gets 401; deleting the user removes the token", async () => {
+  it("a token whose user was demoted below admin gets 401; deleting the user removes the token", async () => {
     const token = await create(r.admin, "demoted");
     await post(r.admin, "/users", { username: "tmpadmin", password: "tmpadminpw", role: "admin" });
     const uid = (await query("SELECT id FROM users WHERE username = 'tmpadmin'"))[0].id;
@@ -216,9 +217,9 @@ describe("GET /api/operator/enrollment", () => {
     await query("UPDATE api_tokens SET user_id = ? WHERE token_hash = ?", uid, hash);
     expect((await fetchEnrollment(bearer(token))).status).toBe(200);
     await post(r.admin, `/users/${uid}/role`, { role: "editor" });
-    expect((await fetchEnrollment(bearer(token))).status).toBe(200);
+    expect(await detail(await fetchEnrollment(bearer(token)), 401)).toBe("API token's user is not an admin");
     await post(r.admin, `/users/${uid}/role`, { role: "viewer" });
-    expect(await detail(await fetchEnrollment(bearer(token)), 401)).toBe("API token's user is not an editor or admin");
+    expect(await detail(await fetchEnrollment(bearer(token)), 401)).toBe("API token's user is not an admin");
     await post(r.admin, `/users/${uid}/delete`);
     expect((await tokens()).some((t) => t.token_hash === hash)).toBe(false);
     expect((await fetchEnrollment(bearer(token))).status).toBe(401);

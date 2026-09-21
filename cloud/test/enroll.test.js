@@ -1,11 +1,13 @@
 // POST /api/enroll: key check (constant-time, throttled per ip), device_id/name validation,
-// create vs re-enroll (existing token kept, name updated), audit rows, no token in the audit log.
+// create vs re-enroll (a NEW token, the old one stops, name updated), the per-hour cap on new
+// device ids, audit rows, no token in the audit log.
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as auth from "../src/auth.js";
 import * as db from "../src/db.js";
 import { BASE, query, setupAdmin } from "./helpers.js";
+import { MAX_NEW_DEVICES_PER_HOUR } from "../src/api.js";
 import { audits, detail, group, playlist } from "./pages_common.js";
 
 let key;
@@ -47,15 +49,22 @@ describe("POST /api/enroll", () => {
     expect(sync.status).toBe(200);
   });
 
-  it("re-enrolling keeps the existing token, updates the name, audits device_reenrolled", async () => {
+  it("re-enrolling issues a new token (the old card stops syncing), updates the name, audits device_reenrolled with renamed_from", async () => {
     await query("DELETE FROM audit_log WHERE action LIKE 'device_%enrolled'");
     const first = await (await enroll({ key, device_id: "hall-2", name: "Hall" })).json();
     const again = await enroll({ key, device_id: "HALL-2", name: "Hall (new card)" });
     expect(again.status).toBe(200);
-    expect(await again.json()).toEqual({ device_id: "hall-2", token: first.token, cms_url: BASE });
+    const body = await again.json();
+    expect(body).toMatchObject({ device_id: "hall-2", cms_url: BASE });
+    expect(body.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(body.token).not.toBe(first.token);
     const row = await dev("hall-2");
     expect(row.name).toBe("Hall (new card)");
-    expect(row.token).toBe(first.token);
+    expect(row.token).toBe(body.token);
+    // the enrollment key alone never yields a live token: the old one is dead, only the new one syncs
+    const bearer = (t) => SELF.fetch(`${BASE}/api/sync/hall-2`, { headers: { authorization: `Bearer ${t}` } });
+    expect((await bearer(first.token)).status).toBe(401);
+    expect((await bearer(body.token)).status).toBe(200);
     // a rename can change the derived Wyze camera name, so the Pi must refetch its camera config
     const ver = async () => parseInt((await query("SELECT value FROM settings WHERE key = 'camera_config_version'"))[0]?.value || "0", 10);
     const afterRename = await ver();
@@ -66,7 +75,7 @@ describe("POST /api/enroll", () => {
     expect((await dev("hall-2")).name).toBe("Hall (new card)");
     expect(await ver()).toBe(afterRename); // unchanged name: no bump
     expect((await audits("device_reenrolled")).map((a) => a.details)).toEqual([
-      '{"device_id": "hall-2", "name": "Hall (new card)"}', '{"device_id": "hall-2", "name": "Hall (new card)"}',
+      '{"device_id": "hall-2", "name": "Hall (new card)"}', '{"device_id": "hall-2", "name": "Hall (new card)", "renamed_from": "Hall"}',
     ]);
     expect((await audits("device_enrolled")).length).toBe(1);
   });
@@ -137,6 +146,29 @@ describe("POST /api/enroll", () => {
     await clear("203.0.113.9");
   });
 
+  it("caps new device ids fleet-wide per hour (429 + Retry-After, audited); re-enrolls and rows older than an hour do not count", async () => {
+    await query("DELETE FROM audit_log WHERE action = 'device_enroll_capped'");
+    const before = (await query("SELECT COUNT(*) AS n FROM devices WHERE created_at > datetime('now', '-1 hour')"))[0].n;
+    for (let i = 0; i < MAX_NEW_DEVICES_PER_HOUR - before; i++) {
+      await query("INSERT INTO devices (device_id, name, token) VALUES (?, ?, ?)", `cap-${i}`, "x", `tok-cap-${i}`);
+    }
+    try {
+      const capped = await enroll({ key, device_id: "cap-new", name: "x" }, { "cf-connecting-ip": "10.7.7.7" });
+      expect(await detail(capped, 429)).toBe("Too many new projectors enrolled in the last hour; try again later");
+      expect(capped.headers.get("retry-after")).toBe("3600");
+      expect(await dev("cap-new")).toBeNull();
+      expect((await audits("device_enroll_capped"))[0]).toMatchObject({ target_type: "device", target_id: null, details: '{"device_id": "cap-new", "name": "x"}', ip: "10.7.7.7" });
+      // an existing id still re-enrolls (a re-flashed card)
+      expect((await enroll({ key, device_id: "cap-0", name: "x" })).status).toBe(200);
+      // a row aged past the hour frees a slot
+      await query("UPDATE devices SET created_at = datetime('now', '-2 hours') WHERE device_id = 'cap-0'");
+      expect((await enroll({ key, device_id: "cap-new", name: "x" })).status).toBe(200);
+      expect(await dev("cap-new")).not.toBeNull();
+    } finally {
+      await query("DELETE FROM devices WHERE device_id LIKE 'cap-%'");
+    }
+  });
+
   it("applies the Settings group/playlist on first enrollment only; deleted rows count as none", async () => {
     await query("DELETE FROM audit_log WHERE action LIKE 'device_%enrolled'");
     const gid = await group("Enroll group");
@@ -158,7 +190,7 @@ describe("POST /api/enroll", () => {
       await setDefaults(null, pid);
       expect((await enroll({ key, device_id: "auto-1", name: "Auto 2" })).status).toBe(200);
       expect(await dev("auto-1")).toMatchObject({ name: "Auto 2", group_id: null, playlist_id: pid });
-      expect((await audits("device_reenrolled"))[0].details).toBe('{"device_id": "auto-1", "name": "Auto 2"}');
+      expect((await audits("device_reenrolled"))[0].details).toBe('{"device_id": "auto-1", "name": "Auto 2", "renamed_from": "Auto"}');
       // and the earlier device enrolled before any defaults is untouched by a re-enroll too
       expect((await enroll({ key, device_id: "auto-0", name: "x" })).status).toBe(200);
       expect(await dev("auto-0")).toMatchObject({ group_id: null, playlist_id: null });
