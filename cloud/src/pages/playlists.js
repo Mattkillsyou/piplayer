@@ -135,7 +135,7 @@ async function playlistsEdit(ctx) {
         </form>` : esc(it.duration_override_seconds || "—")}
       </td>
       <td>
-        ${canEdit ? `<form method="post" action="/playlists/${playlist.id}/items/${it.id}/delete" class="inline">
+        ${canEdit ? `<form method="post" action="/playlists/${playlist.id}/items/${it.id}/delete" class="inline" data-confirm="Remove ${esc(it.original_name)} from ${esc(playlist.name)}? Projectors playing it skip it from their next sync.">
           ${csrfInput(ctx)}
           <button type="submit" class="danger small">Remove</button>
         </form>` : ""}

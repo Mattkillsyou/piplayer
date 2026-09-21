@@ -344,7 +344,7 @@ describe("settings panel", () => {
   it("saves and audits (credentials as 'set'), shows configured badges + enabled test buttons, keeps or clears Twilio", async () => {
     const res = await post(r.admin, "/settings/alerts", { ...GOOD, twilio_account_sid: "AC9", twilio_auth_token: "secret-tok", twilio_from: "+1555", twilio_to: "+1666" });
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/settings?saved=1");
+    expect(res.headers.get("location")).toBe("/settings");
     expect(await alertRows()).toEqual([
       { key: "alert_email", value: "ops@example.com" }, { key: "alert_offline_minutes", value: "15" },
       { key: "alert_repeat_minutes", value: "60" }, { key: "alert_webhook_url", value: "https://hooks.example.com/z" },
@@ -377,22 +377,24 @@ describe("settings panel", () => {
     expect(await detail(await post(r.admin, "/settings/alerts/test", { channel: "carrier-pigeon" }), 400)).toBe("channel must be one of email, webhook, sms");
     let res = await post(r.admin, "/settings/alerts/test", { channel: "email" });
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/settings?test_error=" + encodeURIComponent("email: no alert email address set"));
-    let page = await (await r.admin.get(res.headers.get("location"))).text();
+    expect(res.headers.get("location")).toBe("/settings");
+    let page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('<div class="alert error" role="alert">Test alert failed: email: no alert email address set</div>');
+    expect(await (await r.admin.get("/settings")).text()).not.toContain("Test alert failed"); // shown once
     await query("INSERT INTO settings (key, value) VALUES ('alert_webhook_url', 'https://hooks.example.com/t')");
     const calls = stubFetch(200);
     res = await post(r.admin, "/settings/alerts/test", { channel: "webhook" });
-    expect(res.headers.get("location")).toBe("/settings?tested=webhook");
+    expect(res.headers.get("location")).toBe("/settings");
     expect(calls.length).toBe(1);
     expect(JSON.parse(calls[0].body).text).toContain("requested by admin");
-    page = await (await r.admin.get("/settings?tested=webhook")).text();
+    page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('<div class="alert ok" role="alert">Test webhook alert sent.</div>');
     const t = await audits("alert_test_sent");
     expect(t.map((x) => [x.target_id, x.details])).toEqual([["webhook", null], ["email", '{"error": "no alert email address set"}']]);
-    // the banner text is escaped
-    page = await (await r.admin.get("/settings?test_error=" + encodeURIComponent("<b>x"))).text();
-    expect(page).toContain("Test alert failed: &lt;b&gt;x");
+    // the banner is never driven by the query string (a link cannot put words in the red box)
+    page = await (await r.admin.get("/settings?test_error=" + encodeURIComponent("<b>x") + "&tested=webhook")).text();
+    expect(page).not.toContain("Test alert failed");
+    expect(page).not.toContain("alert sent");
     await query("DELETE FROM settings WHERE key LIKE 'alert_%'");
   });
 });

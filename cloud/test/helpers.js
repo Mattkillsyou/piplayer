@@ -6,15 +6,20 @@ export const BASE = "http://piplayer.test";
 export const SETUP_TOKEN = "test-setup-token";
 
 export class Client {
-  constructor() { this.cookie = null; }
+  // `cookie` is the session cookie; `flash` the one-shot piplayer_flash notice a flashRedirect()
+  // sets, carried like a browser would so the next page shows the banner and clears it.
+  constructor() { this.cookie = null; this.flash = null; }
 
   async fetch(path, init = {}) {
     const headers = new Headers(init.headers || {});
-    if (this.cookie) headers.set("cookie", this.cookie);
+    const cookie = [this.cookie, this.flash].filter(Boolean).join("; ");
+    if (cookie) headers.set("cookie", cookie);
     const res = await SELF.fetch(BASE + path, { ...init, headers, redirect: "manual" });
     for (const c of res.headers.getSetCookie ? res.headers.getSetCookie() : []) {
       const kv = c.split(";")[0];
-      this.cookie = kv.endsWith("=") ? null : kv;
+      const value = kv.endsWith("=") ? null : kv;
+      if (kv.startsWith("piplayer_flash=")) this.flash = value;
+      else this.cookie = value;
     }
     return res;
   }

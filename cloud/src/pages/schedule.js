@@ -27,18 +27,22 @@ async function schedulePage(ctx) {
   const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name");
   const tz = (await ctx.settings()).timezone;
   const now = wallClock(tz);
+  // Several rules can match at once; only the one the player picks (manifest.pick_playlist) is
+  // "active now", the rest say they are being overridden instead of claiming to play.
+  const active = schedules.pick_active(rules, now);
   const nowText = `${now.year}-${pad2(now.month)}-${pad2(now.day)} ${pad2(now.hour)}:${pad2(now.minute)}:${pad2(now.second)} ${now.zone}`;
   for (const r of rules) {
     r.summary = schedules.describe(r);
     r.matches_now = schedules.schedule_matches(r, now);
+    r.is_active = !!active && r.id === active.id;
   }
 
-  const ruleRow = (r) => `<tr${r.matches_now ? ' class="rule-active"' : ""}>
+  const ruleRow = (r) => `<tr${r.is_active ? ' class="rule-active"' : ""}>
       <td class="position-cell">${r.priority}</td>
       <td class="name">${esc(r.name)}</td>
       <td>${esc(r.playlist_name || "—")}</td>
       <td class="muted">${esc(r.summary)}</td>
-      <td>${r.matches_now ? '<span class="badge badge-active">active now</span>' : '<span class="badge badge-muted">waiting</span>'}</td>
+      <td>${r.is_active ? '<span class="badge badge-active">active now</span>' : r.matches_now ? '<span class="badge badge-muted">matches, but a higher-priority rule is playing</span>' : '<span class="badge badge-muted">waiting</span>'}</td>
       <td>
         ${canEdit ? `<form method="post" action="/devices/${device.id}/schedule/${r.id}/delete" class="inline" data-confirm="Delete rule ${esc(r.name)}?">
           ${csrfInput(ctx)}

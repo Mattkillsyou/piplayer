@@ -78,12 +78,13 @@ describe("/settings API tokens", () => {
     expect((await fetchEnrollment(bearer(token))).status).toBe(200);
     const res = await post(r.admin, `/settings/tokens/${id}/revoke`);
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/settings?revoked=1");
+    expect(res.headers.get("location")).toBe("/settings");
     expect((await tokens()).some((t) => t.id === id)).toBe(false);
     const [a] = await audits("api_token_revoked");
     expect(a).toMatchObject({ username: "admin", target_type: "api_token", target_id: String(id), details: '{"name": "to-revoke"}' });
     expect((await fetchEnrollment(bearer(token))).status).toBe(401);
-    expect(await (await r.admin.get("/settings?revoked=1")).text()).toContain("API token revoked.");
+    expect(await (await r.admin.get("/settings")).text()).toContain("API token revoked.");
+    expect(await (await r.admin.get("/settings?revoked=1")).text()).not.toContain("API token revoked.");
   });
 });
 
@@ -148,12 +149,13 @@ describe("/users API tokens (admin issues tokens for other users)", () => {
     expect((await fetchEnrollment(bearer(own))).status).toBe(200);
     const res = await post(r.admin, `/users/${ed.id}/tokens/${id}/revoke`);
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/users?revoked=1");
+    expect(res.headers.get("location")).toBe("/users");
     expect((await tokens()).some((t) => t.id === id)).toBe(false);
     expect((await tokens()).some((t) => t.id === ownId)).toBe(true);
     const [a] = await audits("api_token_revoked");
     expect(a).toMatchObject({ username: "admin", target_type: "api_token", target_id: String(id), details: '{"name": "ed-revoke", "username": "ed"}' });
-    expect(await (await r.admin.get("/users?revoked=1")).text()).toContain("API token revoked.");
+    expect(await (await r.admin.get("/users")).text()).toContain("API token revoked.");
+    expect(await (await r.admin.get("/users?revoked=1")).text()).not.toContain("API token revoked.");
     // an admin's own token is also revocable from the Users page (any user's tokens)
     const me = await user("admin");
     expect((await post(r.admin, `/users/${me.id}/tokens/${ownId}/revoke`)).status).toBe(303);

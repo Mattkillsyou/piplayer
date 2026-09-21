@@ -193,9 +193,14 @@ export function isValidTimeZone(tz) {
   if (typeof tz !== "string" || !tz) return false;
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: tz });
-    return true;
   } catch {
     return false;
+  }
+  if (tz === "UTC" || tz.startsWith("Etc/")) return true; // neither is listed by supportedValuesOf; Etc/GMT+12 is a real fixed-offset zone
+  try {
+    return Intl.supportedValuesOf("timeZone").includes(tz); // rejects EST/MST/PST etc., which ICU maps to fixed-offset zones
+  } catch {
+    return true; // runtime without supportedValuesOf: fall back to the Intl check
   }
 }
 

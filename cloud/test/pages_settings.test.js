@@ -34,6 +34,7 @@ describe("settings", () => {
   });
 
   it("page shows the current values (env defaults) and the tz datalist", async () => {
+    await r.admin.get("/settings"); // consumes the one-shot notice left by the save above
     const page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('name="timezone" value="UTC"');
     expect(page).toContain('name="screenshot_interval" value="60"');
@@ -52,8 +53,12 @@ describe("settings", () => {
 
   it("validation: 400 for a bad zone, interval < 15 or non-int, bad duration; nothing saved", async () => {
     const cases = [
-      [{ ...GOOD, timezone: "Mars/Olympus" }, "timezone must be a valid IANA name"],
-      [{ ...GOOD, timezone: "" }, "timezone must be a valid IANA name"],
+      [{ ...GOOD, timezone: "Mars/Olympus" }, "Pick a timezone from the list"],
+      [{ ...GOOD, timezone: "" }, "Pick a timezone from the list"],
+      // ICU accepts EST/MST but maps them to fixed-offset zones (America/Panama, America/Phoenix): no DST
+      [{ ...GOOD, timezone: "EST" }, "short names like EST are not accepted"],
+      [{ ...GOOD, timezone: "MST" }, "short names like EST are not accepted"],
+      [{ ...GOOD, timezone: "PST" }, "short names like EST are not accepted"],
       [{ ...GOOD, screenshot_interval: "14" }, "screenshot_interval must be at least 15 seconds"],
       [{ ...GOOD, screenshot_interval: "abc" }, "screenshot_interval must be an integer"],
       [{ ...GOOD, screenshot_interval: "1.5" }, "screenshot_interval must be an integer"],
@@ -86,7 +91,8 @@ describe("settings", () => {
   it("saves, audits, redirects with the saved banner, and the zone drives other pages + manifest", async () => {
     const res = await post(r.admin, "/settings", { ...GOOD, timezone: " Europe/Berlin " });
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/settings?saved=1");
+    expect(res.headers.get("location")).toBe("/settings");
+    expect(res.headers.get("set-cookie")).toMatch(/^piplayer_flash=/);
     expect(await settings()).toEqual(withUpdate([
       { key: "camera_interval", value: "20" },
       { key: "default_image_duration", value: "7.5" },
@@ -97,8 +103,10 @@ describe("settings", () => {
     expect(a.username).toBe("admin");
     expect(JSON.parse(a.details)).toEqual({ timezone: "Europe/Berlin", screenshot_interval: 120, camera_interval: 20, default_image_duration: 7.5,
       enroll_group_id: null, enroll_playlist_id: null, ...UPDATE_AUDIT });
-    const page = await (await r.admin.get("/settings?saved=1")).text();
-    expect(page).toContain("Settings saved.");
+    const page = await (await r.admin.get("/settings")).text();
+    expect(page).toContain('<div class="alert ok" role="alert">Settings saved.</div>');
+    // one-shot: the next load, and a forged query string, show nothing
+    expect(await (await r.admin.get("/settings?saved=1&rotated=1&revoked=1&tested=email&test_error=x")).text()).not.toMatch(/Settings saved|rotated|revoked|alert sent|alert failed/);
     expect(page).toContain('name="timezone" value="Europe/Berlin"');
     expect(page).toContain('name="screenshot_interval" value="120"');
     expect(page).toContain('name="camera_interval" value="20"');
@@ -222,7 +230,7 @@ describe("settings", () => {
     expect(a.username).toBe("admin");
     expect(a.target_id).toBe("enrollment_key");
     expect(a.details).toBeNull();
-    const after = await (await r.admin.get("/settings?rotated=1")).text();
+    const after = await (await r.admin.get("/settings")).text();
     expect(after).toContain("Enrollment key rotated.");
     expect(after).toContain(`value="${rotated}" readonly`);
     expect(after).not.toContain(key);

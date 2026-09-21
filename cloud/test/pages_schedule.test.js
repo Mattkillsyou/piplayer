@@ -33,7 +33,15 @@ describe("page", () => {
     await query("DELETE FROM device_schedules");
     const always = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, days_of_week) VALUES (?, ?, ?, 5, '0123456')", w.dev.id, w.pid, XSS + "r");
     const never = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, start_date, end_date) VALUES (?, ?, 'past', 1, '2000-01-01', '2000-01-02')", w.dev.id, w.pid);
+    // a second always-matching rule at lower priority: it matches, but only the top one plays (L19)
+    const shadowed = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, days_of_week) VALUES (?, ?, 'all day', 0, '0123456')", w.dev.id, w.pid);
     let page = await (await r.viewer.get(base())).text();
+    expect(page.match(/active now/g)).toHaveLength(1);
+    expect(page.match(/class="rule-active"/g)).toHaveLength(1);
+    expect(page).toContain('<span class="badge badge-muted">matches, but a higher-priority rule is playing</span>');
+    expect(page).toContain("Rules (3)");
+    await query("DELETE FROM device_schedules WHERE id = ?", shadowed);
+    page = await (await r.viewer.get(base())).text();
     expect(page).toContain("<h1>Sched &lt;dev&gt;</h1>");
     expect(page).toContain('<span class="eyebrow">Schedule · sched-1</span>');
     expect(page).toContain("(zone UTC)");

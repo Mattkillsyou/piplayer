@@ -15,8 +15,8 @@ import * as auth from "../auth.js";
 import * as cloudflare from "../cloudflare.js";
 import * as db from "../db.js";
 import * as secrets from "../secrets.js";
-import { esc, fail, floatField, idParam, intField, isValidTimeZone, localTime, nowUtc, redirect, str, zoneName } from "../util.js";
-import { alertBox, csrfInput, layout } from "./layout.js";
+import { esc, fail, floatField, idParam, intField, isValidTimeZone, localTime, nowUtc, str, zoneName } from "../util.js";
+import { csrfInput, layout } from "./layout.js";
 
 export const MIN_SCREENSHOT_INTERVAL = 15;
 export const MIN_CAMERA_INTERVAL = 5;
@@ -157,16 +157,16 @@ async function alertsPanel(ctx, s) {
         <input type="number" name="alert_repeat_minutes" value="${esc(s.alert_repeat_minutes)}" min="0" max="10080" step="1" required>
       </label>
       <label>Email ${badge(c.email)}${c.email && !c.email_binding ? ' <span class="badge badge-stale">mail binding missing</span>' : ""}
-        <input type="text" name="alert_email" value="${esc(s.alert_email)}" placeholder="you@example.net, team@example.net" maxlength="1000" autocomplete="off">
+        <input type="email" multiple name="alert_email" value="${esc(s.alert_email)}" placeholder="you@example.net, team@example.net" maxlength="1000" autocomplete="off">
       </label>
       <label>Webhook URL ${badge(c.webhook)}
-        <input type="url" name="alert_webhook_url" value="${esc(s.alert_webhook_url)}" placeholder="https://hooks.slack.com/services/..." maxlength="2048" autocomplete="off" spellcheck="false">
+        <input type="url" name="alert_webhook_url" value="${esc(s.alert_webhook_url)}" placeholder="https://hooks.slack.com/services/..." pattern="https://.*" maxlength="2048" autocomplete="off" spellcheck="false">
       </label>
       ${TWILIO_FIELDS.map(([n, label]) => `<label>${label} ${setBadge(n)}
         <input type="password" name="${n}" value="" placeholder="${have.has(n) ? "leave empty to keep" : "not set"}" autocomplete="off" spellcheck="false" maxlength="200">
       </label>`).join("\n      ")}
     </div>
-    <p class="help small">Email is sent from <code>${esc(alerts.EMAIL_FROM)}</code> through Cloudflare Email Routing (each destination must be verified there; comma-separate several). The webhook gets a JSON POST with <code>title</code>, <code>text</code>, <code>content</code> and <code>message</code>, so a Slack, Discord or ntfy URL works as is. SMS ${badge(c.sms)}: Twilio credentials are stored encrypted and never shown again.</p>
+    <p class="help small">Email is sent from <code>${esc(alerts.EMAIL_FROM)}</code> through Cloudflare Email Routing (each destination must be verified there; comma-separate several). ${cloudflare.configured(ctx.env) ? "These addresses are also the only people allowed to open a device's live camera page (Cloudflare Access); saving updates every device's camera access. " : ""}The webhook gets a JSON POST with <code>title</code>, <code>text</code>, <code>content</code> and <code>message</code>, so a Slack, Discord or ntfy URL works as is. SMS ${badge(c.sms)}: Twilio credentials are stored encrypted and never shown again.</p>
     <div class="row">
       <button type="submit" class="primary">Save alert settings</button>
     </div>
@@ -203,21 +203,10 @@ async function settingsPage(ctx, newToken = "") {
   const s = await ctx.settings();
   const groups = await db.all(ctx.env, "SELECT id, name FROM device_groups ORDER BY name");
   const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name");
-  const saved = ctx.url.searchParams.get("saved") === "1";
-  const rotated = ctx.url.searchParams.get("rotated") === "1";
-  const revoked = ctx.url.searchParams.get("revoked") === "1";
-  const tested = ctx.url.searchParams.get("tested") || "";
-  const testError = ctx.url.searchParams.get("test_error") || "";
   const content = `<div class="page-head">
   <h1>Settings</h1>
   <span class="page-meta"><strong>site time ${esc(localTime(nowUtc(), s.timezone))}</strong><br>schedules, the audit log and every timestamp on these pages use this zone</span>
 </div>
-${saved ? alertBox("Settings saved.", "ok") : ""}
-${rotated ? alertBox("Enrollment key rotated. Cards flashed with the old key must be re-flashed.", "ok") : ""}
-${revoked ? alertBox("API token revoked.", "ok") : ""}
-${tested ? alertBox(`Test ${tested} alert sent.`, "ok") : ""}
-${testError ? alertBox(`Test alert failed: ${testError}`) : ""}
-
 <div class="panel">
   <h2>Site settings</h2>
   <form method="post" action="/settings">
@@ -262,7 +251,7 @@ ${testError ? alertBox(`Test alert failed: ${testError}`) : ""}
           ${db.AUTO_UPDATE_MODES.map((m) => `<option value="${m}"${m === s.auto_update ? " selected" : ""}>${m}</option>`).join("\n          ")}
         </select>
       </label>
-      <label>Auto-update window (site time, HH:MM-HH:MM)
+      <label>Auto-update window (HH:MM-HH:MM, on the Pi's clock, which is set to the site timezone when the card is flashed)
         <input type="text" name="auto_update_window" value="${esc(s.auto_update_window)}" placeholder="03:00-05:00" pattern="([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]" required>
       </label>
     </div>
@@ -311,7 +300,7 @@ async function settingsSave(ctx) {
   auth.requireRole(ctx, "admin");
   const form = await ctx.form();
   const timezone = str(form, "timezone").trim();
-  if (!isValidTimeZone(timezone)) fail(400, "timezone must be a valid IANA name (e.g. America/Los_Angeles)");
+  if (!isValidTimeZone(timezone)) fail(400, "Pick a timezone from the list, for example America/New_York (short names like EST are not accepted)");
   const interval = intField(str(form, "screenshot_interval"), "screenshot_interval");
   if (interval === null) fail(400, "screenshot_interval required");
   if (interval < MIN_SCREENSHOT_INTERVAL) fail(400, `screenshot_interval must be at least ${MIN_SCREENSHOT_INTERVAL} seconds`);
@@ -350,7 +339,7 @@ async function settingsSave(ctx) {
     ? ["DELETE FROM settings WHERE key = ?", k]
     : ["INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", k, String(v)])));
   await audit.log(ctx, "settings_update", "settings", null, values);
-  return redirect("/settings?saved=1");
+  return auth.flashRedirect(ctx, "/settings", "Settings saved.");
 }
 
 // Filled fields replace, empty keep; the audit row says which changed, never a value.
@@ -377,7 +366,7 @@ async function wyzeSave(ctx) {
     await audit.log(ctx, "wyze_settings_update", "settings", "wyze",
       Object.fromEntries(Object.keys(changed).map((k) => [k, k === "wyze_camera_pattern" ? pattern : "set"])));
   }
-  return redirect("/settings?saved=1");
+  return auth.flashRedirect(ctx, "/settings", "Settings saved.");
 }
 
 async function wyzeClear(ctx) {
@@ -385,7 +374,7 @@ async function wyzeClear(ctx) {
   for (const name of secrets.WYZE_NAMES) await secrets.set(ctx.env, name, "");
   await db.bumpCameraConfigVersion(ctx.env);
   await audit.log(ctx, "wyze_settings_cleared", "settings", "wyze");
-  return redirect("/settings?saved=1");
+  return auth.flashRedirect(ctx, "/settings", "Settings saved.");
 }
 
 // Thresholds, addresses and webhook go to `settings` (an empty address / URL turns that
@@ -393,6 +382,7 @@ async function wyzeClear(ctx) {
 // carries a credential.
 async function alertsSave(ctx) {
   auth.requireRole(ctx, "admin");
+  const before = (await ctx.settings()).alert_email;
   const form = await ctx.form();
   const offline = intField(str(form, "alert_offline_minutes"), "alert_offline_minutes");
   if (!db.isAlertOfflineMinutes(offline)) fail(400, "alert_offline_minutes must be a whole number of minutes, 1-1440");
@@ -420,14 +410,18 @@ async function alertsSave(ctx) {
     details[name] = "set";
   }
   await audit.log(ctx, "alert_settings_update", "settings", "alerts", details);
-  return redirect("/settings?saved=1");
+  // The addresses double as the camera Access policy: push a changed list to every tunnel now,
+  // so a removed operator does not keep the live camera pages until each tunnel is recreated.
+  const accessError = email !== before ? await cloudflare.syncAccess(ctx) : null;
+  if (accessError) return auth.flashRedirect(ctx, "/settings", `Saved, but the camera access list could not be updated on every device: ${accessError}. Click Recreate tunnel on each device on the Devices page.`, "error");
+  return auth.flashRedirect(ctx, "/settings", "Settings saved.");
 }
 
 async function twilioClear(ctx) {
   auth.requireRole(ctx, "admin");
   for (const name of alerts.TWILIO_NAMES) await secrets.set(ctx.env, name, "");
   await audit.log(ctx, "alert_settings_update", "settings", "alerts", { twilio: "cleared" });
-  return redirect("/settings?saved=1");
+  return auth.flashRedirect(ctx, "/settings", "Settings saved.");
 }
 
 // One test message through one channel; the outcome comes back as a banner (never a 500).
@@ -437,15 +431,15 @@ async function alertsTest(ctx) {
   if (!alerts.CHANNELS.includes(channel)) fail(400, `channel must be one of ${alerts.CHANNELS.join(", ")}`);
   const error = await alerts.sendTest(ctx.env, await ctx.settings(), channel, me.username);
   await audit.log(ctx, "alert_test_sent", "settings", channel, error ? { error: error.slice(0, 200) } : null);
-  if (error) return redirect(`/settings?test_error=${encodeURIComponent(`${channel}: ${error.slice(0, 200)}`)}`);
-  return redirect(`/settings?tested=${channel}`);
+  if (error) return auth.flashRedirect(ctx, "/settings", `Test alert failed: ${channel}: ${error.slice(0, 200)}`, "error");
+  return auth.flashRedirect(ctx, "/settings", `Test ${channel} alert sent.`);
 }
 
 async function enrollmentRotate(ctx) {
   auth.requireRole(ctx, "admin");
   await db.generateEnrollmentKey(ctx.env);
   await audit.log(ctx, "enrollment_key_rotated", "settings", "enrollment_key");
-  return redirect("/settings?rotated=1");
+  return auth.flashRedirect(ctx, "/settings", "Enrollment key rotated. Cards flashed with the old key must be re-flashed.");
 }
 
 // Create a token and render the page with the plaintext once (no redirect: the secret must
@@ -464,7 +458,7 @@ async function tokenRevoke(ctx) {
   if (!row) fail(404, "token not found");
   await db.run(ctx.env, "DELETE FROM api_tokens WHERE id = ?", tokenId);
   await audit.log(ctx, "api_token_revoked", "api_token", tokenId, { name: row.name });
-  return redirect("/settings?revoked=1");
+  return auth.flashRedirect(ctx, "/settings", "API token revoked.");
 }
 
 export function register(router) {

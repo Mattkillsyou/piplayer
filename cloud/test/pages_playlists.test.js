@@ -212,6 +212,8 @@ describe("items", () => {
     for (const m of [w.m1, w.m2, w.m3]) {
       items.push(await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, ?)", pid, m, items.length * 5));
     }
+    // a mis-click must not drop an item from every projector: the Remove form asks first (L30)
+    expect(await (await r.editor.get(`/playlists/${pid}`)).text()).toContain(`action="/playlists/${pid}/items/${items[0]}/delete" class="inline" data-confirm="Remove one.png from Remove? Projectors playing it skip it from their next sync."`);
     expect(await detail(await post(r.editor, `/playlists/${pid}/items/${NOPE}/delete`), 404)).toBe("Playlist item not found");
     expect((await post(r.editor, `/playlists/${w.pid}/items/${items[0]}/delete`)).status).toBe(404);
     const res = await post(r.editor, `/playlists/${pid}/items/${items[1]}/delete`);

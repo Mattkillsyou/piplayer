@@ -31,7 +31,8 @@ describe("users", () => {
     expect(page).toContain('admin <span class="muted small">(you)</span>');
     expect(page).toContain('name="role" data-autosubmit aria-label="Role for admin" disabled');
     expect(page).not.toContain(XSS);
-    expect(page).toContain('data-confirm="Delete x&#39;);alert(1);//u?"');
+    expect(page).toContain('data-confirm="Delete x&#39;);alert(1);//u? Their API tokens stop working and any flasher using them will fail."');
+    expect(page).toContain('name="password" placeholder="new password" minlength="6" required');
     expect(page).toContain('<span class="badge badge-editor">editor</span>');
     expect(page).not.toContain("onchange");
     expect(page).not.toContain('maxlength="72"');
@@ -72,16 +73,27 @@ describe("users", () => {
     await post(r.admin, `/users/${ed.id}/role`, { role: "editor" });
   });
 
-  it("password: min 6 / max 1024, 404 unknown, changes the hash + audits", async () => {
+  it("password: min 6 / max 1024, 404 unknown, changes the hash + audits, signs the user out everywhere", async () => {
     const vw = await uid("vw");
+    const d = new Client();
+    expect((await d.login("vw", "viewer-pass")).status).toBe(303);
+    expect((await d.get("/dashboard")).status).toBe(200);
     expect(await detail(await post(r.admin, `/users/${vw.id}/password`, { password: "short" }), 400)).toBe("password must be at least 6 chars");
     expect(await detail(await post(r.admin, `/users/${vw.id}/password`, { password: "p".repeat(1025) }), 400)).toBe(auth.PASSWORD_TOO_LONG_MSG);
     expect(await detail(await post(r.admin, `/users/${NOPE}/password`, { password: "pw123456" }), 404)).toBe("User not found");
     expect((await uid("vw")).password_hash).toBe(vw.password_hash);
     expect((await post(r.admin, `/users/${vw.id}/password`, { password: "brand-new-1" })).status).toBe(303);
     expect((await uid("vw")).password_hash).not.toBe(vw.password_hash);
+    // every session of that user is gone with the reset (M2); r.viewer is signed out too
+    expect((await d.get("/dashboard")).headers.get("location")).toBe("/login");
+    expect(await one("SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?", vw.id)).toEqual({ n: 0 });
+    expect(await (await r.admin.get("/users")).text()).toContain('<div class="alert ok" role="alert">Password changed.</div>');
+    // an admin resetting their own password keeps their own session
+    const me = await uid("admin");
+    expect((await post(r.admin, `/users/${me.id}/password`, { password: "test1234" })).status).toBe(303);
+    expect((await r.admin.get("/users")).status).toBe(200);
     expect((await new Client().login("vw", "brand-new-1")).status).toBe(303);
-    expect((await audits("user_set_password"))[0].target_id).toBe(String(vw.id));
+    expect((await audits("user_set_password")).slice(0, 2).map((a) => a.target_id)).toEqual([String(me.id), String(vw.id)]);
   });
 
   it("delete: self 400, last admin 400, 404 unknown, otherwise deletes + audits", async () => {
