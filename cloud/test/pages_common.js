@@ -33,11 +33,12 @@ export const post = (c, path, fields = {}) => c.post(path, fields, { "X-CSRF-Tok
 export const postJson = (c, path, data) => c.postJson(path, data, { "X-CSRF-Token": c.token });
 
 let mediaSeq = 0;
-export const media = (name, type = "image", extra = {}) => ins(
+// The sequence also feeds the sha256, which is UNIQUE since migration 0006: bump it for every row.
+export const media = (name, type = "image", extra = {}) => (mediaSeq++, ins(
   `INSERT INTO media (filename, original_name, media_type, size_bytes, duration_seconds, sha256)
    VALUES (?, ?, ?, ?, ?, ?)`,
-  extra.filename || `${++mediaSeq}_${name}`, name, type, extra.size ?? 1000, extra.duration ?? null,
-  SHA("a").slice(0, 56) + String(mediaSeq).padStart(8, "0"));
+  extra.filename || `${mediaSeq}_${name}`, name, type, extra.size ?? 1000, extra.duration ?? null,
+  SHA("a").slice(0, 56) + String(mediaSeq).padStart(8, "0")));
 export const playlist = (name) => ins("INSERT INTO playlists (name) VALUES (?)", name);
 // Device row; `cols` adds columns ({playlist_id, group_id, last_seen_at, ...}).
 export async function device(deviceId, name = deviceId, cols = {}) {

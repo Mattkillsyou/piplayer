@@ -109,7 +109,9 @@ async function libraryDelete(ctx) {
     stmts.push(["UPDATE playlists SET updated_at = datetime('now') WHERE id = ?", pid]);
   }
   await db.batch(ctx.env, stmts);
-  await ctx.env.MEDIA.delete("media/" + row.filename);
+  // The row is gone either way; an R2 hiccup must not turn that into a 500 with no audit row.
+  try { await ctx.env.MEDIA.delete("media/" + row.filename); }
+  catch (e) { console.error(`R2 delete failed for media/${row.filename}:`, e && e.stack || e); }
   await audit.log(ctx, "delete_media", "media", mediaId, { filename: row.original_name, playlists: affected });
   return redirect("/library");
 }

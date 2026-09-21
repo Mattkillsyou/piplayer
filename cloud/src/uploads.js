@@ -5,7 +5,7 @@
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
 import * as db from "./db.js";
-import { envInt, fail, idParam, json, jsonObject, randomToken } from "./util.js";
+import { envInt, fail, hex, idParam, json, jsonObject, randomToken } from "./util.js";
 
 export const PART_SIZE = 8 * 1024 * 1024;
 export const MAX_FILENAME_LEN = 120;
@@ -86,11 +86,14 @@ function validateInit(body, env) {
   if (name.length > 1024) fail(400, "name too long");
   const ext = extOf(name);
   let mediaType = mediaTypeForExt(ext);
-  if (mediaType === null) fail(400, `Unsupported extension ${ext}. Allowed: [${ALLOWED_EXTENSIONS.map((e) => `'${e}'`).join(", ")}]`);
+  if (mediaType === null) {
+    fail(400, ext.length > 1 ? `That file type (${ext}) is not supported. Use ${ALLOWED_EXTENSIONS.map((e) => e.slice(1)).join(", ")}.`
+      : "That file has no extension, so its type cannot be told. Use mp4, mov, m4v, mkv, webm, jpg, png, gif, webp or bmp.");
+  }
   const size = body.size;
   if (typeof size !== "number" || !Number.isInteger(size) || size < 0) fail(400, "size must be a non-negative integer");
   if (size === 0) fail(400, "empty file");
-  if (size > maxBytes(env)) fail(413, `File exceeds ${maxBytes(env)} bytes`);
+  if (size > maxBytes(env)) fail(413, `This file is ${(size / 2 ** 30).toFixed(1)} GB; the limit is ${(maxBytes(env) / 2 ** 30).toFixed(1)} GB.`);
   if (typeof body.sha256 !== "string" || !/^[0-9a-fA-F]{64}$/.test(body.sha256)) fail(400, "sha256 must be 64 hex chars");
   const sha256 = body.sha256.toLowerCase();
   if (body.media_type !== undefined && body.media_type !== null && body.media_type !== "video" && body.media_type !== "image") {
@@ -118,7 +121,7 @@ function validateInit(body, env) {
 
 async function duplicateOf(env, sha256) {
   const existing = await db.first(env, "SELECT id, original_name FROM media WHERE sha256 = ?", sha256);
-  if (existing) fail(409, `Duplicate of '${existing.original_name}' (sha256 match)`);
+  if (existing) fail(409, `Already in the library as '${existing.original_name}'.`);
 }
 
 async function uploadInit(ctx) {
@@ -134,6 +137,12 @@ async function uploadInit(ctx) {
   if (inflight) return json({ upload_id: inflight.id, part_size: PART_SIZE, received: inflight.received });
 
   const key = "media/" + finalMediaName(v.sha256, v.name, v.ext);
+  // The key comes from the browser's sha256 prefix and name only: a different file whose
+  // sha256 shares the first 16 hex chars must not open a second multipart at a key the
+  // library (or another in-flight upload) already holds, or complete would replace those bytes.
+  if (await db.first(ctx.env, "SELECT 1 FROM media WHERE filename = ? UNION ALL SELECT 1 FROM uploads WHERE key = ?", key.slice("media/".length), key)) {
+    fail(409, "A file with this name is already in the library or being uploaded");
+  }
   const mp = await ctx.env.MEDIA.createMultipartUpload(key, {
     httpMetadata: { contentType: v.contentType },
     customMetadata: { sha256: v.sha256, original_name: v.name.slice(0, 200) },
@@ -209,7 +218,8 @@ async function uploadPart(ctx) {
     part = await ctx.env.MEDIA.resumeMultipartUpload(row.key, row.upload_id).uploadPart(n, body);
   } catch (e) {
     await releaseClaim(ctx.env, row, n, claim);
-    fail(409, `upload ${row.id} is no longer open: ${e && e.message ? e.message : e}`);
+    console.warn(`uploadPart ${row.id} part ${n}:`, e && e.message ? e.message : e);
+    fail(409, "This upload is no longer open. Drop the file again to start over.");
   }
   // Record the etag R2 holds for this part, guarded on our claim: if it went stale and was
   // taken over meanwhile, the other request's etag is the one on file.
@@ -234,29 +244,19 @@ async function uploadComplete(ctx) {
   if (parts.length !== total || row.received !== row.size) {
     fail(400, `upload incomplete: ${row.received} of ${row.size} bytes (${parts.length}/${total} parts)`);
   }
-  const mp = ctx.env.MEDIA.resumeMultipartUpload(row.key, row.upload_id);
-  let obj;
-  try {
-    obj = await mp.complete(parts);
-  } catch (e) {
-    fail(409, `could not complete upload ${row.id}: ${e && e.message ? e.message : e}`);
-  }
-  if (obj.size !== row.size) {
-    // Never leave an object of the wrong size under a name a media row could point at.
-    await ctx.env.MEDIA.delete(row.key);
-    await db.run(ctx.env, "DELETE FROM uploads WHERE id = ?", row.id);
-    fail(400, `stored object is ${obj.size} bytes, expected ${row.size}`);
-  }
-  // Re-check the duplicate rule: another upload of the same bytes may have won meanwhile.
-  const existing = await db.first(ctx.env, "SELECT id, original_name, filename FROM media WHERE sha256 = ?", row.sha256);
+  // Re-check the duplicate rule: another upload of the same bytes may have won meanwhile
+  // (the fast path with the friendly name; the UNIQUE index on sha256 catches the same-instant race).
+  const existing = await db.first(ctx.env, "SELECT id, original_name FROM media WHERE sha256 = ?", row.sha256);
   if (existing) {
-    if (existing.filename !== row.key.slice("media/".length)) await ctx.env.MEDIA.delete(row.key);
+    await abortMultipart(ctx.env, row);
     await db.run(ctx.env, "DELETE FROM uploads WHERE id = ?", row.id);
-    fail(409, `Duplicate of '${existing.original_name}' (sha256 match)`);
+    fail(409, `Already in the library as '${existing.original_name}'.`);
   }
   const filename = row.key.slice("media/".length);
   let mediaId;
   try {
+    // The media row is inserted before R2 completes the object, so a name or sha256 clash
+    // fails here while the multipart can still be aborted without touching the library object.
     const [ins] = await db.batch(ctx.env, [
       [`INSERT INTO media (filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256)
         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
@@ -265,14 +265,42 @@ async function uploadComplete(ctx) {
     ]);
     mediaId = ins.meta.last_row_id;
   } catch (e) {
-    // The object stays: a row with this filename may already reference it (same content).
     if (db.isConstraintError(e)) {
+      await abortMultipart(ctx.env, row);
       await db.run(ctx.env, "DELETE FROM uploads WHERE id = ?", row.id);
       fail(409, "a file with this content or name already exists");
     }
     throw e;
   }
-  await audit.log(ctx, "upload_media", "media", mediaId, { filename: row.name, type: row.media_type });
+  const mp = ctx.env.MEDIA.resumeMultipartUpload(row.key, row.upload_id);
+  let obj;
+  try {
+    obj = await mp.complete(parts);
+  } catch (e) {
+    await db.run(ctx.env, "DELETE FROM media WHERE id = ?", mediaId);
+    console.warn(`uploadComplete ${row.id}:`, e && e.message ? e.message : e);
+    fail(409, "This upload could not be finished. Drop the file again to start over.");
+  }
+  if (obj.size !== row.size) {
+    // Never leave an object of the wrong size under a name a media row could point at.
+    await ctx.env.MEDIA.delete(row.key);
+    await db.run(ctx.env, "DELETE FROM media WHERE id = ?", mediaId);
+    fail(400, `stored object is ${obj.size} bytes, expected ${row.size}`);
+  }
+  // The browser computed row.sha256 and the Pi rejects any download that does not match it,
+  // so check the stored bytes once here instead of letting every player fail forever. Skipped
+  // above PIPLAYER_VERIFY_SHA_MAX_BYTES (1 GiB) so a 5 GB video cannot exhaust the request.
+  const shaVerified = row.size <= envInt(ctx.env, "PIPLAYER_VERIFY_SHA_MAX_BYTES", 1024 ** 3);
+  if (shaVerified) {
+    const digest = new crypto.DigestStream("SHA-256");
+    await (await ctx.env.MEDIA.get(row.key)).body.pipeTo(digest);
+    if (hex(await digest.digest) !== row.sha256) {
+      await ctx.env.MEDIA.delete(row.key);
+      await db.run(ctx.env, "DELETE FROM media WHERE id = ?", mediaId);
+      fail(400, "The file did not arrive intact; please upload it again.");
+    }
+  }
+  await audit.log(ctx, "upload_media", "media", mediaId, { filename: row.name, type: row.media_type, sha_verified: shaVerified ? undefined : false });
   return json({ media_id: mediaId });
 }
 

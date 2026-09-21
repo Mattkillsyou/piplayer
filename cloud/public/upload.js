@@ -1,8 +1,9 @@
 // Library upload queue: for each selected file read its metadata in the browser, hash it
 // (sha256.js, 8 MiB slices) and drive the chunk protocol of src/uploads.js:
 // POST init -> PUT parts (skipping the ones the server already has) -> POST complete.
-// Progress shows the hashing percentage first, then the upload percentage; every server
-// error is shown as its {"detail"} text. No CDN scripts, no inline handlers.
+// Progress shows the hashing percentage first, then the upload percentage; a server error
+// is shown as its {"detail"} text (plain English from src/uploads.js). No CDN scripts, no
+// inline handlers.
 (function () {
   'use strict';
 
@@ -20,10 +21,11 @@
 
   function mb(n) { return (n / 1024 / 1024).toFixed(1); }
 
-  // Read the {"detail"} of an error response (falls back to the status line).
+  // Read the {"detail"} of an error response (an HTML error page from the edge, say a 413
+  // for an oversize part, has none: say so without quoting it).
   function detailOf(text, statusCode) {
     try { var d = JSON.parse(text).detail; if (d) return d; } catch (e) { /* not JSON */ }
-    return text ? text.slice(0, 200) : ('HTTP ' + statusCode);
+    return 'The upload failed (' + statusCode + '). Try again.';
   }
 
   function request(method, url, body, onProgress) {
@@ -48,9 +50,9 @@
         var data = null;
         try { data = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
         if (data && typeof data === 'object') resolve(data);
-        else reject(new Error('Unexpected reply from the server (HTTP ' + xhr.status + ', not JSON).'));
+        else reject(new Error('The server gave an unexpected reply. Try again.'));
       };
-      xhr.onerror = function () { reject(new Error('Network error during upload.')); };
+      xhr.onerror = function () { reject(new Error('The connection dropped during the upload. Drop the file again to resume.')); };
       xhr.send(body === undefined ? null : (body instanceof Blob ? body : JSON.stringify(body)));
     });
   }
@@ -158,7 +160,7 @@
       return request('POST', form.dataset.init, body);
     }).then(function (r) {
       init = r;
-      if (!init.upload_id || !(init.part_size > 0)) throw new Error('Unexpected reply from the server at upload init.');
+      if (!init.upload_id || !(init.part_size > 0)) throw new Error('The server gave an unexpected reply. Try again.');
       // Resume: skip the parts the server already holds (page reloaded mid-upload).
       return init.received > 0 ? request('GET', '/library/upload/' + init.upload_id) : { parts: [] };
     }).then(function (st) {

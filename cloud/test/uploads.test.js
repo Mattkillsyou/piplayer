@@ -109,8 +109,9 @@ describe("init validation", () => {
       [{ name: "" }, "name required"],
       [{ name: 7 }, "name required"],
       [{ name: "x".repeat(1100) + ".mp4" }, "name too long"],
-      [{ name: "virus.exe" }, "Unsupported extension .exe. Allowed: ['.bmp', '.gif', '.jpeg', '.jpg', '.m4v', '.mkv', '.mov', '.mp4', '.png', '.webm', '.webp']"],
-      [{ name: "noext" }, "Unsupported extension . Allowed: ['.bmp', '.gif', '.jpeg', '.jpg', '.m4v', '.mkv', '.mov', '.mp4', '.png', '.webm', '.webp']"],
+      [{ name: "virus.exe" }, "That file type (.exe) is not supported. Use bmp, gif, jpeg, jpg, m4v, mkv, mov, mp4, png, webm, webp."],
+      [{ name: "noext" }, "That file has no extension, so its type cannot be told. Use mp4, mov, m4v, mkv, webm, jpg, png, gif, webp or bmp."],
+      [{ name: "clip.mp4." }, "That file has no extension, so its type cannot be told. Use mp4, mov, m4v, mkv, webm, jpg, png, gif, webp or bmp."],
       [{ size: 0 }, "empty file"],
       [{ size: -1 }, "size must be a non-negative integer"],
       [{ size: 1.5 }, "size must be a non-negative integer"],
@@ -133,7 +134,7 @@ describe("init validation", () => {
     const max = parseInt(env.PIPLAYER_MAX_UPLOAD_BYTES, 10);
     const r = await init(editor, editorCsrf, initBody({ size: max + 1 }));
     expect(r.status).toBe(413);
-    expect(await r.json()).toEqual({ detail: `File exceeds ${max} bytes` });
+    expect(await r.json()).toEqual({ detail: "This file is 5.0 GB; the limit is 5.0 GB." });
     expect(await query("SELECT id FROM uploads")).toEqual([]);
   });
 });
@@ -218,7 +219,7 @@ describe("upload protocol", () => {
   it("duplicate content is refused at init (409, friendly, no upload created)", async () => {
     const r = await init(editor, editorCsrf, initBody({ name: "other name.mp4", sha256: sha }));
     expect(r.status).toBe(409);
-    expect(await r.json()).toEqual({ detail: "Duplicate of 'My Clip (1).mp4' (sha256 match)" });
+    expect(await r.json()).toEqual({ detail: "Already in the library as 'My Clip (1).mp4'." });
     expect(await query("SELECT id FROM uploads")).toEqual([]);
   });
 
@@ -282,8 +283,56 @@ describe("upload protocol", () => {
     await env.MEDIA.resumeMultipartUpload(row.key, row.upload_id).abort();
     const p = await putPart(editor, editorCsrf, upload_id, 1, small);
     expect(p.status).toBe(409);
-    expect((await p.json()).detail).toContain("no longer open");
+    expect((await p.json()).detail).toBe("This upload is no longer open. Drop the file again to start over.");
     await editor.postJson(`/library/upload/${upload_id}/abort`, {}, { "X-CSRF-Token": editorCsrf });
+  });
+
+  it("a claim older than CLAIM_STALE_SECONDS is taken over; a live one is 409", async () => {
+    const small = fakeFile(1 * MiB, 10);
+    let r = await init(editor, editorCsrf, initBody({ name: "stale.mp4", size: small.length, sha256: await digest(small) }));
+    const { upload_id } = await r.json();
+    const now = Math.floor(Date.now() / 1000);
+    // a worker that died inside uploadPart 11 minutes ago left this claim behind
+    await env.DB.prepare("UPDATE uploads SET parts = ? WHERE id = ?")
+      .bind(JSON.stringify([{ partNumber: 1, etag: null, claim: "dead", at: now - 11 * 60 }]), upload_id).run();
+    r = await putPart(editor, editorCsrf, upload_id, 1, small);
+    expect(r.status, await r.clone().text()).toBe(200);
+    expect(JSON.parse((await query("SELECT parts FROM uploads WHERE id = ?", upload_id))[0].parts))
+      .toEqual([{ partNumber: 1, etag: expect.any(String) }]);
+    // a claim from a minute ago is a live PUT of another tab
+    await env.DB.prepare("UPDATE uploads SET parts = ?, received = 0 WHERE id = ?")
+      .bind(JSON.stringify([{ partNumber: 1, etag: null, claim: "live", at: now - 60 }]), upload_id).run();
+    r = await putPart(editor, editorCsrf, upload_id, 1, small);
+    expect(r.status).toBe(409);
+    expect((await r.json()).detail).toBe("part 1 is already being uploaded");
+    await editor.postJson(`/library/upload/${upload_id}/abort`, {}, { "X-CSRF-Token": editorCsrf });
+  });
+
+  it("two editors uploading the same bytes: the second complete is a 409 and leaves the first media row and object intact", async () => {
+    const same = fakeFile(1 * MiB, 20);
+    const sha = await digest(same);
+    const other = await makeUser("ed3", "editor");
+    const otherCsrf = await other.csrf("/library");
+    // init only dedupes in-flight rows per user, so both uploads open (under their own names)
+    let r = await init(editor, editorCsrf, initBody({ name: "one.mp4", size: same.length, sha256: sha }));
+    const a = (await r.json()).upload_id;
+    r = await init(other, otherCsrf, initBody({ name: "two.mp4", size: same.length, sha256: sha }));
+    const b = (await r.json()).upload_id;
+    expect((await query("SELECT COUNT(*) AS n FROM uploads WHERE sha256 = ?", sha))[0].n).toBe(2);
+    const keyB = (await query("SELECT key FROM uploads WHERE id = ?", b))[0].key;
+    expect((await putPart(editor, editorCsrf, a, 1, same)).status).toBe(200);
+    expect((await putPart(other, otherCsrf, b, 1, same)).status).toBe(200);
+    r = await editor.postJson(`/library/upload/${a}/complete`, {}, { "X-CSRF-Token": editorCsrf });
+    expect(r.status, await r.clone().text()).toBe(200);
+    r = await other.postJson(`/library/upload/${b}/complete`, {}, { "X-CSRF-Token": otherCsrf });
+    expect(r.status).toBe(409);
+    expect((await r.json()).detail).toBe("Already in the library as 'one.mp4'.");
+    expect((await query("SELECT COUNT(*) AS n FROM media WHERE sha256 = ?", sha))[0].n).toBe(1);
+    expect(await query("SELECT id FROM uploads WHERE sha256 = ?", sha)).toEqual([]);
+    const filename = (await query("SELECT filename FROM media WHERE sha256 = ?", sha))[0].filename;
+    expect(await digest(new Uint8Array(await (await env.MEDIA.get("media/" + filename)).arrayBuffer()))).toBe(sha);
+    // the loser's multipart was aborted, never completed into an object
+    expect(await env.MEDIA.head(keyB)).toBeNull();
   });
 
   it("gif: image by default, video when the browser reports animated", async () => {
