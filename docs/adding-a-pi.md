@@ -15,7 +15,9 @@ You'll need:
 - The Pi connected to the same network as the controller, or Tailscale
   installed on both
 
-> **On Windows or a Mac: use the Projection5000 SD Flasher** (`tools/flasher/README.md`).
+> **On Windows or a Mac: use the Projection5000 SD Flasher.** Get it from
+> <https://projectors.photogen5000.com/download> (Windows exe, Apple Silicon
+> and Intel Mac downloads; `tools/flasher/README.md` is the manual).
 > It replaces sections 1, 2, 4 and 5 below. There is one button. Fill in the
 > form, press **Flash**, and the card is made; no console login on the Pi and
 > nothing to copy and paste:
@@ -69,10 +71,9 @@ You'll need:
 > override (the key from the cms Settings page), which flashes without
 > connecting. The manual path that follows still works.
 >
-> **On a Mac.** The same flasher exists for macOS: download
-> `Projection5000-SD-Flasher-mac-arm64.dmg` (Apple Silicon: M1, M2, M3, M4)
-> or `Projection5000-SD-Flasher-mac-intel.dmg` (an Intel Mac) from the
-> release, open it and drag **Projection5000 SD Flasher** to Applications.
+> **On a Mac.** The same flasher exists for macOS: on the download page pick
+> **Apple Silicon** (M1, M2, M3, M4) or **Intel Mac**, open the `.dmg` and
+> drag **Projection5000 SD Flasher** to Applications.
 > The app is signed but not notarized, so macOS blocks the very first open.
 > Once only: in Applications, **right-click** the app, choose **Open**, then
 > click **Open** again in the box that appears. On macOS 15 (Sequoia) and
