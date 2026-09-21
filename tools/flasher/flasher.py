@@ -450,7 +450,6 @@ class App:
         self._build()
         self._apply_settings(load_settings())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self._fit_to_screen()
         self._pump()
         self.refresh_disks()
         self.refresh_networks()
@@ -464,6 +463,9 @@ class App:
             self.check_token()
         self._show_account()
         self.set_status(READY_TEXT)
+        # Last, once every widget holds its first text: Tk on macOS (Aqua) never returns from update() when a
+        # hidden window that is not the process's first gets its geometry set and then its labels change.
+        self._fit_to_screen()
 
     # ----- form
     def _var(self, key, default="", kind=tk.StringVar):
