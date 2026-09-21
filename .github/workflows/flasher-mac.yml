@@ -62,9 +62,40 @@ jobs:
       - name: Install PyInstaller and pytest
         run: python -m pip install --upgrade pip pyinstaller pytest pytest-timeout
 
+      - name: Probe Tk update() behaviour on this runner (temporary)
+        run: |
+          cat > /tmp/probe.py <<'PY'
+          import sys, time, threading, tkinter as tk
+          mode = sys.argv[1]
+          base = tk.Tk(); base.withdraw()
+          root = tk.Toplevel(base) if mode == "toplevel" else base
+          if mode == "second":
+              base.destroy(); root = tk.Tk()
+          root.withdraw()
+          n = [0]
+          def pump():
+              n[0] += 1
+              root.after(50, pump)
+          root.after(50, pump)
+          t0 = time.monotonic()
+          for i in range(20):
+              a = time.monotonic(); root.update(); b = time.monotonic()
+              print(f"{mode}: update #{i} took {b - a:.3f}s pumps={n[0]}", flush=True)
+              time.sleep(0.02)
+          if mode == "thread":
+              ev = threading.Event()
+              th = threading.Thread(target=lambda: ev.wait(1), daemon=True); th.start(); th.join()
+              for i in range(5):
+                  a = time.monotonic(); root.update(); print(f"after thread: update took {time.monotonic() - a:.3f}s", flush=True)
+          print(f"{mode}: done in {time.monotonic() - t0:.2f}s", flush=True)
+          PY
+          for mode in root toplevel second thread; do
+            timeout 60 python /tmp/probe.py $mode || echo "$mode: HUNG or failed (exit $?)"
+          done
+
       - name: Run the flasher tests on macOS
         # -v and a per-test timeout: a test that hangs on a Mac (a dialog, a tool that waits) names itself.
-        run: python -m pytest -v -p no:cacheprovider --timeout=300 --timeout-method=thread
+        run: python -m pytest -v -p no:cacheprovider --timeout=120 --timeout-method=thread
 
       - name: Resolve the Raspberry Pi OS image (name and sha256, for the cache key)
         id: image
