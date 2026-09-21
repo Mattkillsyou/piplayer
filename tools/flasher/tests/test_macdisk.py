@@ -17,7 +17,7 @@ import pytest
 import flasher
 import macdisk
 import windisk
-from conftest import PUBKEY
+from conftest import PUBKEY, new_root
 
 IMG_SIZE = 3 * 1024 * 1024 + 100  # not a sector multiple, like the real image
 CARD_SIZE = 4 * 1024 * 1024
@@ -468,14 +468,9 @@ def test_run_flash_on_macos_writes_the_card_byte_for_byte(tmp_path, monkeypatch)
 
 def test_gui_lists_mac_cards_through_the_same_screen(monkeypatch):
     """The App with macdisk behind flasher.disk: the same combobox, the same label shape, the same confirm text."""
-    import tkinter as tk
     monkeypatch.setattr(flasher, "disk", macdisk)
     FakeDiskutil(monkeypatch)
-    try:
-        root = tk.Tk()
-    except tk.TclError as e:
-        pytest.skip(f"no display: {e}")
-    root.withdraw()
+    root = new_root()
     try:
         app = flasher.App(root)
         for _ in range(100):

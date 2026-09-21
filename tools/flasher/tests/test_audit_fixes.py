@@ -17,7 +17,7 @@ import imagefetch
 import wifi
 import windisk
 import winlocale
-from conftest import PUBKEY
+from conftest import PUBKEY, new_root
 from test_console import KEY, OPERATOR_TOKEN, StubConsole, _serve
 
 DISK = {"number": 2, "name": "Generic MassStorageClass", "bus": "USB", "size": 31914983424, "sector": 512,
@@ -264,11 +264,7 @@ _roots = []
 
 
 def _root():
-    try:
-        root = tk.Tk()
-    except tk.TclError as e:
-        pytest.skip(f"no display: {e}")
-    root.withdraw()
+    root = new_root()
     _roots.append(root)
     return root
 

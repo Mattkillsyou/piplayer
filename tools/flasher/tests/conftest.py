@@ -1,4 +1,5 @@
 import sys
+import tkinter as tk
 import types
 from pathlib import Path
 
@@ -41,3 +42,24 @@ def fake_wifi(networks=(), current=None, passwords=None):
 
 
 PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIUL3nG/VzzJ6wyH+UdpX4KRzETi9LJnhz6FuBwRr0U5 projection5000-flasher@pc"
+
+_shared_tk = []
+
+
+def new_root():
+    """A withdrawn window for one GUI test, skipping when there is no display. A fresh tk.Tk() on Windows; on
+    macOS a Toplevel of one hidden Tk kept for the whole session, because Tk/Aqua hangs in update() once a
+    second Tk() is made after the first was destroyed (seen on the GitHub macOS runners)."""
+    try:
+        if sys.platform == "darwin":
+            if not _shared_tk:
+                base = tk.Tk()
+                base.withdraw()
+                _shared_tk.append(base)
+            root = tk.Toplevel(_shared_tk[0])
+        else:
+            root = tk.Tk()
+    except tk.TclError as e:
+        pytest.skip(f"no display: {e}")
+    root.withdraw()
+    return root

@@ -10,6 +10,7 @@ import pytest
 import flasher
 import machost
 import sshkey
+from conftest import new_root
 from test_console import OPERATOR_TOKEN
 
 
@@ -217,11 +218,7 @@ def test_the_whole_gui_runs_on_the_mac_host(monkeypatch, tmp_path):
     monkeypatch.setattr(macwifi, "_profile", lambda: "{}")
     monkeypatch.setattr(machost.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 44, "", ""))
     FakeDiskutil(monkeypatch)
-    try:
-        root = tk.Tk()
-    except tk.TclError as e:
-        pytest.skip(f"no display: {e}")
-    root.withdraw()
+    root = new_root()
     try:
         app = flasher.App(root)
         v = app.values()
