@@ -49,6 +49,12 @@ function fakeCloudflare() {
     else if (method === "POST" && path === "/accounts/acct1/cfd_tunnel") state.tunnels.push(result = { id: id("tun"), ...body });
     else if ((m = /^\/accounts\/acct1\/cfd_tunnel\/([^/]+)\/configurations$/.exec(path)) && method === "PUT") result = state.ingress[m[1]] = body.config;
     else if ((m = /^\/accounts\/acct1\/cfd_tunnel\/([^/]+)\/token$/.exec(path)) && method === "GET") result = `eyJ-token-for-${m[1]}`;
+    else if ((m = /^\/accounts\/acct1\/cfd_tunnel\/([^/]+)\/connections$/.exec(path)) && method === "DELETE") result = [];
+    else if ((m = /^\/accounts\/acct1\/cfd_tunnel\/([^/]+)$/.exec(path)) && method === "DELETE") {
+      const i = state.tunnels.findIndex((t) => t.id === m[1]);
+      if (i < 0) return new Response(JSON.stringify({ success: false, errors: [{ code: 1000, message: "tunnel not found" }] }), { status: 404 });
+      [result] = state.tunnels.splice(i, 1);
+    }
     else if (method === "GET" && path === "/zones/zone1/dns_records") result = state.dns.filter((r) => r.name === u.searchParams.get("name"));
     else if (method === "POST" && path === "/zones/zone1/dns_records") state.dns.push(result = { id: id("dns"), ...body });
     else if ((m = /^\/zones\/zone1\/dns_records\/([^/]+)$/.exec(path)) && method === "PUT") Object.assign(result = state.dns.find((r) => r.id === m[1]), body);
@@ -276,6 +282,87 @@ describe("provisioning", () => {
     expect((await devRow(lobby.id)).tunnel_id).toBe("tun-1");
     expect((await post(r.editor, "/devices/999999/tunnel")).status).toBe(404);
     expect((await post(r.editor, "/devices/abc/tunnel")).status).toBe(400);
+    await query("DELETE FROM settings WHERE key = 'alert_email'");
+  });
+});
+
+describe("operator list changes and token rotation", () => {
+  // The route ctx shape the stage-2 callers (Settings / Users / Devices) hand these helpers.
+  const ctx = () => ({ env, user: { id: 1, username: "admin" }, settings: () => db.loadSettings(env) });
+
+  it("syncAccess rewrites the policy of every device with a tunnel; no-op without secrets, emails or tunnels; the API refusing is the reason", async () => {
+    await query("DELETE FROM audit_log WHERE action = 'camera_access_updated'");
+    await query("UPDATE devices SET tunnel_id = NULL, tunnel_hostname = NULL, camera_live_url = NULL WHERE id = ?", lobby.id);
+    const fake = fakeCloudflare();
+    expect(await cloudflare.syncAccess(ctx())).toBeNull(); // not configured
+    configure();
+    await query("DELETE FROM settings WHERE key = 'alert_email'");
+    expect(await cloudflare.syncAccess(ctx())).toBeNull(); // no operator email known
+    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net, matt@example.net')");
+    expect(await cloudflare.syncAccess(ctx())).toBeNull(); // no device has a tunnel
+    expect(fake.calls.length).toBe(0);
+    expect((await audits("camera_access_updated")).length).toBe(0);
+    await cloudflare.provision(CF, "lobby", EMAILS);
+    await cloudflare.provision(CF, "hall", EMAILS);
+    const hall = await device("hall", "Hall");
+    await query("UPDATE devices SET tunnel_id = 'tun-1' WHERE id = ?", lobby.id);
+    await query("UPDATE devices SET tunnel_id = 'tun-5' WHERE id = ?", hall.id);
+    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'new@example.net')");
+    fake.calls.length = 0;
+    expect(await cloudflare.syncAccess(ctx())).toBeNull();
+    // only the Access app + policy per device: nothing about tunnels or DNS
+    expect(shapes(fake.calls)).toEqual([
+      "GET /accounts/acct1/access/apps", "GET /accounts/acct1/access/apps/app-3/policies", "PUT /accounts/acct1/access/apps/app-3/policies/pol-4",
+      "GET /accounts/acct1/access/apps", "GET /accounts/acct1/access/apps/app-7/policies", "PUT /accounts/acct1/access/apps/app-7/policies/pol-8",
+    ]);
+    const want = [{ email: { email: "new@example.net" } }];
+    expect(fake.state.policies["app-3"][0].include).toEqual(want);
+    expect(fake.state.policies["app-7"][0].include).toEqual(want);
+    const [a] = await audits("camera_access_updated");
+    expect(a).toMatchObject({ target_type: "settings", target_id: "operators", details: '{"devices": 2, "emails": 1}' });
+    // a refusal comes back as the reason, nothing audited for it
+    fake.refuse = { key: "PUT /accounts/acct1/access/apps/app-3/policies/pol-4", message: "policy is locked" };
+    expect(await cloudflare.syncAccess(ctx())).toBe("Cloudflare API PUT /accounts/.../access/apps/app-3/policies/pol-4: policy is locked");
+    expect((await audits("camera_access_updated")).length).toBe(1);
+    await query("DELETE FROM devices WHERE id = ?", hall.id);
+    await query("UPDATE devices SET tunnel_id = NULL WHERE id = ?", lobby.id);
+    await query("DELETE FROM settings WHERE key = 'alert_email'");
+  });
+
+  it("rotateTunnel deletes the old tunnel (connections first) and provisions a new one with a new token; a tunnel already gone is fine", async () => {
+    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net')");
+    await query("UPDATE devices SET tunnel_id = NULL, tunnel_hostname = NULL, camera_live_url = NULL WHERE id = ?", lobby.id);
+    const fake = fakeCloudflare();
+    const row = () => one("SELECT id, device_id, tunnel_id FROM devices WHERE id = ?", lobby.id);
+    await expect(cloudflare.rotateTunnel(ctx(), await row())).rejects.toThrow("CF_API_TOKEN, CF_ACCOUNT_ID, CF_ZONE_ID not set");
+    expect(fake.calls.length).toBe(0);
+    configure();
+    // no tunnel yet: plain provisioning
+    expect(await cloudflare.rotateTunnel(ctx(), await row())).toEqual({ tunnel_id: "tun-1", hostname: "lobby-cam.photogen5000.com" });
+    expect(fake.calls.filter((c) => c.method === "DELETE").length).toBe(0);
+    expect(await cloudflare.tunnelToken(CF, "tun-1")).toBe("eyJ-token-for-tun-1");
+    fake.calls.length = 0;
+    const out = await cloudflare.rotateTunnel(ctx(), await row());
+    expect(out).toEqual({ tunnel_id: "tun-5", hostname: "lobby-cam.photogen5000.com" });
+    expect(shapes(fake.calls).slice(0, 4)).toEqual([
+      "DELETE /accounts/acct1/cfd_tunnel/tun-1/connections", "DELETE /accounts/acct1/cfd_tunnel/tun-1",
+      "GET /accounts/acct1/cfd_tunnel", "POST /accounts/acct1/cfd_tunnel",
+    ]);
+    expect(fake.state.tunnels.map((t) => t.id)).toEqual(["tun-5"]);
+    expect(await devRow(lobby.id)).toEqual({ tunnel_id: "tun-5", tunnel_hostname: "lobby-cam.photogen5000.com", camera_live_url: "https://lobby-cam.photogen5000.com/" });
+    // the CNAME follows, the Access app is reused, the new token differs
+    expect(fake.state.dns.map((d) => d.content)).toEqual(["tun-5.cfargotunnel.com"]);
+    expect(fake.state.apps.length).toBe(1);
+    expect(await cloudflare.tunnelToken(CF, "tun-5")).toBe("eyJ-token-for-tun-5");
+    // the stored tunnel is already gone on Cloudflare's side: 404 ignored, still rotated
+    await query("UPDATE devices SET tunnel_id = 'tun-gone' WHERE id = ?", lobby.id);
+    expect((await cloudflare.rotateTunnel(ctx(), await row())).tunnel_id).toBe("tun-5");
+    expect(fake.state.tunnels.length).toBe(1);
+    // any other refusal is the caller's error
+    fake.refuse = { key: "DELETE /accounts/acct1/cfd_tunnel/tun-5", message: "tunnel has active connections" };
+    await expect(cloudflare.rotateTunnel(ctx(), await row())).rejects.toThrow("Cloudflare API DELETE /accounts/.../cfd_tunnel/tun-5: tunnel has active connections");
+    expect((await devRow(lobby.id)).tunnel_id).toBe("tun-5");
+    await query("UPDATE devices SET tunnel_id = NULL, tunnel_hostname = NULL, camera_live_url = NULL WHERE id = ?", lobby.id);
     await query("DELETE FROM settings WHERE key = 'alert_email'");
   });
 });

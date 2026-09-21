@@ -3,13 +3,15 @@
 // once per (device, kind), closed when the condition clears, and the configured channels
 // (email via the ALERT_MAIL send_email binding, a JSON webhook, Twilio SMS) get one digest per
 // run: what opened, what recovered and what is still open past alert_repeat_minutes.
-// ponytail: a failed send is logged + audited, never retried (notified_at is stamped first),
-// so a dead webhook cannot make the working channels repeat every 5 minutes.
+// ponytail: a failed send is logged + audited, never retried (notified_at is stamped once the
+// digest has been sent, whether or not a channel failed), so a dead webhook cannot make the
+// working channels repeat every 5 minutes. A run that throws before the digest leaves its rows
+// unstamped and the next run announces them.
 import * as audit from "./audit.js";
 import * as db from "./db.js";
 import * as secrets from "./secrets.js";
 import { OFFLINE_AFTER_SECONDS } from "./pages/devices.js";
-import { ageSeconds, esc, nowUtc } from "./util.js";
+import { ageSeconds, esc, localTime, nowUtc } from "./util.js";
 
 // The wrangler.toml trigger index.js scheduled() routes here (the entry module may only
 // export handlers, so the string lives in this module).
@@ -33,7 +35,8 @@ const FETCH_TIMEOUT_MS = 10000;
 // Kinds active for one device row (the columns api.sync stores) at `now`. Offline wins:
 // while the player is not syncing its other columns are frozen, so nothing else is opened or
 // closed (evaluate keeps those alerts as they are). A device that never synced is not offline:
-// it has nothing to lose yet.
+// it has nothing to lose yet. The screenshot is stale when it lags the last sync by 3
+// intervals: measured against the sync, not the clock, so a sync gap cannot make it grow.
 export function conditions(d, settings, now) {
   const seen = ageSeconds(d.last_seen_at, now);
   if (seen === null) return new Set();
@@ -41,7 +44,7 @@ export function conditions(d, settings, now) {
   const out = new Set();
   if (d.player_status === "mpv-down") out.add("mpv-down");
   const shot = ageSeconds(d.last_screenshot_at, now);
-  if (shot !== null && shot > 3 * settings.screenshot_interval) out.add("screenshot-stale");
+  if (shot !== null && shot - seen > 3 * settings.screenshot_interval) out.add("screenshot-stale");
   if (d.last_error) out.add("sync-error");
   if (d.last_update_ok === 0) out.add("update-failed");
   if (d.camera_error) out.add("camera-error");
@@ -70,15 +73,20 @@ export async function evaluate(env, now = new Date()) {
       const cur = openBy.get(`${d.id}:${kind}`);
       if (active.has(kind)) {
         if (!cur) {
-          const id = (await db.run(env, "INSERT INTO alerts (device_id, kind, opened_at, notified_at) VALUES (?, ?, ?, ?)", d.id, kind, ts, ts)).last_row_id;
-          events.opened.push({ id, device: d, kind, opened_at: ts });
+          // OR IGNORE: an overlapping run may have opened the same (device, kind) since the
+          // SELECT above (idx_alerts_one_open); that run's digest carries it, so nothing to do here.
+          const ins = await db.run(env, "INSERT OR IGNORE INTO alerts (device_id, kind, opened_at) VALUES (?, ?, ?)", d.id, kind, ts);
+          if (!ins.changes) continue;
+          events.opened.push({ id: ins.last_row_id, device: d, kind, opened_at: ts });
           await audit.log(ctx, "alert_opened", "device", d.device_id, { kind });
+        } else if (cur.notified_at === null) {
+          // opened by a run that threw before its digest went out
+          events.opened.push({ id: cur.id, device: d, kind, opened_at: cur.opened_at });
         } else if (repeatAfter > 0 && ageSeconds(cur.notified_at, now) >= repeatAfter) {
-          await db.run(env, "UPDATE alerts SET notified_at = ? WHERE id = ?", ts, cur.id);
           events.repeated.push({ id: cur.id, device: d, kind, opened_at: cur.opened_at });
         }
       } else if (cur && !(offline && kind !== "offline")) {
-        await db.run(env, "UPDATE alerts SET closed_at = ?, notified_at = ? WHERE id = ?", ts, ts, cur.id);
+        await db.run(env, "UPDATE alerts SET closed_at = ? WHERE id = ?", ts, cur.id);
         events.closed.push({ id: cur.id, device: d, kind, opened_at: cur.opened_at });
         await audit.log(ctx, "alert_closed", "device", d.device_id, { kind });
       }
@@ -86,7 +94,7 @@ export async function evaluate(env, now = new Date()) {
   }
   const result = { opened: events.opened.length, closed: events.closed.length, repeated: events.repeated.length, sent: [], errors: [] };
   if (result.opened + result.closed + result.repeated === 0) return result;
-  const msg = digest(events);
+  const msg = digest(events, settings.timezone);
   for (const [channel, error] of await sendAll(env, settings, msg)) {
     if (error === null) result.sent.push(channel);
     else {
@@ -95,12 +103,16 @@ export async function evaluate(env, now = new Date()) {
       await audit.log(ctx, "alert_notify_failed", "settings", channel, { error: error.slice(0, 200) });
     }
   }
+  // Everything in the digest is stamped in one round trip (send never throws, so this runs).
+  const ids = [...events.opened, ...events.closed, ...events.repeated].map((e) => e.id);
+  await db.batch(env, ids.map((id) => ["UPDATE alerts SET notified_at = ? WHERE id = ?", ts, id]));
   return result;
 }
 
-// {subject, text} for one run's events; the same text goes to every channel.
-export function digest({ opened = [], closed = [], repeated = [] }) {
-  const line = (e) => `${e.device.name} (${e.device.device_id}): ${KIND_TEXT[e.kind] || e.kind} since ${e.opened_at} UTC`;
+// {subject, text} for one run's events; the same text goes to every channel. Times are in the
+// site zone like every console page.
+export function digest({ opened = [], closed = [], repeated = [] }, timeZone = "UTC") {
+  const line = (e) => `${e.device.name} (${e.device.device_id}): ${KIND_TEXT[e.kind] || e.kind} since ${localTime(e.opened_at, timeZone)}`;
   const parts = [];
   if (opened.length) parts.push(`ALERT ${opened.length}`, ...opened.map(line));
   if (closed.length) parts.push(`RECOVERED ${closed.length}`, ...closed.map(line));
@@ -209,8 +221,10 @@ async function sendSms(env, msg) {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (res.ok) return null;
+  // Twilio quotes the To / From number in its validation errors; they are stored as secrets
+  // and this text lands in the audit log and the Settings banner URL, so hide any number.
   let why = "";
-  try { why = (await res.json()).message || ""; } catch { /* not JSON */ }
+  try { why = String((await res.json()).message || "").replace(/\+?\d{6,}/g, "(number hidden)"); } catch { /* not JSON */ }
   return `Twilio answered ${res.status}${why ? `: ${why}` : ""}`.slice(0, 300);
 }
 

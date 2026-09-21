@@ -45,7 +45,9 @@ async function call(env, method, path, body) {
     // Label the call without the account / zone ids: the message lands in the audit log, the
     // Devices banner URL and the worker log, none of which should carry secrets.
     const where = path.split("?")[0].replace(acct(env), "/accounts/...").replace(zone(env), "/zones/...");
-    throw new Error(`Cloudflare API ${method} ${where}: ${errors.length ? errors.join("; ") : `HTTP ${res.status}`}`);
+    const err = new Error(`Cloudflare API ${method} ${where}: ${errors.length ? errors.join("; ") : `HTTP ${res.status}`}`);
+    err.status = res.status;
+    throw err;
   }
   return data.result;
 }
@@ -136,6 +138,41 @@ export async function provisionDevice(ctx, device) {
     tunnel_id, hostname, `https://${hostname}/`, device.id);
   await audit.log(ctx, "device_tunnel_created", "device", device.id, { device_id: device.device_id, tunnel_id, hostname, emails: emails.length });
   return { tunnel_id, hostname };
+}
+
+// The operator list changed (alert email addresses, an admin added or removed): rewrite the
+// Access policy of every device that has a tunnel so the change reaches them now, not on their
+// next provision. null on success or when there is nothing to do (not configured, no email
+// known, no tunnels), else the reason for the caller's banner; audits camera_access_updated.
+// Settings are re-read: the caller has just saved them and ctx.settings() is memoised.
+export async function syncAccess(ctx) {
+  if (!configured(ctx.env)) return null;
+  const emails = await operatorEmails(ctx.env, await db.loadSettings(ctx.env));
+  if (!emails) return null;
+  const devices = await db.all(ctx.env, "SELECT id, device_id FROM devices WHERE tunnel_id IS NOT NULL");
+  if (!devices.length) return null;
+  try {
+    for (const d of devices) await ensureAccess(ctx.env, d.device_id, hostnameFor(ctx.env, d.device_id), emails);
+  } catch (e) {
+    return String(e && e.message || e).slice(0, 200);
+  }
+  await audit.log(ctx, "camera_access_updated", "settings", "operators", { devices: devices.length, emails: emails.length });
+  return null;
+}
+
+// A new tunnel for a device whose connector token may have leaked: delete the old tunnel (its
+// connections first, Cloudflare refuses to delete a tunnel that still has any) and provision
+// again, so the Pi gets a fresh token on its next sync and the old one stops working. A tunnel
+// already gone (404) is fine. Returns what provisionDevice returns and throws like it does.
+export async function rotateTunnel(ctx, device) {
+  if (!configured(ctx.env)) throw new Error(`${missing(ctx.env).join(", ")} not set`);
+  if (device.tunnel_id) {
+    const base = `${acct(ctx.env)}/cfd_tunnel/${device.tunnel_id}`;
+    for (const path of [`${base}/connections`, base]) {
+      await call(ctx.env, "DELETE", path).catch((e) => { if (e.status !== 404) throw e; });
+    }
+  }
+  return provisionDevice(ctx, device);
 }
 
 // provisionDevice that never throws: {tunnel_id, hostname, error: null}, or {error} with the

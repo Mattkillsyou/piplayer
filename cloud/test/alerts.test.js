@@ -24,7 +24,7 @@ async function run(at, cols = {}) {
   await setDevice(lobby.id, { last_seen_at: ago(30, at), ...cols });
   return alerts.evaluate(env, at);
 }
-const MSG = { subject: "Projection5000: 1 opened", text: "ALERT 1\nLobby (lobby): offline (no sync) since 2026-09-16 09:00:00 UTC" };
+const MSG = { subject: "Projection5000: 1 opened", text: "ALERT 1\nLobby (lobby): offline (no sync) since 2026-09-16 09:00 UTC" };
 
 // fetch stub capturing every outbound call; answers `status` with `body`.
 function stubFetch(status = 200, body = "{}") {
@@ -54,8 +54,10 @@ describe("conditions", () => {
     expect(alerts.conditions(base, SETTINGS, NOW)).toEqual(new Set());
     expect(alerts.conditions({ ...base, last_seen_at: null, last_error: "x" }, SETTINGS, NOW)).toEqual(new Set());
     expect(alerts.conditions({ ...base, player_status: "mpv-down" }, SETTINGS, NOW)).toEqual(new Set(["mpv-down"]));
-    expect(alerts.conditions({ ...base, last_screenshot_at: ago(181) }, SETTINGS, NOW)).toEqual(new Set(["screenshot-stale"]));
-    expect(alerts.conditions({ ...base, last_screenshot_at: ago(179) }, SETTINGS, NOW)).toEqual(new Set());
+    // stale = 3 intervals behind the last sync (30 s ago), not behind the clock
+    expect(alerts.conditions({ ...base, last_screenshot_at: ago(211) }, SETTINGS, NOW)).toEqual(new Set(["screenshot-stale"]));
+    expect(alerts.conditions({ ...base, last_screenshot_at: ago(209) }, SETTINGS, NOW)).toEqual(new Set());
+    expect(alerts.conditions({ ...base, last_seen_at: ago(200), last_screenshot_at: ago(260) }, SETTINGS, NOW)).toEqual(new Set());
     expect(alerts.conditions({ ...base, last_screenshot_at: null }, SETTINGS, NOW)).toEqual(new Set());
     expect(alerts.conditions({ ...base, last_error: "boom" }, SETTINGS, NOW)).toEqual(new Set(["sync-error"]));
     expect(alerts.conditions({ ...base, last_update_ok: 0 }, SETTINGS, NOW)).toEqual(new Set(["update-failed"]));
@@ -147,6 +149,67 @@ describe("evaluate", () => {
     expect((await rows()).map((a) => [a.kind, a.closed_at])).toEqual([["offline", daysAgo(10)], ["mpv-down", null]]);
     await query("DELETE FROM alerts");
   });
+
+  // env.DB.prepare wrapped so `hook(sql)` runs inside .run() of every matching statement.
+  function hookInsert(pattern, hook) {
+    const orig = env.DB.prepare.bind(env.DB);
+    env.DB.prepare = (sql) => {
+      const stmt = orig(sql);
+      if (!pattern.test(sql)) return stmt;
+      const bind = stmt.bind.bind(stmt);
+      stmt.bind = (...p) => {
+        const b = bind(...p);
+        const run = b.run.bind(b);
+        b.run = async () => { await hook(sql, p); return run(); };
+        return b;
+      };
+      return stmt;
+    };
+    return () => { delete env.DB.prepare; };
+  }
+
+  it("a run that throws before its digest leaves the rows unstamped; the next run announces them", async () => {
+    await query("INSERT INTO settings (key, value) VALUES ('alert_webhook_url', 'https://hooks.example.com/a')");
+    await setDevice(hall.id, { last_seen_at: ago(30), last_error: "hall broke" });
+    let inserts = 0;
+    const restore = hookInsert(/INSERT OR IGNORE INTO alerts/, async () => { if (++inserts === 2) throw new Error("D1 hiccup"); });
+    try {
+      await expect(run(NOW, { last_error: "lobby broke" })).rejects.toThrow("D1 hiccup");
+    } finally {
+      restore();
+    }
+    expect((await rows()).map((a) => [a.device_id, a.notified_at])).toEqual([[lobby.id, null]]);
+    const calls = stubFetch(200);
+    expect(await run(later(5))).toEqual({ opened: 2, closed: 0, repeated: 0, sent: ["webhook"], errors: [] });
+    const text = JSON.parse(calls[0].body).text;
+    expect(text).toContain("Lobby (lobby): sync error since 2026-09-16 10:00 UTC");
+    expect(text).toContain("Hall (hall): sync error since 2026-09-16 10:05 UTC");
+    expect((await rows()).map((a) => a.notified_at)).toEqual([nowUtc(later(5)), nowUtc(later(5))]);
+    await setDevice(hall.id, { last_seen_at: ago(30, later(10)) });
+    expect(await run(later(10))).toEqual({ opened: 0, closed: 0, repeated: 0, sent: [], errors: [] });
+    await setDevice(hall.id, { last_seen_at: null, last_error: null });
+    await run(later(15), { last_error: null });
+    await query("DELETE FROM settings WHERE key = 'alert_webhook_url'");
+    await query("DELETE FROM alerts");
+  });
+
+  it("an overlapping run opening the same (device, kind) does not make a duplicate row", async () => {
+    // migrations/0006_indexes.sql (idx_alerts_one_open) refuses a second open row per (device, kind)
+    const opened = (await audits("alert_opened")).length;
+    // the other run inserts between this run's SELECT and its INSERT
+    const restore = hookInsert(/INSERT OR IGNORE INTO alerts/, (sql, p) => query("INSERT INTO alerts (device_id, kind, opened_at) VALUES (?, ?, ?)", ...p));
+    let res;
+    try {
+      res = await run(NOW, { camera_error: "no cam" });
+    } finally {
+      restore();
+    }
+    expect(res).toEqual({ opened: 0, closed: 0, repeated: 0, sent: [], errors: [] });
+    expect((await rows()).map((a) => [a.device_id, a.kind])).toEqual([[lobby.id, "camera-error"]]);
+    expect((await audits("alert_opened")).length).toBe(opened);
+    await run(later(5), { camera_error: null });
+    await query("DELETE FROM alerts");
+  });
 });
 
 describe("channels", () => {
@@ -155,9 +218,9 @@ describe("channels", () => {
     const d = alerts.digest({ opened: [e("offline")], closed: [e("sync-error", "Hall")], repeated: [e("camera-error")] });
     expect(d.subject).toBe("Projection5000: 1 opened, 1 recovered, 1 still open");
     expect(d.text.split("\n")).toEqual([
-      "ALERT 1", "Lobby (lobby): offline (no sync) since 2026-09-16 09:00:00 UTC",
-      "RECOVERED 1", "Hall (hall): sync error since 2026-09-16 09:00:00 UTC",
-      "STILL OPEN 1", "Lobby (lobby): camera error since 2026-09-16 09:00:00 UTC",
+      "ALERT 1", "Lobby (lobby): offline (no sync) since 2026-09-16 09:00 UTC",
+      "RECOVERED 1", "Hall (hall): sync error since 2026-09-16 09:00 UTC",
+      "STILL OPEN 1", "Lobby (lobby): camera error since 2026-09-16 09:00 UTC",
     ]);
     expect(alerts.digest({ opened: [e("offline")] }).subject).toBe("Projection5000: 1 opened");
   });
@@ -211,6 +274,9 @@ describe("channels", () => {
     expect(calls[0].body).toEqual({ From: "+15550001111", To: "+15550002222", Body: `${MSG.subject}\n${MSG.text}` });
     calls = stubFetch(401, '{"code":20003,"message":"Authenticate"}');
     expect(await alerts.send(env, SETTINGS, "sms", MSG)).toBe("Twilio answered 401: Authenticate");
+    // the To / From numbers are secrets: Twilio's validation text must not leak them
+    calls = stubFetch(400, JSON.stringify({ code: 21211, message: "The 'To' number +15550002222 is not a valid phone number." }));
+    expect(await alerts.send(env, SETTINGS, "sms", MSG)).toBe("Twilio answered 400: The 'To' number (number hidden) is not a valid phone number.");
     expect(alerts.smsBody({ subject: "s", text: "x".repeat(1000) }).length).toBe(600);
     for (const n of alerts.TWILIO_NAMES) await secrets.set(env, n, "");
   });
@@ -221,7 +287,7 @@ describe("channels", () => {
     const res = await run(NOW, { projector_error: "no ir" });
     expect(res).toEqual({ opened: 1, closed: 0, repeated: 0, sent: [], errors: ["webhook: webhook answered 503"] });
     expect(calls.length).toBe(1);
-    expect(JSON.parse(calls[0].body).text).toContain("Lobby (lobby): projector error since 2026-09-16 10:00:00 UTC");
+    expect(JSON.parse(calls[0].body).text).toContain("Lobby (lobby): projector error since 2026-09-16 10:00 UTC");
     expect((await audits("alert_notify_failed"))[0]).toMatchObject({ target_type: "settings", target_id: "webhook", details: '{"error": "webhook answered 503"}' });
     expect((await rows())[0].notified_at).toBe(nowUtc(NOW)); // stamped: no retry storm
     expect(await run(later(5))).toEqual({ opened: 0, closed: 0, repeated: 0, sent: [], errors: [] });
