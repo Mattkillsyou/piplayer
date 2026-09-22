@@ -2,12 +2,15 @@
 
 ## v0.7.1
 
-Sign in comes first. The flasher opens on the sign-in box (Username, Password, Sign in) and shows nothing
-else until you have signed in; the form appears after that, under a line that says whose account the
+Sign in comes first. The flasher opens on the sign-in box (Username, Password, Sign in, no explanation)
+and shows nothing else until you have signed in; the form appears after that, under a line that says whose account the
 projectors go to ("Signed in as <you>", with Switch user next to it). Once signed in on a computer the box
 does not come back unless you switch user, sign out under Advanced, or the console rejects the stored
 sign-in. The Windows installer now calls the program "Matt Brown Projection 5000" (Program Files folder,
-Start Menu, Programs and Features).
+Start Menu, Programs and Features), as does the window title. On Windows the title bar and the window
+edge are black like the rest of the window (no accent-coloured strip). The window is a fixed size: 700
+wide, exactly as tall as what is on it, with no resize handles or maximize button. Under the sign-in box
+falls a band of matrix rain (white heads, grey trails) until you are signed in.
 
 ## v0.7.0
 

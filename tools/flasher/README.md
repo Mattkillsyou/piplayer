@@ -1,6 +1,6 @@
-# Matt Brown's Projection5000 SD Flasher
+# Matt Brown Projection 5000 SD Flasher
 
-Windows and macOS desktop tool (window title "Matt Brown's Projection5000") that writes Raspberry Pi OS Lite to
+Windows and macOS desktop tool (window title "Matt Brown Projection 5000", black title bar on Windows, a fixed 700 px wide window that is always exactly as tall as what is on it: no resizing, no maximize) that writes Raspberry Pi OS Lite to
 an SD card and pre-configures the Pi so that on first boot it joins the
 network, takes its hostname, installs the Projection5000 player (a copy of
 `player/` travels on the card; the Pi never needs GitHub access) and reports
@@ -21,10 +21,9 @@ account in a few minutes."). Nothing on the screen names the console or the
 fonts; all of that is under Advanced.
 
 Sign in comes first. With no stored sign-in the panel holds only the sign-in
-box ("Sign in with your console username and password (the same as on the
-website)": Username, Password, **Sign in**) and the status line says "Sign in
-to start. The projectors you flash go into your account."; nothing else is on
-the screen (not even Advanced) until you have signed in. Then the form takes
+box (Username and Password over full-width fields, **Sign in** as wide as the fields, a band of matrix rain under them; no explanation) and the status line says
+"Sign in."; nothing else is on the screen (not even Advanced) until you have
+signed in. Then the form takes
 the box's place, under one line above the panel: "Signed in as <you>" with
 **Switch user** next to it (see "Signing in").
 
@@ -154,15 +153,14 @@ box is the first thing on the screen when there is no stored sign-in and the
 only thing until you have signed in; a stored token is used silently after
 that.
 
-1. The sign-in box sits in the panel in place of the form: "Sign in with your
-   console username and password (the same as on the website)", Username,
-   Password (masked), **Sign in**. The status line reads "Sign in to start.
-   The projectors you flash go into your account." There is no Cancel when
+1. The sign-in box sits in the panel in place of the form: Username, Password
+   (masked), **Sign in**; the console username and password, nothing
+   explained on the screen. The status line reads "Sign in." There is no Cancel when
    there is nothing to go back to; Switch user (above the panel) or Sign in
    under Advanced open the same box with a **Cancel** that returns to the
    form as you were. If FLASH ever finds no sign-in (the console rejected the
-   stored one), the box comes back with "Sign in below, then the card is made
-   automatically." and the flash continues by itself after the sign-in.
+   stored one), the box comes back with "Sign in to continue." and the flash
+   continues by itself after the sign-in.
 2. Sign in calls `POST /api/operator/login` (no auth) with the username, the
    password and this PC's hostname. `200` carries the operator token, your
    username and role; the form takes the box's place (and the pending flash,

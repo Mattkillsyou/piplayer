@@ -234,7 +234,7 @@ def test_the_whole_gui_runs_on_the_mac_host(monkeypatch, tmp_path):
         app = flasher.App(root)
         v = app.values()
         assert (v["timezone"], v["keymap"], v["wifi_country"]) == ("Europe/Dublin", "ie", "IE")
-        assert root.title() == "Matt Brown's Projection5000" and app.status_label.cget("text") == flasher.SIGNIN_FIRST_TEXT
+        assert root.title() == "Matt Brown Projection 5000" and app.status_label.cget("text") == flasher.SIGNIN_FIRST_TEXT
         log = app.log_text.get("1.0", "end")
         assert "Fonts: " in log and app.account_label.cget("text") == "Not signed in"
         for _ in range(100):

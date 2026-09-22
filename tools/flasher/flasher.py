@@ -20,6 +20,7 @@ import io
 import json
 import os
 import queue
+import random
 import secrets
 import socket
 import sys
@@ -40,7 +41,8 @@ import pimodel
 import sshkey
 from sysplat import defaults, disk, host, wifi
 
-APP_TITLE = "Matt Brown's Projection5000"
+APP_TITLE = "Matt Brown Projection 5000"
+WINDOW_W = 700  # the window's one width; its height follows the contents
 EYEBROW = "MATT BROWN'S"
 # Persisted between runs (host.data_dir). Never a secret: the device token is issued by the console at flash time
 # with the operator token, which lives DPAPI-protected in the operator config (Windows) or in the login keychain
@@ -49,9 +51,8 @@ SETTINGS_KEYS = ("name", "pi_model", "ssid", "wifi_hidden", "timezone", "static_
 LOG_NAME, LOG_MAX = "flasher.log", 2_000_000  # the technical log; rotated to flasher.log.1 at 2 MB
 # The status line: plain sentences, one at a time (everything technical goes to the details box and the file).
 READY_TEXT = "Ready."
-SIGNIN_TEXT = "Sign in below, then the card is made automatically."
-SIGNIN_FIRST_TEXT = "Sign in to start. The projectors you flash go into your account."
-SIGNIN_HINT = "Sign in with your console username and password (the same as on the website)."
+SIGNIN_TEXT = "Sign in to continue."  # FLASH found no sign-in: the flash goes on by itself after it
+SIGNIN_FIRST_TEXT = "Sign in."
 DRY_RUN_TEXT = "Dry run finished. Nothing was written."
 # An armhf model with no internet: shown under the model row instead of a dialog.
 OFFLINE_TEXT = (f"This model needs the 32-bit image. Connect to the internet once (about {pimodel.DOWNLOAD_MB} MB) "
@@ -355,6 +356,7 @@ def apply_theme(root: tk.Tk) -> dict:
     st.configure("MonoHint.TLabel", font=(fam["mono"], 8), foreground=MUTED)
     st.configure("Error.TLabel", font=(fam["sans"], 9), foreground=PHOSPHOR)
     st.configure("Link.TLabel", font=(fam["mono"], 9), foreground=BODY)
+    st.configure("Field.TLabel", font=(fam["mono"], 9), foreground=MUTED)  # the sign-in box's labels, over the fields
     # fields: #0A0A0A with a 1px grey edge, white when focused
     for w in ("TEntry", "TCombobox"):
         st.configure(w, fieldbackground=FIELD, foreground=PHOSPHOR, bordercolor=RULE_3, lightcolor=FIELD,
@@ -410,6 +412,45 @@ def load_logo(master, size=64):
         return None
 
 
+class MatrixRain(tk.Canvas):
+    """Falling columns of glyphs, white heads with grey trails on black, in the band under the sign-in box (Tk
+    has no transparency, so the rain gets a canvas of its own). One after() timer, about 12 frames a second,
+    running only while the box is on screen (start() / stop())."""
+    GLYPHS = "01アイウエオカキクケコサシスセソタチツテトナニヌネノ<>/|=+-*#$%&"
+    TRAIL = (PHOSPHOR, INK, BODY, MUTED, DIM, DIM, DIM)
+    CELL_W, CELL_H, FRAME_MS = 14, 16, 80
+
+    def __init__(self, master, width: int, height: int, family: str):
+        super().__init__(master, width=width, height=height, bg=GROUND, highlightthickness=0, bd=0)
+        self.font = (family, 10)
+        self.cols, self.rows = max(1, width // self.CELL_W), max(1, height // self.CELL_H)
+        self.drops = [random.randint(-self.rows, self.rows) for _ in range(self.cols)]
+        self._job = None
+
+    def start(self):
+        if self._job is None:
+            self._tick()
+
+    def stop(self):
+        if self._job is not None:
+            self.after_cancel(self._job)
+            self._job = None
+
+    def _tick(self):
+        self.delete("all")
+        for c, head in enumerate(self.drops):
+            for k, colour in enumerate(self.TRAIL):
+                r = head - k
+                if 0 <= r < self.rows:
+                    self.create_text(c * self.CELL_W + self.CELL_W // 2, r * self.CELL_H + self.CELL_H // 2,
+                                     text=random.choice(self.GLYPHS), fill=colour, font=self.font)
+            if head - len(self.TRAIL) > self.rows:
+                self.drops[c] = random.randint(-self.rows, -1)  # gone off the bottom: start over, later
+            elif random.random() < 0.8:
+                self.drops[c] = head + 1  # a few columns hang back each frame, so they fall out of step
+        self._job = self.after(self.FRAME_MS, self._tick)
+
+
 def draw_brackets(panel: tk.Frame, inset=5) -> list:
     """The console's panel frame: four corner L shapes, 1px white with 14px arms, on small canvases placed over
     the panel's corners (its padding, so nothing is covered)."""
@@ -431,8 +472,9 @@ class App:
     def __init__(self, root: tk.Tk, dry_run: bool = False, image: str = ""):
         self.root = root
         root.title(APP_TITLE)
-        root.minsize(700, 460)
+        root.resizable(False, False)  # the window fits its contents (see _grow); nothing to drag or maximize
         host.set_window_icon(root, resource_path("icon.ico"))  # macOS: the .app bundle carries the icon
+        host.dark_title_bar(root)  # Windows: the title bar in the app's black, not the system's white strip
         self.fonts = apply_theme(root)
         self.marker = hatch_marker(root)  # the error labels' leading hatch, kept alive here
         self.dry_run_default = dry_run
@@ -472,7 +514,7 @@ class App:
             self.sign_in()
         # Last, once every widget holds its first text: Tk on macOS (Aqua) never returns from update() when a
         # hidden window that is not the process's first gets its geometry set and then its labels change.
-        self._fit_to_screen()
+        self._grow()
 
     # ----- form
     def _var(self, key, default="", kind=tk.StringVar):
@@ -579,25 +621,26 @@ class App:
         # takes its place then; Switch user brings it back). The username and password go to the console once,
         # for the operator token; neither is a form value or reaches the card.
         self.op_username, self.op_password = tk.StringVar(), tk.StringVar()
-        self.signin = ttk.Frame(panel, padding=(16, 14))
-        self.signin.columnconfigure(1, weight=1)
-        ttk.Label(self.signin, text=SIGNIN_HINT, wraplength=560, justify="left").grid(
-            row=0, column=0, columnspan=3, sticky="w", padx=4, pady=(0, 4))
-        ttk.Label(self.signin, text="Username").grid(row=1, column=0, sticky="w", padx=4, pady=4)
+        self.signin = ttk.Frame(panel, padding=(24, 22, 24, 18))
+        self.signin.columnconfigure(0, weight=1)
+        ttk.Label(self.signin, text="Username", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=4)
         self.user_entry = ttk.Entry(self.signin, textvariable=self.op_username, width=40)
-        self.user_entry.grid(row=1, column=1, sticky="we", padx=4, pady=4)
-        ttk.Label(self.signin, text="Password").grid(row=2, column=0, sticky="w", padx=4, pady=4)
+        self.user_entry.grid(row=1, column=0, sticky="we", padx=4, pady=(2, 14))
+        ttk.Label(self.signin, text="Password", style="Field.TLabel").grid(row=2, column=0, sticky="w", padx=4)
         self.pass_entry = ttk.Entry(self.signin, textvariable=self.op_password, width=40, show="*")
-        self.pass_entry.grid(row=2, column=1, sticky="we", padx=4, pady=4)
+        self.pass_entry.grid(row=3, column=0, sticky="we", padx=4, pady=(2, 18))
         for e in (self.user_entry, self.pass_entry):
             e.bind("<Return>", lambda _e: self.submit_signin())
         row = ttk.Frame(self.signin)
-        row.grid(row=3, column=1, sticky="w")
+        row.grid(row=4, column=0, sticky="we")
+        row.columnconfigure(0, weight=1)
         self.signin_btn = ttk.Button(row, text="Sign in", command=self.submit_signin, style="Primary.TButton")
-        self.signin_btn.pack(side="left", padx=4, pady=4)
+        self.signin_btn.grid(row=0, column=0, sticky="we", padx=4)
         self.signin_cancel_btn = ttk.Button(row, text="Cancel", command=self.cancel_signin)
-        self.signin_cancel_btn.pack(side="left", padx=4)
-        self._err(self.signin, 4, "signin")
+        self.signin_cancel_btn.grid(row=0, column=1, padx=4)
+        self._err(self.signin, 5, "signin", column=0, columnspan=1)
+        self.rain = MatrixRain(self.signin, width=WINDOW_W - 32 - 48 - 8, height=150, family=self.fonts["mono"])
+        self.rain.grid(row=6, column=0, sticky="we", padx=4, pady=(18, 0))
 
         # 5. Flash, progress, the one status line.
         buttons = ttk.Frame(form)
@@ -670,17 +713,11 @@ class App:
         ttk.Label(adv, text=f"Build: {build_info()}", style="Hint.TLabel", wraplength=520, justify="left"
                   ).grid(row=8, column=1, columnspan=2, sticky="w", padx=4)
 
-    def _fit_to_screen(self):
-        # Never taller than the work area (screen minus taskbar / menu bar); the window grows when Advanced opens.
-        self.root.update_idletasks()
-        self._size_to(max(self.root.winfo_reqwidth(), 700), max(self.root.winfo_reqheight(), 460))
-
     def _grow(self):
-        """Advanced (and the details box) opened: make the window tall enough to show it all."""
+        """The window is not resizable: it is always exactly as tall as its contents (the sign-in box or the
+        form, Advanced open or closed), never taller than the work area, and WINDOW_W wide."""
         self.root.update_idletasks()
-        need = self.root.winfo_reqheight()
-        if need > self.root.winfo_height():
-            self._size_to(self.root.winfo_width(), need)
+        self._size_to(WINDOW_W, self.root.winfo_reqheight())
 
     def _size_to(self, w: int, h: int):
         """Resize to w x h (client px) inside the work area: no taller than it, and moved up when the bottom
@@ -717,15 +754,15 @@ class App:
             self.advanced.pack_forget()
         else:
             self.advanced.pack(fill="both", expand=True, after=self.adv_btn)
-            self._grow()
+        self._grow()
 
     def _toggle_details(self):
         if self.v["show_details"].get():
             self.details.grid()
             self.log_text.see("end")
-            self._grow()
         else:
             self.details.grid_remove()
+        self._grow()
 
     # ----- the account (the in-app sign-in: username and password go to POST /api/operator/login once, the
     # operator token comes back). Invisible in normal use: a stored token is used silently, and FLASH asks first
@@ -778,11 +815,12 @@ class App:
         if self.advanced.winfo_manager():
             self.advanced.pack_forget()
         self.signin.pack(fill="x")
+        self.rain.start()
         # Cancel only makes sense when there is a sign-in to go back to; with none, signing in is the only way on.
         if self.connected():
-            self.signin_cancel_btn.pack(side="left", padx=4)
+            self.signin_cancel_btn.grid()
         else:
-            self.signin_cancel_btn.pack_forget()
+            self.signin_cancel_btn.grid_remove()
         self._grow()
         self.set_status(SIGNIN_TEXT if then else SIGNIN_FIRST_TEXT)
         (self.pass_entry if self.op_username.get().strip() else self.user_entry).focus_set()
@@ -830,6 +868,7 @@ class App:
         """The box goes away (the password with it) and the form takes its place; FLASH comes back unless a
         flash is running."""
         self._then = None
+        self.rain.stop()
         self.signin.pack_forget()
         self.form.pack(fill="x")
         if not self.adv_btn.winfo_manager():

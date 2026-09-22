@@ -161,6 +161,23 @@ def set_window_icon(root, ico_path) -> None:
         pass
 
 
+def dark_title_bar(root) -> None:
+    """The title bar in the app's black with white text (Windows 11: DWMWA_CAPTION_COLOR / TEXT_COLOR), or at
+    least the dark theme (Windows 10 20H1+; attribute 19 on the 1809 builds). Best effort."""
+    try:
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        dwm = ctypes.windll.dwmapi.DwmSetWindowAttribute
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE, and its pre-20H1 number
+            if dwm(hwnd, attr, ctypes.byref(ctypes.c_int(1)), 4) == 0:
+                break
+        dwm(hwnd, 34, ctypes.byref(ctypes.c_int(0x000000)), 4)  # DWMWA_BORDER_COLOR: black, not the accent
+        dwm(hwnd, 35, ctypes.byref(ctypes.c_int(0x000000)), 4)  # DWMWA_CAPTION_COLOR: black (COLORREF)
+        dwm(hwnd, 36, ctypes.byref(ctypes.c_int(0xFFFFFF)), 4)  # DWMWA_TEXT_COLOR: white
+    except Exception:
+        pass
+
+
 def set_dpi_aware() -> None:
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on high-DPI screens

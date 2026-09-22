@@ -184,6 +184,10 @@ def set_window_icon(root, ico_path) -> None:
     """Nothing: the .app bundle carries the icon (iconbitmap cannot read .ico on macOS)."""
 
 
+def dark_title_bar(root) -> None:
+    """Nothing: macOS draws the title bar in the system appearance."""
+
+
 def set_dpi_aware() -> None:
     """Nothing: NSHighResolutionCapable in the .app's Info.plist does it."""
 

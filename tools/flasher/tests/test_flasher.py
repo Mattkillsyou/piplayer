@@ -296,7 +296,7 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     assert fields == ["Device name", "Pi model", "Wi-Fi network", "Wi-Fi password", "SD card", "Refresh", "FLASH",
                       "Ready.", "Advanced"]
     assert app.acct_line.winfo_manager() == "pack" and app.acct_label.cget("text") == "Signed in as matt"
-    assert root.title() == flasher.APP_TITLE == "Matt Brown's Projection5000"
+    assert root.title() == flasher.APP_TITLE == "Matt Brown Projection 5000"
     # The masthead: the projector icon at 64 px, the name over the wordmark, nothing else in that frame.
     head = app.eyebrow.master.master
     assert app.logo.width() == app.logo.height() == 64 and head.cget("height") == 96
@@ -375,9 +375,11 @@ def test_theme_is_the_console_look(monkeypatch):
     assert st.lookup("Wordmark.TLabel", "font") == f"{fam} 24 bold"
     assert st.lookup("Wordmark.TLabel", "foreground") == "#FFFFFF"
     assert app.eyebrow.cget("style") == "Eyebrow.TLabel" and app.wordmark.cget("style") == "Wordmark.TLabel"
-    # the status line in the mono face; no lamp anywhere (the four bracket canvases are the only canvases)
+    # the status line in the mono face; no lamp anywhere (the four bracket canvases and the sign-in box's rain
+    # are the only canvases)
     assert st.lookup("Status.TLabel", "font").endswith(" 10") and st.lookup("Status.TLabel", "foreground") == "#E6E6E6"
-    assert not hasattr(app, "lamp") and len(_widgets(root, tk.Canvas)) == 4
+    assert not hasattr(app, "lamp") and len(_widgets(root, tk.Canvas)) == 5
+    assert isinstance(app.rain, flasher.MatrixRain) and app.rain.master is app.signin
     root.destroy()
 
 
@@ -510,7 +512,14 @@ def test_gui_constructs_with_windows_defaults(monkeypatch):
     # Not signed in, no baked key: the sign-in box is up in place of the form until the operator signs in.
     assert _status(app) == flasher.SIGNIN_FIRST_TEXT and app.account_label.cget("text") == "Not signed in"
     assert app.signin.winfo_manager() == "pack" and not app.form.winfo_manager() and not app.acct_line.winfo_manager()
-    assert app.account_btn.cget("text") == "Sign in"
+    # The rain under the box runs only while the box is up: a frame is drawn, the timer is armed, and it stops
+    # (drawing nothing more) once the operator is signed in.
+    root.update()
+    assert app.rain._job is not None and app.rain.find_all()
+    app.op = {"token": "p5k_x", "username": "matt"}
+    app._signin_done()
+    assert app.rain._job is None and not app.signin.winfo_manager() and app.form.winfo_manager() == "pack"
+    assert app.account_btn.cget("text") == "Sign out"
     app.v["timezone"].set("Europe/Paris")
     app.on_close()  # saves the form
     # The remembered form survives a restart; keymap and country are never remembered (always this PC's).
@@ -640,10 +649,9 @@ def test_flash_signs_in_then_makes_the_card(monkeypatch, stub):
     # Not signed in: the sign-in box is the whole panel, the form waits behind it, FLASH is off.
     assert app.console_url == stub and not app.connected()
     assert app.signin.winfo_manager() == "pack" and not app.form.winfo_manager()
-    assert _status(app) == flasher.SIGNIN_FIRST_TEXT == "Sign in to start. The projectors you flash go into your account."
+    assert _status(app) == flasher.SIGNIN_FIRST_TEXT == "Sign in."
     assert str(app.flash_btn["state"]) == "disabled"
-    assert _visible_texts(app.signin, []) == [flasher.SIGNIN_HINT, "Username", "Password", "Sign in"]  # no Cancel: nothing to go back to
-    assert flasher.SIGNIN_HINT == "Sign in with your console username and password (the same as on the website)."
+    assert _visible_texts(app.signin, []) == ["Username", "Password", "Sign in"]  # no hint, no Cancel: nothing to go back to
     assert app.pass_entry.cget("show") == "*" and root.focus_get() in (app.user_entry, None)
     assert not app.cancel_btn.winfo_manager()
     # Nothing typed: said inline, no request.
