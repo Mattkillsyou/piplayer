@@ -442,7 +442,7 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
 .topbar nav a:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--p5k-rule-max); color: var(--p5k-phosphor); }
 /* the SD Flasher link: white on black in both themes, boxed, so it reads as the first thing to click */
 .topbar nav a.nav-flasher { color: #FFFFFF; background: #000000; border: 1px solid #FFFFFF; border-bottom-width: 1px; margin: 12px 8px 12px 0; padding: 0 14px; font-weight: 700; }
-.topbar nav a.nav-flasher:hover, .topbar nav a.nav-flasher.active { color: #000000; background: #FFFFFF; border-color: #FFFFFF; }
+.topbar nav a.nav-flasher:hover, .topbar nav a.nav-flasher.active { color: #FFFFFF; background: #000000; border-color: #FFFFFF; box-shadow: var(--p5k-glow-key); }
 .topbar .user { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; font-size: var(--p5k-text-data-sm); color: var(--p5k-body); }
 .topbar .user .badge { margin-left: 4px; }
 .nav-toggle { display: none; }
