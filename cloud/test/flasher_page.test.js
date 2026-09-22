@@ -6,7 +6,7 @@ import { Client } from "./helpers.js";
 import { roles } from "./pages_common.js";
 
 const RELEASE = `https://github.com/Mattkillsyou/piplayer/releases/download/v${FLASHER_VERSION}`;
-const FILES = ["Projection5000-SD-Flasher.exe", "Projection5000-SD-Flasher-mac-arm64.dmg", "Projection5000-SD-Flasher-mac-intel.dmg"];
+const FILES = ["Projection5000-SD-Flasher-Setup.exe", "Projection5000-SD-Flasher-mac-arm64.dmg", "Projection5000-SD-Flasher-mac-intel.dmg"];
 
 let r;
 

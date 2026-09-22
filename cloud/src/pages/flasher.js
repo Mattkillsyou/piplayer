@@ -18,7 +18,7 @@ function flasherPage(ctx) {
 <div class="panel">
   <h2>Download</h2>
   <div class="row">
-    <a class="button primary" href="${RELEASE}/Projection5000-SD-Flasher.exe">Download for Windows</a>
+    <a class="button primary" href="${RELEASE}/Projection5000-SD-Flasher-Setup.exe">Download for Windows</a>
     <a class="button primary" href="${RELEASE}/Projection5000-SD-Flasher-mac-arm64.dmg">Download for Mac (Apple Silicon)</a>
     <a class="button primary" href="${RELEASE}/Projection5000-SD-Flasher-mac-intel.dmg">Download for Mac (Intel)</a>
   </div>
@@ -32,8 +32,8 @@ function flasherPage(ctx) {
     <div>
       <h3>Windows</h3>
       <ol>
-        <li>Double-click <code>Projection5000-SD-Flasher.exe</code>.</li>
-        <li>If Windows says "Windows protected your PC", click <em>More info</em>, then <em>Run anyway</em>.</li>
+        <li>Open <code>Projection5000-SD-Flasher-Setup.exe</code> and click <em>Install</em>. The SD Flasher then sits in the Start menu (and on the desktop if you ticked that).</li>
+        <li>If Windows says "Windows protected your PC", click <em>More info</em>, then <em>Run anyway</em>. The program is not signed with a paid certificate, so Windows does not know it yet.</li>
         <li>Click <em>Yes</em> on the "make changes to your device" question. Writing a card needs that.</li>
       </ol>
     </div>

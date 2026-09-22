@@ -34,7 +34,7 @@ Mac first-open steps included, until the app is notarized.
 
 Bundled image: [2026-09-15-raspios-trixie-arm64-lite.img.xz] (sha256 [first 8 hex]...). Built from [commit].
 
-**Windows:** download `Projection5000-SD-Flasher.exe`, run it (accept the "Run anyway" on SmartScreen and the
+**Windows:** download `Projection5000-SD-Flasher-Setup.exe`, run it and click Install (accept the "Run anyway" on SmartScreen and the
 administrator prompt), name the Pi, pick the model, pick the card, press FLASH.
 
 **Mac:** download `Projection5000-SD-Flasher-mac-arm64.dmg` (Apple Silicon: M1, M2, M3, M4) or

@@ -203,7 +203,9 @@ Editors and admins can sign in; a viewer cannot.
 
 ## Run the exe
 
-Download or build `dist\Projection5000-SD-Flasher.exe`, double-click, accept
+Download `Projection5000-SD-Flasher-Setup.exe` from the console's SD Flasher page and run it (Program Files,
+Start Menu, uninstaller; `installer.iss`, built by `build.ps1` when Inno Setup is installed), or build and run
+`dist\Projection5000-SD-Flasher.exe` directly; accept
 the UAC prompt. If you decline the prompt the tool shows "Run as administrator"
 and exits. `Projection5000-SD-Flasher.exe --dry-run` works without the prompt
 (see below). The exe is not code-signed: a downloaded copy triggers SmartScreen

@@ -129,3 +129,16 @@ if ($ConsoleUrl) {
 }
 Write-Host $consoleLine
 Write-Host "OK: $exe ($([math]::Round((Get-Item $exe).Length / 1MB, 1)) MB), selfcheck output in $out"
+
+# The installer (installer.iss, Inno Setup 6: winget install JRSoftware.InnoSetup): Program Files, Start Menu,
+# uninstaller. Skipped with a note when ISCC.exe is not installed; the plain exe above still works on its own.
+$iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($iscc) {
+    $ver = (Select-String -Path (Join-Path $PSScriptRoot 'version.txt') -Pattern "StringStruct\('ProductVersion', '(\d+\.\d+\.\d+)" | Select-Object -First 1).Matches[0].Groups[1].Value
+    & $iscc /Q "/DAppVersion=$ver" (Join-Path $PSScriptRoot 'installer.iss')
+    if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+    $setup = Join-Path $PSScriptRoot 'dist\Projection5000-SD-Flasher-Setup.exe'
+    Write-Host "OK: $setup ($([math]::Round((Get-Item $setup).Length / 1MB, 1)) MB)"
+} else {
+    Write-Host "note: Inno Setup not found, no installer built (winget install JRSoftware.InnoSetup)"
+}
