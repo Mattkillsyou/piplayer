@@ -38,6 +38,11 @@ PIPLAYER_AUDIT_RETENTION_DAYS = "365"
 [[send_email]]
 name = "ALERT_MAIL"
 
+# Finishing an upload hashes the whole stored object (src/uploads.js uploadComplete): a multi-GB
+# video needs far more than the 30 s default. Workers Paid allows up to 5 minutes.
+[limits]
+cpu_ms = 300000
+
 [triggers]
 crons = ["0 3 * * *", "*/5 * * * *"]   # daily housekeeping; alerts.evaluate every 5 min (index.js scheduled)
 

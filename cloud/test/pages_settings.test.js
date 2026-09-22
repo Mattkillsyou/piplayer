@@ -59,26 +59,27 @@ describe("settings", () => {
       [{ ...GOOD, timezone: "EST" }, "short names like EST are not accepted"],
       [{ ...GOOD, timezone: "MST" }, "short names like EST are not accepted"],
       [{ ...GOOD, timezone: "PST" }, "short names like EST are not accepted"],
-      [{ ...GOOD, screenshot_interval: "14" }, "screenshot_interval must be at least 15 seconds"],
-      [{ ...GOOD, screenshot_interval: "abc" }, "screenshot_interval must be an integer"],
-      [{ ...GOOD, screenshot_interval: "1.5" }, "screenshot_interval must be an integer"],
-      [{ ...GOOD, screenshot_interval: "" }, "screenshot_interval required"],
-      [{ ...GOOD, camera_interval: "4" }, "camera_interval must be at least 5 seconds"],
-      [{ ...GOOD, camera_interval: "x" }, "camera_interval must be an integer"],
-      [{ ...GOOD, camera_interval: "" }, "camera_interval required"],
-      [{ ...GOOD, default_image_duration: "0" }, "default_image_duration must be a positive number"],
-      [{ ...GOOD, default_image_duration: "-3" }, "default_image_duration must be a positive number"],
-      [{ ...GOOD, default_image_duration: "inf" }, "default_image_duration must be a positive number"],
-      [{ ...GOOD, default_image_duration: "86401" }, "default_image_duration must be a positive number"],
-      [{ ...GOOD, default_image_duration: "" }, "default_image_duration required"],
-      [{ ...GOOD, player_release: "-rf" }, "Player software version must be a release name"],
-      [{ ...GOOD, player_release: "a..b" }, "Player software version must be a release name"],
-      [{ ...GOOD, player_release: "v1;rm" }, "Player software version must be a release name"],
-      [{ ...GOOD, player_release: "a".repeat(101) }, "Player software version must be a release name"],
-      [{ ...GOOD, auto_update: "weekly" }, "auto_update must be one of off, nightly"],
-      [{ ...GOOD, auto_update_window: "3:00-5:00" }, "auto_update_window must be HH:MM-HH:MM"],
-      [{ ...GOOD, auto_update_window: "03:00" }, "auto_update_window must be HH:MM-HH:MM"],
-      [{ ...GOOD, auto_update_window: "24:00-05:00" }, "auto_update_window must be HH:MM-HH:MM"],
+      [{ ...GOOD, screenshot_interval: "14" }, "Screenshot interval must be a whole number of at least 15 seconds"],
+      [{ ...GOOD, screenshot_interval: "abc" }, "Screenshot interval must be a whole number"],
+      [{ ...GOOD, screenshot_interval: "1.5" }, "Screenshot interval must be a whole number"],
+      [{ ...GOOD, screenshot_interval: "" }, "Screenshot interval must be a whole number of at least 15 seconds"],
+      [{ ...GOOD, camera_interval: "4" }, "Camera snapshot interval must be a whole number of at least 5 seconds"],
+      [{ ...GOOD, camera_interval: "x" }, "Camera snapshot interval must be a whole number"],
+      [{ ...GOOD, camera_interval: "" }, "Camera snapshot interval must be a whole number of at least 5 seconds"],
+      [{ ...GOOD, default_image_duration: "0" }, "Default image duration must be between 0.5 and 86400 seconds"],
+      [{ ...GOOD, default_image_duration: "-3" }, "Default image duration must be between 0.5 and 86400 seconds"],
+      [{ ...GOOD, default_image_duration: "inf" }, "Default image duration must be between 0.5 and 86400 seconds"],
+      [{ ...GOOD, default_image_duration: "86401" }, "Default image duration must be between 0.5 and 86400 seconds"],
+      [{ ...GOOD, default_image_duration: "0.4" }, "Default image duration must be between 0.5 and 86400 seconds"],
+      [{ ...GOOD, default_image_duration: "" }, "Default image duration must be between 0.5 and 86400 seconds"],
+      [{ ...GOOD, player_release: "-rf" }, "Player software version may only contain letters, digits, dots, slashes, hyphens and underscores (at most 100)"],
+      [{ ...GOOD, player_release: "a..b" }, "Player software version may only contain letters, digits, dots, slashes, hyphens and underscores (at most 100)"],
+      [{ ...GOOD, player_release: "v1;rm" }, "Player software version may only contain letters, digits, dots, slashes, hyphens and underscores (at most 100)"],
+      [{ ...GOOD, player_release: "a".repeat(101) }, "Player software version may only contain letters, digits, dots, slashes, hyphens and underscores (at most 100)"],
+      [{ ...GOOD, auto_update: "weekly" }, "Auto-update must be off or nightly"],
+      [{ ...GOOD, auto_update_window: "3:00-5:00" }, "Auto-update window must be HH:MM-HH:MM"],
+      [{ ...GOOD, auto_update_window: "03:00" }, "Auto-update window must be HH:MM-HH:MM"],
+      [{ ...GOOD, auto_update_window: "24:00-05:00" }, "Auto-update window must be HH:MM-HH:MM"],
     ];
     await query("DELETE FROM audit_log WHERE action = 'settings_update'");
     for (const [fields, msg] of cases) {
@@ -144,10 +145,10 @@ describe("settings", () => {
     expect(page).toContain(`<option value="${pid}">Welcome loop</option>`);
 
     for (const [fields, msg] of [
-      [{ ...GOOD, enroll_group_id: "999999" }, "enroll_group_id: unknown group"],
-      [{ ...GOOD, enroll_group_id: "abc" }, "enroll_group_id must be an integer"],
-      [{ ...GOOD, enroll_playlist_id: "999999" }, "enroll_playlist_id: unknown playlist"],
-      [{ ...GOOD, enroll_playlist_id: "1.5" }, "enroll_playlist_id must be an integer"],
+      [{ ...GOOD, enroll_group_id: "999999" }, "Pick a group from the list"],
+      [{ ...GOOD, enroll_group_id: "abc" }, "New devices join group must be a whole number"],
+      [{ ...GOOD, enroll_playlist_id: "999999" }, "Pick a playlist from the list"],
+      [{ ...GOOD, enroll_playlist_id: "1.5" }, "New devices get playlist must be a whole number"],
     ]) {
       expect(await detail(await post(r.admin, "/settings", fields), 400), JSON.stringify(fields)).toContain(msg);
     }
@@ -246,9 +247,9 @@ describe("projector power settings", () => {
     let page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('name="projector_lead_minutes" value="3"');
     expect(page).toContain('name="projector_idle_minutes" value="10"');
-    expect(await detail(await post(r.admin, "/settings", { ...GOOD, projector_lead_minutes: "x" }), 400)).toBe("projector_lead_minutes must be an integer");
-    expect(await detail(await post(r.admin, "/settings", { ...GOOD, projector_lead_minutes: "-1" }), 400)).toBe("projector_lead_minutes must be a whole number of minutes, 0-1440");
-    expect(await detail(await post(r.admin, "/settings", { ...GOOD, projector_idle_minutes: "1441" }), 400)).toBe("projector_idle_minutes must be a whole number of minutes, 0-1440");
+    expect(await detail(await post(r.admin, "/settings", { ...GOOD, projector_lead_minutes: "x" }), 400)).toBe("Switch on before a schedule starts must be a whole number");
+    expect(await detail(await post(r.admin, "/settings", { ...GOOD, projector_lead_minutes: "-1" }), 400)).toBe("Switch on before a schedule starts must be a whole number of minutes, 0-1440");
+    expect(await detail(await post(r.admin, "/settings", { ...GOOD, projector_idle_minutes: "1441" }), 400)).toBe("Switch off after playback ends must be a whole number of minutes, 0-1440");
     expect((await settings()).filter((x) => x.key.startsWith("projector_"))).toEqual([]);
     let res = await post(r.admin, "/settings", { ...GOOD, projector_lead_minutes: "15", projector_idle_minutes: "0" });
     expect(res.status).toBe(303);

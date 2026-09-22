@@ -72,7 +72,7 @@ async function loginSubmit(ctx) {
   const password = str(form, "password");
   const next = nextPath(ctx, str(form, "next"));
   // Before the throttle and any PBKDF2: the audit and login_failures rows stay bounded.
-  if (username.length > auth.MAX_USERNAME_CHARS) return loginPage(ctx, "Username too long", 400, false, next);
+  if (username.length > auth.MAX_USERNAME_CHARS) return loginPage(ctx, "Username must be at most 64 characters", 400, false, next);
   const ip = audit.clientIp(ctx);
   const wait = await auth.loginLockedFor(ctx.env, ip, username);
   if (wait) return loginPage(ctx, `Too many failed attempts; try again in ${wait} s`, 429, true, next);

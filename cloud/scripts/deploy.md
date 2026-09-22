@@ -9,7 +9,8 @@ Prerequisites: `npx wrangler login` with Workers Scripts, D1 and R2 write scopes
 that owns the `photogen5000.com` zone. Check with `npx wrangler whoami`. That account must be on
 the **Workers Paid** plan (dashboard → Workers & Pages → Plans): Workers Free caps CPU at 10 ms
 per request and one PBKDF2 password derivation (100 000 iterations) needs ≈ 15 ms, so login
-and user creation would fail with error 1102; D1/R2 calls are subrequests (Free: 50 external +
+and user creation would fail with error 1102 (`wrangler.toml` also raises the CPU limit to 5 minutes,
+`[limits] cpu_ms = 300000`, so finishing an upload can hash a multi-GB file; only Paid allows that); D1/R2 calls are subrequests (Free: 50 external +
 1 000 to Cloudflare services per invocation, Paid: 10 000) and the Devices/Dashboard pages
 use a fixed handful of statements regardless of fleet size (see README "Limits and design
 notes"). `wrangler deploy` does not check the plan — a Free-plan deploy only
@@ -44,8 +45,9 @@ Wrangler lists the pending files in `migrations/` and asks for confirmation. Re-
 safe: only unapplied migrations run. Until the database is at the version the code expects
 (`meta.schema_version`, `db.SCHEMA_VERSION`), the worker refuses every request, `/api/health`
 included, with a plain-English 500 naming `npm run migrate:remote`; `npm run deploy` runs it
-first for that reason. `0006_indexes.sql` adds two unique indexes and fails on a database that
-already holds duplicates; the file's header comment has the SELECTs to find them.
+first for that reason. `0006_indexes.sql` heals duplicate media rows and duplicate open alerts
+itself before adding its unique indexes (its header comment has the SELECTs that show what it
+will touch); `0008` adds the login_failures username index; the code expects `schema_version` 8.
 
 ## 3. Secrets (generated, never chosen by hand)
 

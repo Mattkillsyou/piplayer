@@ -131,7 +131,7 @@ describe("H5: legacy zone abbreviations", () => {
 
 describe("H1 + H6: the Users page", () => {
   it("refuses a username over the login cap; the reset form requires a password", async () => {
-    expect(await detail(await post(r.admin, "/users", { username: "u".repeat(65), password: "pw123456", role: "viewer" }), 400)).toBe("Username too long");
+    expect(await detail(await post(r.admin, "/users", { username: "u".repeat(65), password: "pw123456", role: "viewer" }), 400)).toBe("Username must be at most 64 characters");
     expect(await one("SELECT id FROM users WHERE username = ?", "u".repeat(65))).toBeNull();
     expect((await post(r.admin, "/users", { username: "u".repeat(64), password: "pw123456", role: "viewer" })).status).toBe(303);
     const page = await (await r.admin.get("/users")).text();

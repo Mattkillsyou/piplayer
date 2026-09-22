@@ -159,7 +159,7 @@ async function loadUpload(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const row = await db.first(ctx.env, "SELECT * FROM uploads WHERE id = ?", ctx.params.id);
   if (!row) fail(404, "Upload not found");
-  if (row.user_id !== user.id && user.role !== "admin") fail(403, "not your upload");
+  if (row.user_id !== user.id && user.role !== "admin") fail(403, "You can only continue or cancel your own uploads");
   row.parts = JSON.parse(row.parts);
   return row;
 }
@@ -288,9 +288,10 @@ async function uploadComplete(ctx) {
     fail(400, `stored object is ${obj.size} bytes, expected ${row.size}`);
   }
   // The browser computed row.sha256 and the Pi rejects any download that does not match it,
-  // so check the stored bytes once here instead of letting every player fail forever. Skipped
-  // above PIPLAYER_VERIFY_SHA_MAX_BYTES (1 GiB) so a 5 GB video cannot exhaust the request.
-  const shaVerified = row.size <= envInt(ctx.env, "PIPLAYER_VERIFY_SHA_MAX_BYTES", 1024 ** 3);
+  // so check the stored bytes once here instead of letting every player fail forever. Every
+  // upload is verified ([limits] cpu_ms in wrangler.toml covers a multi-GB hash); a lower
+  // PIPLAYER_VERIFY_SHA_MAX_BYTES skips files above it, and the audit row says so.
+  const shaVerified = row.size <= envInt(ctx.env, "PIPLAYER_VERIFY_SHA_MAX_BYTES", maxBytes(ctx.env));
   if (shaVerified) {
     const digest = new crypto.DigestStream("SHA-256");
     await (await ctx.env.MEDIA.get(row.key)).body.pipeTo(digest);

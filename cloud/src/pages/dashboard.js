@@ -73,7 +73,7 @@ async function dashboard(ctx) {
   const devices = await decorateDevices(env, rows, settings);
   const auditTail = await db.all(env,
     `SELECT username, action, target_type, target_id, ip, created_at
-       FROM audit_log ORDER BY created_at DESC, id DESC LIMIT ?`, DASHBOARD_AUDIT_TAIL);
+       FROM audit_log WHERE username IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT ?`, DASHBOARD_AUDIT_TAIL);
   const openAlerts = await alerts.openCount(env);
   const faultCount = devices.filter(isFault).length;
   const playingCount = devices.filter((d) => d.lamp === "playing").length;
@@ -122,7 +122,7 @@ ${!n
 
 <div class="audit-tail">
   <div class="audit-tail-head">
-    <h2>Audit tail · <a href="/audit">full log</a></h2>
+    <h2>Audit tail (people) · <a href="/audit">full log</a></h2>
     <span class="cursor-blink" aria-hidden="true"></span>
   </div>
   <ul class="log-lines">

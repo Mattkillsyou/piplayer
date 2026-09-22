@@ -28,7 +28,7 @@ describe("H1: username cap and per-ip ceiling", () => {
     const before = (await query("SELECT COUNT(*) AS n FROM audit_log"))[0].n;
     const r = await loginFrom("203.0.113.1", "u".repeat(auth.MAX_USERNAME_CHARS + 1), "x");
     expect(r.status).toBe(400);
-    expect(await r.text()).toContain("Username too long");
+    expect(await r.text()).toContain("Username must be at most 64 characters");
     expect((await query("SELECT COUNT(*) AS n FROM audit_log"))[0].n).toBe(before);
     expect(await query("SELECT username FROM login_failures WHERE ip = '203.0.113.1'")).toEqual([]);
     // exactly 64 is still a normal (failed) login

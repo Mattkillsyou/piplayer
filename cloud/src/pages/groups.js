@@ -65,7 +65,7 @@ ${!groups.length ? emptyState("NO GROUPS", `No groups yet.${canEdit ? " Create o
 async function groupsCreate(ctx) {
   auth.requireRole(ctx, "editor");
   const name = str(await ctx.form(), "name").trim();
-  if (!name) fail(400, "Name required");
+  if (!name) fail(400, "Enter a name");
   let id;
   try {
     id = (await db.run(ctx.env, "INSERT INTO device_groups (name) VALUES (?)", name)).last_row_id;

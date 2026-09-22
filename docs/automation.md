@@ -418,7 +418,9 @@ above):
 `default` follows the site: `wyze` with the pattern-derived name once the
 Wyze email and password are set, `none` until then. Set `none` on a device that
 has no camera so its bridge stays down; set `rtsp` for a non-Wyze camera.
-Changes are audited (`device_set_camera_source`).
+Changes are audited (`device_set_camera_source`). The URL is stored
+encrypted; one saved before encryption existed is encrypted by the next
+nightly housekeeping, nothing to re-save.
 
 **Device API.** `GET /api/camera-config/<device_id>` with the device's bearer
 token returns `{source: "none", version: 3}`,
@@ -920,7 +922,9 @@ dashboard's "open alerts" card shows the count and links here (`all clear`
 at 0). Alerts are read-only: there is no acknowledge or mute, close the
 condition instead (and to silence a device permanently, delete it: its
 alerts are deleted with it). Closed rows older than 90 days are pruned by
-the nightly housekeeping.
+the nightly housekeeping. The dashboard's audit tail lists people's actions
+only; alert rows and everything else the console writes on its own are on
+`/audit`.
 
 **Operator steps** (once per site). Only the channels you want; each is
 independent.

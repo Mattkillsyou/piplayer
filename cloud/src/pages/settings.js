@@ -16,7 +16,7 @@ import * as cloudflare from "../cloudflare.js";
 import * as db from "../db.js";
 import * as secrets from "../secrets.js";
 import { esc, fail, floatField, idParam, intField, isValidTimeZone, localTime, nowUtc, str, zoneName } from "../util.js";
-import { csrfInput, layout } from "./layout.js";
+import { alertBox, csrfInput, layout } from "./layout.js";
 
 export const MIN_SCREENSHOT_INTERVAL = 15;
 export const MIN_CAMERA_INTERVAL = 5;
@@ -43,7 +43,7 @@ export const userTokens = (env, userId) => db.all(env,
 // Validated name from a create form, or 400.
 export function tokenName(form) {
   const name = str(form, "name").trim();
-  if (!name || [...name].length > MAX_TOKEN_NAME) fail(400, `name must be 1-${MAX_TOKEN_NAME} chars`);
+  if (!name || [...name].length > MAX_TOKEN_NAME) fail(400, `Token name must be 1-${MAX_TOKEN_NAME} characters`);
   return name;
 }
 
@@ -210,6 +210,7 @@ async function settingsPage(ctx, newToken = "") {
 </div>
 <div class="panel">
   <h2>Site settings</h2>
+  ${s.timezone_problem ? alertBox(`The saved timezone "${s.timezone_problem}" is no longer accepted, so the console is using UTC. Pick a timezone from the list and save.`, "warn") : ""}
   <form method="post" action="/settings">
     ${csrfInput(ctx)}
     <div class="form-grid">
@@ -302,37 +303,35 @@ async function settingsSave(ctx) {
   const form = await ctx.form();
   const timezone = str(form, "timezone").trim();
   if (!isValidTimeZone(timezone)) fail(400, "Pick a timezone from the list, for example America/New_York (short names like EST are not accepted)");
-  const interval = intField(str(form, "screenshot_interval"), "screenshot_interval");
-  if (interval === null) fail(400, "screenshot_interval required");
-  if (interval < MIN_SCREENSHOT_INTERVAL) fail(400, `screenshot_interval must be at least ${MIN_SCREENSHOT_INTERVAL} seconds`);
-  const camera = intField(str(form, "camera_interval"), "camera_interval");
-  if (camera === null) fail(400, "camera_interval required");
-  if (camera < MIN_CAMERA_INTERVAL) fail(400, `camera_interval must be at least ${MIN_CAMERA_INTERVAL} seconds`);
-  const duration = floatField(str(form, "default_image_duration"), "default_image_duration",
-    "default_image_duration must be a positive number");
-  if (duration === null) fail(400, "default_image_duration required");
-  if (duration <= 0 || duration > 86400) fail(400, "default_image_duration must be a positive number of seconds (at most 86400)");
-  const enrollGroup = intField(str(form, "enroll_group_id"), "enroll_group_id");
-  if (enrollGroup !== null && !(await db.first(ctx.env, "SELECT id FROM device_groups WHERE id = ?", enrollGroup))) fail(400, "enroll_group_id: unknown group");
-  const enrollPlaylist = intField(str(form, "enroll_playlist_id"), "enroll_playlist_id");
-  if (enrollPlaylist !== null && !(await db.first(ctx.env, "SELECT id FROM playlists WHERE id = ?", enrollPlaylist))) fail(400, "enroll_playlist_id: unknown playlist");
+  // Every message names the field by its on-page label: the owner reads it on the error page.
+  const interval = intField(str(form, "screenshot_interval"), "Screenshot interval");
+  if (interval === null || interval < MIN_SCREENSHOT_INTERVAL) fail(400, `Screenshot interval must be a whole number of at least ${MIN_SCREENSHOT_INTERVAL} seconds`);
+  const camera = intField(str(form, "camera_interval"), "Camera snapshot interval");
+  if (camera === null || camera < MIN_CAMERA_INTERVAL) fail(400, `Camera snapshot interval must be a whole number of at least ${MIN_CAMERA_INTERVAL} seconds`);
+  const durationMsg = "Default image duration must be between 0.5 and 86400 seconds";
+  const duration = floatField(str(form, "default_image_duration"), "Default image duration", durationMsg);
+  if (duration === null || duration < 0.5 || duration > 86400) fail(400, durationMsg);
+  const enrollGroup = intField(str(form, "enroll_group_id"), "New devices join group");
+  if (enrollGroup !== null && !(await db.first(ctx.env, "SELECT id FROM device_groups WHERE id = ?", enrollGroup))) fail(400, "Pick a group from the list");
+  const enrollPlaylist = intField(str(form, "enroll_playlist_id"), "New devices get playlist");
+  if (enrollPlaylist !== null && !(await db.first(ctx.env, "SELECT id FROM playlists WHERE id = ?", enrollPlaylist))) fail(400, "Pick a playlist from the list");
   // Update policy: an omitted (empty) field keeps its current value, so older callers that
   // only post the four site fields never lose it.
   const current = await ctx.settings();
   const release = str(form, "player_release").trim() || current.player_release;
-  if (!db.isGitRef(release)) fail(400, "Player software version must be a release name (letters, digits, . _ / -; at most 100 characters)");
+  if (!db.isGitRef(release)) fail(400, "Player software version may only contain letters, digits, dots, slashes, hyphens and underscores (at most 100)");
   const autoUpdate = str(form, "auto_update").trim() || current.auto_update;
-  if (!db.AUTO_UPDATE_MODES.includes(autoUpdate)) fail(400, `auto_update must be one of ${db.AUTO_UPDATE_MODES.join(", ")}`);
+  if (!db.AUTO_UPDATE_MODES.includes(autoUpdate)) fail(400, `Auto-update must be ${db.AUTO_UPDATE_MODES.join(" or ")}`);
   const window = str(form, "auto_update_window").trim() || current.auto_update_window;
-  if (!db.UPDATE_WINDOW_RE.test(window)) fail(400, "auto_update_window must be HH:MM-HH:MM (24-hour, site time)");
+  if (!db.UPDATE_WINDOW_RE.test(window)) fail(400, "Auto-update window must be HH:MM-HH:MM");
   const values = { timezone, screenshot_interval: interval, camera_interval: camera, default_image_duration: duration,
     enroll_group_id: enrollGroup, enroll_playlist_id: enrollPlaylist,
     player_release: release, auto_update: autoUpdate, auto_update_window: window };
   // Projector lead / idle minutes: stored (and audited) only when the form posts them.
-  for (const key of ["projector_lead_minutes", "projector_idle_minutes"]) {
+  for (const [key, label] of [["projector_lead_minutes", "Switch on before a schedule starts"], ["projector_idle_minutes", "Switch off after playback ends"]]) {
     if (!str(form, key).trim()) continue;
-    const v = intField(str(form, key), key);
-    if (!db.isProjectorMinutes(v)) fail(400, `${key} must be a whole number of minutes, 0-${db.MAX_PROJECTOR_MINUTES}`);
+    const v = intField(str(form, key), label);
+    if (!db.isProjectorMinutes(v)) fail(400, `${label} must be a whole number of minutes, 0-${db.MAX_PROJECTOR_MINUTES}`);
     values[key] = v;
   }
   // null (none) deletes the row so the settings table only holds what is set
@@ -349,12 +348,12 @@ async function wyzeSave(ctx) {
   const form = await ctx.form();
   const current = await ctx.settings();
   const pattern = str(form, "wyze_camera_pattern").trim() || current.wyze_camera_pattern;
-  if (!db.isCameraPattern(pattern)) fail(400, "wyze_camera_pattern must be 1-100 printable chars");
+  if (!db.isCameraPattern(pattern)) fail(400, "Camera name pattern must be 1-100 printable characters");
   const changed = {};
-  for (const [name] of WYZE_FIELDS) {
+  for (const [name, label] of WYZE_FIELDS) {
     const v = str(form, name);
     if (!v) continue;
-    if (v.length > 500 || /[\x00-\x1f\x7f]/.test(v)) fail(400, `${name} must be at most 500 printable chars`);
+    if (v.length > 500 || /[\x00-\x1f\x7f]/.test(v)) fail(400, `${label} must be at most 500 printable characters`);
     changed[name] = v;
   }
   for (const [name, v] of Object.entries(changed)) await secrets.set(ctx.env, name, v);
@@ -385,19 +384,19 @@ async function alertsSave(ctx) {
   auth.requireRole(ctx, "admin");
   const before = (await ctx.settings()).alert_email;
   const form = await ctx.form();
-  const offline = intField(str(form, "alert_offline_minutes"), "alert_offline_minutes");
-  if (!db.isAlertOfflineMinutes(offline)) fail(400, "alert_offline_minutes must be a whole number of minutes, 1-1440");
-  const repeat = intField(str(form, "alert_repeat_minutes"), "alert_repeat_minutes");
-  if (!db.isAlertRepeatMinutes(repeat)) fail(400, "alert_repeat_minutes must be a whole number of minutes, 0-10080");
+  const offline = intField(str(form, "alert_offline_minutes"), "Offline after");
+  if (!db.isAlertOfflineMinutes(offline)) fail(400, "Offline after must be a whole number of minutes, 1-1440");
+  const repeat = intField(str(form, "alert_repeat_minutes"), "Repeat while open");
+  if (!db.isAlertRepeatMinutes(repeat)) fail(400, "Repeat while open must be a whole number of minutes, 0-10080");
   const email = str(form, "alert_email").trim();
-  if (email && !db.parseEmails(email)) fail(400, "alert_email must be one or more email addresses, comma-separated");
+  if (email && !db.parseEmails(email)) fail(400, "Enter one or more email addresses, separated by commas");
   const webhook = str(form, "alert_webhook_url").trim();
-  if (webhook && !db.isWebhookUrl(webhook)) fail(400, "alert_webhook_url must be an absolute https:// URL");
+  if (webhook && !db.isWebhookUrl(webhook)) fail(400, "The webhook must be an https:// address");
   const twilio = {};
-  for (const [name] of TWILIO_FIELDS) {
+  for (const [name, label] of TWILIO_FIELDS) {
     const v = str(form, name).trim();
     if (!v) continue;
-    if (v.length > 200 || /[\x00-\x1f\x7f]/.test(v)) fail(400, `${name} must be at most 200 printable chars`);
+    if (v.length > 200 || /[\x00-\x1f\x7f]/.test(v)) fail(400, `${label.split(" (")[0]} must be at most 200 printable characters`);
     twilio[name] = v;
   }
   const values = { alert_offline_minutes: offline, alert_repeat_minutes: repeat, alert_email: email, alert_webhook_url: webhook };
@@ -429,7 +428,7 @@ async function twilioClear(ctx) {
 async function alertsTest(ctx) {
   const me = auth.requireRole(ctx, "admin");
   const channel = str(await ctx.form(), "channel").trim();
-  if (!alerts.CHANNELS.includes(channel)) fail(400, `channel must be one of ${alerts.CHANNELS.join(", ")}`);
+  if (!alerts.CHANNELS.includes(channel)) fail(400, "Pick a channel to test");
   const error = await alerts.sendTest(ctx.env, await ctx.settings(), channel, me.username);
   await audit.log(ctx, "alert_test_sent", "settings", channel, error ? { error: error.slice(0, 200) } : null);
   if (error) return auth.flashRedirect(ctx, "/settings", `Test alert failed: ${channel}: ${error.slice(0, 200)}`, "error");

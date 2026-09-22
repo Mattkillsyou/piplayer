@@ -174,7 +174,7 @@ describe("camera live URL", () => {
 
     for (const bad of ["http://cam.example.com/", "javascript:alert(1)", "cam.example.com", "https://", "https://user:pw@cam.example.com/", "ftp://x/", `https://cam.example.com/${"a".repeat(2100)}`]) {
       expect(await detail(await post(r.admin, `/devices/${dev.id}/camera-url`, { camera_live_url: bad }), 400), bad)
-        .toBe("camera_live_url must be an absolute https:// URL");
+        .toBe("The camera live URL must be an https:// address");
     }
     expect((await row()).camera_live_url).toBe("https://cam.example.com/lobby");
     expect((await post(r.admin, "/devices/999999/camera-url", { camera_live_url: "https://x.example/" })).status).toBe(404);

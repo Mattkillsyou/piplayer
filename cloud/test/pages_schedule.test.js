@@ -83,10 +83,10 @@ describe("page", () => {
 describe("create validation (contract 10)", () => {
   it("times must be HH:MM and are normalised; start != end", async () => {
     for (const bad of ["25:99", "24:00", "12:60", "7", "0800", "8am", "07:00:00", "junk"]) {
-      expect(await detail(await rule({ start_time: bad }), 400), bad).toBe("start_time must be HH:MM (00:00-23:59)");
-      expect(await detail(await rule({ end_time: bad }), 400), bad).toBe("end_time must be HH:MM (00:00-23:59)");
+      expect(await detail(await rule({ start_time: bad }), 400), bad).toBe("The start time must be in HH:MM form (00:00 to 23:59)");
+      expect(await detail(await rule({ end_time: bad }), 400), bad).toBe("The end time must be in HH:MM form (00:00 to 23:59)");
     }
-    expect(await detail(await rule({ start_time: "09:00", end_time: "9:00" }), 400)).toBe("start and end must differ; use no times for all-day");
+    expect(await detail(await rule({ start_time: "09:00", end_time: "9:00" }), 400)).toBe("Start and end must differ; leave both empty for all day");
     let res = await rule({ start_time: "7:05", end_time: " 23:59 " });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe(base());
@@ -98,10 +98,10 @@ describe("create validation (contract 10)", () => {
 
   it("dates must be ISO and ordered", async () => {
     for (const bad of ["2026-13-01", "2026-02-30", "01/02/2026", "yesterday", "2026-1-1"]) {
-      expect(await detail(await rule({ start_date: bad }), 400), bad).toBe("start_date must be a date in YYYY-MM-DD form");
-      expect(await detail(await rule({ end_date: bad }), 400), bad).toBe("end_date must be a date in YYYY-MM-DD form");
+      expect(await detail(await rule({ start_date: bad }), 400), bad).toBe("Start date must be a date in YYYY-MM-DD form");
+      expect(await detail(await rule({ end_date: bad }), 400), bad).toBe("End date must be a date in YYYY-MM-DD form");
     }
-    expect(await detail(await rule({ start_date: "2026-09-20", end_date: "2026-09-19" }), 400)).toBe("start_date must be on or before end_date");
+    expect(await detail(await rule({ start_date: "2026-09-20", end_date: "2026-09-19" }), 400)).toBe("The start date must be on or before the end date");
     expect((await rule({ start_date: "2026-09-19", end_date: "2026-09-19" })).status).toBe(303);
     expect(await last()).toMatchObject({ start_date: "2026-09-19", end_date: "2026-09-19" });
   });
@@ -111,16 +111,16 @@ describe("create validation (contract 10)", () => {
       const res = await rule({ priority: bad });
       expect(res.status, bad).toBe(400);
     }
-    expect(await detail(await rule({ priority: "1001" }), 400)).toBe("priority must be between 0 and 1000");
-    expect(await detail(await rule({ priority: "x" }), 400)).toBe("priority must be an integer");
-    expect(await detail(await rule({ playlist_id: "abc" }), 400)).toBe("playlist_id must be an integer");
-    expect(await detail(await rule({ playlist_id: "" }), 400)).toBe("playlist_id required");
+    expect(await detail(await rule({ priority: "1001" }), 400)).toBe("Priority must be between 0 and 1000");
+    expect(await detail(await rule({ priority: "x" }), 400)).toBe("Priority must be a whole number");
+    expect(await detail(await rule({ playlist_id: "abc" }), 400)).toBe("Playlist must be a whole number");
+    expect(await detail(await rule({ playlist_id: "" }), 400)).toBe("Pick a playlist");
     expect(await detail(await rule({ playlist_id: String(NOPE) }), 404)).toBe("Playlist not found");
     expect(await detail(await post(r.editor, `/devices/${NOPE}/schedule`, { name: "x", playlist_id: String(w.pid) }), 404)).toBe("Device not found");
     // junk days -> 400 like web.py, never silently filtered to "always"
-    expect(await detail(await rule({ days_of_week: "6x40 4" }), 400)).toBe("days_of_week must only contain digits 0-6 (0 = Monday)");
-    expect(await detail(await rule({ days_of_week: "abc" }), 400)).toBe("days_of_week must only contain digits 0-6 (0 = Monday)");
-    expect(await detail(await rule({ days_of_week: "7" }), 400)).toBe("days_of_week must only contain digits 0-6 (0 = Monday)");
+    expect(await detail(await rule({ days_of_week: "6x40 4" }), 400)).toBe("Pick the days by ticking them");
+    expect(await detail(await rule({ days_of_week: "abc" }), 400)).toBe("Pick the days by ticking them");
+    expect(await detail(await rule({ days_of_week: "7" }), 400)).toBe("Pick the days by ticking them");
     let res = await rule({ priority: "1000", name: "   ", days_of_week: " 6404 " });
     expect(res.status).toBe(303);
     expect(await last()).toMatchObject({ priority: 1000, name: "Rule", days_of_week: "046" });

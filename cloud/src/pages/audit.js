@@ -13,7 +13,7 @@ const DEFAULT_LIMIT = 200;
 function limitParam(url) {
   const raw = url.searchParams.get("limit");
   if (raw === null || raw === "") return DEFAULT_LIMIT;
-  if (!/^\d+$/.test(raw.trim())) fail(400, "limit must be an integer");
+  if (!/^\d+$/.test(raw.trim())) fail(400, "limit must be a whole number");
   const n = parseInt(raw, 10);
   if (n < 1 || n > 1000) fail(400, "limit must be between 1 and 1000");
   return n;
@@ -23,7 +23,7 @@ function limitParam(url) {
 // itself, so ids and created_at rise together.
 function filterParams(url) {
   const before = url.searchParams.get("before") || "";
-  if (before && !/^\d+$/.test(before)) fail(400, "before must be an integer");
+  if (before && !/^\d+$/.test(before)) fail(400, "before must be a whole number");
   const action = url.searchParams.get("action") || "";
   if (action && !/^[a-z_]{1,64}$/.test(action)) fail(400, "unknown action");
   return { before, action };

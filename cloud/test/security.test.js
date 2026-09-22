@@ -327,7 +327,7 @@ describe("validation sweep (contract 10)", () => {
       expect((await sched({ start_time: v })).status, v).toBe(400);
       expect((await sched({ end_time: v })).status, v).toBe(400);
     }
-    expect(await detail(await sched({ start_time: "09:00", end_time: "09:00" }), 400)).toContain("start and end must differ");
+    expect(await detail(await sched({ start_time: "09:00", end_time: "09:00" }), 400)).toContain("Start and end must differ");
     for (const [f, v] of [["start_date", "2026-13-01"], ["start_date", "01/02/2026"], ["start_date", "2026-1-5"], ["end_date", "junk"], ["end_date", "2026-02-30"]]) {
       expect((await sched({ [f]: v })).status, `${f}=${v}`).toBe(400);
     }

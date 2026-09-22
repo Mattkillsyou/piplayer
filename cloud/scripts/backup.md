@@ -21,7 +21,7 @@ bearer tokens (each one also fetches the Wyze password and the device's Cloudfla
 on sync), the enrollment key, the alert webhook URL, up to an hour of unclaimed operator tokens
 in `device_codes`, and session rows. The `secrets` table (Wyze, Twilio) and the per-device
 camera RTSP URLs (`devices.camera_rtsp_url`, which carry the camera's password; a URL saved
-before they were encrypted stays plain until it is re-saved) are encrypted with a key derived
+before they were encrypted is encrypted by the next nightly housekeeping) are encrypted with a key derived
 from `SESSION_SECRET` and are unreadable without it.
 
 Restore into an empty database:

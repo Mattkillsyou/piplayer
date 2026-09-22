@@ -195,8 +195,8 @@ describe("register", () => {
       .toBe("Device ID must be 1-63 lowercase letters, digits or hyphens, starting with a letter or digit");
     expect(await detail(await post(r.editor, "/devices", { device_id: "-lead", name: "x" }), 400)).toContain("Device ID");
     expect(await detail(await post(r.editor, "/devices", { device_id: "a".repeat(64), name: "x" }), 400)).toContain("Device ID");
-    expect(await detail(await post(r.editor, "/devices", { device_id: "ok-1", name: "  " }), 400)).toBe("name must be 1-120 chars");
-    expect(await detail(await post(r.editor, "/devices", { device_id: "ok-1", name: "n".repeat(121) }), 400)).toBe("name must be 1-120 chars");
+    expect(await detail(await post(r.editor, "/devices", { device_id: "ok-1", name: "  " }), 400)).toBe("Name must be 1-120 characters");
+    expect(await detail(await post(r.editor, "/devices", { device_id: "ok-1", name: "n".repeat(121) }), 400)).toBe("Name must be 1-120 characters");
     expect(await one("SELECT id FROM devices WHERE device_id = 'ok-1'")).toBeNull();
     let res = await post(r.editor, "/devices", { device_id: "  NEW-Pi ", name: " New Pi " });
     expect(res.status).toBe(303);
@@ -214,7 +214,7 @@ describe("assign / group / token / command / delete", () => {
   it("assign: 400 non-int, 404 missing playlist or device, clearing allowed, audits", async () => {
     const dev = await device("asg-1", "Asg", { playlist_id: w.pid });
     for (const bad of ["abc", "1.5", "1e3"]) {
-      expect(await detail(await post(r.editor, `/devices/${dev.id}/assign`, { playlist_id: bad }), 400)).toBe("playlist_id must be an integer");
+      expect(await detail(await post(r.editor, `/devices/${dev.id}/assign`, { playlist_id: bad }), 400)).toBe("playlist_id must be a whole number");
     }
     expect(await detail(await post(r.editor, `/devices/${dev.id}/assign`, { playlist_id: String(NOPE) }), 404)).toBe("Playlist not found");
     expect(await detail(await post(r.editor, `/devices/${NOPE}/assign`, { playlist_id: String(w.pid) }), 404)).toBe("Device not found");
@@ -226,7 +226,7 @@ describe("assign / group / token / command / delete", () => {
 
   it("group: 400/404, then set", async () => {
     const dev = await device("grp-1", "Grp");
-    expect(await detail(await post(r.editor, `/devices/${dev.id}/group`, { group_id: "abc" }), 400)).toBe("group_id must be an integer");
+    expect(await detail(await post(r.editor, `/devices/${dev.id}/group`, { group_id: "abc" }), 400)).toBe("group_id must be a whole number");
     expect(await detail(await post(r.editor, `/devices/${dev.id}/group`, { group_id: String(NOPE) }), 404)).toBe("Group not found");
     expect(await detail(await post(r.editor, `/devices/${NOPE}/group`, { group_id: String(w.gid) }), 404)).toBe("Device not found");
     expect((await post(r.editor, `/devices/${dev.id}/group`, { group_id: String(w.gid) })).status).toBe(303);
@@ -472,7 +472,7 @@ describe("projector", () => {
       .toEqual({ projector_control: "cec", projector_power_mode: "auto", broadlink_host: null });
     expect(await detail(await post(r.editor, p, { projector_control: "zigbee" }), 400)).toBe("projector_control must be one of none, broadlink, cec");
     expect(await detail(await post(r.editor, p, { projector_control: "cec", projector_power_mode: "sometimes" }), 400)).toBe("projector_power_mode must be one of manual, auto");
-    expect(await detail(await post(r.editor, p, { projector_control: "broadlink", broadlink_host: "http://rm4" }), 400)).toBe("broadlink_host must be a hostname or IP address");
+    expect(await detail(await post(r.editor, p, { projector_control: "broadlink", broadlink_host: "http://rm4" }), 400)).toBe("Broadlink address must be a hostname or IP address");
     expect(await detail(await post(r.editor, `/devices/${NOPE}/projector`, { projector_control: "cec" }), 404)).toBe("Device not found");
     const res = await post(r.editor, p, { projector_control: "broadlink", projector_power_mode: "manual", broadlink_host: " 192.168.1.40 " });
     expect(res.status).toBe(303);

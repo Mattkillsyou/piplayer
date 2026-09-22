@@ -81,7 +81,7 @@ ${!rows.length ? emptyState("NO PLAYLISTS", `No playlists yet.${canEdit ? " Crea
 async function playlistsCreate(ctx) {
   auth.requireRole(ctx, "editor");
   const name = str(await ctx.form(), "name").trim();
-  if (!name) fail(400, "Name required");
+  if (!name) fail(400, "Enter a name");
   let pid;
   try {
     pid = (await db.run(ctx.env, "INSERT INTO playlists (name) VALUES (?)", name)).last_row_id;
@@ -192,13 +192,13 @@ ${items.length ? '<div class="drop-hint"><span>⣿</span><span class="sans">Drag
 async function playlistAddItem(ctx) {
   auth.requireRole(ctx, "editor");
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
-  const mid = intField(str(await ctx.form(), "media_id"), "media_id");
-  if (mid === null) fail(400, "media_id required");
+  const mid = intField(str(await ctx.form(), "media_id"), "Media to add");
+  if (mid === null) fail(400, "Pick a file to add");
   const env = ctx.env;
   if (!(await db.first(env, "SELECT id FROM playlists WHERE id = ?", playlistId))) fail(404, "Playlist not found");
   if (!(await db.first(env, "SELECT id FROM media WHERE id = ?", mid))) fail(404, "Media not found");
   if (await db.first(env, "SELECT id FROM playlist_items WHERE playlist_id = ? AND media_id = ?", playlistId, mid)) {
-    fail(409, "Already in playlist");
+    fail(409, "That file is already in this playlist");
   }
   // No BEGIN IMMEDIATE on D1: the next position is computed inside the same batch as the
   // insert, and the HAVING re-checks the duplicate so two overlapping adds cannot both land.
@@ -208,7 +208,7 @@ async function playlistAddItem(ctx) {
       HAVING NOT EXISTS (SELECT 1 FROM playlist_items WHERE playlist_id = ?1 AND media_id = ?2)`, playlistId, mid],
     [TOUCH_SQL, playlistId],
   ]);
-  if (!results[0].meta.changes) fail(409, "Already in playlist");
+  if (!results[0].meta.changes) fail(409, "That file is already in this playlist");
   await audit.log(ctx, "playlist_add_item", "playlist", playlistId, { media_id: mid });
   return redirect(`/playlists/${playlistId}`);
 }
@@ -222,9 +222,9 @@ async function playlistSetDuration(ctx) {
   if (raw) {
     // Python float() accepts 'inf'/'nan' and then the range check rejects them; here the
     // number regex rejects them up front, same 400 either way.
-    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(raw)) fail(400, "duration must be a positive number");
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(raw)) fail(400, "Duration must be a number of seconds between 0.5 and 86400");
     dur = Number(raw);
-    if (!Number.isFinite(dur) || dur <= 0 || dur > 86400) fail(400, "duration must be a positive number of seconds (at most 86400)");
+    if (!Number.isFinite(dur) || dur < 0.5 || dur > 86400) fail(400, "Duration must be a number of seconds between 0.5 and 86400");
   }
   const r = await db.run(ctx.env,
     "UPDATE playlist_items SET duration_override_seconds = ? WHERE id = ? AND playlist_id = ?", dur, itemId, playlistId);
@@ -280,7 +280,7 @@ async function playlistRename(ctx) {
   auth.requireRole(ctx, "editor");
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
   const name = str(await ctx.form(), "name").trim();
-  if (!name) fail(400, "Name required");
+  if (!name) fail(400, "Enter a name");
   let r;
   try {
     r = await db.run(ctx.env, "UPDATE playlists SET name = ?, updated_at = datetime('now') WHERE id = ?", name, playlistId);

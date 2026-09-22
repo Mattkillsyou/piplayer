@@ -33,7 +33,7 @@ export function isConstraintError(e) {
 
 // The meta.schema_version the code expects: bump with each new migrations/000N file (the last
 // statement of every migration writes it).
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 // Fail loudly (once per isolate) when migrations were never applied or stopped short of this
 // release: a worker deployed before `npm run migrate:remote` must say so on every request
@@ -135,11 +135,14 @@ export function defaultSettings(env) {
 // auto_update_window ('HH:MM-HH:MM'), wyze_camera_pattern, camera_config_version (int),
 // projector_lead_minutes / projector_idle_minutes (int, 0-1440), alert_offline_minutes (int, 1-1440),
 // alert_repeat_minutes (int, 0-10080), alert_email (comma-separated addresses or ''),
-// alert_webhook_url (https URL or '')}.
+// alert_webhook_url (https URL or '')}. timezone_problem (string, at most 64 chars) is only
+// present when the stored timezone is no longer accepted: timezone is UTC then and the Settings
+// page shows the offending value so the admin can pick a real one.
 export async function loadSettings(env) {
   const s = defaultSettings(env);
   for (const row of await all(env, "SELECT key, value FROM settings")) {
-    if (row.key === "timezone" && isValidTimeZone(row.value)) s.timezone = row.value; // a bad zone (D1 edit, restore) falls back to UTC like any other malformed row
+    if (row.key === "timezone" && isValidTimeZone(row.value)) s.timezone = row.value;
+    else if (row.key === "timezone") s.timezone_problem = String(row.value).slice(0, 64); // a bad zone (D1 edit, restore) falls back to UTC like any other malformed row, but visibly
     else if (row.key === "screenshot_interval" && Number.isFinite(+row.value)) s.screenshot_interval = parseInt(row.value, 10);
     else if (row.key === "camera_interval" && Number.isFinite(+row.value)) s.camera_interval = parseInt(row.value, 10);
     else if (row.key === "default_image_duration" && Number.isFinite(+row.value)) s.default_image_duration = parseFloat(row.value);

@@ -119,9 +119,9 @@ async function usersCreate(ctx) {
   const username = str(form, "username").trim();
   const password = str(form, "password");
   const role = str(form, "role", "editor") || "editor";
-  if (!username || password.length < 6) fail(400, "username required and password must be at least 6 chars");
-  if (username.length > auth.MAX_USERNAME_CHARS) fail(400, "Username too long");
-  if (!ROLE_OK(role)) fail(400, "role must be admin, editor, or viewer");
+  if (!username || password.length < 6) fail(400, "Enter a username and a password of at least 6 characters");
+  if (username.length > auth.MAX_USERNAME_CHARS) fail(400, `Username must be at most ${auth.MAX_USERNAME_CHARS} characters`);
+  if (!ROLE_OK(role)) fail(400, "Pick a role");
   const problem = auth.passwordProblem(password);
   if (problem) fail(400, problem);
   const hash = await auth.hashPassword(password);
@@ -140,15 +140,15 @@ async function usersSetRole(ctx) {
   const me = auth.requireRole(ctx, "admin");
   const userId = idParam(ctx.params.user_id, "user_id");
   const role = str(await ctx.form(), "role");
-  if (!ROLE_OK(role)) fail(400, "invalid role");
-  if (userId === me.id && role !== "admin") fail(400, "cannot demote yourself");
+  if (!ROLE_OK(role)) fail(400, "Pick a role");
+  if (userId === me.id && role !== "admin") fail(400, "You cannot change your own role");
   // The last-admin guard sits inside the statement: two admins demoting each other at the same
   // instant serialise in SQLite, so the second one sees the count already at 1 and changes nothing.
   const r = await db.run(ctx.env,
     "UPDATE users SET role = ? WHERE id = ? AND (? = 'admin' OR role != 'admin' OR (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1)", role, userId, role);
   if (!r.changes) {
     if (!(await db.first(ctx.env, "SELECT 1 AS one FROM users WHERE id = ?", userId))) fail(404, "User not found");
-    fail(400, "cannot demote the last admin");
+    fail(400, "The last admin cannot be given another role");
   }
   await audit.log(ctx, "user_set_role", "user", userId, { role });
   return done(ctx, "Role updated");
@@ -176,13 +176,13 @@ async function usersSetPassword(ctx) {
 async function usersDelete(ctx) {
   const me = auth.requireRole(ctx, "admin");
   const userId = idParam(ctx.params.user_id, "user_id");
-  if (userId === me.id) fail(400, "cannot delete yourself");
+  if (userId === me.id) fail(400, "You cannot delete your own account");
   // One guarded statement (see usersSetRole); `changes` counts the cascaded session rows too.
   const r = await db.run(ctx.env,
     "DELETE FROM users WHERE id = ? AND (role != 'admin' OR (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1)", userId);
   if (!r.changes) {
     if (!(await db.first(ctx.env, "SELECT 1 AS one FROM users WHERE id = ?", userId))) fail(404, "User not found");
-    fail(400, "cannot delete the last admin");
+    fail(400, "The last admin cannot be deleted");
   }
   await audit.log(ctx, "user_delete", "user", userId);
   return done(ctx, "User deleted");
@@ -196,7 +196,7 @@ async function userTokenCreate(ctx) {
   const name = tokenName(await ctx.form());
   const user = await db.first(ctx.env, "SELECT id, username, role FROM users WHERE id = ?", userId);
   if (!user) fail(404, "User not found");
-  if (user.role === "viewer") fail(400, "viewers cannot hold API tokens; change the role first");
+  if (user.role === "viewer") fail(400, "Viewers cannot hold API tokens; change the role first");
   const { token } = await auth.issueApiToken(ctx, userId, name, { username: user.username });
   return usersPage(ctx, { userId, token });
 }

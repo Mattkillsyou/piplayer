@@ -286,7 +286,7 @@ export function register(router) {
 
 | key | default | used by |
 |---|---|---|
-| `timezone` | `UTC` (IANA name, validate with `isValidTimeZone`) | every rendered timestamp, `server_time`, schedule evaluation |
+| `timezone` | `UTC` (IANA name, validate with `isValidTimeZone`) | every rendered timestamp, `server_time`, schedule evaluation. A stored value that no longer validates reads as `UTC` and `loadSettings` adds `timezone_problem` (the stored string, <= 64 chars) so the Settings page can warn |
 | `screenshot_interval` | `PIPLAYER_SCREENSHOT_INTERVAL` (60) | manifest `screenshot_interval_seconds`, stale badge (`> 3 ×`) |
 | `camera_interval` | `PIPLAYER_CAMERA_INTERVAL` (10, min 5) | manifest `camera_interval_seconds`, camera snapshot stale badge (`> 3 ×`) |
 | `default_image_duration` | `PIPLAYER_DEFAULT_IMAGE_DURATION` (10) | effective duration of images |
@@ -366,9 +366,10 @@ orphan. Tests: `test/device_codes.test.js`.
 
 Other limits stay env vars: `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB), `PIPLAYER_MAX_SCREENSHOT_BYTES`
 (5 MiB), `PIPLAYER_MAX_CAMERA_BYTES` (2 MiB), `PIPLAYER_AUDIT_RETENTION_DAYS` (365),
-`PIPLAYER_VERIFY_SHA_MAX_BYTES` (1 GiB: `POST /library/upload/:id/complete` re-hashes the stored
-object up to this size and refuses a mismatch with 400, deleting the object; larger files keep the
-browser's hash and the `upload_media` audit row carries `sha_verified: false`). Read them with `envInt(env, name, fallback)`.
+`PIPLAYER_VERIFY_SHA_MAX_BYTES` (defaults to the upload limit, so `POST /library/upload/:id/complete`
+re-hashes every stored object and refuses a mismatch with 400, deleting the object; `[limits]
+cpu_ms = 300000` in `wrangler.toml` pays for a multi-GB hash. Set it lower only to skip files
+above it: those keep the browser's hash and the `upload_media` audit row carries `sha_verified: false`). Read them with `envInt(env, name, fallback)`.
 Optional `PIPLAYER_PUBLIC_BASE_URL`: when set, the Devices install snippet prints it as `CMS_URL`
 and drops the "edit it if this Pi reaches the CMS another way" note (`pages/devices.installBaseUrl`).
 
@@ -405,12 +406,16 @@ from /proc/device-tree/model, trimmed to 64 chars) and `camera_supported INTEGER
 the camera bridge can run there); NULL = unknown or an old player that does not send them.
 `migrations/0006_indexes.sql` (schema_version 6) adds `idx_media_sha256` UNIQUE on
 `media(sha256)` and the partial UNIQUE `idx_alerts_one_open` on `alerts(device_id, kind) WHERE
-closed_at IS NULL`; it fails on a database that already holds duplicates (the file's header
-comment has the SELECTs to find them). `migrations/0007_command_undeliverable.sql` adds
+closed_at IS NULL`; before the indexes it heals a database that already holds duplicates itself
+(playlist items re-pointed to the oldest media row per sha256, repeats inside a playlist and the
+duplicate rows deleted, all but the newest open alert per (device, kind) closed; the header
+comment has the SELECTs that show what it will touch). `migrations/0007_command_undeliverable.sql` adds
 `device_commands.undeliverable INTEGER NOT NULL DEFAULT 0` (backfilled from
 `result LIKE 'undeliverable:%'`): the Devices page reads the badge from this flag, which only the
 console's own close in `manifest.pending_commands` sets, instead of from a result text a player
-can also post. `db.js` exports `SCHEMA_VERSION` and `assertMigrated` compares `meta.schema_version`
+can also post. `migrations/0008_login_failures_index.sql` (schema_version 8) adds
+`idx_login_failures_user(username, at)` for the per-account login ceiling.
+`db.js` exports `SCHEMA_VERSION` (8) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
@@ -437,7 +442,7 @@ Devices row "Camera" `<details>` gains `POST /devices/:id/camera-source` (editor
 (`pages/devices.CAMERA_SOURCES`), `camera_rtsp_url` (`rtsp://` / `rtsps://`, required for rtsp),
 `camera_wyze_name` (<= 100, empty = pattern); the RTSP URL is stored encrypted with
 `secrets.encrypt(env, "rtsp:<device_id>", url)` in `devices.camera_rtsp_url` (a plaintext row
-from before is served as is until re-saved; an undecryptable one reads as none) and never
+from before is served as is until the nightly housekeeping encrypts it; an undecryptable one reads as none) and never
 rendered back; an unchanged save does not bump; audit
 `device_set_camera_source` (source, name, `camera_rtsp_url: "set"`, never the URL). A rename
 (`POST /devices/:id/rename`, editor+, audit `device_rename`; a re-enrollment under a new name

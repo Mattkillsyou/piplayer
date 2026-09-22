@@ -41,7 +41,7 @@ describe("groups", () => {
   });
 
   it("create: 400 blank, 409 duplicate (friendly), audits", async () => {
-    expect(await detail(await post(r.editor, "/groups", { name: "  " }), 400)).toBe("Name required");
+    expect(await detail(await post(r.editor, "/groups", { name: "  " }), 400)).toBe("Enter a name");
     expect((await post(r.editor, "/groups", { name: " Fresh group " })).status).toBe(303);
     const dup = await detail(await post(r.editor, "/groups", { name: "Fresh group" }), 409);
     expect(dup).toBe("A group with that name already exists");
@@ -50,7 +50,7 @@ describe("groups", () => {
   });
 
   it("assign: 400/404, clear allowed, audits", async () => {
-    expect(await detail(await post(r.editor, `/groups/${w.gid}/assign`, { playlist_id: "abc" }), 400)).toBe("playlist_id must be an integer");
+    expect(await detail(await post(r.editor, `/groups/${w.gid}/assign`, { playlist_id: "abc" }), 400)).toBe("playlist_id must be a whole number");
     expect(await detail(await post(r.editor, `/groups/${w.gid}/assign`, { playlist_id: String(NOPE) }), 404)).toBe("Playlist not found");
     expect(await detail(await post(r.editor, `/groups/${NOPE}/assign`, { playlist_id: String(w.pid) }), 404)).toBe("Group not found");
     expect((await post(r.editor, `/groups/${w.gid}/assign`, { playlist_id: String(w.pid) })).status).toBe(303);

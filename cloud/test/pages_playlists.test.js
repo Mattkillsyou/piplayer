@@ -79,7 +79,7 @@ describe("list page", () => {
 
 describe("create / rename / delete", () => {
   it("create validates, 409s on duplicates, audits, redirects to the editor", async () => {
-    expect(await detail(await post(r.editor, "/playlists", { name: "   " }), 400)).toBe("Name required");
+    expect(await detail(await post(r.editor, "/playlists", { name: "   " }), 400)).toBe("Enter a name");
     const res = await post(r.editor, "/playlists", { name: "  Fresh " });
     expect(res.status).toBe(303);
     const pid = (await one("SELECT id FROM playlists WHERE name = 'Fresh'")).id;
@@ -139,8 +139,8 @@ describe("items", () => {
     const pid = await playlist("Items");
     const ma = await media("a.png");
     const mb = await media("b.png");
-    expect(await detail(await post(r.editor, `/playlists/${pid}/items`, { media_id: "abc" }), 400)).toBe("media_id must be an integer");
-    expect(await detail(await post(r.editor, `/playlists/${pid}/items`, { media_id: "" }), 400)).toBe("media_id required");
+    expect(await detail(await post(r.editor, `/playlists/${pid}/items`, { media_id: "abc" }), 400)).toBe("Media to add must be a whole number");
+    expect(await detail(await post(r.editor, `/playlists/${pid}/items`, { media_id: "" }), 400)).toBe("Pick a file to add");
     expect(await detail(await post(r.editor, `/playlists/${pid}/items`, { media_id: String(NOPE) }), 404)).toBe("Media not found");
     expect(await detail(await post(r.editor, `/playlists/${NOPE}/items`, { media_id: String(ma) }), 404)).toBe("Playlist not found");
     await query("UPDATE playlists SET updated_at = '2000-01-01 00:00:00' WHERE id = ?", pid);
@@ -149,7 +149,7 @@ describe("items", () => {
       expect(res.status).toBe(303);
       expect(res.headers.get("location")).toBe(`/playlists/${pid}`);
     }
-    expect(await detail(await post(r.editor, `/playlists/${pid}/items`, { media_id: String(ma) }), 409)).toBe("Already in playlist");
+    expect(await detail(await post(r.editor, `/playlists/${pid}/items`, { media_id: String(ma) }), 409)).toBe("That file is already in this playlist");
     expect((await positions(pid)).map((x) => x.position)).toEqual([0, 1]);
     expect((await one("SELECT updated_at FROM playlists WHERE id = ?", pid)).updated_at).not.toBe("2000-01-01 00:00:00");
     expect((await audits("playlist_add_item"))[0]).toMatchObject({ target_id: String(pid), details: `{"media_id": ${mb}}` });
@@ -159,7 +159,7 @@ describe("items", () => {
   });
 
   it("duration override: bad values 400 and unchanged, good values stored, 404 for a foreign item", async () => {
-    for (const bad of ["inf", "Infinity", "+inf", "1e999", "nan", "-1", "0", "abc", "86401", "1e400"]) {
+    for (const bad of ["inf", "Infinity", "+inf", "1e999", "nan", "-1", "0", "0.4", "abc", "86401", "1e400"]) {
       const res = await post(r.editor, `/playlists/${w.pid}/items/${w.i1}/duration`, { duration: bad });
       await detail(res, 400);
       expect((await one("SELECT duration_override_seconds AS d FROM playlist_items WHERE id = ?", w.i1)).d).toBeNull();

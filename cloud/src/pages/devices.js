@@ -157,7 +157,7 @@ export function liveUrl(value) {
 export function validateLiveUrl(value) {
   if (!(value || "").trim()) return null;
   const url = liveUrl(value);
-  if (!url) fail(400, "camera_live_url must be an absolute https:// URL");
+  if (!url) fail(400, "The camera live URL must be an https:// address");
   return url;
 }
 
@@ -201,6 +201,18 @@ export async function cameraConfig(env, device, settings) {
     }
   }
   return { source: "none", version };
+}
+
+// Daily cron (index.js MODULES): a plaintext RTSP URL from before the encrypted column is
+// rewritten under the same per-device key cameraConfig() decrypts with, so the credentials
+// it carries stop sitting in D1 in the clear without waiting for the row to be re-saved.
+export async function housekeeping(env) {
+  const rows = await db.all(env, "SELECT id, device_id, camera_rtsp_url FROM devices WHERE camera_rtsp_url IS NOT NULL AND camera_rtsp_url NOT LIKE 'v1:%'");
+  for (const row of rows) {
+    await db.run(env, "UPDATE devices SET camera_rtsp_url = ? WHERE id = ? AND camera_rtsp_url = ?",
+      await secrets.encrypt(env, `rtsp:${row.device_id}`, row.camera_rtsp_url), row.id, row.camera_rtsp_url);
+  }
+  return rows.length;
 }
 
 export const statusLamp = (d) => `<span class="status status-${esc(d.lamp)}"><span class="lamp"></span>${esc(lampText(d.lamp))}</span>`;
@@ -592,7 +604,7 @@ async function devicesCreate(ctx) {
   const deviceId = str(form, "device_id").trim().toLowerCase();
   const name = str(form, "name").trim();
   if (!DEVICE_ID_RE.test(deviceId)) fail(400, "Device ID must be 1-63 lowercase letters, digits or hyphens, starting with a letter or digit");
-  if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `name must be 1-${MAX_DEVICE_NAME} chars`);
+  if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `Name must be 1-${MAX_DEVICE_NAME} characters`);
   const token = randomToken(32);
   let id;
   try {
@@ -611,7 +623,7 @@ async function devicesRename(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const name = str(await ctx.form(), "name").trim();
-  if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `name must be 1-${MAX_DEVICE_NAME} chars`);
+  if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `Name must be 1-${MAX_DEVICE_NAME} characters`);
   const row = await db.first(ctx.env, "SELECT name FROM devices WHERE id = ?", deviceId);
   if (!row) fail(404, "Device not found");
   if (row.name !== name) {
@@ -770,11 +782,11 @@ async function devicesSetCameraSource(ctx) {
   // never rendered back; an empty field keeps the stored one while the source stays rtsp
   // (switching the source away clears it).
   const posted = str(form, "camera_rtsp_url").trim();
-  if (posted && !RTSP_URL_RE.test(posted)) fail(400, "camera_rtsp_url must be an rtsp:// or rtsps:// URL");
+  if (posted && !RTSP_URL_RE.test(posted)) fail(400, "Stream address must start with rtsp:// or rtsps://");
   const rtsp = posted ? await secrets.encrypt(ctx.env, `rtsp:${row.device_id}`, posted) : (source === "rtsp" ? row.camera_rtsp_url : null);
-  if (source === "rtsp" && rtsp === null) fail(400, "camera_rtsp_url required when camera_source is rtsp");
+  if (source === "rtsp" && rtsp === null) fail(400, "Enter the stream address for the rtsp source");
   const wyzeName = str(form, "camera_wyze_name").trim() || null;
-  if (wyzeName !== null && ([...wyzeName].length > MAX_WYZE_NAME || /[\x00-\x1f\x7f]/.test(wyzeName))) fail(400, `camera_wyze_name must be at most ${MAX_WYZE_NAME} printable chars`);
+  if (wyzeName !== null && ([...wyzeName].length > MAX_WYZE_NAME || /[\x00-\x1f\x7f]/.test(wyzeName))) fail(400, `Camera name may be at most ${MAX_WYZE_NAME} printable characters`);
   if (row.camera_source === source && row.camera_rtsp_url === rtsp && row.camera_wyze_name === wyzeName) return redirect("/devices");
   await db.run(ctx.env, "UPDATE devices SET camera_source = ?, camera_rtsp_url = ?, camera_wyze_name = ? WHERE id = ?", source, rtsp, wyzeName, deviceId);
   await db.bumpCameraConfigVersion(ctx.env);
@@ -826,7 +838,7 @@ async function devicesSetProjector(ctx) {
   const mode = str(form, "projector_power_mode").trim() || "manual";
   if (!manifest.PROJECTOR_MODES.includes(mode)) fail(400, `projector_power_mode must be one of ${manifest.PROJECTOR_MODES.join(", ")}`);
   const host = str(form, "broadlink_host").trim() || null;
-  if (host !== null && !BROADLINK_HOST_RE.test(host)) fail(400, "broadlink_host must be a hostname or IP address");
+  if (host !== null && !BROADLINK_HOST_RE.test(host)) fail(400, "Broadlink address must be a hostname or IP address");
   await requireRow(ctx.env, "devices", deviceId, "Device");
   await db.run(ctx.env, "UPDATE devices SET projector_control = ?, projector_power_mode = ?, broadlink_host = ? WHERE id = ?",
     control, mode, host, deviceId);

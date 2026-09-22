@@ -148,7 +148,7 @@ describe("L8: RTSP URLs are stored encrypted", () => {
     const stored = (await row()).camera_rtsp_url;
     expect((await post(r.editor, `/devices/${dev.id}/camera-source`, { camera_source: "rtsp", camera_rtsp_url: "" })).status).toBe(303);
     expect((await row()).camera_rtsp_url).toBe(stored);
-    expect(await detail(await post(r.editor, `/devices/${dev.id}/camera-source`, { camera_source: "rtsp", camera_rtsp_url: "http://x/" }), 400)).toBe("camera_rtsp_url must be an rtsp:// or rtsps:// URL");
+    expect(await detail(await post(r.editor, `/devices/${dev.id}/camera-source`, { camera_source: "rtsp", camera_rtsp_url: "http://x/" }), 400)).toBe("Stream address must start with rtsp:// or rtsps://");
     // legacy plaintext row (before this fix): served as is
     await query("UPDATE devices SET camera_rtsp_url = 'rtsp://old:pw@10.0.0.6/s' WHERE id = ?", dev.id);
     expect((await config(dev)).rtsp_url).toBe("rtsp://old:pw@10.0.0.6/s");
@@ -171,8 +171,8 @@ describe("L14 / L22: name cap and rename", () => {
     expect(await version()).toBe(v); // same name: no refetch for the players
     expect((await post(r.editor, `/devices/${dev.id}/rename`, { name: "Changed" })).status).toBe(303);
     expect(await version()).toBe(v + 1); // the Wyze camera name may derive from {device_name}
-    expect(await detail(await post(r.editor, `/devices/${dev.id}/rename`, { name: "  " }), 400)).toBe("name must be 1-120 chars");
-    expect(await detail(await post(r.editor, `/devices/${dev.id}/rename`, { name: "n".repeat(121) }), 400)).toBe("name must be 1-120 chars");
+    expect(await detail(await post(r.editor, `/devices/${dev.id}/rename`, { name: "  " }), 400)).toBe("Name must be 1-120 characters");
+    expect(await detail(await post(r.editor, `/devices/${dev.id}/rename`, { name: "n".repeat(121) }), 400)).toBe("Name must be 1-120 characters");
     expect((await post(r.editor, `/devices/${dev.id}/rename`, { name: "n".repeat(120) })).status).toBe(303);
     expect(await detail(await post(r.editor, `/devices/${NOPE}/rename`, { name: "x" }), 404)).toBe("Device not found");
     expect(await detail(await post(r.editor, "/devices/abc/rename", { name: "x" }), 400)).toContain("device_id");

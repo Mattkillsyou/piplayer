@@ -113,8 +113,8 @@ describe("Settings: Wyze account", () => {
     expect(res.status).toBe(303);
     expect(await version()).toBe(before + 1);
 
-    expect(await detail(await post(r.admin, "/settings/wyze", { wyze_camera_pattern: "x".repeat(101) }), 400)).toBe("wyze_camera_pattern must be 1-100 printable chars");
-    expect(await detail(await post(r.admin, "/settings/wyze", { wyze_email: "a\u0000b" }), 400)).toBe("wyze_email must be at most 500 printable chars");
+    expect(await detail(await post(r.admin, "/settings/wyze", { wyze_camera_pattern: "x".repeat(101) }), 400)).toBe("Camera name pattern must be 1-100 printable characters");
+    expect(await detail(await post(r.admin, "/settings/wyze", { wyze_email: "a\u0000b" }), 400)).toBe("Wyze account email must be at most 500 printable characters");
     expect(await version()).toBe(before + 1);
 
     res = await post(r.admin, "/settings/wyze", { wyze_camera_pattern: "Cam {device_id}" });
@@ -184,9 +184,9 @@ describe("Devices page: camera source", () => {
 
     const bad = [
       [{ camera_source: "usb" }, "camera_source must be one of none, wyze, rtsp or empty for the site default"],
-      [{ camera_source: "rtsp" }, "camera_rtsp_url required when camera_source is rtsp"],
-      [{ camera_source: "rtsp", camera_rtsp_url: "https://x/" }, "camera_rtsp_url must be an rtsp:// or rtsps:// URL"],
-      [{ camera_source: "wyze", camera_wyze_name: "x".repeat(101) }, "camera_wyze_name must be at most 100 printable chars"],
+      [{ camera_source: "rtsp" }, "Enter the stream address for the rtsp source"],
+      [{ camera_source: "rtsp", camera_rtsp_url: "https://x/" }, "Stream address must start with rtsp:// or rtsps://"],
+      [{ camera_source: "wyze", camera_wyze_name: "x".repeat(101) }, "Camera name may be at most 100 printable characters"],
     ];
     for (const [fields, msg] of bad) expect(await detail(await post(r.editor, `/devices/${dev.id}/camera-source`, fields), 400), msg).toBe(msg);
     expect((await post(r.editor, "/devices/999999/camera-source", { camera_source: "none" })).status).toBe(404);

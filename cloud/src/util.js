@@ -55,7 +55,7 @@ export function str(form, name, fallback = "") {
 export function intField(value, field) {
   value = (value ?? "").toString().trim();
   if (!value) return null;
-  if (!/^[+-]?\d+$/.test(value)) fail(400, `${field} must be an integer`);
+  if (!/^[+-]?\d+$/.test(value)) fail(400, `${field} must be a whole number`);
   return parseInt(value, 10);
 }
 

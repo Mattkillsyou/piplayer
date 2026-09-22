@@ -132,29 +132,29 @@ async function scheduleCreate(ctx) {
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const form = await ctx.form();
   const name = str(form, "name").trim() || "Rule";
-  const pid = intField(str(form, "playlist_id"), "playlist_id");
-  if (pid === null) fail(400, "playlist_id required");
-  const prio = intField(str(form, "priority", "0"), "priority") ?? 0;
-  if (prio < 0 || prio > 1000) fail(400, "priority must be between 0 and 1000");
+  const pid = intField(str(form, "playlist_id"), "Playlist");
+  if (pid === null) fail(400, "Pick a playlist");
+  const prio = intField(str(form, "priority", "0"), "Priority") ?? 0;
+  if (prio < 0 || prio > 1000) fail(400, "Priority must be between 0 and 1000");
   let startTime = str(form, "start_time").trim() || null;
   let endTime = str(form, "end_time").trim() || null;
   if (startTime !== null) {
     startTime = normalizeHhmm(startTime);
-    if (startTime === null) fail(400, "start_time must be HH:MM (00:00-23:59)");
+    if (startTime === null) fail(400, "The start time must be in HH:MM form (00:00 to 23:59)");
   }
   if (endTime !== null) {
     endTime = normalizeHhmm(endTime);
-    if (endTime === null) fail(400, "end_time must be HH:MM (00:00-23:59)");
+    if (endTime === null) fail(400, "The end time must be in HH:MM form (00:00 to 23:59)");
   }
   if (startTime !== null && endTime !== null && startTime === endTime) {
-    fail(400, "start and end must differ; use no times for all-day");
+    fail(400, "Start and end must differ; leave both empty for all day");
   }
   const rawDays = str(form, "days_of_week").trim();
-  if (rawDays && !/^[0-6]+$/.test(rawDays)) fail(400, "days_of_week must only contain digits 0-6 (0 = Monday)");
+  if (rawDays && !/^[0-6]+$/.test(rawDays)) fail(400, "Pick the days by ticking them");
   const days = [...new Set(rawDays)].sort().join("") || null;
-  const startDate = isoDateField(str(form, "start_date"), "start_date");
-  const endDate = isoDateField(str(form, "end_date"), "end_date");
-  if (startDate && endDate && startDate > endDate) fail(400, "start_date must be on or before end_date");
+  const startDate = isoDateField(str(form, "start_date"), "Start date");
+  const endDate = isoDateField(str(form, "end_date"), "End date");
+  if (startDate && endDate && startDate > endDate) fail(400, "The start date must be on or before the end date");
   await requireRow(ctx.env, "devices", deviceId, "Device");
   await requireRow(ctx.env, "playlists", pid, "Playlist");
   const id = (await db.run(ctx.env,

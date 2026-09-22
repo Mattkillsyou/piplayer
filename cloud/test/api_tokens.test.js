@@ -58,8 +58,8 @@ describe("/settings API tokens", () => {
 
   it("validation: 400 for an empty or over-long name, nothing stored", async () => {
     const before = (await tokens()).length;
-    expect(await detail(await post(r.admin, "/settings/tokens", { name: "  " }), 400)).toContain("name must be 1-60 chars");
-    expect(await detail(await post(r.admin, "/settings/tokens", { name: "x".repeat(61) }), 400)).toContain("name must be 1-60 chars");
+    expect(await detail(await post(r.admin, "/settings/tokens", { name: "  " }), 400)).toContain("Token name must be 1-60 characters");
+    expect(await detail(await post(r.admin, "/settings/tokens", { name: "x".repeat(61) }), 400)).toContain("Token name must be 1-60 characters");
     expect((await tokens()).length).toBe(before);
   });
 
@@ -124,11 +124,11 @@ describe("/users API tokens (admin issues tokens for other users)", () => {
 
   it("400 for a viewer target (no create form on the page), 404 for an unknown user, name validation", async () => {
     const vw = await user("vw");
-    expect(await detail(await post(r.admin, `/users/${vw.id}/tokens`, { name: "v" }), 400)).toContain("viewers cannot hold API tokens");
+    expect(await detail(await post(r.admin, `/users/${vw.id}/tokens`, { name: "v" }), 400)).toContain("Viewers cannot hold API tokens");
     expect(await detail(await post(r.admin, `/users/${NOPE}/tokens`, { name: "v" }), 404)).toBe("User not found");
     const ed = await user("ed");
-    expect(await detail(await post(r.admin, `/users/${ed.id}/tokens`, { name: "  " }), 400)).toContain("name must be 1-60 chars");
-    expect(await detail(await post(r.admin, `/users/${ed.id}/tokens`, { name: "x".repeat(61) }), 400)).toContain("name must be 1-60 chars");
+    expect(await detail(await post(r.admin, `/users/${ed.id}/tokens`, { name: "  " }), 400)).toContain("Token name must be 1-60 characters");
+    expect(await detail(await post(r.admin, `/users/${ed.id}/tokens`, { name: "x".repeat(61) }), 400)).toContain("Token name must be 1-60 characters");
     expect((await tokens()).some((t) => t.user_id === vw.id)).toBe(false);
     const page = await (await r.admin.get("/users")).text();
     expect(page).not.toContain(`action="/users/${vw.id}/tokens"`);

@@ -324,17 +324,17 @@ describe("settings panel", () => {
 
   it("validation 400s; nothing saved", async () => {
     for (const [fields, msg] of [
-      [{ ...GOOD, alert_offline_minutes: "0" }, "alert_offline_minutes must be a whole number of minutes, 1-1440"],
-      [{ ...GOOD, alert_offline_minutes: "x" }, "alert_offline_minutes must be an integer"],
-      [{ ...GOOD, alert_offline_minutes: "" }, "alert_offline_minutes must be a whole number of minutes, 1-1440"],
-      [{ ...GOOD, alert_repeat_minutes: "-1" }, "alert_repeat_minutes must be a whole number of minutes, 0-10080"],
-      [{ ...GOOD, alert_repeat_minutes: "10081" }, "alert_repeat_minutes must be a whole number of minutes, 0-10080"],
-      [{ ...GOOD, alert_email: "not-an-address" }, "alert_email must be one or more email addresses, comma-separated"],
-      [{ ...GOOD, alert_email: "a@b.co, junk" }, "alert_email must be one or more email addresses, comma-separated"],
-      [{ ...GOOD, alert_webhook_url: "http://hooks.example.com/z" }, "alert_webhook_url must be an absolute https:// URL"],
-      [{ ...GOOD, alert_webhook_url: "https://user:pw@hooks.example.com/z" }, "alert_webhook_url must be an absolute https:// URL"],
-      [{ ...GOOD, alert_webhook_url: "javascript:alert(1)" }, "alert_webhook_url must be an absolute https:// URL"],
-      [{ ...GOOD, twilio_auth_token: "bad\x01" }, "twilio_auth_token must be at most 200 printable chars"],
+      [{ ...GOOD, alert_offline_minutes: "0" }, "Offline after must be a whole number of minutes, 1-1440"],
+      [{ ...GOOD, alert_offline_minutes: "x" }, "Offline after must be a whole number"],
+      [{ ...GOOD, alert_offline_minutes: "" }, "Offline after must be a whole number of minutes, 1-1440"],
+      [{ ...GOOD, alert_repeat_minutes: "-1" }, "Repeat while open must be a whole number of minutes, 0-10080"],
+      [{ ...GOOD, alert_repeat_minutes: "10081" }, "Repeat while open must be a whole number of minutes, 0-10080"],
+      [{ ...GOOD, alert_email: "not-an-address" }, "Enter one or more email addresses, separated by commas"],
+      [{ ...GOOD, alert_email: "a@b.co, junk" }, "Enter one or more email addresses, separated by commas"],
+      [{ ...GOOD, alert_webhook_url: "http://hooks.example.com/z" }, "The webhook must be an https:// address"],
+      [{ ...GOOD, alert_webhook_url: "https://user:pw@hooks.example.com/z" }, "The webhook must be an https:// address"],
+      [{ ...GOOD, alert_webhook_url: "javascript:alert(1)" }, "The webhook must be an https:// address"],
+      [{ ...GOOD, twilio_auth_token: "bad\x01" }, "Twilio auth token must be at most 200 printable characters"],
     ]) {
       expect(await detail(await post(r.admin, "/settings/alerts", fields), 400), JSON.stringify(fields)).toBe(msg);
     }
@@ -374,7 +374,7 @@ describe("settings panel", () => {
   });
 
   it("Send test: unknown channel 400; unconfigured channel -> failure banner; webhook success banner; audited", async () => {
-    expect(await detail(await post(r.admin, "/settings/alerts/test", { channel: "carrier-pigeon" }), 400)).toBe("channel must be one of email, webhook, sms");
+    expect(await detail(await post(r.admin, "/settings/alerts/test", { channel: "carrier-pigeon" }), 400)).toBe("Pick a channel to test");
     let res = await post(r.admin, "/settings/alerts/test", { channel: "email" });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/settings");

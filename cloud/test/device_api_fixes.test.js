@@ -47,13 +47,16 @@ describe("after setup", () => {
   it("an invalid timezone row falls back to UTC: sync and the pages keep working (M13)", async () => {
     await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('timezone', 'Mars/Olympus')");
     try {
-      expect((await db.loadSettings(env)).timezone).toBe("UTC");
+      const s = await db.loadSettings(env);
+      expect(s.timezone).toBe("UTC");
+      expect(s.timezone_problem).toBe("Mars/Olympus"); // the Settings page warns with the stored value
       expect((await sync(dev)).status).toBe(200);
       for (const path of ["/dashboard", "/devices", "/settings"]) expect((await admin.get(path)).status, path).toBe(200);
       expect(await (await admin.get("/settings")).text()).toContain('value="UTC"');
     } finally {
       await query("DELETE FROM settings WHERE key = 'timezone'");
     }
+    expect((await db.loadSettings(env)).timezone_problem).toBeUndefined(); // a good or missing row sets nothing
   });
 
   it("two overlapping syncs deliver a command once; delivery_count moves by one (L12)", async () => {

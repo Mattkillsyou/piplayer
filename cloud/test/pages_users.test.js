@@ -44,9 +44,9 @@ describe("users", () => {
 
   it("create validation: 400s, 409 duplicate, default role editor, audits", async () => {
     expect(await detail(await post(r.admin, "/users", { username: "u1", password: "short", role: "viewer" }), 400))
-      .toBe("username required and password must be at least 6 chars");
-    expect(await detail(await post(r.admin, "/users", { username: "   ", password: "pw123456", role: "viewer" }), 400)).toContain("username required");
-    expect(await detail(await post(r.admin, "/users", { username: "u1", password: "pw123456", role: "god" }), 400)).toBe("role must be admin, editor, or viewer");
+      .toBe("Enter a username and a password of at least 6 characters");
+    expect(await detail(await post(r.admin, "/users", { username: "   ", password: "pw123456", role: "viewer" }), 400)).toContain("Enter a username");
+    expect(await detail(await post(r.admin, "/users", { username: "u1", password: "pw123456", role: "god" }), 400)).toBe("Pick a role");
     expect(await detail(await post(r.admin, "/users", { username: "u1", password: "p".repeat(1025), role: "viewer" }), 400)).toBe(auth.PASSWORD_TOO_LONG_MSG);
     expect(await detail(await post(r.admin, "/users", { username: "u1", password: "é".repeat(600), role: "viewer" }), 400)).toContain("1024");
     expect(await uid("u1")).toBeNull();
@@ -63,8 +63,8 @@ describe("users", () => {
   it("role: invalid 400, self-demote 400, 404 unknown, updates + audits", async () => {
     const me = await uid("admin");
     const ed = await uid("ed");
-    expect(await detail(await post(r.admin, `/users/${ed.id}/role`, { role: "root" }), 400)).toBe("invalid role");
-    expect(await detail(await post(r.admin, `/users/${me.id}/role`, { role: "viewer" }), 400)).toBe("cannot demote yourself");
+    expect(await detail(await post(r.admin, `/users/${ed.id}/role`, { role: "root" }), 400)).toBe("Pick a role");
+    expect(await detail(await post(r.admin, `/users/${me.id}/role`, { role: "viewer" }), 400)).toBe("You cannot change your own role");
     expect((await post(r.admin, `/users/${me.id}/role`, { role: "admin" })).status).toBe(303);
     expect(await detail(await post(r.admin, `/users/${NOPE}/role`, { role: "viewer" }), 404)).toBe("User not found");
     expect((await post(r.admin, `/users/${ed.id}/role`, { role: "viewer" })).status).toBe(303);
@@ -98,7 +98,7 @@ describe("users", () => {
 
   it("delete: self 400, last admin 400, 404 unknown, otherwise deletes + audits", async () => {
     const me = await uid("admin");
-    expect(await detail(await post(r.admin, `/users/${me.id}/delete`), 400)).toBe("cannot delete yourself");
+    expect(await detail(await post(r.admin, `/users/${me.id}/delete`), 400)).toBe("You cannot delete your own account");
     expect(await detail(await post(r.admin, `/users/${NOPE}/delete`), 404)).toBe("User not found");
     await post(r.admin, "/users", { username: "admin2", password: "pw123456", role: "admin" });
     const a2 = await uid("admin2");
@@ -112,7 +112,7 @@ describe("users", () => {
     const a3 = await uid("admin3");
     expect((await post(c3, `/users/${me.id}/delete`)).status).toBe(303);   // 2 admins, fine
     expect(await uid("admin")).toBeNull();
-    expect(await detail(await post(c3, `/users/${a3.id}/delete`), 400)).toBe("cannot delete yourself");
+    expect(await detail(await post(c3, `/users/${a3.id}/delete`), 400)).toBe("You cannot delete your own account");
     // the deleted admin's session is gone
     expect((await r.admin.get("/users")).status).toBe(303);
     expect((await audits("user_delete"))[0]).toMatchObject({ username: "admin3", target_id: String(me.id) });
@@ -123,7 +123,7 @@ describe("users", () => {
     c4.token = await c4.csrf("/users");
     expect((await post(c4, `/users/${a3.id}/delete`)).status).toBe(303);
     const a4 = await uid("admin4");
-    expect(await detail(await post(c4, `/users/${a4.id}/delete`), 400)).toBe("cannot delete yourself");
+    expect(await detail(await post(c4, `/users/${a4.id}/delete`), 400)).toBe("You cannot delete your own account");
     const ed = await uid("ed");
     await post(c4, `/users/${ed.id}/role`, { role: "admin" });
     await post(c4, `/users/${a4.id}/role`, { role: "viewer" }); // self-demote refused

@@ -15,7 +15,7 @@ Plain ES-module JavaScript, no framework, no runtime dependencies. Dev dependenc
 wrangler.toml          bindings: DB (D1 piplayer-cloud-db), MEDIA (R2 piplayer-cloud-media),
                        ASSETS (public/, run_worker_first), ALERT_MAIL (send_email), [vars]
                        PIPLAYER_*, crons 0 3 * * * (housekeeping) + */5 * * * * (alerts),
-                       custom domain route
+                       [limits] cpu_ms = 300000 (hashing a multi-GB upload), custom domain route
 migrations/            D1 schema, applied in name order (0001_init.sql = cms/app/db.py + settings,
                        sessions, login_failures, uploads, meta; later files add to it); add
                        000N_*.sql, never edit old ones
@@ -68,8 +68,10 @@ real request origin.
 ## Migrations
 
 `migrations/0001_init.sql` is the base schema; `0002_camera`, `0003_automation`,
-`0004_device_codes`, `0005_pi_model`, `0006_indexes` and `0007_command_undeliverable` add to it
-(see the Schema section of MODULES.md for what each one adds). To change the schema, add the next `migrations/000N_<name>.sql`
+`0004_device_codes`, `0005_pi_model`, `0006_indexes`, `0007_command_undeliverable` and
+`0008_login_failures_index` add to it (see the Schema section of MODULES.md for what each one
+adds; the database is at `schema_version` 8). `0006` heals duplicate media rows and duplicate
+open alerts itself before its unique indexes go on, so no manual step precedes it. To change the schema, add the next `migrations/000N_<name>.sql`
 (one higher than the last file present; never edit an existing one; `ALTER TABLE ... ADD COLUMN`,
 new tables, indexes; end it with the `schema_version` write and bump `db.SCHEMA_VERSION` to match)
 and apply with `npm run migrate:local` (dev) / `npm run migrate:remote` (production; `npm run
@@ -199,7 +201,8 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
 
 - **The account must be on the Workers Paid plan.** Two platform limits
   (developers.cloudflare.com/workers/platform/limits) rule out Workers Free: CPU time is
-  10 ms per request on Free (30 s default on Paid), and one PBKDF2-SHA256 derivation at
+  10 ms per request on Free (30 s default on Paid; `wrangler.toml` raises it to 5 minutes with
+  `[limits] cpu_ms = 300000` so completing an upload can hash a multi-GB file), and one PBKDF2-SHA256 derivation at
   100 000 iterations costs ≈ 13-15 ms of CPU, so every `/login`, `/setup` and `/users` password
   write would die with Cloudflare error 1102 (`Worker exceeded resource limits`). Subrequests
   also count against a per-invocation budget and every D1 statement and R2 call is one: Free
@@ -227,11 +230,12 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   error messages are plain English ("That file type (.exe) is not supported...", "This file is
   X GB; the limit is Y GB.", "Already in the library as ...").
 - **Complete verifies the hash**: `POST /library/upload/{id}/complete` re-hashes the stored
-  object (up to `PIPLAYER_VERIFY_SHA_MAX_BYTES`, default 1 GiB) and refuses a mismatch with 400,
-  deleting the object, so a wrong browser hash never reaches the library or the dedupe check.
-  Larger files are recorded with the browser hash and the audit row carries
-  `sha_verified: false`; the player still verifies every download and reports a mismatch as
-  `sync_error` on the Devices page.
+  object and refuses a mismatch with 400, deleting the object, so a wrong browser hash never
+  reaches the library or the dedupe check. Every upload is verified: `[limits] cpu_ms = 300000`
+  in `wrangler.toml` (Workers Paid) covers hashing a file at the 5 GiB upload limit.
+  `PIPLAYER_VERIFY_SHA_MAX_BYTES` can only lower the cap; a file above it is recorded with the
+  browser hash and the audit row carries `sha_verified: false` (the player still verifies every
+  download and reports a mismatch as `sync_error` on the Devices page).
 - **Animated GIF**: the server never sees the frames; `upload.js` counts Graphic Control
   Extension blocks in the slices it hashes and sends `animated: true` when it finds more than
   one, in which case the `.gif` is stored as `video` (mpv plays it through; image display
@@ -249,8 +253,9 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   counted. Audit: `device_enrolled`, `device_reenrolled`, `enrollment_key_rotated`.
 - **Timezone is a setting**, not the server's clock: `/settings` stores an IANA zone (validated
   with `Intl.DateTimeFormat`), default `UTC`. A stored zone that no longer validates (a D1 edit,
-  a restore) does not break the console: the site falls back to `UTC` and the Settings field
-  shows `UTC` so the admin can re-save the right zone. Schedule rules evaluate wall-clock time in that
+  a restore) does not break the console: the site falls back to `UTC`, `loadSettings` reports
+  the stored value as `timezone_problem`, and the Settings page warns with it so the admin can
+  pick a real zone. Schedule rules evaluate wall-clock time in that
   zone (`formatToParts`), every displayed timestamp is rendered in it with the zone
   abbreviation, and the manifest `server_time` carries its numeric offset. Timestamps in D1 stay
   UTC (`datetime('now')`). Wrap-midnight windows are anchored to the day they start, as in the
@@ -283,7 +288,11 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
 - **Housekeeping** (the `0 3 * * *` cron): audit rows older than
   `PIPLAYER_AUDIT_RETENTION_DAYS` (365), abandoned uploads, expired sessions, throttle rows,
   closed alerts older than 90 days, and enrollment codes older than an hour (an approved but
-  never-claimed flasher token is deleted with its code).
+  never-claimed flasher token is deleted with its code); it also encrypts any camera RTSP URL
+  still stored in plain text from before encryption.
+- **The dashboard's audit tail shows people's actions only** (rows with a username); device
+  syncs and cron rows are on `/audit`. Every validation message on the pages is plain English
+  for a non-technical owner.
 - **Alerts** (`*/5 * * * *`, `src/alerts.js`): offline / mpv-down / stale screenshot / sync,
   update, camera and projector errors per device; one row per (device, kind) while it holds,
   notified on open, on recovery and every `alert_repeat_minutes` while open, through email

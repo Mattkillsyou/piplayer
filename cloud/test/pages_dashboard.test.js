@@ -136,23 +136,28 @@ describe("dashboard", () => {
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 
-  it("audit tail lists the last 8 entries, newest first, with local minute timestamps", async () => {
+  it("audit tail lists the last 8 entries by people, newest first, with local minute timestamps", async () => {
     await query("DELETE FROM audit_log");
     let page = await (await r.viewer.get("/dashboard")).text();
     expect(page).toContain('<li class="empty-line">no activity yet</li>');
-    for (let i = 0; i < 10; i++) {
+    // 11 rows with a username plus two without one (device sync, cron): only people show
+    for (let i = 0; i < 11; i++) {
       await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at) VALUES (NULL, ?, ?, 'device', ?, '10.0.0.9', ?)",
-        i === 9 ? null : "ed<b>", `act_${i}`, String(i), `2021-03-04 05:0${i % 10}:00`);
+        "ed<b>", `act_${i}`, String(i), `2021-03-04 05:${String(i).padStart(2, "0")}:00`);
     }
+    await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at) VALUES (NULL, NULL, 'device_sync', 'device', '99', '10.0.0.9', '2021-03-04 05:20:00')");
+    await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at) VALUES (NULL, NULL, 'housekeeping', NULL, NULL, NULL, '2021-03-04 05:21:00')");
     page = await (await r.viewer.get("/dashboard")).text();
     expect(page).not.toContain("no activity yet");
     expect((page.match(/<span class="log-t">/g) || []).length).toBe(8);
-    expect(page).toContain('<li><span class="log-t">2021-03-04 05:09</span> <span class="log-u">system</span> <span class="log-a">act_9</span> <span class="log-tg">device 9</span> <span class="log-ip">10.0.0.9</span></li>');
-    expect(page).toContain('<span class="log-u">ed&lt;b&gt;</span> <span class="log-a">act_8</span>');
-    expect(page).not.toContain("act_1</span>");
+    expect(page).not.toContain("device_sync");
+    expect(page).not.toContain("housekeeping");
+    expect(page).toContain('<li><span class="log-t">2021-03-04 05:10</span> <span class="log-u">ed&lt;b&gt;</span> <span class="log-a">act_10</span> <span class="log-tg">device 10</span> <span class="log-ip">10.0.0.9</span></li>');
+    expect(page).toContain('<span class="log-u">ed&lt;b&gt;</span> <span class="log-a">act_3</span>');
+    expect(page).not.toContain("act_2</span>");
     expect(page).not.toContain("act_0</span>");
-    expect(page.indexOf("act_9")).toBeLessThan(page.indexOf("act_8"));
-    expect(page).toContain('<h2>Audit tail · <a href="/audit">full log</a></h2>');
+    expect(page.indexOf("act_10")).toBeLessThan(page.indexOf("act_9</span>"));
+    expect(page).toContain('<h2>Audit tail (people) · <a href="/audit">full log</a></h2>');
   });
 
   it("timestamps follow the site timezone setting", async () => {
