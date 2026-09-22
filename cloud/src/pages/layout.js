@@ -6,7 +6,10 @@ import { esc, html } from "../util.js";
 export const APP_NAME = "Projection5000";
 export const APP_EYEBROW = "Matt Brown's";
 
+// Order is the order in the top bar; the SD Flasher comes first and is drawn as a white-on-black
+// pill (.nav-flasher) so the one thing a new user needs stands out.
 const NAV = [
+  ["/flasher", "SD Flasher"],
   ["/dashboard", "Dashboard", (p) => p === "/dashboard"],
   ["/library", "Library"],
   ["/playlists", "Playlists"],
@@ -16,7 +19,6 @@ const NAV = [
   ["/audit", "Audit"],
   ["/users", "Users", null, "admin"],
   ["/settings", "Settings", null, "admin"],
-  ["/flasher", "SD Flasher"],
 ];
 
 // Hidden CSRF input for a <form method="post"> (contract 8).
@@ -51,7 +53,8 @@ function navHtml(ctx) {
     .filter(([, , , role]) => !role || user.role === role)
     .map(([href, label, test]) => {
       const active = test ? test(path) : path.startsWith(href);
-      return `<a href="${href}"${active ? ' class="active"' : ""}>${label}</a>`;
+      const cls = [href === "/flasher" ? "nav-flasher" : "", active ? "active" : ""].filter(Boolean).join(" ");
+      return `<a href="${href}"${cls ? ` class="${cls}"` : ""}>${label}</a>`;
     })
     .join("\n      ");
   return `<header class="topbar">

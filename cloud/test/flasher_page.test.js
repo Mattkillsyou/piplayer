@@ -42,7 +42,8 @@ describe("/flasher", () => {
     for (const role of ["viewer", "editor", "admin"]) {
       for (const p of ["/dashboard", "/devices", "/flasher"]) {
         const html = await (await r[role].get(p)).text();
-        expect(html, `${role} ${p}`).toContain(`<a href="/flasher"${p === "/flasher" ? ' class="active"' : ""}>SD Flasher</a>`);
+        expect(html, `${role} ${p}`).toContain(`<a href="/flasher" class="nav-flasher${p === "/flasher" ? " active" : ""}">SD Flasher</a>`);
+        expect(html.indexOf('>SD Flasher</a>'), `${role} ${p}: SD Flasher comes first`).toBeLessThan(html.indexOf('>Dashboard</a>'));
       }
     }
   });

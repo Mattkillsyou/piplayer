@@ -423,7 +423,7 @@ hr, .rule { border: 0; height: 1px; background: var(--p5k-rule-2); margin: var(-
 html[data-theme="light"] .wordmark { text-shadow: none; }
 @media (prefers-color-scheme: light) { html:not([data-theme="dark"]) .wordmark { text-shadow: none; } }
 
-.topbar nav { display: flex; align-items: stretch; gap: 2px; flex: 1 1 auto; min-height: var(--p5k-topbar-h); overflow: hidden; }
+.topbar nav { display: flex; align-items: stretch; flex-wrap: wrap; gap: 2px; flex: 1 1 auto; min-height: var(--p5k-topbar-h); } /* wraps to a second row rather than clipping links */
 .topbar nav a {
   display: flex;
   align-items: center;
@@ -440,12 +440,15 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
 .topbar nav a:hover { color: var(--p5k-phosphor); background: var(--p5k-fill-tint-2); text-shadow: none; text-decoration: none; }
 .topbar nav a.active { color: var(--p5k-phosphor); border-bottom-color: var(--p5k-rule-max); background: var(--p5k-fill-tint-2); }
 .topbar nav a:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--p5k-rule-max); color: var(--p5k-phosphor); }
+/* the SD Flasher link: white on black in both themes, boxed, so it reads as the first thing to click */
+.topbar nav a.nav-flasher { color: #FFFFFF; background: #000000; border: 1px solid #FFFFFF; border-bottom-width: 1px; margin: 12px 8px 12px 0; padding: 0 14px; font-weight: 700; }
+.topbar nav a.nav-flasher:hover, .topbar nav a.nav-flasher.active { color: #000000; background: #FFFFFF; border-color: #FFFFFF; }
 .topbar .user { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; font-size: var(--p5k-text-data-sm); color: var(--p5k-body); }
 .topbar .user .badge { margin-left: 4px; }
 .nav-toggle { display: none; }
 
-/* compact rule: shorter labels and tighter tracking below 1100px */
-@media (max-width: 1100px) {
+/* compact rule: tighter tracking below 1400px (ten links plus the SD Flasher pill) */
+@media (max-width: 1400px) {
   .topbar { gap: 14px; }
   .topbar nav a { padding: 0 7px; font-size: 10px; letter-spacing: 0.06em; }
 }
@@ -457,6 +460,7 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
   .topbar.nav-open nav { display: flex; }
   .topbar nav a { min-height: var(--p5k-touch); padding: 0 6px; border-bottom: 1px solid var(--p5k-rule); font-size: var(--p5k-text-data-sm); letter-spacing: var(--p5k-track-nav); }
   .topbar nav a.active { border-bottom-color: var(--p5k-rule); border-left: 2px solid var(--p5k-rule-max); padding-left: 8px; }
+  .topbar nav a.nav-flasher { margin: 8px 0; padding: 0 12px; justify-content: center; }
   .topbar .user { display: none; order: 4; flex-basis: 100%; justify-content: space-between; padding: 10px 6px 6px; }
   .topbar.nav-open .user { display: flex; }
   .topbar .user .username { margin-right: auto; }
