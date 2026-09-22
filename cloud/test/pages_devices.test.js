@@ -35,6 +35,7 @@ describe("role matrix", () => {
   });
 
   it("viewer never sees a token or the install command; editor and admin can act, only admin gets the token", async () => {
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, w.dev.id); // the viewer's for a moment
     const vw = await (await r.viewer.get("/devices")).text();
     expect(vw).toContain("Lobby One");
     expect(vw).not.toContain(w.dev.token);
@@ -51,6 +52,7 @@ describe("role matrix", () => {
     expect(vw).toContain('<span class="help small">Viewer access: read-only.</span>');
     expect(vw).toContain('name="group_id" data-autosubmit disabled');
     expect(vw).toContain('name="playlist_id" data-autosubmit disabled');
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.editor, w.dev.id);
     // the token reads the Wyze login through /api/camera-config, so editors never see it (H3)
     const ed = await (await r.editor.get("/devices")).text();
     expect(ed).not.toContain(w.dev.token);
@@ -134,7 +136,7 @@ describe("page content", () => {
     expect(page).toContain("<summary>Camera</summary>"); // but the live URL form is always there
     expect(page).toContain('<span class="value">never</span>');
     expect(page).toContain('<span class="value">—</span>');
-    expect(page).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group</span>'); // no pi_model yet: nothing appended
+    expect(page).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group · ed</span>'); // no pi_model yet: nothing appended before the owner (admins only)
     expect(page).toContain(`<option value="${w.gid}" selected>Lobby group</option>`);
     expect(page).toContain(`<option value="${w.pid}" selected>Default PL</option>`);
     expect(page).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
@@ -145,7 +147,7 @@ describe("page content", () => {
 
   it("shows the reported Pi model in the id line, escaped", async () => {
     await query("UPDATE devices SET pi_model = ? WHERE id = ?", "Raspberry Pi 4 Model B Rev 1.5 <b>", w.dev.id);
-    const page = await (await r.viewer.get("/devices")).text();
+    const page = await (await r.editor.get("/devices")).text();
     expect(page).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group · Raspberry Pi 4 Model B Rev 1.5 &lt;b&gt;</span>');
     await query("UPDATE devices SET pi_model = NULL WHERE id = ?", w.dev.id);
   });
@@ -177,7 +179,7 @@ describe("page content", () => {
     await query("UPDATE device_commands SET completed_at = datetime('now'), result = 'undeliverable: no result after 5 deliveries', delivery_count = 5, undeliverable = 1 WHERE id = ?", rows[5].id);
     await query("UPDATE device_commands SET completed_at = datetime('now'), result = 'ok <done>' WHERE id = ?", rows[4].id);
     await query("UPDATE device_commands SET completed_at = datetime('now') WHERE id = ?", rows[3].id);
-    const page = await (await r.viewer.get("/devices")).text();
+    const page = await (await r.editor.get("/devices")).text();
     expect(page).toContain("<summary>Recent commands (5)</summary>");
     expect(page).toContain("delivered ×2, no result yet");
     expect(page).toContain('<span class="badge badge-stale">undeliverable: no result after 5 deliveries</span>');
@@ -284,25 +286,25 @@ describe("screenshot", () => {
     const dev = await device("shot-1", "Shot");
     expect((await r.viewer.get(`/devices/${NOPE}/screenshot`)).status).toBe(404);
     expect((await r.viewer.get("/devices/abc/screenshot")).status).toBe(400);
-    let res = await r.viewer.get(`/devices/${dev.id}/screenshot`);
+    let res = await r.editor.get(`/devices/${dev.id}/screenshot`);
     expect(await detail(res, 404)).toBe("no screenshot yet");
     await media.putScreenshot(env, dev.device_id, JPEG);
     await query("UPDATE devices SET last_screenshot_at = datetime('now', '-10 minutes') WHERE id = ?", dev.id);
-    res = await r.viewer.get(`/devices/${dev.id}/screenshot?t=x`);
+    res = await r.editor.get(`/devices/${dev.id}/screenshot?t=x`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/jpeg");
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG);
     // stale badge: 10 min > 3 x 60 s
-    const page = await (await r.viewer.get("/devices")).text();
+    const page = await (await r.editor.get("/devices")).text();
     expect(page).toContain(`/devices/${dev.id}/screenshot?t=`);
     expect(page).toContain(`<a href="/devices/${dev.id}/screenshot?t=`);
     expect(page).toContain('<span class="screen-chip tl">10 min ago</span>');
     expect(page).toContain('<div class="device-screen is-stale">');
     expect(page).toContain('<span class="screen-chip tr is-stale badge-stale" title="No new screenshot for more than 3 capture intervals">stale</span>');
     await query("UPDATE devices SET last_screenshot_at = datetime('now') WHERE id = ?", dev.id);
-    const fresh = await (await r.viewer.get("/devices")).text();
+    const fresh = await (await r.editor.get("/devices")).text();
     expect(fresh).toContain('<span class="screen-chip tr">live</span>');
   });
 });
@@ -346,33 +348,33 @@ describe("query budget", () => {
 describe("remote updates", () => {
   it("shows the player's last update report: ok as a muted line, a failure as an error box", async () => {
     const dev = await device("upd-1", "Upd <one>");
-    let page = await (await r.viewer.get("/devices")).text();
+    let page = await (await r.editor.get("/devices")).text();
     expect(page).not.toContain("update-status");
     await query("UPDATE devices SET last_update_at = datetime('now', '-3 hours'), last_update_ok = 1, last_update_message = 'already at abc123', last_update_ref = 'v1.4.0' WHERE id = ?", dev.id);
-    page = await (await r.viewer.get("/devices")).text();
+    page = await (await r.editor.get("/devices")).text();
     expect(page).toContain('<p class="update-status muted small" title="Reported by the player after its last update">Update ok <code>v1.4.0</code> · 3 h ago · ');
     expect(page).toContain(" UTC: already at abc123</p>");
     expect(page).not.toContain("Update failed");
     await query("UPDATE devices SET last_update_at = datetime('now', '-90 seconds'), last_update_ok = 0, last_update_message = 'install-player.sh exited 1: <pip>', last_update_ref = NULL WHERE id = ?", dev.id);
-    page = await (await r.viewer.get("/devices")).text();
+    page = await (await r.editor.get("/devices")).text();
     expect(page).toContain('<div class="alert error update-status" title="Reported by the player after its last update">Update failed · 1 min ago · ');
     expect(page).toContain(" UTC: install-player.sh exited 1: &lt;pip&gt;</div>");
     expect(page).not.toContain("<code></code>");
     // a failed update is a fault even when the player is online and playing
     await query("UPDATE devices SET last_seen_at = datetime('now'), player_status = 'playing' WHERE id = ?", dev.id);
-    page = await (await r.viewer.get("/devices")).text();
+    page = await (await r.editor.get("/devices")).text();
     const faults = (p) => (p.match(/<div class="device-row is-fault">/g) || []).length;
     const failed = faults(page);
     expect(page).toContain('<span class="status status-playing"><span class="lamp"></span>playing</span>');
     await query("UPDATE devices SET last_update_ok = 1 WHERE id = ?", dev.id);
-    page = await (await r.viewer.get("/devices")).text();
+    page = await (await r.editor.get("/devices")).text();
     expect(faults(page)).toBe(failed - 1);
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 
   it("Update all players queues one command per device, skips devices already waiting, audits, banners", async () => {
     await query("DELETE FROM device_commands");
-    const before = (await query("SELECT COUNT(*) AS n FROM devices"))[0].n;
+    const before = (await query("SELECT COUNT(*) AS n FROM devices WHERE owner_id = ?", r.ids.editor))[0].n; // the fleet action is per owner
     expect(before).toBeGreaterThan(1);
     expect(await detail(await post(r.editor, "/devices/update-all", { command: "reboot" }), 400)).toBe("unknown command");
     expect(await query("SELECT id FROM device_commands")).toEqual([]);
@@ -456,6 +458,7 @@ describe("projector", () => {
     expect(b).not.toContain("ir-learn:");
     expect(b).not.toContain("badge-muted");
     // viewers see the state and the disabled form, no buttons
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, dev.id);
     page = await (await r.viewer.get("/devices")).text();
     b = block(page);
     expect(b).toContain("projector off</span>");

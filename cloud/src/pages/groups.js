@@ -3,19 +3,21 @@ import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, idParam, intField, redirect, str } from "../util.js";
-import { requireRow } from "./devices.js";
+import { ownedClause, requireRow } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 
 async function groupsPage(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = user.role !== "viewer";
+  // Groups are shared; the device count is only what this user may see.
+  const own = ownedClause(user);
   const groups = await db.all(ctx.env,
     `SELECT g.id, g.name,
             g.playlist_id, p.name AS playlist_name,
-            (SELECT COUNT(*) FROM devices d WHERE d.group_id = g.id) AS device_count
+            (SELECT COUNT(*) FROM devices d WHERE d.group_id = g.id AND ${own.sql}) AS device_count
        FROM device_groups g
        LEFT JOIN playlists p ON p.id = g.playlist_id
-       ORDER BY g.name`);
+       ORDER BY g.name`, ...own.params);
   const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name");
   const row = (g) => `<tr>
       <td class="name">${esc(g.name)}</td>

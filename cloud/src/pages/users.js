@@ -28,7 +28,7 @@ async function tokensRow(ctx, u, tz, newToken) {
   const canHold = u.role !== "viewer";
   if (!tokens.length && !canHold) return "";
   return `<tr class="user-tokens">
-      <td colspan="6">
+      <td colspan="7">
         <details${newToken ? " open" : ""}>
           <summary class="small">API tokens (${tokens.length})</summary>
           ${newToken ? newTokenBlock(newToken) : ""}
@@ -42,10 +42,13 @@ async function tokensRow(ctx, u, tz, newToken) {
 async function usersPage(ctx, created = null) {
   const me = auth.requireRole(ctx, "admin");
   const tz = (await ctx.settings()).timezone;
-  const users = await db.all(ctx.env, "SELECT id, username, role, created_at FROM users ORDER BY username");
+  const users = await db.all(ctx.env,
+    `SELECT u.id, u.username, u.role, u.created_at, (SELECT COUNT(*) FROM devices d WHERE d.owner_id = u.id) AS device_count
+       FROM users u ORDER BY u.username`);
   const row = (u) => `<tr>
       <td class="name">${esc(u.username)}${u.id === me.id ? ' <span class="muted small">(you)</span>' : ""}</td>
       <td><span class="badge badge-${esc(u.role)}">${esc(u.role)}</span></td>
+      <td title="Projectors this account owns (set on the Devices page)">${u.device_count}</td>
       <td class="muted nowrap">${esc(localTime(u.created_at, tz))}</td>
       <td>
         <form method="post" action="/users/${u.id}/role" class="inline">
@@ -63,7 +66,7 @@ async function usersPage(ctx, created = null) {
         </form>
       </td>
       <td>
-        ${u.id !== me.id ? `<form method="post" action="/users/${u.id}/delete" class="inline" data-confirm="Delete ${esc(u.username)}? Their API tokens stop working and any flasher using them will fail.">
+        ${u.id !== me.id ? `<form method="post" action="/users/${u.id}/delete" class="inline" data-confirm="Delete ${esc(u.username)}? Their API tokens stop working and any flasher using them will fail. Their projectors keep playing but have no owner until you pick one on the Devices page.">
           ${csrfInput(ctx)}
           <button type="submit" class="danger small">Delete</button>
         </form>` : ""}
@@ -103,7 +106,7 @@ async function usersPage(ctx, created = null) {
 <div class="table-wrap">
 <table class="data">
   <caption class="sr-only">Users</caption>
-  <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Created</th><th scope="col">Change role</th><th scope="col">Set password</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+  <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Projectors</th><th scope="col">Created</th><th scope="col">Change role</th><th scope="col">Set password</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
   <tbody>
     ${rows.filter(Boolean).join("\n    ")}
   </tbody>

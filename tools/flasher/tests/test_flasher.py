@@ -12,7 +12,7 @@ import pytest
 import firstboot
 import flasher
 from conftest import PUBKEY, fake_wifi, new_root
-from test_console import OPERATOR_TOKEN, StubConsole, _serve
+from test_console import OPERATOR_TOKEN, TAKEN, VIEW_ONLY, VIEWER_TOKEN, StubConsole, _serve
 
 FLASHER = Path(flasher.__file__)
 DISK = {"number": 2, "name": "Generic MassStorageClass", "bus": "USB", "size": 31914983424, "sector": 512,
@@ -28,8 +28,10 @@ FORM = {"name": "Lobby", "ssid": "Venue", "wifi_password": "wp123456", "wifi_hid
 FULL = dict(FORM, token="", device_id="lobby", username="projector-admin", password="pw",
             console_url="http://console.local/", enrollment_key=KEY, operator_token="", ssh_pubkey=PUBKEY,
             dry_run=False)
-ENROLLMENT = {"console_url": "https://c.example", "enrollment_key": KEY, "timezone": "UTC",
-              "groups": [{"id": 1, "name": "Lobby"}], "playlists": [{"id": 7, "name": "Loop"}], "wyze_configured": False}
+ME = {"username": "matt", "role": "editor", "console_url": "https://c.example", "timezone": "UTC",
+      "groups": [{"id": 1, "name": "Lobby"}], "playlists": [{"id": 7, "name": "Loop"}], "wyze_configured": False}
+REGISTERED = {"device_id": "lobby", "token": "tok-lobby-0123456789", "cms_url": "https://c.example", "owner": "matt",
+              "created": True}
 
 
 _roots = []
@@ -152,7 +154,7 @@ def test_console_json_resource_frozen_and_source(monkeypatch, tmp_path):
     monkeypatch.setattr(flasher.sys, "frozen", True, raising=False)
     monkeypatch.setattr(flasher.sys, "_MEIPASS", str(mei), raising=False)
     assert flasher.build_info() == "built now"
-    assert flasher.console_summary() == "console: https://frozen.example (enrollment key: fetched with the operator token)"
+    assert flasher.console_summary() == "console: https://frozen.example (enrollment key: none; projectors are registered with the sign-in)"
     # A URL-only console.json is the normal build (the key comes from the console at flash time).
     flasher.write_console_json(mei / "console.json", "https://frozen.example/")
     assert flasher.console_defaults() == {"console_url": "https://frozen.example", "enrollment_key": ""}
@@ -274,7 +276,8 @@ def test_operator_config_falls_back_to_plain_text_with_a_warning(monkeypatch, tm
 
 def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     """One button. The visible top level: the masthead (logo, name, wordmark), Device name, Pi model, Wi-Fi network,
-    Wi-Fi password, SD card, Refresh, FLASH, the status line, Advanced. No console line, no sign-in, no log box."""
+    Wi-Fi password, SD card, Refresh, FLASH, the status line, Advanced. No console line, no sign-in box (hidden
+    until FLASH needs it), no log box."""
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
     app = flasher.App(root)
@@ -292,8 +295,8 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     assert _all_texts(head, []) == ["", "MATT BROWN'S", "PROJECTION5000"]  # the icon label (frames have no text)
     # Nothing on the screen names the console, the fonts or the sign-in; the log box lives under Advanced.
     texts = _all_texts(root, [])
-    assert not any("Console" in t or "Signed in" in t or "Sign in" in t or "Fonts" in t or "SD FLASHER" in t
-                   for t in texts), texts
+    assert not any("Console" in t or "Signed in" in t or "Fonts" in t or "SD FLASHER" in t for t in texts), texts
+    assert not app.signin.winfo_manager() and _visible_texts(app.signin, []) == []  # the sign-in box is hidden
     assert _status(app) == "Ready." and app.status_label.cget("style") == "Status.TLabel"
     assert not app.details.winfo_manager() and app.log_text.master is app.details  # hidden until Show details
     # No field ever holds the console URL, a username, a password, a key or a token on the main screen.
@@ -309,8 +312,8 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     # SSH key rows any more: the model picks the image, Windows picks the locale, the key is automatic.
     app.adv_btn.invoke()
     assert app.advanced.winfo_manager() == "pack"
-    assert _visible_texts(app.advanced, []) == ["Time zone", "Static IP", "Gateway", "Account", "Connect"]
-    assert app.account_label.cget("text") == "Not connected"
+    assert _visible_texts(app.advanced, []) == ["Time zone", "Static IP", "Gateway", "Account", "Sign in"]
+    assert app.account_label.cget("text") == "Not signed in"
     checks = [w.cget("text") for w in _widgets(app.advanced, flasher.ttk.Checkbutton)]
     assert checks == ["Hidden Wi-Fi network", "Show details"]  # the dry-run box exists only under --dry-run
     assert any(isinstance(w, flasher.ttk.Label) and w.cget("text").startswith("Build: ")
@@ -494,9 +497,9 @@ def test_gui_constructs_with_windows_defaults(monkeypatch):
     app.v["name"].set("---")
     assert app.id_label.cget("text") == ""
     assert root.winfo_reqheight() <= root.winfo_screenheight() - 120
-    # Not connected, no baked key: nothing says so on the screen; Advanced shows the account state.
-    assert _status(app) == "Ready." and app.account_label.cget("text") == "Not connected"
-    assert app.account_btn.cget("text") == "Connect"
+    # Not signed in, no baked key: nothing says so on the screen; Advanced shows the account state.
+    assert _status(app) == "Ready." and app.account_label.cget("text") == "Not signed in"
+    assert app.account_btn.cget("text") == "Sign in"
     app.v["timezone"].set("Europe/Paris")
     app.on_close()  # saves the form
     # The remembered form survives a restart; keymap and country are never remembered (always this PC's).
@@ -558,7 +561,7 @@ def test_validate_shows_plain_words_inline(monkeypatch, tmp_path):
     _fill(app, image_mode="latest", static_ip="192.168.1.50/24", gateway="192.168.1.1")
     v = app.validate()
     assert v is not None and "address1=192.168.1.50/24,192.168.1.1" in firstboot.render_firstrun(flasher.card_cfg(v))
-    # Not connected and nothing baked is not a form error: FLASH connects first (see the connect tests).
+    # Not signed in and nothing baked is not a form error: FLASH asks for the sign-in first (see those tests).
     app.baked_key = ""
     _fill(app, image_mode="latest")
     assert app.validate() is not None and _shown_errors(app) == {}
@@ -612,104 +615,98 @@ def stub():
         srv.shutdown()
 
 
-def test_flash_connects_in_the_browser_then_makes_the_card(monkeypatch, stub):
-    """Not connected, no baked key: FLASH opens the browser, says so in plain words, waits for the approval and then
-    flashes with no further click. 'Signed in as' appears nowhere on the screen."""
+def test_flash_signs_in_then_makes_the_card(monkeypatch, stub):
+    """Not signed in, no baked key: FLASH shows the sign-in box (username, masked password, Sign in) with the
+    plain-words hint, and once the console answers the flash runs with no further click."""
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher, "console_url", lambda: stub)
-    opened, flashed = [], []
-    monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: opened.append(url) or True)
-    monkeypatch.setattr(flasher, "run_flash", lambda v, *a, **k: flashed.append(v))
-    StubConsole.approve_after = 2
+    flashed = []
+    monkeypatch.setattr(flasher, "run_flash", lambda v, *a, **k: flashed.append(v) or "matt")
     root = _root()
     app = flasher.App(root)
-    assert app.console_url == stub and not app.connected()
+    assert app.console_url == stub and not app.connected() and not app.signin.winfo_manager()
     _fill(app, image_mode="latest")
     app.v["dry_run"].set(True)
     app.flash_btn.invoke()
-    assert _status(app) == flasher.CONNECT_TEXT
-    assert str(app.flash_btn["state"]) == "disabled" and app.cancel_btn.winfo_manager() == "grid"
-    assert _pump(root, app, lambda: "approve the sign-in there (code BCDF-GH)" in _log(app), timeout=5)
-    assert opened == [stub + "/authorize?code=BCDFGH"]  # the link carries the raw code
-    assert _status(app) == flasher.CONNECT_TEXT  # the code is a detail, not something to type
+    root.update()
+    assert _status(app) == flasher.SIGNIN_TEXT == "Sign in below, then the card is made automatically."
+    assert app.signin.winfo_manager() == "grid" and str(app.flash_btn["state"]) == "disabled"
+    assert _visible_texts(app.signin, []) == [flasher.SIGNIN_HINT, "Username", "Password", "Sign in", "Cancel"]
+    assert flasher.SIGNIN_HINT == "Sign in with your console username and password (the same as on the website)."
+    assert app.pass_entry.cget("show") == "*" and root.focus_get() in (app.user_entry, None)
+    assert not app.cancel_btn.winfo_manager()  # the box has its own Cancel
+    # Nothing typed: said inline, no request.
+    app.signin_btn.invoke()
+    assert _shown_errors(app) == {"signin": "Enter your username and password."} and StubConsole.calls == []
+    app.op_username.set("matt")
+    app.op_password.set("secret")
+    app.signin_btn.invoke()
     assert _pump(root, app, lambda: bool(flashed), timeout=8)
     assert app.op["token"] == OPERATOR_TOKEN and flashed[0]["operator_token"] == OPERATOR_TOKEN
     assert flasher.load_operator_config() == {"console_url": stub, "token": OPERATOR_TOKEN, "username": "matt"}
-    assert StubConsole.polls == 2 and "Signed in as matt." in _log(app)
+    assert StubConsole.calls[0] == ("/api/operator/login", {"username": "matt", "password": "secret",
+                                                           "hostname": flasher.socket.gethostname()})
+    assert "Signed in as matt." in _log(app) and "secret" not in _log(app)
+    assert not app.signin.winfo_manager() and app.op_password.get() == ""  # the box is gone, the password with it
     assert _pump(root, app, lambda: _status(app) == flasher.DRY_RUN_TEXT)
     assert str(app.flash_btn["state"]) == "normal" and not app.cancel_btn.winfo_manager()
-    texts = _all_texts(root, [])
-    assert not any("Signed in" in t or "Sign in" in t for t in texts)
-    # Advanced names the account; Disconnect forgets the token, Connect comes back.
-    assert app.account_label.cget("text") == "Connected as matt" and app.account_btn.cget("text") == "Disconnect"
+    # Advanced names the account; Sign out forgets the token, Sign in comes back with the username prefilled.
+    assert app.account_label.cget("text") == "Signed in as matt" and app.account_btn.cget("text") == "Sign out"
     app.account_btn.invoke()
     assert app.op["token"] == "" and not flasher.operator_config_path().exists()
-    assert app.account_label.cget("text") == "Not connected" and app.account_btn.cget("text") == "Connect"
+    assert app.account_label.cget("text") == "Not signed in" and app.account_btn.cget("text") == "Sign in"
     assert "Signed out" in _log(app) and _status(app) == flasher.DRY_RUN_TEXT
+    app.account_btn.invoke()  # Sign in under Advanced: the same box, no flash afterwards
+    assert app.signin.winfo_manager() == "grid" and app.op_username.get() == "matt" and app._then is None
+    assert _status(app) == "Sign in below." and str(app.account_btn["state"]) == "disabled"
     root.destroy()
 
 
-def test_connect_denied_browserless_and_offline(monkeypatch, stub):
+def test_sign_in_wrong_password_view_only_throttled_and_offline(monkeypatch, stub):
+    """Every refusal is said inline under the box in plain words, the box stays open for another try, and no
+    token is kept. Cancel closes it and puts the status line back to Ready."""
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher, "console_url", lambda: stub)
-    monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: False)
-    StubConsole.deny = True
     root = _root()
     app = flasher.App(root)
     app.adv_btn.invoke()
-    app.account_btn.invoke()  # Connect under Advanced: the same flow, no flash afterwards
-    assert str(app.account_btn["state"]) == "disabled"
-    link = f"{stub}/authorize?code=BCDFGH"
-    # No browser: the status line carries the URL and the code to type.
-    assert _pump(root, app, lambda: link in _status(app), timeout=5)
-    assert _status(app) == f"Open {link} in a browser and type the code BCDF-GH. Then the card is made automatically."
-    assert f"Could not open a browser. Open {link} yourself and type the code BCDF-GH." in _log(app)
-    assert _pump(root, app, lambda: _status(app).startswith("Not approved"), timeout=8)
-    assert _status(app) == "Not approved: denied on the console"
-    assert "Connect failed: Not approved: denied on the console" in _log(app)
-    assert str(app.account_btn["state"]) == "normal" and app.op["token"] == ""
-    assert str(app.flash_btn["state"]) == "normal" and not app.cancel_btn.winfo_manager()
-    assert not flasher.operator_config_path().exists()
-    # The console is down: reported in plain words, the button is back.
-    monkeypatch.setattr(flasher.console, "request_device_code", lambda *a: (_ for _ in ()).throw(
-        flasher.console.ConsoleError("cannot reach it")))
     app.account_btn.invoke()
-    assert _pump(root, app, lambda: "cannot reach it" in _status(app))
-    assert _status(app) == "Could not reach the console: cannot reach it"
-    assert app.account_label.cget("text") == "Not connected" and app.account_btn.cget("text") == "Connect"
-    root.destroy()
-
-
-def test_connect_times_out_or_is_cancelled_back_to_ready(monkeypatch, stub):
-    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
-    monkeypatch.setattr(flasher, "console_url", lambda: stub)
-    monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: True)
-    StubConsole.approve_after = None
-    real = flasher.console.request_device_code
-    monkeypatch.setattr(flasher.console, "request_device_code", lambda *a: dict(real(*a), expires_in=2))
-    root = _root()
-    app = flasher.App(root)
-    app.connect()
-    assert _pump(root, app, lambda: "took too long" in _status(app), timeout=8)
-    assert _status(app) == "The approval took too long (10 minutes). Press FLASH again."
-    assert StubConsole.polls >= 1 and app.op["token"] == ""
-    # Cancel during the wait: back to Ready, the poll thread stops.
-    StubConsole.polls = 0
-    monkeypatch.setattr(flasher.console, "request_device_code", lambda *a: dict(real(*a), expires_in=600))
-    _fill(app, image_mode="latest")
-    app.v["dry_run"].set(True)
-    app.on_flash()
-    assert _status(app) == flasher.CONNECT_TEXT
-    assert _pump(root, app, lambda: StubConsole.polls >= 1, timeout=5)
-    app.cancel_btn.invoke()
-    assert app._signin_cancel.is_set() and _status(app) == "Ready."
-    assert str(app.flash_btn["state"]) == "normal" and not app.cancel_btn.winfo_manager()
-    polls = StubConsole.polls
-    time.sleep(1.5)
-    assert StubConsole.polls <= polls + 1  # at most the poll that was in flight
-    # Closing the window stops it too.
-    app.on_flash()
-    assert _pump(root, app, lambda: StubConsole.polls > polls + 1, timeout=5)
+    app.op_username.set("matt")
+    app.op_password.set("wrong")
+    app.signin_btn.invoke()
+    assert str(app.signin_btn["state"]) == "disabled"  # one request at a time
+    assert _pump(root, app, lambda: "signin" in _shown_errors(app), timeout=5)
+    assert _shown_errors(app)["signin"] == "Invalid username or password" and str(app.signin_btn["state"]) == "normal"
+    assert "Sign in failed: Invalid username or password" in _log(app) and app.op["token"] == ""
+    app.op_username.set("viewer")
+    app.op_password.set("secret")
+    app.signin_btn.invoke()
+    assert _pump(root, app, lambda: _shown_errors(app).get("signin") == VIEW_ONLY, timeout=5)
+    assert not flasher.operator_config_path().exists()
+    for _ in range(2):
+        app.op_username.set("matt")
+        app.op_password.set("wrong")
+        app.signin_btn.invoke()
+        assert _pump(root, app, lambda: str(app.signin_btn["state"]) == "normal", timeout=5)
+    app.op_password.set("secret")
+    app.signin_btn.invoke()
+    assert _pump(root, app, lambda: "Too many" in _shown_errors(app).get("signin", ""), timeout=5)
+    assert _shown_errors(app)["signin"] == "Too many failed attempts; try again in 60 s"
+    # The console is down: reported in plain words, the box stays.
+    monkeypatch.setattr(flasher.console, "login", lambda *a: (_ for _ in ()).throw(
+        flasher.console.ConsoleError("cannot reach it")))
+    app.signin_btn.invoke()
+    assert _pump(root, app, lambda: "cannot reach it" in _shown_errors(app).get("signin", ""))
+    assert _shown_errors(app)["signin"] == "Could not reach the console: cannot reach it"
+    assert app.signin.winfo_manager() == "grid" and str(app.flash_btn["state"]) == "disabled"
+    # Cancel: the box goes, FLASH and the Account row come back.
+    app.signin.winfo_children()[-2].winfo_children()[1].invoke()  # the box's Cancel button
+    assert not app.signin.winfo_manager() and _status(app) == "Ready." and app._signin_cancel.is_set()
+    assert str(app.flash_btn["state"]) == "normal" and str(app.account_btn["state"]) == "normal"
+    assert app.account_label.cget("text") == "Not signed in" and app.op_password.get() == ""
+    assert "Sign in cancelled." in _log(app)
+    # Closing the window while the box is open is fine too.
+    app.account_btn.invoke()
     app.on_close()
     assert app._signin_cancel.is_set()
 
@@ -719,45 +716,55 @@ def test_gui_uses_a_stored_token_silently(monkeypatch):
     flasher.save_operator_config(flasher.DEFAULT_CONSOLE_URL, OPERATOR_TOKEN, "matt")
     seen = []
 
-    def fetch(url, token):
+    def me(url, token):
         seen.append((url, token))
         if len(seen) > 1:
             err = flasher.console.ConsoleError("HTTP 401 Unauthorized")
             err.code = 401
             raise err
-        return dict(ENROLLMENT)
+        return dict(ME)
 
-    monkeypatch.setattr(flasher.console, "fetch_enrollment", fetch)
+    monkeypatch.setattr(flasher.console, "me", me)
     root = _root()
     app = flasher.App(root)
-    assert app.connected() and app.account_label.cget("text") == "Connected as matt"
+    assert app.connected() and app.account_label.cget("text") == "Signed in as matt"
     assert _pump(root, app, lambda: "Signed in as matt (checked with the console)." in _log(app))
     assert seen == [(flasher.DEFAULT_CONSOLE_URL, OPERATOR_TOKEN)]
     assert _status(app) == "Ready."  # the check is a detail
-    assert KEY not in _log(app)  # the key is never shown
+    assert app.op_username.get() == "matt" and not app.signin.winfo_manager()
     root.destroy()
-    # The console rejects the stored token (revoked): forgotten; the next FLASH connects again.
+    # The console rejects the stored token (revoked): forgotten; the next FLASH signs in again.
     root = _root()
     app = flasher.App(root)
     assert _pump(root, app, lambda: not app.connected())
-    assert app.account_label.cget("text") == "Not connected" and _status(app) == "Ready."
-    assert "FLASH connects again" in _log(app)
+    assert app.account_label.cget("text") == "Not signed in" and _status(app) == "Ready."
+    assert "FLASH signs in again" in _log(app)
     assert not flasher.operator_config_path().exists()
+    assert app.op_username.get() == "matt"  # still prefilled for the next sign-in
     root.destroy()
     # A token saved for another console does not count for this build.
     flasher.save_operator_config("https://other.example", OPERATOR_TOKEN, "matt")
     root = _root()
     app = flasher.App(root)
-    assert not app.connected() and len(seen) == 2
+    assert not app.connected() and len(seen) == 2 and app.op_username.get() == ""
     root.destroy()
     # Offline at launch: the stored sign-in is kept.
     flasher.save_operator_config(flasher.DEFAULT_CONSOLE_URL, OPERATOR_TOKEN, "matt")
-    monkeypatch.setattr(flasher.console, "fetch_enrollment",
+    monkeypatch.setattr(flasher.console, "me",
                         lambda *a: (_ for _ in ()).throw(flasher.console.ConsoleError("cannot reach")))
     root = _root()
     app = flasher.App(root)
     assert _pump(root, app, lambda: "Console check failed (cannot reach); the stored sign-in is kept." in _log(app))
-    assert app.op["token"] == OPERATOR_TOKEN and app.account_label.cget("text") == "Connected as matt"
+    assert app.op["token"] == OPERATOR_TOKEN and app.account_label.cget("text") == "Signed in as matt"
+    root.destroy()
+    # The account was made view-only meanwhile (403): forgotten, and the console's words reach the status line.
+    err = flasher.console.ConsoleError("/api/operator/me: " + VIEW_ONLY)
+    err.code, err.body = 403, {"detail": VIEW_ONLY}
+    monkeypatch.setattr(flasher.console, "me", lambda *a: (_ for _ in ()).throw(err))
+    root = _root()
+    app = flasher.App(root)
+    assert _pump(root, app, lambda: not app.connected())
+    assert _status(app) == VIEW_ONLY and VIEW_ONLY in _log(app) and not flasher.operator_config_path().exists()
     root.destroy()
 
 
@@ -794,11 +801,13 @@ def test_status_line_speaks_plain_words(monkeypatch):
     assert _status(app) == "Writing the card..."
     app.set_progress(43.4, "1234 MB written, 21.0 MB/s")
     assert _status(app) == "Writing the card (43%)..." and app.progress["value"] == 43.4
-    app.set_status(flasher.DONE_TEXT)
+    app.set_status(flasher.done_text("matt"))
     app.set_progress(100, "verified")  # a late tick never overwrites a sentence
-    assert _status(app) == flasher.DONE_TEXT
-    assert flasher.DONE_TEXT == ("Done. Put the card in the Pi and turn it on. It shows up on the Devices page in a "
-                                 "few minutes.")
+    assert _status(app) == flasher.done_text("matt")
+    assert flasher.done_text("matt") == ("Done. Put the card in the Pi and turn it on. It shows up under Devices in "
+                                         "matt's account in a few minutes.")
+    assert flasher.done_text() == ("Done. Put the card in the Pi and turn it on. It shows up on the Devices page in a "
+                                   "few minutes.")  # a baked enrollment key: no account
     # A failed flash: the first line of the reason, plus the dialog; the button comes back.
     errors = []
     monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: errors.append(a))
@@ -1047,7 +1056,7 @@ def test_run_flash_end_to_end_with_stubs(monkeypatch, tmp_path):
     assert "Console http://console.local: enrolls itself on first boot." in text and "SUMMARY" in text
     assert "Login: ssh projector-admin@lobby.local with the key" in text and "password login is off" in text
     assert "pw" not in text.split("SUMMARY")[1].replace("password login", "")
-    assert flasher.DONE_TEXT in lines and "Device id: lobby" in lines
+    assert flasher.done_text() in lines and "Device id: lobby" in lines
     assert KEY not in text  # the log never shows the key
     # Oversized image: refused before the card is touched.
     calls.clear()
@@ -1064,41 +1073,92 @@ def test_run_flash_end_to_end_with_stubs(monkeypatch, tmp_path):
     assert any("device token given, no enrollment" in s for s in lines)
 
 
-def test_run_flash_fetches_the_key_with_the_sign_in(monkeypatch, tmp_path):
-    """No baked key, no device token: the enrollment key comes from the console at flash time, is never
-    logged, and the answer's wyze_configured reaches the provision script."""
+def test_run_flash_registers_the_projector_with_the_sign_in(monkeypatch, tmp_path):
+    """No baked key, no device token: the projector is registered in the signed-in account at flash time and
+    the device token the console issues goes on the card (no enrollment key anywhere); /me's wyze_configured
+    reaches the provision script; the Done sentence names the account."""
     calls, lines = [], []
     card, boot = _flash_stubs(monkeypatch, tmp_path, calls)
     seen = []
-    monkeypatch.setattr(flasher.console, "fetch_enrollment",
-                        lambda url, token: seen.append((url, token)) or dict(ENROLLMENT, wyze_configured=True))
+    monkeypatch.setattr(flasher.console, "me", lambda url, token: seen.append(("me", url, token))
+                        or dict(ME, wyze_configured=True))
+    monkeypatch.setattr(flasher.console, "register_device",
+                        lambda url, token, dev, name, model: seen.append(("register", url, token, dev, name, model))
+                        or dict(REGISTERED))
     img = tmp_path / "x.img"
     img.write_bytes(b"\x01" * 4096)
     v = dict(FULL, image_path=str(img), disk_info=dict(DISK, size=1 << 20), enrollment_key="",
-             operator_token=OPERATOR_TOKEN)
-    flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
-    assert seen == [("http://console.local", OPERATOR_TOKEN)]
-    assert "Enrollment key: ok. Wyze bridge: will be installed (the console has a Wyze account)." in lines
+             operator_token=OPERATOR_TOKEN, pi_model="pi5")
+    owner = flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
+    assert owner == "matt"
+    assert seen == [("me", "http://console.local", OPERATOR_TOKEN),
+                    ("register", "http://console.local", OPERATOR_TOKEN, "lobby", "Lobby", "Raspberry Pi 5 / 500")]
+    assert "Signed in as matt. Wyze bridge: will be installed (the console has a Wyze account)." in lines
+    assert "Registered lobby in matt's account (new projector). Device token: ok." in lines
     provision = (boot / "projection5000-provision.sh").read_bytes()
-    assert b"\nENROLL_KEY=" + KEY.encode() + b"\n" in provision and b" --with-wyze" in provision
-    assert KEY not in "\n".join(lines)
+    assert b"\nDEVICE_TOKEN=tok-lobby-0123456789\n" in provision and b"\nCMS_URL=https://c.example\n" in provision
+    assert b"\nENROLL_KEY=" not in provision and b" --with-wyze" in provision
+    assert flasher.done_text("matt") in lines and "matt's account" in flasher.done_text("matt")
+    assert "tok-lobby-0123456789" not in "\n".join(lines)  # the token is never logged
+    assert any("device token: keep it safe" in s for s in lines)
+    # A re-flash of an existing projector is said so.
+    seen.clear()
+    monkeypatch.setattr(flasher.console, "register_device", lambda *a: dict(REGISTERED, created=False, owner=""))
+    flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
+    assert "Registered lobby in matt's account (already there, new device token). Device token: ok." in lines
     # Not signed in and nothing baked: refused before anything is rendered or written.
     calls.clear()
     with pytest.raises(ValueError, match="Sign in first"):
         flasher.run_flash(dict(v, operator_token=""), lines.append, lambda pct, text: None, threading.Event())
     assert calls == []
-    # A rejected sign-in surfaces as the console's message.
-    monkeypatch.setattr(flasher.console, "fetch_enrollment",
-                        lambda *a: (_ for _ in ()).throw(flasher.console.ConsoleError("HTTP 401 Unauthorized")))
-    with pytest.raises(flasher.console.ConsoleError, match="401"):
-        flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
-    assert calls == []
-    # A baked key (offline build) or a device token: no fetch at all.
-    monkeypatch.setattr(flasher.console, "fetch_enrollment", lambda *a: pytest.fail("fetched with a baked key"))
-    flasher.run_flash(dict(v, enrollment_key=KEY, operator_token=""), lines.append, lambda pct, text: None,
-                      threading.Event())
+    # A rejected sign-in, or another account's id, surfaces as the console's error with its code.
+    for code, words in ((401, "invalid API token"), (409, TAKEN)):
+        err = flasher.console.ConsoleError(f"/api/operator/devices: {words}")
+        err.code, err.body = code, {"detail": words}
+        monkeypatch.setattr(flasher.console, "register_device", lambda *a, e=err: (_ for _ in ()).throw(e))
+        with pytest.raises(flasher.console.ConsoleError, match=words) as info:
+            flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
+        assert info.value.code == code and calls == []
+    # A dry run checks the sign-in and stops there: nothing is registered.
+    monkeypatch.setattr(flasher.console, "register_device", lambda *a: pytest.fail("registered in a dry run"))
+    lines.clear()
+    assert flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event(), dry_run=True) == "matt"
+    assert "Dry run: the projector is not registered on the console." in lines
+    # A baked key (offline build) or a device token: the console is not contacted at all.
+    monkeypatch.setattr(flasher.console, "me", lambda *a: pytest.fail("checked with a baked key"))
+    assert flasher.run_flash(dict(v, enrollment_key=KEY, operator_token=""), lines.append, lambda pct, text: None,
+                             threading.Event()) == ""
+    provision = (boot / "projection5000-provision.sh").read_bytes()
+    assert b"\nENROLL_KEY=" + KEY.encode() + b"\n" in provision and b"\nDEVICE_TOKEN=\n" in provision
+    assert flasher.done_text() in lines and any("carries the enrollment key" in s for s in lines)
     flasher.run_flash(dict(v, token="tok-lobby-0123456789", operator_token=""), lines.append,
                       lambda pct, text: None, threading.Event())
+
+
+def test_taken_name_is_said_under_the_name_field(monkeypatch):
+    """409 from the console (the id belongs to another account): the words under Device name, the focus there,
+    the sign-in kept; 403 (the account can only view now): the words on the status line, the sign-in forgotten."""
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    dialogs = []
+    monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: dialogs.append(a))
+    root = _root()
+    app = flasher.App(root)
+    app.op = {"token": OPERATOR_TOKEN, "username": "matt"}
+    flasher.save_operator_config(app.console_url, OPERATOR_TOKEN, "matt")
+    err = flasher.console.ConsoleError("/api/operator/devices: " + TAKEN)
+    err.code, err.body = 409, {"detail": TAKEN}
+    monkeypatch.setattr(flasher, "run_flash", lambda *a, **k: (_ for _ in ()).throw(err))
+    app._run_flash(dict(FULL, enrollment_key="", operator_token=OPERATOR_TOKEN))
+    assert _pump(root, app, lambda: "name" in _shown_errors(app))
+    assert _shown_errors(app)["name"] == TAKEN and root.focus_get() in (app.name_entry, None)
+    assert _status(app) == "That name is taken. Pick another name and press FLASH again."
+    assert dialogs == [] and app.connected() and str(app.flash_btn["state"]) == "normal"
+    err = flasher.console.ConsoleError("/api/operator/devices: " + VIEW_ONLY)
+    err.code, err.body = 403, {"detail": VIEW_ONLY}
+    app._run_flash(dict(FULL, enrollment_key="", operator_token=OPERATOR_TOKEN))
+    assert _pump(root, app, lambda: not app.connected())
+    assert _status(app) == VIEW_ONLY and dialogs == [] and not flasher.operator_config_path().exists()
+    root.destroy()
 
 
 def test_cancel_after_write_is_honoured_and_reported(monkeypatch, tmp_path):
@@ -1147,7 +1207,7 @@ def test_failure_after_write_explains_the_card_state(monkeypatch, tmp_path):
 def test_dry_run_stops_before_disk(monkeypatch, tmp_path):
     img = tmp_path / "x.img"
     img.write_bytes(b"\x01" * 1024)
-    # A dry run validates, renders and resolves the image; with a key in hand it never contacts the console.
+    # A dry run validates, renders and resolves the image; with a baked key it never contacts the console.
     monkeypatch.setattr(flasher.console.urllib.request, "urlopen",
                         lambda *a, **k: pytest.fail("console contacted in dry run"))
     monkeypatch.setattr(flasher.disk, "clear_disk", lambda *a: pytest.fail("clear_disk called in dry run"))
@@ -1259,7 +1319,7 @@ def test_gui_uses_the_bundled_image_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(flasher, "run_flash", lambda *a, **k: None)
     app._run_flash(dict(FULL, dry_run=False))
     assert _pump(root, app, lambda: bool(done))
-    assert done == [flasher.DONE_TEXT + "\n\nDevice id: lobby"] and _status(app) == flasher.DONE_TEXT
+    assert done == [flasher.done_text() + "\n\nDevice id: lobby"] and _status(app) == flasher.done_text()
     root.destroy()
     # A developer's --image wins over the bundle; without a bundle the model's image is downloaded.
     root = _root()

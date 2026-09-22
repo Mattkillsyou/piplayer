@@ -15,6 +15,7 @@ import * as alertsPage from "./pages/alerts.js";
 import * as auditPage from "./pages/audit.js";
 import * as dashboard from "./pages/dashboard.js";
 import * as devices from "./pages/devices.js";
+import * as flasher from "./pages/flasher.js";
 import * as groups from "./pages/groups.js";
 import * as library from "./pages/library.js";
 import * as login from "./pages/login.js";
@@ -29,7 +30,7 @@ import { isApiPath, Router } from "./router.js";
 import { esc, fail, HttpError, json, redirect } from "./util.js";
 
 const MODULES = [
-  login, setup, signup, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings,
+  login, setup, signup, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings, flasher,
   api, media, manifest, schedules, uploads, auth, audit, alerts, deviceCodes,
 ];
 
@@ -104,11 +105,6 @@ async function handle(request, env, exec) {
     // public/ is the assets root, so /static/style.css is served from public/style.css.
     const assetUrl = new URL(path.slice("/static".length) + url.search, url);
     return env.ASSETS.fetch(new Request(assetUrl, request));
-  }
-  if (path === "/download" && (request.method === "GET" || request.method === "HEAD")) {
-    // The old address of the SD flasher downloads (docs and the flasher still print it): the
-    // home page carries them now (pages/login.js).
-    return redirect("/", 301);
   }
   await db.assertMigrated(env);
 

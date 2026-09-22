@@ -172,12 +172,13 @@ Per unit, in order. Steps 1-4 happen at the desk; 5-10 at the projector.
 1. **Label.** Write the `device_id` (e.g. `lobby-projector`) on a label on
    the Pi case and another on the HDMI plug that will go into the projector.
 2. **Flash the card.** Get the Projection5000 SD Flasher for Windows or
-   Mac from <https://projectors.photogen5000.com/download>: fill in the
-   device name, pick the Pi model and the Wi-Fi network (blank if wired),
-   insert the card, click Flash. The first time on a computer the flasher
-   opens the console in your browser and asks you to approve that computer;
-   after that it fetches the enrollment key itself (`docs/automation.md`
-   section B). Flash the spare card the same way with the same device id;
+   Mac from the console's Download page (sign in, then Download in the top
+   bar): fill in the device name, pick the Pi model and the Wi-Fi network
+   (blank if wired), insert the card, click Flash. The first time on a
+   computer, sign in to the flasher with your username and password; after
+   that it registers each projector in your account itself
+   (`docs/automation.md` section B). Flash the spare card the same way with
+   the same device id;
    it stays with you, not at the projector (step 12). (No Windows or Mac?
    Follow [adding-a-pi.md](adding-a-pi.md) with Raspberry Pi Imager instead.)
 3. **Assemble.** Pi into the case (fan header connected), microSD in. If you
@@ -218,9 +219,9 @@ Per unit, in order. Steps 1-4 happen at the desk; 5-10 at the projector.
     `auto` if the device runs on schedules ([automation.md](automation.md),
     section E).
 12. **Take the spare card home.** A flashed card that has not booted yet
-    carries the console's enrollment key in plain text
-    (`tools/flasher/README.md`, Security note), and that key unlocks every
-    device on the console. Keep it with the operator, labelled and dated,
-    never at the projector; if a card dies, bring the spare or flash a new
-    one (ten minutes, same device id). If a spare goes missing, rotate the
-    enrollment key on the console's Settings page and re-flash the others.
+    carries that projector's device token in plain text
+    (`tools/flasher/README.md`, Security note). Keep it with the operator,
+    labelled and dated, never at the projector; if a card dies, bring the
+    spare or flash a new one (ten minutes, same device id). If a spare goes
+    missing, flash the projector again: the console issues a new token and
+    the missing card's stops working.

@@ -13,7 +13,7 @@ beforeAll(async () => {
 describe("dashboard", () => {
   it("renders for every role, anonymous goes to /login", async () => {
     await roleMatrix(r, "GET", "/dashboard");
-    const page = await (await r.viewer.get("/dashboard")).text();
+    const page = await (await r.admin.get("/dashboard")).text();
     expect(page).toContain("<h1>Dashboard</h1>");
     expect(page).toMatch(/<span class="page-meta">server \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC · UTC<\/span>/);
     expect(page).toContain('<span class="empty-title">NO DEVICES</span>');
@@ -40,7 +40,7 @@ describe("dashboard", () => {
     const b = await device("b-dev", "B dev", { group_id: gid });
     const c = await device("c-dev", "C dev");
     await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'Always on', 3)", c.id, gpl);
-    const page = await (await r.viewer.get("/dashboard")).text();
+    const page = await (await r.editor.get("/dashboard")).text();
     expect(page).toContain('<span class="card-value">2</span>');   // media
     expect(page).toContain("3.5 MB total");
     expect(page).toContain('<span class="card-value">3</span>');   // devices (and 2 playlists -> "2" already asserted)
@@ -67,7 +67,7 @@ describe("dashboard", () => {
     // device B: group fallback, no screenshot; the Pi model follows the group on the tile
     expect(page).toContain("<code>b-dev</code> · G1");
     await query("UPDATE devices SET pi_model = 'Raspberry Pi Zero 2 W Rev 1.0' WHERE id = ?", b.id);
-    expect(await (await r.viewer.get("/dashboard")).text()).toContain('<div class="device-card-id"><code>b-dev</code> · G1 · Raspberry Pi Zero 2 W Rev 1.0</div>');
+    expect(await (await r.editor.get("/dashboard")).text()).toContain('<div class="device-card-id"><code>b-dev</code> · G1 · Raspberry Pi Zero 2 W Rev 1.0</div>');
     expect(page).toContain('<span class="now-via">via group: G1</span>');
     expect(page).toContain('<span class="empty-sub">no screenshot yet</span>');
     expect(page).not.toContain("device-camera"); // no camera snapshot yet
@@ -75,9 +75,13 @@ describe("dashboard", () => {
     // device C: schedule wins
     expect(page).toContain('<span class="now-via">via schedule: Always on</span>');
     expect((page.match(/<div class="device-card is-fault">/g) || []).length).toBe(3);
-    // viewers get no tile actions
-    expect(page).not.toContain('class="tile-actions"');
-    expect(page).not.toContain(`action="/devices/${a.id}/command"`);
+    // viewers get no tile actions (on their own projector: ownership)
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, a.id);
+    const vw = await (await r.viewer.get("/dashboard")).text();
+    expect(vw).toContain("Monitor wall · 1 device");
+    expect(vw).not.toContain('class="tile-actions"');
+    expect(vw).not.toContain(`action="/devices/${a.id}/command"`);
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.editor, a.id);
     void b;
   });
 
@@ -103,14 +107,14 @@ describe("dashboard", () => {
     const now = new Date().toISOString().slice(0, 19).replace("T", " ");
     const dev = await device("upd-dev", "Upd dev", { last_seen_at: now, player_status: "playing" });
     await query("UPDATE devices SET last_update_at = datetime('now', '-90 seconds'), last_update_ok = 0, last_update_message = 'install-player.sh exited 1: <pip>', last_update_ref = 'v1.4.0' WHERE id = ?", dev.id);
-    let page = await (await r.viewer.get("/dashboard")).text();
+    let page = await (await r.editor.get("/dashboard")).text();
     expect(page).toContain("1 playing · 4 faults");
     expect(page).toContain('data-filter="faults" aria-pressed="false">Faults (4)</button>');
     expect((page.match(/<div class="device-card is-fault">/g) || []).length).toBe(4);
     expect(page).toContain('<div class="alert error update-status" title="Reported by the player after its last update">Update failed <code>v1.4.0</code> · 1 min ago · ');
     expect(page).toContain(" UTC: install-player.sh exited 1: &lt;pip&gt;</div>");
     await query("UPDATE devices SET last_update_ok = 1, last_update_message = 'already at abc123' WHERE id = ?", dev.id);
-    page = await (await r.viewer.get("/dashboard")).text();
+    page = await (await r.editor.get("/dashboard")).text();
     expect(page).toContain("1 playing · 3 faults");
     expect((page.match(/<div class="device-card is-fault">/g) || []).length).toBe(3);
     expect(page).toContain('<div class="device-card">');
@@ -122,15 +126,15 @@ describe("dashboard", () => {
   it("tiles show the projector lamp only when a control is set, plus the reported error; no fault", async () => {
     const now = new Date().toISOString().slice(0, 19).replace("T", " ");
     const dev = await device("proj-dev", "Proj dev", { last_seen_at: now, player_status: "playing" });
-    let page = await (await r.viewer.get("/dashboard")).text();
+    let page = await (await r.editor.get("/dashboard")).text();
     expect(page).not.toContain("projector-state");
     await query("UPDATE devices SET projector_control = 'broadlink', projector_power_state = 'on', projector_error = 'send failed: <timeout>' WHERE id = ?", dev.id);
-    page = await (await r.viewer.get("/dashboard")).text();
+    page = await (await r.editor.get("/dashboard")).text();
     expect(page).toContain('<span class="status status-playing projector-state" title="Reported by the player on its last sync"><span class="lamp"></span>projector on</span>');
     expect(page).toContain('<div class="alert warn small" title="Reported by the player on its last sync">Projector: send failed: &lt;timeout&gt;</div>');
     expect(page).toContain("1 playing · 3 faults");
     await query("UPDATE devices SET projector_control = 'none', projector_error = NULL WHERE id = ?", dev.id);
-    page = await (await r.viewer.get("/dashboard")).text();
+    page = await (await r.editor.get("/dashboard")).text();
     expect(page).not.toContain("projector-state");
     expect(page).not.toContain("Projector:");
     await query("DELETE FROM devices WHERE id = ?", dev.id);
@@ -138,7 +142,7 @@ describe("dashboard", () => {
 
   it("audit tail lists the last 8 entries by people, newest first, with local minute timestamps", async () => {
     await query("DELETE FROM audit_log");
-    let page = await (await r.viewer.get("/dashboard")).text();
+    let page = await (await r.editor.get("/dashboard")).text();
     expect(page).toContain('<li class="empty-line">no activity yet</li>');
     // 11 rows with a username plus two without one (device sync, cron): only people show
     for (let i = 0; i < 11; i++) {
@@ -147,7 +151,7 @@ describe("dashboard", () => {
     }
     await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at) VALUES (NULL, NULL, 'device_sync', 'device', '99', '10.0.0.9', '2021-03-04 05:20:00')");
     await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at) VALUES (NULL, NULL, 'housekeeping', NULL, NULL, NULL, '2021-03-04 05:21:00')");
-    page = await (await r.viewer.get("/dashboard")).text();
+    page = await (await r.editor.get("/dashboard")).text();
     expect(page).not.toContain("no activity yet");
     expect((page.match(/<span class="log-t">/g) || []).length).toBe(8);
     expect(page).not.toContain("device_sync");
@@ -162,7 +166,7 @@ describe("dashboard", () => {
 
   it("timestamps follow the site timezone setting", async () => {
     await query("INSERT INTO settings (key, value) VALUES ('timezone', 'America/Los_Angeles') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-    const page = await (await r.viewer.get("/dashboard")).text();
+    const page = await (await r.editor.get("/dashboard")).text();
     expect(page).toContain("d ago · 2019-12-31 16:00 PST</span>");
     expect(page).toContain('title="2019-12-31 16:00 PST"');
     expect(page).toContain('<span class="log-t">2021-03-03 21:09</span>');

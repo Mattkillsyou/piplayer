@@ -15,9 +15,9 @@ You'll need:
 - The Pi connected to the same network as the controller, or Tailscale
   installed on both
 
-> **On Windows or a Mac: use the Projection5000 SD Flasher.** Get it from
-> <https://projectors.photogen5000.com/download> (Windows exe, Apple Silicon
-> and Intel Mac downloads; `tools/flasher/README.md` is the manual).
+> **On Windows or a Mac: use the Projection5000 SD Flasher.** Sign in to
+> the console and open **Download** in the top bar (Windows exe, Apple
+> Silicon and Intel Mac downloads; `tools/flasher/README.md` is the manual).
 > It replaces sections 1, 2, 4 and 5 below. There is one button. Fill in the
 > form, press **Flash**, and the card is made; no console login on the Pi and
 > nothing to copy and paste:
@@ -33,24 +33,28 @@ You'll need:
 >    what is happening in plain words ("Writing the card (43%)...") and ends
 >    with "Done. Put the card in the Pi and turn it on."
 >
-> The first time you press Flash on a PC, the flasher needs to be connected
-> to your Projection5000 account. The status line says "Approve this computer
-> in the browser window that just opened", a browser page opens with a code
-> already filled in, and you click Approve (as an admin; the page also shows
-> which computer asked and from where). The
-> flasher then carries on and makes the card by itself; nothing more to click.
-> From then on the PC stays connected and Flash just flashes. If the browser
-> does not open, the status line shows the web address and the code to type.
-> **Advanced** (collapsed, at the bottom) shows whether this PC is connected
-> ("Connected as <you>" with a **Disconnect** button, or **Connect**), plus
+> The first time you press Flash on a PC, sign in to the flasher with your
+> username and password (the same as on the console website): a sign-in box
+> opens under the form, the status line says "Sign in below, then the card is
+> made automatically", and once you are signed in the flasher carries on and
+> makes the card by itself; nothing more to click. From then on the PC stays
+> signed in and Flash just flashes. Every projector you flash belongs to
+> your account and appears under Devices there ("Done. Put the card in the
+> Pi and turn it on. It shows up under Devices in <you>'s account in a few
+> minutes."). A viewer account cannot flash (ask an admin to make it an
+> editor), and a name that is already another account's projector is refused
+> under Device name: pick another.
+> **Advanced** (collapsed, at the bottom) shows who is signed in
+> ("Signed in as <you>" with a **Sign out** button, or **Sign in**), plus
 > time zone, hidden network, static IP, and a **Show details** checkbox that
 > reveals the full technical log for when something goes wrong. The same log
 > is saved to `%LOCALAPPDATA%\Projection5000\flasher.log`.
 >
-> Behind the scenes: the flasher fetches the console's current **enrollment
-> key** with your connection and puts it on the card, never showing it; the
-> Pi enrolls itself on first boot, creating the device and fetching its
-> token, and appears on the Devices page within a few minutes. The Pi's login
+> Behind the scenes: the flasher registers the projector in your account on
+> the console and puts the device token it gets back on the card, never
+> showing it; there is no enrollment key on the card and the Pi never
+> enrolls. It appears under Devices right away and starts reporting a few
+> minutes after its first boot. The Pi's login
 > is the fixed user `projector-admin` with **SSH by key only**: the flasher
 > makes one ed25519 key per Windows user
 > (`%APPDATA%\Projection5000\ssh\id_ed25519`) and installs the public key
@@ -59,19 +63,18 @@ You'll need:
 > the exe, and the 32-bit image for the older models is downloaded once
 > (about 530 MB) and kept for later flashes (developers can point the flasher
 > at another image with `--image <path>` or the `FLASHER_IMAGE` environment
-> variable). Re-flashing a card with the same device id re-enrolls the same
-> device: the new card gets a new token and keeps the same playlist and
-> group, and the old card stops syncing. Rotate the key on the Settings page
-> when a card or a flasher PC is lost: the next flash fetches the new key,
-> no rebuild needed. If the Settings page names a default group and playlist ("New
-> devices join group" / "New devices get playlist"), the device gets them on
-> its first enrollment only; see [automation.md](automation.md) sections A
-> and B. Both consoles enroll: the cloud console and the Python console
-> (`cms/`) each have the Settings page with the key and the two defaults, but
-> only the cloud console offers the browser approval; for a LAN-only cms site
-> build the flasher with the offline `build.ps1 -ConsoleUrl <url> -Key <key>`
-> override (the key from the cms Settings page), which flashes without
-> connecting. The manual path that follows still works.
+> variable). Re-flashing a card with the same device id re-registers the
+> same projector: the new card gets a new token and keeps the same playlist
+> and group, and the old card stops syncing. Flash the projector again when a
+> card is lost; sign out (or revoke the token on the Settings page) when a
+> flasher PC is lost. If the Settings page names a default group and playlist ("New
+> devices join group" / "New devices get playlist"), the projector gets them
+> when it is first registered; see [automation.md](automation.md) sections A
+> and B. Only the cloud console has the flasher sign-in; for a LAN-only cms
+> site build the flasher with the offline `build.ps1 -ConsoleUrl <url> -Key
+> <key>` override (the enrollment key from the cms Settings page), which
+> flashes without signing in and whose cards enroll on first boot the old
+> way. The manual path that follows still works.
 >
 > **On a Mac.** The same flasher exists for macOS: on the download page pick
 > **Apple Silicon** (M1, M2, M3, M4) or **Intel Mac**, open the `.dmg` and

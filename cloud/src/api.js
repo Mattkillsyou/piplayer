@@ -5,11 +5,12 @@ import * as audit from "./audit.js";
 import * as auth from "./auth.js";
 import * as cloudflare from "./cloudflare.js";
 import * as db from "./db.js";
+import { cleanHostname, TOKEN_NAME_PREFIX } from "./device_codes.js";
 import * as manifest from "./manifest.js";
 import * as media from "./media.js";
 import * as secrets from "./secrets.js";
 import { installBaseUrl, MAX_DEVICE_NAME } from "./pages/devices.js";
-import { envInt, fail, HttpError, json, jsonObject, nowUtc, randomToken } from "./util.js";
+import { envInt, fail, HttpError, json, jsonObject, nowUtc, randomToken, utf8Len } from "./util.js";
 import { cameraConfig } from "./pages/devices.js";
 
 export const MAX_SYNC_ERROR_LEN = 200;
@@ -249,15 +250,69 @@ async function enrollDefaults(env, settings) {
   return { group_id: await live("device_groups", settings.enroll_group_id), playlist_id: await live("playlists", settings.enroll_playlist_id) };
 }
 
-// Zero-touch enrollment: a freshly flashed Pi trades the site's enrollment key for its device
-// token. Re-enrolling an existing device_id issues a NEW token: the re-flashed card works, the
-// old card and anything that learned the old token stop (the key alone must never hand out a
-// live token). The console's view of that device is kept (group/playlist untouched; only a
-// FIRST enrollment applies the Settings defaults, and the audit row says which; a rename is
-// audited as renamed_from). Wrong keys are throttled per ip like login and new device ids are
-// capped per hour fleet-wide; the token is never logged or audited. With the Cloudflare
+// The device_id / name rules shared by POST /api/enroll and POST /api/operator/devices.
+function deviceFields(body) {
+  const deviceId = typeof body.device_id === "string" ? body.device_id.trim().toLowerCase() : "";
+  if (!DEVICE_ID_RE.test(deviceId)) fail(400, "device_id must be lowercase alphanumeric + hyphens, 1-63 chars");
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `name must be 1-${MAX_DEVICE_NAME} chars`);
+  return { deviceId, name };
+}
+
+// Create the row for a NEW device id, or issue a fresh token for a known one: the re-flashed
+// card works, the old card and anything that learned the old token stop. The console's view of
+// that device is kept (group/playlist untouched; only a FIRST registration applies the Settings
+// defaults, and the audit row says which; a rename is audited as renamed_from). New device ids
+// are capped per hour fleet-wide; the token is never logged or audited. With the Cloudflare
 // secrets set, a device without a tunnel gets one here (cloudflare.tryProvisionDevice: a
-// failure is audited, never fatal).
+// failure is audited, never fatal). `owner` is null for the enrollment key (it may re-register
+// any device id) or the operator token's user, who becomes the owner of a new row and of an
+// ownerless one, and may only re-register their own unless they are an admin. `actions` names
+// the create / re-register audit rows. Returns {id, token, created}.
+async function registerDevice(ctx, { deviceId, name, piModel = null, owner = null }, [createdAction, againAction]) {
+  const existing = () => db.first(ctx.env, "SELECT id, name, tunnel_id, owner_id FROM devices WHERE device_id = ?", deviceId);
+  let row = await existing();
+  if (!row) {
+    const { n } = await db.first(ctx.env, "SELECT COUNT(*) AS n FROM devices WHERE created_at > datetime('now', '-1 hour')");
+    if (n >= MAX_NEW_DEVICES_PER_HOUR) {
+      await audit.log(ctx, "device_enroll_capped", "device", null, { device_id: deviceId, name }, owner);
+      throw new HttpError(429, "Too many new projectors enrolled in the last hour; try again later", { "Retry-After": "3600" });
+    }
+    const token = randomToken(32);
+    const { group_id, playlist_id } = await enrollDefaults(ctx.env, await ctx.settings());
+    try {
+      const id = (await db.run(ctx.env,
+        "INSERT INTO devices (device_id, name, token, group_id, playlist_id, owner_id, pi_model) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        deviceId, name, token, group_id, playlist_id, owner ? owner.id : null, piModel)).last_row_id;
+      await audit.log(ctx, createdAction, "device", id,
+        { device_id: deviceId, name, owner: owner ? owner.username : undefined, group_id: group_id ?? undefined, playlist_id: playlist_id ?? undefined }, owner);
+      if (cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id, device_id: deviceId });
+      return { id, token, created: true };
+    } catch (e) {
+      if (!db.isConstraintError(e)) throw e;
+      row = await existing(); // lost a race with a concurrent enroll of the same id
+      if (!row) throw e;
+    }
+  }
+  if (owner && owner.role !== "admin" && row.owner_id !== owner.id) {
+    fail(409, "A projector with that ID belongs to another account; pick another name");
+  }
+  const token = randomToken(32);
+  await db.run(ctx.env, "UPDATE devices SET token = ?, name = ?, pi_model = COALESCE(?, pi_model), owner_id = COALESCE(owner_id, ?) WHERE id = ?",
+    token, name, piModel, owner ? owner.id : null, row.id);
+  // The Wyze camera name can derive from the device name (wyze_camera_pattern), so a rename
+  // must make the Pi refetch its camera config.
+  if (row.name !== name) await db.bumpCameraConfigVersion(ctx.env);
+  await audit.log(ctx, againAction, "device", row.id,
+    { device_id: deviceId, name, renamed_from: row.name !== name ? row.name : undefined }, owner);
+  if (!row.tunnel_id && cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id: row.id, device_id: deviceId });
+  return { id: row.id, token, created: false };
+}
+
+// Zero-touch enrollment (legacy: cards written by flashers before v0.7.0): a freshly flashed
+// Pi trades the site's enrollment key for its device token. The key alone must never hand out a
+// live token, so a known device_id gets a NEW one (registerDevice). Wrong keys are throttled
+// per ip like login. The row it creates has no owner (only admins see it until one is set).
 async function enroll(ctx) {
   const wait = await auth.loginLockedFor(ctx.env, ctx.ip, auth.ENROLL_KEY, auth.ENROLL_MAX_FAILURES, auth.ENROLL_LOCK_SECONDS);
   if (wait) throw new HttpError(429, `Too many failed attempts; try again in ${wait} s`, { "Retry-After": String(wait) });
@@ -268,46 +323,84 @@ async function enroll(ctx) {
     await auth.recordLoginFailure(ctx.env, ctx.ip, auth.ENROLL_KEY);
     fail(401, "invalid enrollment key");
   }
-  const deviceId = typeof body.device_id === "string" ? body.device_id.trim().toLowerCase() : "";
-  if (!DEVICE_ID_RE.test(deviceId)) fail(400, "device_id must be lowercase alphanumeric + hyphens, 1-63 chars");
-  const name = typeof body.name === "string" ? body.name.trim() : "";
-  if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `name must be 1-${MAX_DEVICE_NAME} chars`);
-
-  const existing = () => db.first(ctx.env, "SELECT id, name, token, tunnel_id FROM devices WHERE device_id = ?", deviceId);
-  let row = await existing();
-  if (!row) {
-    const { n } = await db.first(ctx.env, "SELECT COUNT(*) AS n FROM devices WHERE created_at > datetime('now', '-1 hour')");
-    if (n >= MAX_NEW_DEVICES_PER_HOUR) {
-      await audit.log(ctx, "device_enroll_capped", "device", null, { device_id: deviceId, name }, null);
-      throw new HttpError(429, "Too many new projectors enrolled in the last hour; try again later", { "Retry-After": "3600" });
-    }
-    const token = randomToken(32);
-    const { group_id, playlist_id } = await enrollDefaults(ctx.env, settings);
-    try {
-      const id = (await db.run(ctx.env, "INSERT INTO devices (device_id, name, token, group_id, playlist_id) VALUES (?, ?, ?, ?, ?)",
-        deviceId, name, token, group_id, playlist_id)).last_row_id;
-      await audit.log(ctx, "device_enrolled", "device", id,
-        { device_id: deviceId, name, group_id: group_id ?? undefined, playlist_id: playlist_id ?? undefined }, null);
-      if (cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id, device_id: deviceId });
-      return json({ device_id: deviceId, token, cms_url: ctx.url.origin });
-    } catch (e) {
-      if (!db.isConstraintError(e)) throw e;
-      row = await existing(); // lost a race with a concurrent enroll of the same id
-      if (!row) throw e;
-    }
-  }
-  const token = randomToken(32);
-  await db.run(ctx.env, "UPDATE devices SET token = ?, name = ? WHERE id = ?", token, name, row.id);
-  // The Wyze camera name can derive from the device name (wyze_camera_pattern), so a rename
-  // must make the Pi refetch its camera config.
-  if (row.name !== name) await db.bumpCameraConfigVersion(ctx.env);
-  await audit.log(ctx, "device_reenrolled", "device", row.id,
-    { device_id: deviceId, name, renamed_from: row.name !== name ? row.name : undefined }, null);
-  if (!row.tunnel_id && cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id: row.id, device_id: deviceId });
-  return json({ device_id: deviceId, token, cms_url: ctx.url.origin });
+  const fields = deviceFields(body);
+  const { token } = await registerDevice(ctx, fields, ["device_enrolled", "device_reenrolled"]);
+  return json({ device_id: fields.deviceId, token, cms_url: ctx.url.origin });
 }
 
-// Operator endpoint for the flasher (tools/flasher): `Authorization: Bearer p5k_...` (Settings
+const VIEW_ONLY = "This account can only view; ask an admin to make it an editor";
+
+// Sign-in for the SD flasher (v0.7.0+): the username and password typed into the app, no
+// browser. Same throttle, audit and no-enumeration rules as POST /login (pages/login.js); a
+// good password mints an api_tokens row "SD Flasher on <hostname>" for editors and admins
+// (viewers get 403 and no token: every projector the flasher registers belongs to this account).
+async function operatorLogin(ctx) {
+  const body = await jsonObject(ctx.request);
+  const username = typeof body.username === "string" ? body.username.trim() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  if (username.length > auth.MAX_USERNAME_CHARS) fail(400, `Username must be at most ${auth.MAX_USERNAME_CHARS} characters`);
+  if (auth.RESERVED_USERNAMES.has(username.toLowerCase())) fail(401, "Invalid username or password");
+  const wait = await auth.loginLockedFor(ctx.env, ctx.ip, username);
+  if (wait) throw new HttpError(429, `Too many failed attempts; try again in ${wait} s`, { "Retry-After": String(wait) });
+  if (utf8Len(password) > auth.MAX_PASSWORD_BYTES) fail(400, auth.PASSWORD_TOO_LONG_MSG);
+  const row = await db.first(ctx.env, "SELECT id, username, password_hash, role FROM users WHERE username = ?", username);
+  if (!row) await auth.burnPasswordCheck(password);
+  if (!row || !(await auth.verifyPassword(password, row.password_hash))) {
+    await audit.log(ctx, "login_failed", "user", row ? row.id : null, { username: row ? row.username : "(no such user)", source: "flasher" }, null);
+    await auth.recordLoginFailure(ctx.env, ctx.ip, username);
+    fail(401, "Invalid username or password");
+  }
+  await auth.clearLoginFailures(ctx.env, ctx.ip, username);
+  if (row.role === "viewer") fail(403, VIEW_ONLY);
+  const hostname = cleanHostname(body.hostname);
+  ctx.user = { id: row.id, username: row.username, role: row.role }; // the api_token_created row is this user's
+  const { token } = await auth.issueApiToken(ctx, row.id, TOKEN_NAME_PREFIX + hostname, { source: "flasher", hostname });
+  return json({ token, username: row.username, role: row.role });
+}
+
+// `Authorization: Bearer p5k_...` of an editor or admin for the flasher endpoints below (a
+// viewer's token: 403, same words as the sign-in), stamped and audited as api_token_used at
+// most once per hour per token.
+async function flasherOperator(ctx) {
+  const op = await auth.operatorFromHeader(ctx);
+  if (auth.roleRank(op.role) < auth.roleRank("editor")) fail(403, VIEW_ONLY);
+  if (await auth.touchApiToken(ctx.env, op.token_id)) {
+    await audit.log(ctx, "api_token_used", "api_token", op.token_id, { name: op.token_name }, { id: op.id, username: op.username });
+  }
+  return op;
+}
+
+// Who the flasher is signed in as, plus what it needs to sanity-check the console (the same
+// fields as operatorEnrollment minus the enrollment key: cards carry their device token now).
+async function operatorMe(ctx) {
+  const op = await flasherOperator(ctx);
+  const settings = await ctx.settings();
+  return json({
+    username: op.username,
+    role: op.role,
+    console_url: installBaseUrl(ctx.env, ctx.url).base,
+    timezone: settings.timezone,
+    wyze_configured: await secrets.wyzeConfigured(ctx.env),
+    groups: await db.all(ctx.env, "SELECT id, name FROM device_groups ORDER BY name"),
+    playlists: await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name"),
+  });
+}
+
+// The flasher registers the projector it is about to flash, as the signed-in account, and
+// writes the device token it gets onto the card (no enrollment key on cards any more).
+// {device_id, name, pi_model?} -> 201 {device_id, token, cms_url, owner, created: true} for a
+// new id (owner_id = this user), 200 {..., created: false} with a NEW token for the user's own
+// id (or any id for an admin; an ownerless one becomes theirs), 409 for another account's id.
+async function operatorDevices(ctx) {
+  const op = await flasherOperator(ctx);
+  const body = await jsonObject(ctx.request);
+  const fields = deviceFields(body);
+  const piModel = typeof body.pi_model === "string" ? body.pi_model.trim().slice(0, MAX_PI_MODEL_LEN) || null : null;
+  const { token, created } = await registerDevice(ctx, { ...fields, piModel, owner: op }, ["device_registered", "device_reregistered"]);
+  return json({ device_id: fields.deviceId, token, cms_url: ctx.url.origin, owner: op.username, created }, created ? 201 : 200);
+}
+
+// Legacy operator endpoint (flashers before v0.7.0): `Authorization: Bearer p5k_...` (Settings
 // page "My API tokens", admin user: the key it returns can enroll any device id) -> the live
 // enrollment key plus what the operator needs to sanity-check the console. Audited as
 // api_token_used at most once per hour per token.
@@ -351,6 +444,9 @@ async function getCameraConfig(ctx) {
 export function register(router) {
   router.get("/api/health", () => json({ ok: true }));
   router.post("/api/enroll", enroll);
+  router.post("/api/operator/login", operatorLogin);
+  router.get("/api/operator/me", operatorMe);
+  router.post("/api/operator/devices", operatorDevices);
   router.get("/api/operator/enrollment", operatorEnrollment);
   router.get("/api/sync/:device_id", sync);
   router.get("/api/camera-config/:device_id", getCameraConfig);

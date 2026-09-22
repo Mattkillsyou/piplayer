@@ -140,8 +140,10 @@ npm run deploy                                    # = npm run migrate:remote && 
 
 ## First-run setup and accounts
 
-`/` is the public home page (`public/download.html`: Sign in / Create an account, the SD flasher
-downloads and first-run steps; `/download` redirects there); signed in, `/` goes to `/dashboard`.
+`/` is the public home page (`public/download.html`: Sign in / Create an account); signed in, `/`
+goes to `/dashboard`. `/flasher` (any signed-in role, "SD Flasher" in the top bar) has the SD
+flasher downloads (`FLASHER_VERSION` in `src/pages/flasher.js` names the release) and the
+first-run steps; the old `/download` address goes there when signed in, to `/` otherwise.
 While the `users` table is empty every page redirects to `/setup`; `GET /setup?token=<SETUP_TOKEN>`
 shows the form (username, password twice), `POST /setup` creates the admin and logs in. Wrong
 or missing token → 403; once a user exists `/setup` → 404. Roles are `admin > editor > viewer`
@@ -198,8 +200,14 @@ hash formula, the 5-delivery cap on remote commands and the `sync_error` report 
 Devices page. What the player reports about itself on `GET /api/sync` (`current_filename`,
 `player_status`, `player_version`) is stored capped at 200 characters like its error strings;
 `POST /api/screenshots` and `/api/camera` answer 411 when the upload carries no
-`Content-Length`. `GET /api/operator/enrollment` (the flasher's endpoint) requires an admin's
-operator token. Regenerating a token on the Devices page invalidates the old one at once and,
+`Content-Length`. The SD flasher (v0.7.0+) signs in with `POST /api/operator/login`
+`{"username", "password", "hostname"}` (no browser, no enrollment key): editors and admins get a
+`p5k_` operator token named `SD Flasher on <hostname>`, viewers a 403 with the words to read to
+the owner; `GET /api/operator/me` says who the token is and lists groups and playlists; and
+`POST /api/operator/devices` `{"device_id", "name", "pi_model"}` registers the projector for that
+account and hands back the device token the flasher writes onto the card (see the enrollment
+note below). `GET /api/operator/enrollment` (admin's token only; returns the enrollment key) is
+kept for flashers before v0.7.0. Regenerating a token on the Devices page invalidates the old one at once and,
 when the device has an automatic camera tunnel, recreates that too (the tunnel key travels in
 every sync, so a leaked device token means a leaked tunnel key). The Devices page also has a
 Rename form per device (editor+); the flasher's name is otherwise only changed by re-flashing.
@@ -249,15 +257,27 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   one, in which case the `.gif` is stored as `video` (mpv plays it through; image display
   duration does not apply). A block straddling two 8 MiB slices, or a false match inside pixel
   data, mis-classifies that GIF — the same limitation the CMS has without ffprobe.
-- **Zero-touch enrollment**: `POST /api/enroll` `{"key", "device_id", "name"}` trades the site's
-  enrollment key (Settings page; "Rotate" invalidates cards not yet booted) for the device's
-  token: `{"device_id", "token", "cms_url"}`. Re-enrolling a known `device_id` issues a NEW
-  token: the old card (and anything that learned the old token) stops syncing, the console's
-  view of the device (group, playlist, history) is kept and a rename is audited as
-  `renamed_from`. The enrollment key alone can re-enroll any device id, so rotate it whenever a
-  card, a flasher PC or an operator token is lost. Wrong key: 401, throttled per ip
-  (10 failures / 60 s → 429 with `Retry-After`); new device ids are capped fleet-wide at 20 per
-  hour (429 with `Retry-After: 3600`, audited as `device_enroll_capped`); re-enrollments are not
+- **Per-account projectors** (`POST /api/operator/devices`, `api.registerDevice`, migration
+  0009 `devices.owner_id`): the flasher registers each projector as the account signed in to the
+  app before it writes the card, and the card carries the device token (no enrollment key on
+  cards). A new `device_id` gets a row owned by that user with the Settings group/playlist
+  defaults (201, `created: true`, audit `device_registered` with `owner`); the user's own id gets
+  a NEW token (200, `created: false`, the old card stops syncing, a rename is audited as
+  `renamed_from` under `device_reregistered`); an id owned by another account is a 409 ("belongs
+  to another account; pick another name"). Admins may re-register any id, and an ownerless one
+  (from before migration 0009, the Devices page form or `/api/enroll`) becomes theirs; editors
+  get the 409 for those too. Editors and viewers see only their own projectors on the console,
+  admins see every projector and can change the owner. The new-id cap below applies.
+- **Zero-touch enrollment** (legacy: cards written by flashers before v0.7.0): `POST /api/enroll`
+  `{"key", "device_id", "name"}` trades the site's enrollment key (Settings page; "Rotate"
+  invalidates cards not yet booted) for the device's token: `{"device_id", "token", "cms_url"}`.
+  The row it creates has no owner. Re-enrolling a known `device_id` issues a NEW token: the old
+  card (and anything that learned the old token) stops syncing, the console's view of the
+  device (group, playlist, history) is kept and a rename is audited as `renamed_from`. The
+  enrollment key alone can re-enroll any device id, so rotate it whenever a card, a flasher PC
+  or an operator token is lost. Wrong key: 401, throttled per ip (10 failures / 60 s → 429 with
+  `Retry-After`); new device ids are capped fleet-wide at 20 per hour whichever endpoint creates
+  them (429 with `Retry-After: 3600`, audited as `device_enroll_capped`); re-enrollments are not
   counted. Audit: `device_enrolled`, `device_reenrolled`, `enrollment_key_rotated`.
 - **Timezone is a setting**, not the server's clock: `/settings` stores an IANA zone (validated
   with `Intl.DateTimeFormat`), default `UTC`. A stored zone that no longer validates (a D1 edit,

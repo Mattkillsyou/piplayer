@@ -29,7 +29,7 @@ describe("groups", () => {
     expect(page).toContain("<h1>Device groups</h1>");
     expect(page).not.toContain(XSS);
     expect(page).toContain("x&#39;);alert(1);//grp");
-    expect(page).toContain("<td>1</td>");
+    expect(page).toContain("<td>0</td>"); // the viewer owns no device in the group (ownership.test.js)
     expect(page).toContain(`<option value="${w.pid}" selected>Fallback</option>`);
     expect(page).toContain('data-autosubmit aria-label="Default playlist for x&#39;);alert(1);//grp" disabled');
     expect(page).not.toContain("new group");

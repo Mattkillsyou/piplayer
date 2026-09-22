@@ -18,7 +18,11 @@ async function loginAs(username, password) {
   return c;
 }
 
-// {admin, editor, viewer}: the first admin via /setup, the others created on /users.
+// The editor's user id once roles() has run: device() makes it the owner of every fixture
+// device, so the editor client sees and may act on what a test creates (ownership, migration 0009).
+let editorId = null;
+
+// {admin, editor, viewer, ids: {admin, editor, viewer}}: the first admin via /setup, the others created on /users.
 export async function roles() {
   const admin = await setupAdmin("admin", "test1234");
   admin.token = await admin.csrf("/dashboard");
@@ -26,7 +30,10 @@ export async function roles() {
     const r = await post(admin, "/users", { username, password: `${role}-pass`, role });
     if (r.status !== 303) throw new Error(`create ${role}: ${r.status} ${await r.text()}`);
   }
-  return { admin, editor: await loginAs("ed", "editor-pass"), viewer: await loginAs("vw", "viewer-pass") };
+  const ids = {};
+  for (const u of await query("SELECT id, username FROM users")) ids[{ admin: "admin", ed: "editor", vw: "viewer" }[u.username]] = u.id;
+  editorId = ids.editor;
+  return { admin, editor: await loginAs("ed", "editor-pass"), viewer: await loginAs("vw", "viewer-pass"), ids };
 }
 
 export const post = (c, path, fields = {}) => c.post(path, fields, { "X-CSRF-Token": c.token });
@@ -40,8 +47,10 @@ export const media = (name, type = "image", extra = {}) => (mediaSeq++, ins(
   extra.filename || `${mediaSeq}_${name}`, name, type, extra.size ?? 1000, extra.duration ?? null,
   SHA("a").slice(0, 56) + String(mediaSeq).padStart(8, "0")));
 export const playlist = (name) => ins("INSERT INTO playlists (name) VALUES (?)", name);
-// Device row; `cols` adds columns ({playlist_id, group_id, last_seen_at, ...}).
+// Device row; `cols` adds columns ({playlist_id, group_id, last_seen_at, ...}). Owned by the
+// roles() editor unless cols.owner_id says otherwise (null = no owner, admin-only).
 export async function device(deviceId, name = deviceId, cols = {}) {
+  cols = { owner_id: editorId, ...cols };
   const keys = Object.keys(cols);
   const id = await ins(
     `INSERT INTO devices (device_id, name, token${keys.map((k) => ", " + k).join("")})

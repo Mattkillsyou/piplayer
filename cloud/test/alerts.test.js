@@ -402,7 +402,7 @@ describe("settings panel", () => {
 describe("/alerts page + dashboard badge", () => {
   it("any role reads it; lists open and recovered rows; nav link; dashboard card counts open alerts", async () => {
     await roleMatrix(r, "GET", "/alerts");
-    let page = await (await r.viewer.get("/alerts")).text();
+    let page = await (await r.editor.get("/alerts")).text();
     expect(page).toContain('href="/alerts" class="active"');
     expect(page).toContain("ALL CLEAR");
     expect(page).toContain("Nothing recovered yet.");
@@ -418,12 +418,12 @@ describe("/alerts page + dashboard badge", () => {
     expect(page).toContain('<span class="badge badge-stale">camera error</span>');
     expect(page).toContain("2026-09-15 10:30 UTC");
     expect(page).toContain('href="/settings">Settings</a>');
-    const dash = await (await r.viewer.get("/dashboard")).text();
+    const dash = await (await r.editor.get("/dashboard")).text();
     expect(dash).toContain('<a class="card" href="/alerts" id="alerts-card">');
     expect(dash).toContain('<span class="card-value">1</span>');
     expect(dash).toContain('<span class="badge badge-stale">1 open</span>');
     await query("DELETE FROM alerts");
-    expect(await (await r.viewer.get("/dashboard")).text()).toContain("all clear · checked every 5 min");
+    expect(await (await r.editor.get("/dashboard")).text()).toContain("all clear · checked every 5 min");
   });
 
   it("deleting a device drops its alerts", async () => {

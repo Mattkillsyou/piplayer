@@ -2,15 +2,14 @@
 
 The flasher itself never enrolls: the Pi does that on first boot. enroll() mirrors what the rendered
 projection5000-provision.sh does and is used by the tests; check_health() backs the GUI's "Test connection";
-fetch_enrollment() trades the operator's API token for the console's current enrollment key;
-request_device_code() / poll_device_token() are the flasher's half of the browser sign-in
-(POST /api/operator/device-code, GET /authorize in the browser, POST /api/operator/device-token).
+login() is the in-app sign-in (POST /api/operator/login: username and password for an operator token), me() checks
+a stored token (GET /api/operator/me) and register_device() creates or re-registers a projector under the
+signed-in account (POST /api/operator/devices) and answers with the device token that goes on the card.
 """
 import functools
 import http.client
 import json
 import urllib.error
-import urllib.parse
 import urllib.request
 
 from sysplat import host
@@ -37,9 +36,9 @@ class ConsoleError(Exception):
     code = None  # HTTP status when the console answered with one
     body = {}  # the parsed JSON error body, when there was one
 
-
-class Pending(ConsoleError):
-    """The device code is not approved yet (HTTP 428): poll again."""
+    def plain(self) -> str:
+        """The console's own words (the JSON detail) for the screen; str() keeps the path for the log."""
+        return str(self.body.get("detail") or self)
 
 
 def _base(console_url: str) -> str:
@@ -58,7 +57,7 @@ def _request(base: str, path: str, body: dict = None, headers: dict = None) -> d
     except urllib.error.HTTPError as e:
         hint = f" ({NOT_A_CONSOLE})" if e.code in (404, 301, 302, 303, 307, 308) else ""
         body = _body(e)
-        err = (Pending if e.code == 428 else ConsoleError)(f"{path}: {_detail(e, body)}{hint}")
+        err = ConsoleError(f"{path}: {_detail(e, body)}{hint}")
         err.code, err.body = e.code, body
         raise err from e
     except urllib.error.URLError as e:
@@ -84,8 +83,7 @@ def _body(e: urllib.error.HTTPError) -> dict:
 
 
 def _detail(e: urllib.error.HTTPError, body: dict) -> str:
-    # The cloud's device-code endpoints answer with {status} and no detail (428 pending, 410 denied/expired).
-    d = body.get("detail") or body.get("status")
+    d = body.get("detail")
     return str(d) if d else f"HTTP {e.code} {e.reason}"
 
 
@@ -106,19 +104,32 @@ def enroll(console_url: str, key: str, device_id: str, name: str) -> tuple:
     return token, str(r.get("cms_url") or base)
 
 
-def fetch_enrollment(console_url: str, token: str) -> dict:
-    """GET /api/operator/enrollment with `Authorization: Bearer <operator token>`. Returns the console's answer
-    ({console_url, enrollment_key, groups: [{id, name}], playlists: [{id, name}], timezone, wyze_configured, ...});
-    ConsoleError
-    on a rejected token (401) or a malformed answer. Never enrolls and never sends anything but the token."""
+def _bearer(token: str) -> dict:
+    return {"Authorization": f"Bearer {token.strip()}"}
+
+
+def login(console_url: str, username: str, password: str, hostname: str) -> dict:
+    """POST /api/operator/login (no auth) with the console username and password; returns {token, username, role}.
+    ConsoleError with the console's words on 401 (wrong username or password), 403 (a view-only account: no
+    token is minted) and 429 (too many failed attempts; the detail says how long to wait)."""
     base = _base(console_url)
-    r = _request(base, "/api/operator/enrollment", headers={"Authorization": f"Bearer {token.strip()}"})
-    key = r.get("enrollment_key")
-    if not isinstance(key, str) or not key.strip():
-        raise ConsoleError("/api/operator/enrollment: response carries no enrollment_key")
-    r["enrollment_key"] = key.strip()
+    r = _request(base, "/api/operator/login", {"username": username.strip(), "password": password,
+                                                "hostname": hostname})
+    if not isinstance(r.get("token"), str) or not r["token"].strip():
+        raise ConsoleError("/api/operator/login: response carries no token")
+    return {"token": r["token"].strip(), "username": str(r.get("username") or username.strip()),
+            "role": str(r.get("role") or "")}
+
+
+def me(console_url: str, token: str) -> dict:
+    """GET /api/operator/me with `Authorization: Bearer <operator token>`. Returns the console's answer
+    ({username, role, console_url, timezone, wyze_configured, groups: [{id, name}], playlists: [{id, name}]});
+    ConsoleError on a rejected token (401), a view-only account (403) or a malformed answer."""
+    base = _base(console_url)
+    r = _request(base, "/api/operator/me", headers=_bearer(token))
     if not isinstance(r.get("console_url"), str) or not r["console_url"]:
         r["console_url"] = base
+    r["username"] = str(r.get("username") or "")
     for k in ("groups", "playlists"):
         items = r.get(k) if isinstance(r.get(k), list) else []
         r[k] = [g for g in items if isinstance(g, dict) and isinstance(g.get("name"), str)]
@@ -126,48 +137,17 @@ def fetch_enrollment(console_url: str, token: str) -> dict:
     return r
 
 
-def same_site(console_url: str, url: str) -> bool:
-    """True when url is an http(s) page on the console's own host: the only kind of verification_url the
-    flasher hands to the browser (it runs elevated on Windows; a stray URL from a bad answer stays a log line)."""
-    want, got = urllib.parse.urlsplit(console_url.strip()), urllib.parse.urlsplit(url.strip())
-    return got.scheme in ("http", "https") and bool(got.hostname) and got.hostname == want.hostname
-
-
-def request_device_code(console_url: str, hostname: str) -> dict:
-    """POST /api/operator/device-code (no auth). Returns {device_code, user_code, verification_url, expires_in,
-    interval}; the browser opens verification_url?code=<user_code> and the operator approves there."""
+def register_device(console_url: str, token: str, device_id: str, name: str, pi_model: str = "") -> dict:
+    """POST /api/operator/devices: the projector joins the signed-in account (a new id) or is re-registered
+    (an id this account already owns; the console mints a fresh device token either way). Returns
+    {device_id, token, cms_url, owner, created}; ConsoleError on 401 (sign in again), 403 (view-only), 409
+    (the id belongs to another account) or a malformed answer."""
     base = _base(console_url)
-    r = _request(base, "/api/operator/device-code", {"hostname": hostname})
-    for k in ("device_code", "user_code", "verification_url"):
-        if not isinstance(r.get(k), str) or not r[k]:
-            raise ConsoleError(f"/api/operator/device-code: response carries no {k} ({NOT_A_CONSOLE})")
-    r["expires_in"] = int(r.get("expires_in") or 600)
-    r["interval"] = max(1, int(r.get("interval") or 3))
-    return r
-
-
-def display_code(user_code: str) -> str:
-    """The 6-char user code as the console shows it (XXXX-XX); anything else is shown as sent."""
-    c = user_code.strip()
-    return f"{c[:4]}-{c[4:]}" if len(c) == 6 and c.isalnum() else c
-
-
-GONE = {"denied": "denied on the console", "expired": "the code expired (press FLASH again)"}
-
-
-def poll_device_token(console_url: str, device_code: str) -> dict:
-    """POST /api/operator/device-token {device_code}. Returns {token, username} once approved (one shot);
-    raises Pending (428) while the operator has not approved yet, ConsoleError on 410 (the cloud answers
-    {status: "denied" | "expired"} with no detail; the message says which)."""
-    base = _base(console_url)
-    try:
-        r = _request(base, "/api/operator/device-token", {"device_code": device_code})
-    except ConsoleError as e:
-        if e.code == 410:
-            gone = ConsoleError(GONE.get(e.body.get("status"), GONE["expired"]))
-            gone.code, gone.body = e.code, e.body
-            raise gone from e
-        raise
-    if not isinstance(r.get("token"), str) or not r["token"].strip():
-        raise ConsoleError("/api/operator/device-token: response carries no token")
-    return {"token": r["token"].strip(), "username": str(r.get("username") or "")}
+    r = _request(base, "/api/operator/devices", {"device_id": device_id.strip().lower(), "name": name,
+                                                  "pi_model": pi_model}, headers=_bearer(token))
+    tok = r.get("token")
+    if not isinstance(tok, str) or not tok.strip():
+        raise ConsoleError("/api/operator/devices: response carries no token")
+    return {"device_id": str(r.get("device_id") or device_id.strip().lower()), "token": tok.strip(),
+            "cms_url": str(r.get("cms_url") or base), "owner": str(r.get("owner") or ""),
+            "created": bool(r.get("created"))}

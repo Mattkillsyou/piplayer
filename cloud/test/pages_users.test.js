@@ -32,7 +32,7 @@ describe("users", () => {
     expect(page).toContain('admin <span class="muted small">(you)</span>');
     expect(page).toContain('name="role" data-autosubmit aria-label="Role for admin" disabled');
     expect(page).not.toContain(XSS);
-    expect(page).toContain('data-confirm="Delete x&#39;);alert(1);//u? Their API tokens stop working and any flasher using them will fail."');
+    expect(page).toContain('data-confirm="Delete x&#39;);alert(1);//u? Their API tokens stop working and any flasher using them will fail. Their projectors keep playing but have no owner until you pick one on the Devices page."');
     expect(page).toContain('name="password" placeholder="new password" minlength="6" required');
     expect(page).toContain('<span class="badge badge-editor">editor</span>');
     expect(page).not.toContain("onchange");

@@ -1,7 +1,7 @@
 // /devices/:id/schedule: page (zone, matches_now, describe), create with contract-10
 // validation (HH:MM normalised, start != end, ISO dates, priority range, 404s), delete.
 import { beforeAll, describe, expect, it } from "vitest";
-import { query } from "./helpers.js";
+import { Client, query } from "./helpers.js";
 import { audits, detail, device, ins, NOPE, one, playlist, post, roleMatrix, roles, XSS } from "./pages_common.js";
 
 let r;
@@ -18,7 +18,9 @@ beforeAll(async () => {
 
 describe("role matrix", () => {
   it("page for all, create/delete for editor+", async () => {
-    await roleMatrix(r, "GET", base());
+    // the fixture device is the editor's: the viewer gets the same 404 as for an unknown id
+    expect((await new Client().get(base())).status).toBe(303);
+    for (const [c, status] of [[r.viewer, 404], [r.editor, 200], [r.admin, 200]]) expect((await c.get(base())).status).toBe(status);
     await roleMatrix(r, "POST", base(), { fields: { name: "m", playlist_id: String(w.pid) } });
     const sid = (await last()).id;
     await roleMatrix(r, "POST", `${base()}/${sid}/delete`);
@@ -35,6 +37,7 @@ describe("page", () => {
     const never = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, start_date, end_date) VALUES (?, ?, 'past', 1, '2000-01-01', '2000-01-02')", w.dev.id, w.pid);
     // a second always-matching rule at lower priority: it matches, but only the top one plays (L19)
     const shadowed = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, days_of_week) VALUES (?, ?, 'all day', 0, '0123456')", w.dev.id, w.pid);
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, w.dev.id); // the viewer's projector for the read-only checks
     let page = await (await r.viewer.get(base())).text();
     expect(page.match(/active now/g)).toHaveLength(1);
     expect(page.match(/class="rule-active"/g)).toHaveLength(1);
@@ -59,6 +62,7 @@ describe("page", () => {
     // /settings is admin-only, so only admins get the link
     expect(page).not.toContain('href="/settings"');
     expect(page).toContain("ask an administrator to change the site timezone");
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.editor, w.dev.id);
     page = await (await r.editor.get(base())).text();
     expect(page).not.toContain('href="/settings"');
     page = await (await r.admin.get(base())).text();

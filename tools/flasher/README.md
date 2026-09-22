@@ -3,22 +3,22 @@
 Windows and macOS desktop tool (window title "Matt Brown's Projection5000") that writes Raspberry Pi OS Lite to
 an SD card and pre-configures the Pi so that on first boot it joins the
 network, takes its hostname, installs the Projection5000 player (a copy of
-`player/` travels on the card; the Pi never needs GitHub access) and enrolls
-itself with the console. One screen, one button, nothing to copy and paste.
-The screen, the words and the flow are the same on both systems; the Windows
-exe is described first, "On a Mac" below lists what differs on a Mac. The
-download page to send people is <https://projectors.photogen5000.com/download>
-(the console serves `cloud/public/download.html`; its three buttons point at
-the GitHub release assets).
+`player/` travels on the card; the Pi never needs GitHub access) and reports
+to the console with the token the flasher registered it under. One screen,
+one button, nothing to copy and paste. The screen, the words and the flow are
+the same on both systems; the Windows exe is described first, "On a Mac"
+below lists what differs on a Mac. The downloads live on the console's
+Download page (linked from the top bar once signed in; its three buttons point
+at the GitHub release assets).
 
 ## The screen
 
 The masthead is the product logo: the projector icon, "MATT BROWN'S" over
 "PROJECTION5000". Under it the form, the white FLASH button, a progress bar and
 one status line in plain words ("Ready.", "Writing the card (43%)...", "Done.
-Put the card in the Pi and turn it on. It shows up on the Devices page in a
-few minutes."). Nothing on the screen names the console, the fonts or the
-account; all of that is under Advanced.
+Put the card in the Pi and turn it on. It shows up under Devices in matt's
+account in a few minutes."). Nothing on the screen names the console, the
+fonts or the account; all of that is under Advanced.
 
 1. **Device name**, e.g. "Lobby Projector". The device id / hostname
    (`lobby-projector`) is derived from it and shown in grey under the entry.
@@ -32,12 +32,13 @@ account; all of that is under Advanced.
    away as soon as you edit it). A network that is not listed can be typed in as
    before. Leave both blank for a wired Pi.
 3. **SD card**: pick the reader (Refresh rescans), press **FLASH**, confirm
-   the erase warning. The first time on a PC the status line says "Approve
-   this computer in the browser window that just opened, then the card is
-   made automatically." and the browser opens the console's `/authorize` page
-   with the code prefilled; approve it there and the flash continues with no
-   further click (see "Connecting"). When it finishes: "Done. Put the card in
-   the Pi and turn it on. It shows up on the Devices page in a few minutes."
+   the erase warning. The first time on a PC a sign-in box opens under the
+   form ("Sign in with your console username and password (the same as on
+   the website)": Username, Password, **Sign in**) and the status line says
+   "Sign in below, then the card is made automatically."; sign in and the
+   flash continues with no further click (see "Signing in"). When it
+   finishes: "Done. Put the card in the Pi and turn it on. It shows up under
+   Devices in <you>'s account in a few minutes."
 
 The console is fixed (baked in by `build.ps1 -ConsoleUrl`, or the product
 default) and never shown. There is no console field, no key field, no token
@@ -78,11 +79,16 @@ warning in the details log when its name carries the other architecture.
 
 ## What is automatic
 
-- **Enrollment key**: fetched from the console at flash time with your sign-in
-  (`GET /api/operator/enrollment`), written to the card, never shown; the
-  details log says "Enrollment key: ok". The flasher never enrolls anything itself: the Pi
-  does that on first boot, and a re-flashed card with the same device id
-  re-enrolls the same device (token, playlist and history survive).
+- **Registration**: at flash time the projector is registered in your account
+  (`POST /api/operator/devices` with your sign-in) and the device token the
+  console issues is written to the card, never shown; the details log says
+  "Registered <id> in <you>'s account (new projector). Device token: ok". The
+  card carries no enrollment key and the Pi never enrolls. A re-flashed card
+  with the same device id re-registers the same projector with a fresh token
+  (playlist, group and history survive; the old card stops syncing). A device
+  id that belongs to another account is refused ("A projector with that ID
+  belongs to another account; pick another name", under Device name). A
+  `--dry-run` only checks the sign-in; nothing is registered.
 - **Pi login**: the fixed user `projector-admin`. SSH is on with **key-based
   login only**: the flasher creates one ed25519 keypair per Windows user on
   first use (`%APPDATA%\Projection5000\ssh\id_ed25519` and `.pub`, ACL cut
@@ -112,10 +118,10 @@ warning in the details log when its name carries the other architecture.
   into the exe (see "Bundled image"); no download, no internet needed. For
   the 32-bit models the one-time download (see "Pi models").
 - **Wyze bridge**: when the console has a Wyze account (`wyze_configured` in
-  the enrollment answer) the card's installer runs with `--with-wyze`; the
-  details log says so. Nothing to tick.
+  the `GET /api/operator/me` answer) the card's installer runs with
+  `--with-wyze`; the details log says so. Nothing to tick.
 - **The technical log**: every line the tool used to print (console, fonts,
-  image, enrollment key, disk steps, the summary) goes to the details box
+  image, registration, disk steps, the summary) goes to the details box
   under Advanced and to `%LOCALAPPDATA%\Projection5000\flasher.log`
   (timestamped, appended; rotated to `flasher.log.1` at 2 MB). The status line
   never shows any of it.
@@ -128,47 +134,52 @@ show it):
 - **Time zone** (editable, from Windows), **Hidden Wi-Fi network**.
 - **Static IP** (`192.168.1.50/24`) and **Gateway** (also used as the DNS
   server); blank means DHCP. Works for Wi-Fi and wired cards.
-- **Account**: "Connected as <you>" with **Disconnect** (forgets the stored
+- **Account**: "Signed in as <you>" with **Sign out** (forgets the stored
   sign-in; revoke the token on the console's Settings page as well if the PC
-  changes hands), or "Not connected" with **Connect** (the same browser flow
-  FLASH runs by itself).
+  changes hands), or "Not signed in" with **Sign in** (the same box FLASH
+  opens by itself). To switch user: Sign out, then Sign in as the other one;
+  the username stays prefilled.
 - **Show details**: reveals the technical log box. **Dry run** (see "Run from
   source"). The build stamp.
 
 A problem in an Advanced field opens the section and shows the words there.
 
-## Connecting
+## Signing in
 
-The device-code flow, so no token is ever copied by hand. It is invisible in
-normal use: a stored token is used silently, and FLASH connects first when
-there is none.
+The console username and password, typed into the flasher; no browser. It is
+invisible in normal use: a stored token is used silently, and FLASH asks
+first when there is none.
 
-1. FLASH (or Connect under Advanced) calls `POST /api/operator/device-code`
-   (no auth) with this PC's hostname and gets a `device_code`, a short
-   `user_code` and the `verification_url`.
-2. The browser opens `<verification_url>?code=<user_code>`; the status line
-   reads "Approve this computer in the browser window that just opened, then
-   the card is made automatically." If no browser could be opened the status
-   line shows the URL and the code to type. On the console (signed in as an
-   admin) you approve "Sign in the SD Flasher on <hostname>?".
-   Cancel (or closing the window) stops the wait and puts the line back to
-   "Ready.".
-3. The flasher polls `POST /api/operator/device-token` every few seconds for
-   up to 10 minutes. `428` means not yet, `410 {status}` means expired or denied
-   (the status line then reads "Not approved: denied on the console" or "The
-   approval took too long (10 minutes). Press FLASH again."), `200` carries the
-   token (one shot) and your username; the flash then continues by itself.
-4. The token is stored DPAPI-protected (Windows `CryptProtectData`, readable
+1. FLASH (or Sign in under Advanced) opens the sign-in box under the form:
+   "Sign in with your console username and password (the same as on the
+   website)", Username, Password (masked), **Sign in**, **Cancel**. The
+   status line reads "Sign in below, then the card is made automatically."
+   Cancel (or closing the window) puts the line back to "Ready.".
+2. Sign in calls `POST /api/operator/login` (no auth) with the username, the
+   password and this PC's hostname. `200` carries the operator token, your
+   username and role; the box closes and the flash continues by itself. A
+   refusal is said under the box and the box stays for another try: `401`
+   "Invalid username or password", `403` the console's words (a view-only
+   account: ask an admin to make it an editor), `429` "Too many failed
+   attempts; try again in N s", a network error "Could not reach the
+   console: ...". The password is never logged or stored.
+3. The token is stored DPAPI-protected (Windows `CryptProtectData`, readable
    only by the same Windows account) in `%APPDATA%\Projection5000\flasher.json`
    together with the console URL and username (on a Mac: in the login
    keychain, the file holds only the URL and username). On later launches it is used
-   right away and checked with `GET /api/operator/enrollment` in the
-   background; a `401` (revoked) forgets it so the next FLASH connects again,
-   a network error keeps it. A token saved for a different console is ignored.
+   right away and checked with `GET /api/operator/me` in the background; a
+   `401` (revoked) forgets it so the next FLASH asks again, a `403` (the
+   account was made view-only) forgets it and says so on the status line, a
+   network error keeps it. A token saved for a different console is ignored.
    The result of the check is a line in the details log, never on the screen.
+4. At flash time `GET /api/operator/me` (the Wyze flag) and
+   `POST /api/operator/devices` register the projector in your account (see
+   "What is automatic"); a `401` there forgets the token too ("The console no
+   longer accepts this computer's sign-in. Press FLASH to sign in again.").
 
 On the console the sign-in appears as an API token named "SD Flasher on
 <hostname>" (Settings, "My API tokens"); revoke it there to lock a PC out.
+Editors and admins can sign in; a viewer cannot.
 
 ## Requirements
 
@@ -197,8 +208,7 @@ the UAC prompt. If you decline the prompt the tool shows "Run as administrator"
 and exits. `Projection5000-SD-Flasher.exe --dry-run` works without the prompt
 (see below). The exe is not code-signed: a downloaded copy triggers SmartScreen
 ("Windows protected your PC"; More info, Run anyway); a locally built copy does
-not. The browser opened for the approval runs from the elevated process; that
-is fine for approving a code.
+not.
 
 ## On a Mac
 
@@ -251,8 +261,8 @@ pick the card, press **FLASH**, confirm the erase warning. What differs:
   you to type.
 - **Time zone, keyboard, Wi-Fi country** come from macOS (`/etc/localtime`,
   the keyboard layout in System Settings, the region of the language setting).
-- **The sign-in** (first FLASH, browser approval) is the same; the token is
-  kept in the login keychain as "Matt Brown's Projection5000" (Keychain
+- **The sign-in** (first FLASH, username and password) is the same; the token
+  is kept in the login keychain as "Matt Brown's Projection5000" (Keychain
   Access shows it), never in a file.
 - **HTTPS**: the console and the Raspberry Pi download site are verified
   against the roots in the System Roots and System keychains (Apple's plus
@@ -273,7 +283,7 @@ console URL and your user name; the token itself is in the keychain),
 `flasher.log` (the technical log), `images/` (downloaded images) and
 `ssh/id_ed25519` plus `.pub` (the SSH key, mode 0600;
 `ssh -i ~/"Library/Application Support/Projection5000/ssh/id_ed25519" projector-admin@<device-id>.local`,
-the `~` outside the quotes so the shell expands it). **Disconnect** under
+the `~` outside the quotes so the shell expands it). **Sign out** under
 Advanced deletes the keychain item and `signin.json`.
 
 Two more one-time prompts can appear on a Mac. Writing the first-boot files
@@ -345,12 +355,12 @@ its own copies of the secrets and writes `firstrun.ok` when every step
 succeeded. The Wi-Fi passphrase is stored pre-hashed (PBKDF2, as Raspberry Pi
 Imager does), so the plaintext never reaches the card. The service waits for
 the clock to sync (or seeds it from the console), waits for the console's
-`/api/health`, enrolls (`POST /api/enroll` with the key, the device id and the
-name; the console answers with the device token and its URL), unpacks the
-player archive to `/opt/projection5000-src` and runs
-`player/deploy/install-player.sh`, retrying every 60 s (up to 20 times; a
-token once received is kept across retries). On success it disables itself and
-deletes the script that carried the key.
+`/api/health`, unpacks the player archive to `/opt/projection5000-src` and
+runs `player/deploy/install-player.sh` with the device token and console URL
+from the card, retrying every 60 s (up to 20 times). (A card from an offline
+`-Key` build carries the enrollment key instead and first enrolls with
+`POST /api/enroll`; the console answers with the device token and its URL.)
+On success it disables itself and deletes the script that carried the token.
 
 `firstboot.validate_cfg` is the single list of rules for a card configuration
 (device id, name, login, Wi-Fi, country, timezone, keymap, key or token, SSH
@@ -386,8 +396,9 @@ python flasher.py
 From a normal prompt it relaunches itself elevated (UAC prompt) and exits.
 
 `python flasher.py --dry-run` opens the same window with "Dry run" (under
-Advanced) ticked and needs no admin rights: Flash validates the form, fetches
-the enrollment key (unless one is baked in), renders the first-boot files,
+Advanced) ticked and needs no admin rights: Flash validates the form, checks
+the sign-in with the console (unless a key is baked in; nothing is
+registered), renders the first-boot files,
 resolves the image (download URL and sha256, cache check, no download) and
 then stops with "Dry run finished. Nothing was written." (the details log has
 "Dry run: would write ..."). Use it to check the form and the connection before
@@ -415,9 +426,10 @@ No secret is needed to build. `-ConsoleUrl <url>` (or `$env:FLASHER_CONSOLE_URL`
 bakes the console into `console.json` (never shown on screen); without it the
 product default `https://projectors.photogen5000.com` applies. `-Key
 <enrollment key>` (or `$env:FLASHER_ENROLL_KEY`, needs a URL) bakes a key for
-an offline build (a LAN-only `cms/` site that cannot issue sign-ins); such an
-exe carries the secret and flashes without signing in, share it only with the
-people who flash cards. The script installs PyInstaller if missing, runs the
+an offline build (a LAN-only `cms/` site that has no operator sign-in); such an
+exe carries the secret, flashes without signing in and its cards enroll on
+first boot the old way (no owner); share it only with the people who flash
+cards. The script installs PyInstaller if missing, runs the
 selfcheck, bundles `player/` as `player.tar.gz` plus a build stamp (date,
 commit; shown under Advanced and by `--selfcheck`), builds
 `tools\flasher\dist\Projection5000-SD-Flasher.exe` (`--onefile --windowed`,
@@ -458,15 +470,15 @@ with the tools faked.
 
 No admin rights, card, console or browser needed: the write engine is tested
 against temp files and a fake drive with a synthetic `.img.xz`, the download
-code against a local HTTP server on a free port, enrollment, the key fetch and
-the device-code sign-in against a stub console (`/api/enroll`,
-`/api/operator/enrollment`, `/api/operator/device-code`,
-`/api/operator/device-token`) and (one test, skipped until that CMS answers
+code against a local HTTP server on a free port, enrollment, the sign-in, the
+token check and the registration against a stub console (`/api/enroll`,
+`/api/operator/login`, `/api/operator/me`, `/api/operator/devices`) and (one
+test, skipped until that CMS answers
 `/api/enroll`) against the real Python CMS in `cms/`, the rendered
 `firstrun.sh` and `projection5000-provision.sh` by running them in bash against
 stubbed tools, the SSH key against RFC 8032 vectors and `ssh-keygen -y`, and
 the GUI (the exact set of top-level fields, the masthead, inline validation,
-the connect-then-flash flow, the status line, the details log and its file,
+the sign-in-then-flash flow, the status line, the details log and its file,
 failure, cancel, confirmation) against a withdrawn Tk window. The GUI tests are skipped
 when there is no display.
 
@@ -478,7 +490,7 @@ when there is no display.
 - `%LOCALAPPDATA%\Projection5000\flasher.log` (and `.log.1`): the technical
   log, the same lines as the details box.
 - `%APPDATA%\Projection5000\flasher.json`: the sign-in (console URL, username,
-  DPAPI-protected token). "Disconnect" under Advanced deletes it.
+  DPAPI-protected token). "Sign out" under Advanced deletes it.
 - `%APPDATA%\Projection5000\ssh\id_ed25519` and `.pub`: the SSH key installed
   on every card. Delete both to start over (cards flashed before then keep the
   old public key).
@@ -488,14 +500,16 @@ when there is no display.
 
 Until the first boot completes, the card's boot partition holds the Pi user's
 random password, the pre-hashed Wi-Fi key, your SSH public key and the
-console's enrollment key (or a device token) in plain text (`firstrun.sh` and
+projector's device token (the console's enrollment key on a card from an
+offline `-Key` build) in plain text (`firstrun.sh` and
 `projection5000-provision.sh`). On the first boot `firstrun.sh` moves the
 provisioning script to `/usr/local/sbin` (root only), zero-fills and deletes
 both files on the FAT partition, and the provisioning script deletes itself
 after the player installs. A card whose Pi never completed the first boot
 still carries everything: treat an un-booted card like a password, do not
-leave it lying around, and rotate the enrollment key on the console if it is
-lost (the next flash fetches the new key).
+leave it lying around; if it is lost, flash the projector again (the console
+issues a new token and the lost card's stops working) or rotate the
+enrollment key on the console for an offline-build card.
 
 The private SSH key never leaves this PC. `http://` console URLs are only
 accepted for LAN addresses, `.local` names and localhost; anything else must be
@@ -503,15 +517,20 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
 
 ## Troubleshooting
 
-- **"Approve this computer in the browser window that just opened ..."** and
-  nothing happens: the browser page must be approved by an admin
-  within 10 minutes; a viewer account cannot approve. If no browser opened the
-  status line shows the URL and the code; open it on any device that can
-  reach the console.
-- **The browser asks for approval again** on a PC that was connected: the
-  token was revoked on the console (Settings, "My API tokens") or created by
-  another Windows account. Approve once more; Advanced shows "Connected as
-  <you>" afterwards.
+- **"Invalid username or password"** under the sign-in box: the same
+  username and password as on the console website; after several wrong tries
+  the console asks you to wait ("Too many failed attempts; try again in N
+  s"). **"This account can only view; ask an admin to make it an editor"**:
+  a viewer account cannot flash; an admin changes the role on the console's
+  Users page.
+- **The sign-in box comes back** on a PC that was signed in: the token was
+  revoked on the console (Settings, "My API tokens"), the account was made
+  view-only, or the token was created by another Windows account. Sign in
+  once more; Advanced shows "Signed in as <you>" afterwards.
+- **"A projector with that ID belongs to another account; pick another
+  name"** under Device name: the device id derived from the name is already
+  another user's projector on this console. Choose a different name, or ask
+  an admin to move that projector to your account on the Devices page.
 - **Card not listed**: click Refresh. The tool only lists USB/SD/MMC disks that
   are not the Windows boot or system disk. Some readers report the card only
   after a re-insert; if it still does not appear, try a different reader or

@@ -113,10 +113,10 @@ describe("sync + manifest", () => {
 describe("/devices/:id/camera", () => {
   it("serves image/jpeg no-store nosniff to any session; 303 anonymous; 404 when unset", async () => {
     expect((await new Client().get(`/devices/${dev.id}/camera`)).status).toBe(303);
-    expect((await r.viewer.get("/devices/999999/camera")).status).toBe(404);
-    expect((await r.viewer.get("/devices/abc/camera")).status).toBe(400);
-    expect(await detail(await r.viewer.get(`/devices/${other.id}/camera`), 404)).toBe("no camera snapshot yet");
-    const res = await r.viewer.get(`/devices/${dev.id}/camera?t=x`);
+    expect((await r.editor.get("/devices/999999/camera")).status).toBe(404);
+    expect((await r.editor.get("/devices/abc/camera")).status).toBe(400);
+    expect(await detail(await r.editor.get(`/devices/${other.id}/camera`), 404)).toBe("no camera snapshot yet");
+    const res = await r.editor.get(`/devices/${dev.id}/camera?t=x`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/jpeg");
     expect(res.headers.get("cache-control")).toBe("no-store");
@@ -128,7 +128,7 @@ describe("/devices/:id/camera", () => {
 describe("Devices + dashboard markup", () => {
   it("shows the snapshot with age, STALE after 3 x camera_interval, camera_error in warn style, nothing without a snapshot", async () => {
     await query("UPDATE devices SET last_camera_at = datetime('now', '-8 seconds'), camera_error = NULL WHERE id = ?", dev.id);
-    let page = await (await r.viewer.get("/devices")).text();
+    let page = await (await r.editor.get("/devices")).text();
     expect(page).toContain(`<a href="/devices/${dev.id}/camera?t=`);
     expect(page).toContain(`class="device-thumb" alt="Latest camera snapshot from Cam One">`);
     expect(page).toContain('<div class="device-screen device-camera">');
@@ -139,12 +139,12 @@ describe("Devices + dashboard markup", () => {
 
     // stale: 60 s > 3 x 10 s; camera_error shown in the warn style, escaped
     await query("UPDATE devices SET last_camera_at = datetime('now', '-60 seconds'), camera_error = ? WHERE id = ?", `ffmpeg: <${XSS}>`, dev.id);
-    page = await (await r.viewer.get("/devices")).text();
+    page = await (await r.editor.get("/devices")).text();
     expect(page).toContain('<div class="device-screen device-camera is-stale">');
     expect(page).toContain('<span class="screen-chip tr is-stale badge-stale" title="No new camera snapshot for more than 3 camera intervals">stale</span>');
     expect(page).toContain(`<div class="alert warn small" title="Reported by the player on its last sync">Camera: ffmpeg: &lt;x&#39;);alert(1);//&gt;</div>`);
     expect(page).not.toContain(`<${XSS}>`);
-    const dash = await (await r.viewer.get("/dashboard")).text();
+    const dash = await (await r.editor.get("/dashboard")).text();
     expect(dash).toContain(`<img src="/devices/${dev.id}/camera?t=`);
     expect(dash).toContain('class="device-thumb device-thumb-stale" alt="Latest camera snapshot from Cam One">');
     expect(dash).toContain("Camera: ffmpeg: &lt;x&#39;);alert(1);//&gt;");
@@ -152,12 +152,12 @@ describe("Devices + dashboard markup", () => {
 
     // a bigger camera_interval un-stales it
     await query("INSERT INTO settings (key, value) VALUES ('camera_interval', '30')");
-    page = await (await r.viewer.get("/devices")).text();
+    page = await (await r.editor.get("/devices")).text();
     expect(page).toContain('<div class="device-screen device-camera">');
     await query("DELETE FROM settings WHERE key = 'camera_interval'");
     // camera_error alone (no snapshot ever) still surfaces
     await query("UPDATE devices SET camera_error = 'no camera configured' WHERE id = ?", other.id);
-    page = await (await r.viewer.get("/devices")).text();
+    page = await (await r.editor.get("/devices")).text();
     expect(page).toContain("Camera: no camera configured");
     await query("UPDATE devices SET camera_error = NULL WHERE id = ?", other.id);
   });
@@ -186,11 +186,13 @@ describe("camera live URL", () => {
   });
 
   it("renders the form for editors (disabled for viewers), the Live link and a lazy sandboxed iframe, escaped", async () => {
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, dev.id); // a viewer sees only their own
     let page = await (await r.viewer.get("/devices")).text();
     expect(page).toContain("<summary>Camera</summary>");
     expect(page).toContain(`action="/devices/${dev.id}/camera-url"`);
     expect(page).toContain('name="camera_live_url" value="" placeholder="https://cam-lobby.example.com/" pattern="https://.*" maxlength="2048" disabled>');
     expect(page).not.toContain("data-live-frame");
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.editor, dev.id);
 
     const url = `https://cam.example.com/lobby?x=1&name=${encodeURIComponent(XSS)}`;
     await post(r.editor, `/devices/${dev.id}/camera-url`, { camera_live_url: url });

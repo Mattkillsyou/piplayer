@@ -87,6 +87,23 @@ export async function requireRow(env, table, rowId, label) {
   if (!(await db.first(env, `SELECT id FROM ${table} WHERE id = ?`, rowId))) fail(404, `${label} not found`);
 }
 
+// Ownership (migration 0009): editors and viewers see and act on the projectors they own
+// (devices.owner_id = their user id, set when the SD flasher registers the card), admins on
+// every projector. The WHERE fragment for a query over `devices d`; every page list, count and
+// per-device route goes through this or requireDevice(), so the rule lives here only.
+export function ownedClause(user) {
+  return user.role === "admin" ? { sql: "1", params: [] } : { sql: "d.owner_id = ?", params: [user.id] };
+}
+
+// The devices row (the `cols` asked for) when the signed-in user may see it, else the same 404
+// as an unknown id, so another account's projector does not even show as existing.
+export async function requireDevice(ctx, deviceId, cols = "d.id") {
+  const own = ownedClause(ctx.user);
+  const row = await db.first(ctx.env, `SELECT ${cols} FROM devices d WHERE d.id = ? AND ${own.sql}`, deviceId, ...own.params);
+  if (!row) fail(404, "Device not found");
+  return row;
+}
+
 const screenshotHref = (d) => `/devices/${d.id}/screenshot?t=${esc(encodeURIComponent(d.last_screenshot_at))}`;
 
 // The `.device-screen` block shared by the Devices rows and the dashboard wall: thumb (or
@@ -363,7 +380,7 @@ function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
 
 // `isAdmin` shows the Token / install block (the token is admin-only, like the operator token
 // and /authorize); `openToken` opens it, right after New token.
-function deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, openToken, tz, install, settings, wyzeOn, tunnelOn) {
+function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken, tz, install, settings, wyzeOn, tunnelOn) {
   const dis = canEdit ? "" : " disabled";
   const live = liveUrl(d.camera_live_url);
   return `<div class="device-row${isFault(d) ? " is-fault" : ""}">
@@ -371,7 +388,7 @@ function deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, openToken, tz, i
       ${deviceScreen(d, { link: true, staleTitle: "No new screenshot for more than 3 capture intervals" })}
       ${cameraScreen(d, { link: true, staleTitle: "No new camera snapshot for more than 3 camera intervals" })}
       <span class="device-name">${esc(d.name)}</span>
-      <span class="device-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}${d.pi_model ? ` · ${esc(d.pi_model)}` : ""}</span>
+      <span class="device-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}${d.pi_model ? ` · ${esc(d.pi_model)}` : ""}${isAdmin ? ` · ${d.owner_name ? esc(d.owner_name) : "no owner"}` : ""}</span>
       ${statusLamp(d)}
       ${canEdit ? `<form method="post" action="/devices/${d.id}/rename" class="inline">
         ${csrfInput(ctx)}
@@ -401,6 +418,15 @@ function deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, openToken, tz, i
           </label>
         </form>
         <a href="/devices/${d.id}/schedule" class="button">Schedule (${d.schedule_count})</a>
+        ${isAdmin ? `<form method="post" action="/devices/${d.id}/owner">
+          ${csrfInput(ctx)}
+          <label>owner
+            <select name="owner_id" data-autosubmit title="The account that sees this projector; admins see every projector">
+              <option value="">no owner</option>
+              ${users.map((u) => `<option value="${u.id}"${u.id === d.owner_id ? " selected" : ""}>${esc(u.username)}</option>`).join("\n              ")}
+            </select>
+          </label>
+        </form>` : ""}
       </div>
 
       <div class="now-block${d.active_playlist_name ? "" : " none"}">
@@ -519,6 +545,10 @@ sudo -E bash deploy/install-player.sh</pre>
   </div>`;
 }
 
+// Devices / Dashboard empty state for an account that owns nothing yet: its projectors arrive
+// through the SD Flasher (the /flasher page), not the Add device form.
+export const noProjectors = () => emptyState("NO PROJECTORS", 'No projectors yet. Flash a card with the <a href="/flasher">SD Flasher</a> and it appears here.');
+
 async function devicesPage(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = auth.roleRank(user.role) >= auth.roleRank("editor");
@@ -526,6 +556,7 @@ async function devicesPage(ctx) {
   const settings = await ctx.settings();
   const tz = settings.timezone;
   const env = ctx.env;
+  const own = ownedClause(user);
   const rows = await db.all(env,
     `SELECT d.id, d.device_id, d.name, d.last_seen_at, d.last_ip,
             d.player_version, d.current_position, d.current_filename, d.player_status,
@@ -535,15 +566,19 @@ async function devicesPage(ctx) {
             d.projector_control, d.projector_ir_codes, d.broadlink_host, d.projector_power_mode,
             d.projector_power_state, d.projector_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
-            d.tunnel_id, d.tunnel_hostname, d.pi_model, d.camera_supported,
+            d.tunnel_id, d.tunnel_hostname, d.pi_model, d.camera_supported, d.owner_id,
             p.id AS playlist_id, p.name AS playlist_name,
-            g.id AS group_id, g.name AS group_name
+            g.id AS group_id, g.name AS group_name, u.username AS owner_name
        FROM devices d
        LEFT JOIN playlists p ON p.id = d.playlist_id
        LEFT JOIN device_groups g ON g.id = d.group_id
-       ORDER BY d.name`);
+       LEFT JOIN users u ON u.id = d.owner_id
+      WHERE ${own.sql}
+      ORDER BY d.name`, ...own.params);
   const playlists = await db.all(env, "SELECT id, name FROM playlists ORDER BY name");
   const groups = await db.all(env, "SELECT id, name FROM device_groups ORDER BY name");
+  // The Owner select (admins only): every account, so a projector can be handed to anyone.
+  const users = isAdmin ? await db.all(env, "SELECT id, username FROM users ORDER BY username") : [];
   const devices = await decorateDevices(env, rows, settings);
   // Schedule counts, tokens and the last 5 commands for the whole fleet in one statement
   // each (SQLite window function for the per-device LIMIT) rather than three per device.
@@ -591,15 +626,17 @@ ${isAdmin ? '<p class="help small">Device ID: lowercase letters, digits and hyph
     : canEdit ? '<p class="help small">Device ID: lowercase letters, digits and hyphens, e.g. lobby-projector. After adding the device, an administrator opens "Token / install" on it and runs that command on the Pi.</p>' : ""}
 
 ${!devices.length
-    ? emptyState("NO DEVICES", `No devices yet.${canEdit ? " Add one above." : ""}`)
+    ? (isAdmin ? emptyState("NO DEVICES", "No devices yet. Add one above.") : noProjectors())
     : `<div class="device-rows">
-  ${devices.map((d) => deviceRow(ctx, d, playlists, groups, canEdit, isAdmin, d.id === open, tz, install, settings, wyzeOn, tunnelOn)).join("\n  ")}
+  ${devices.map((d) => deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, d.id === open, tz, install, settings, wyzeOn, tunnelOn)).join("\n  ")}
 </div>`}`;
   return layout(ctx, { title: "Devices", content });
 }
 
+// An editor's manual addition is theirs (they could not see it otherwise); an admin's has no
+// owner until the Owner select says so.
 async function devicesCreate(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const form = await ctx.form();
   const deviceId = str(form, "device_id").trim().toLowerCase();
   const name = str(form, "name").trim();
@@ -608,7 +645,8 @@ async function devicesCreate(ctx) {
   const token = randomToken(32);
   let id;
   try {
-    id = (await db.run(ctx.env, "INSERT INTO devices (device_id, name, token) VALUES (?, ?, ?)", deviceId, name, token)).last_row_id;
+    id = (await db.run(ctx.env, "INSERT INTO devices (device_id, name, token, owner_id) VALUES (?, ?, ?, ?)",
+      deviceId, name, token, user.role === "admin" ? null : user.id)).last_row_id;
   } catch (e) {
     if (db.isConstraintError(e)) fail(409, "A device with that ID already exists");
     throw e;
@@ -624,8 +662,7 @@ async function devicesRename(ctx) {
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const name = str(await ctx.form(), "name").trim();
   if (!name || [...name].length > MAX_DEVICE_NAME) fail(400, `Name must be 1-${MAX_DEVICE_NAME} characters`);
-  const row = await db.first(ctx.env, "SELECT name FROM devices WHERE id = ?", deviceId);
-  if (!row) fail(404, "Device not found");
+  const row = await requireDevice(ctx, deviceId, "d.name");
   if (row.name !== name) {
     await db.run(ctx.env, "UPDATE devices SET name = ? WHERE id = ?", name, deviceId);
     await db.bumpCameraConfigVersion(ctx.env);
@@ -638,7 +675,7 @@ async function devicesAssign(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const pid = intField(str(await ctx.form(), "playlist_id"), "playlist_id");
-  await requireRow(ctx.env, "devices", deviceId, "Device");
+  await requireDevice(ctx, deviceId);
   await requireRow(ctx.env, "playlists", pid, "Playlist");
   await db.run(ctx.env, "UPDATE devices SET playlist_id = ? WHERE id = ?", pid, deviceId);
   await audit.log(ctx, "device_assign_playlist", "device", deviceId, { playlist_id: pid });
@@ -649,7 +686,7 @@ async function devicesSetGroup(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const gid = intField(str(await ctx.form(), "group_id"), "group_id");
-  await requireRow(ctx.env, "devices", deviceId, "Device");
+  await requireDevice(ctx, deviceId);
   await requireRow(ctx.env, "device_groups", gid, "Group");
   await db.run(ctx.env, "UPDATE devices SET group_id = ? WHERE id = ?", gid, deviceId);
   await audit.log(ctx, "device_set_group", "device", deviceId, { group_id: gid });
@@ -661,8 +698,7 @@ async function devicesSetGroup(ctx) {
 async function devicesRegenToken(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
-  const row = await db.first(ctx.env, "SELECT id, device_id, name, tunnel_id FROM devices WHERE id = ?", deviceId);
-  if (!row) fail(404, "Device not found");
+  const row = await requireDevice(ctx, deviceId, "d.id, d.device_id, d.name, d.tunnel_id");
   await db.run(ctx.env, "UPDATE devices SET token = ? WHERE id = ?", randomToken(32), deviceId);
   await audit.log(ctx, "device_regen_token", "device", deviceId);
   let message = `New token made for ${row.name}: open Token / install and run the install command on the Pi again.`;
@@ -677,8 +713,7 @@ async function devicesRegenToken(ctx) {
 async function devicesDelete(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
-  const row = await db.first(ctx.env, "SELECT device_id, name FROM devices WHERE id = ?", deviceId);
-  if (!row) fail(404, "Device not found");
+  const row = await requireDevice(ctx, deviceId, "d.device_id, d.name");
   await db.run(ctx.env, "DELETE FROM devices WHERE id = ?", deviceId);
   // R2 trouble must not undo the delete: the row is gone, the audit and the banner still happen.
   try {
@@ -699,8 +734,7 @@ async function devicesSendCommand(ctx) {
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const command = str(await ctx.form(), "command");
   if (!isCommand(command)) fail(400, "unknown command");
-  const row = await db.first(ctx.env, "SELECT name FROM devices WHERE id = ?", deviceId);
-  if (!row) fail(404, "Device not found");
+  const row = await requireDevice(ctx, deviceId, "d.name");
   const { changes, last_row_id: id } = await db.run(ctx.env,
     `INSERT INTO device_commands (device_id, command, issued_by)
      SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM device_commands WHERE device_id = ? AND command = ? AND completed_at IS NULL)`,
@@ -710,18 +744,19 @@ async function devicesSendCommand(ctx) {
   return auth.flashRedirect(ctx, "/devices", `${commandText(command)} queued for ${row.name}; the Pi picks it up on its next check-in.`);
 }
 
-// Fleet action: queue one update command for every device that is not already waiting for
-// the same one (a second click while the first is still queued must not double-update).
+// Fleet action: queue one update command for every device the user may see that is not already
+// waiting for the same one (a second click while the first is still queued must not double-update).
 async function devicesUpdateAll(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const command = str(await ctx.form(), "command") || "update-player";
   if (!FLEET_COMMANDS.includes(command)) fail(400, "unknown command");
+  const own = ownedClause(user);
   const { changes } = await db.run(ctx.env,
     `INSERT INTO device_commands (device_id, command, issued_by)
      SELECT d.id, ?, ? FROM devices d
-      WHERE NOT EXISTS (SELECT 1 FROM device_commands c
+      WHERE ${own.sql} AND NOT EXISTS (SELECT 1 FROM device_commands c
                          WHERE c.device_id = d.id AND c.command = ? AND c.completed_at IS NULL)`,
-    command, user.id, command);
+    command, user.id, ...own.params, command);
   await audit.log(ctx, "device_update_all", "device", null, { command, queued: changes });
   if (!changes) return auth.flashRedirect(ctx, "/devices", "Nothing new to queue: every device already has this update waiting. It runs when each Pi next checks in.", "warn");
   return auth.flashRedirect(ctx, "/devices", `Update queued for ${changes} device${changes === 1 ? "" : "s"}.`);
@@ -732,8 +767,7 @@ async function devicesUpdateAll(ctx) {
 async function devicesScreenshot(ctx) {
   auth.requireUser(ctx);
   const deviceId = idParam(ctx.params.device_id, "device_id");
-  const row = await db.first(ctx.env, "SELECT device_id FROM devices WHERE id = ?", deviceId);
-  if (!row) fail(404, "Not Found");
+  const row = await requireDevice(ctx, deviceId, "d.device_id");
   try {
     return await media.serveScreenshot(ctx.request, ctx.env, row.device_id);
   } catch (e) {
@@ -746,8 +780,7 @@ async function devicesScreenshot(ctx) {
 async function devicesCamera(ctx) {
   auth.requireUser(ctx);
   const deviceId = idParam(ctx.params.device_id, "device_id");
-  const row = await db.first(ctx.env, "SELECT device_id FROM devices WHERE id = ?", deviceId);
-  if (!row) fail(404, "Not Found");
+  const row = await requireDevice(ctx, deviceId, "d.device_id");
   try {
     return await media.serveCamera(ctx.request, ctx.env, row.device_id);
   } catch (e) {
@@ -760,7 +793,7 @@ async function devicesSetCameraUrl(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const url = validateLiveUrl(str(await ctx.form(), "camera_live_url"));
-  await requireRow(ctx.env, "devices", deviceId, "Device");
+  await requireDevice(ctx, deviceId);
   await db.run(ctx.env, "UPDATE devices SET camera_live_url = ? WHERE id = ?", url, deviceId);
   await audit.log(ctx, "device_set_camera_url", "device", deviceId, { camera_live_url: url });
   return redirect("/devices");
@@ -776,8 +809,7 @@ async function devicesSetCameraSource(ctx) {
   const form = await ctx.form();
   const source = str(form, "camera_source").trim() || null;
   if (source !== null && !CAMERA_SOURCES.includes(source)) fail(400, `camera_source must be one of ${CAMERA_SOURCES.join(", ")} or empty for the site default`);
-  const row = await db.first(ctx.env, "SELECT device_id, camera_source, camera_rtsp_url, camera_wyze_name FROM devices WHERE id = ?", deviceId);
-  if (!row) fail(404, "Device not found");
+  const row = await requireDevice(ctx, deviceId, "d.device_id, d.camera_source, d.camera_rtsp_url, d.camera_wyze_name");
   // The RTSP URL carries credentials: stored encrypted (secrets.js, keyed to the device_id) and
   // never rendered back; an empty field keeps the stored one while the source stays rtsp
   // (switching the source away clears it).
@@ -820,8 +852,7 @@ async function devicesCreateTunnel(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   if (!cloudflare.configured(ctx.env)) fail(400, `automatic tunnels are not configured (${cloudflare.missing(ctx.env).join(", ")} not set)`);
-  const row = await db.first(ctx.env, "SELECT id, device_id, tunnel_id FROM devices WHERE id = ?", deviceId);
-  if (!row) fail(404, "Device not found");
+  const row = await requireDevice(ctx, deviceId, "d.id, d.device_id, d.tunnel_id");
   const done = row.tunnel_id ? await rotateTunnelBanner(ctx, row) : await cloudflare.tryProvisionDevice(ctx, row);
   if (done.error) return auth.flashRedirect(ctx, "/devices", row.tunnel_id ? done.error : `Tunnel creation failed: ${done.error}`, "error");
   return auth.flashRedirect(ctx, "/devices", `Tunnel ready: https://${done.hostname}/ (the Pi picks up the ${row.tunnel_id ? "new " : ""}tunnel key on its next check-in; open the live view logged in to Cloudflare Access).`);
@@ -839,15 +870,29 @@ async function devicesSetProjector(ctx) {
   if (!manifest.PROJECTOR_MODES.includes(mode)) fail(400, `projector_power_mode must be one of ${manifest.PROJECTOR_MODES.join(", ")}`);
   const host = str(form, "broadlink_host").trim() || null;
   if (host !== null && !BROADLINK_HOST_RE.test(host)) fail(400, "Broadlink address must be a hostname or IP address");
-  await requireRow(ctx.env, "devices", deviceId, "Device");
+  await requireDevice(ctx, deviceId);
   await db.run(ctx.env, "UPDATE devices SET projector_control = ?, projector_power_mode = ?, broadlink_host = ? WHERE id = ?",
     control, mode, host, deviceId);
   await audit.log(ctx, "device_set_projector", "device", deviceId, { projector_control: control, projector_power_mode: mode, broadlink_host: host ?? undefined });
   return redirect("/devices");
 }
 
+// Owner select (admin only): hand a projector to an account, or to nobody (only admins see it then).
+async function devicesSetOwner(ctx) {
+  auth.requireRole(ctx, "admin");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const ownerId = intField(str(await ctx.form(), "owner_id"), "owner_id");
+  await requireDevice(ctx, deviceId);
+  const owner = ownerId === null ? null : await db.first(ctx.env, "SELECT username FROM users WHERE id = ?", ownerId);
+  if (ownerId !== null && !owner) fail(404, "User not found");
+  await db.run(ctx.env, "UPDATE devices SET owner_id = ? WHERE id = ?", ownerId, deviceId);
+  await audit.log(ctx, "device_set_owner", "device", deviceId, { owner_id: ownerId, owner: owner ? owner.username : null });
+  return redirect("/devices");
+}
+
 export function register(router) {
   router.get("/devices", devicesPage);
+  router.post("/devices/:device_id/owner", devicesSetOwner);
   router.post("/devices/:device_id/projector", devicesSetProjector);
   router.post("/devices", devicesCreate);
   router.post("/devices/:device_id/rename", devicesRename);

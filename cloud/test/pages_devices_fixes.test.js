@@ -118,8 +118,10 @@ describe("L3 / L20: camera_supported = 0", () => {
     expect(b).not.toContain("live URL set");
     expect(b).not.toContain("tunnel-block");
     expect(b).not.toContain(`live-frame-${dev.id}`);
-    // viewers see the button disabled
+    // viewers see the button disabled (on their own projector: ownership)
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, dev.id);
     expect(block(await (await r.viewer.get("/devices")).text())).toContain('<button type="submit" class="small" disabled>Clear camera setting</button>');
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.editor, dev.id);
     // clearing goes back to the site default, after which nothing is offered
     expect((await post(r.editor, `/devices/${dev.id}/camera-source`, { camera_source: "" })).status).toBe(303);
     expect(await one("SELECT camera_source, camera_wyze_name FROM devices WHERE id = ?", dev.id)).toEqual({ camera_source: null, camera_wyze_name: null });
@@ -195,12 +197,12 @@ describe("L16: the undeliverable badge is the console's, never the player's", ()
     });
     expect(res.status).toBe(200);
     expect(await one("SELECT undeliverable, result FROM device_commands WHERE id = ?", cid)).toEqual({ undeliverable: 0, result: "undeliverable: haha" });
-    const page = await (await r.viewer.get("/devices")).text();
+    const page = await (await r.editor.get("/devices")).text();
     expect(page).toContain("done · undeliverable: haha");
     expect(page).not.toContain('<span class="badge badge-stale">undeliverable: haha</span>');
     // the console's own close (migration 0007 flag) is the badge
     await query("UPDATE device_commands SET undeliverable = 1 WHERE id = ?", cid);
-    expect(await (await r.viewer.get("/devices")).text()).toContain('<span class="badge badge-stale">undeliverable: haha</span>');
+    expect(await (await r.editor.get("/devices")).text()).toContain('<span class="badge badge-stale">undeliverable: haha</span>');
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 });
@@ -210,7 +212,7 @@ describe("L28 / L41 / H6: wording and links", () => {
     const now = new Date().toISOString().slice(0, 19).replace("T", " ");
     const dev = await device("down-1", "Down", { last_seen_at: now, player_status: "mpv-down", current_filename: "clip.mp4" });
     for (const path of ["/devices", "/dashboard"]) {
-      const page = await (await r.viewer.get(path)).text();
+      const page = await (await r.editor.get(path)).text();
       expect(page).toContain('<span class="status status-mpv-down"><span class="lamp"></span>player down</span>');
       expect(page).not.toContain(">mpv-down</span>");
     }

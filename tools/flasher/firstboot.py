@@ -412,17 +412,19 @@ def _wired_lines(c: dict) -> list:
 
 
 def render_provision(cfg: dict) -> str:
-    """The boot-time installer. With a device token on the card it installs straight away; otherwise it
-    first trades the enrollment key for a token at POST /api/enroll (the same device_id re-enrolls the
-    same device, so a re-flashed card keeps its identity on the console). cfg["with_wyze"] (the console's
-    /api/operator/enrollment reported wyze_configured) adds --with-wyze: Docker + the Wyze bridge unit go
+    """The boot-time installer. With a device token on the card (the flasher registered the projector under
+    the signed-in account) it installs straight away; otherwise it first trades the enrollment key for a
+    token at POST /api/enroll (the same device_id re-enrolls the same device, so a re-flashed card keeps its
+    identity on the console). cfg["with_wyze"] (the console's /api/operator/me reported wyze_configured) adds
+    --with-wyze: Docker + the Wyze bridge unit go
     on at install; the credentials come from the console once the player runs (camera zero-config)."""
     c = _cfg(cfg)
     q = shlex.quote
     console = c["console_url"].rstrip("/")
     install_flags = " --with-wyze" if c.get("with_wyze") else ""
-    if c.get("token"):
-        secret = [f"DEVICE_TOKEN={q(c['token'])}", 'CMS_URL="$CONSOLE"']
+    if c.get("token"):  # cfg["cms_url"]: the player's address as the console answered it (else the console)
+        cms = q(c["cms_url"].rstrip("/")) if c.get("cms_url") else '"$CONSOLE"'
+        secret = [f"DEVICE_TOKEN={q(c['token'])}", f"CMS_URL={cms}"]
     else:
         secret = [f"DEVICE_NAME={q(c['name'].strip())}", f"ENROLL_KEY={q(c['enrollment_key'])}",
                   "DEVICE_TOKEN=", "CMS_URL="]

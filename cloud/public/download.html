@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- The home page: sign in / create an account, the SD flasher downloads and the first-run steps (public, no login; served at / by src/pages/login.js, /download redirects here). -->
+<!-- The home page: sign in / create an account (public, no login; served at / by src/pages/login.js). The SD flasher downloads sit behind sign-in on /flasher. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -12,14 +12,11 @@
     src: url("/static/fonts/Silkscreen-Bold.woff2") format("woff2"); }
   @font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 300 700; font-display: swap;
     src: url("/static/fonts/SpaceGrotesk-Variable.woff2") format("woff2"); }
-  @font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap;
-    src: url("/static/fonts/IBMPlexMono-Regular.woff2") format("woff2"); }
   :root {
     --ground: #000000; --raised: #0D0D0D; --field: #0A0A0A; --phosphor: #FFFFFF; --ink: #E6E6E6; --body: #C9C9C9;
     --muted: #7A7A7A; --rule: #3A3A3A; --rule-strong: #727272;
     --display: "Silkscreen", "Press Start 2P", monospace;
     --sans: "Space Grotesk", "Helvetica Neue", Arial, sans-serif;
-    --mono: "IBM Plex Mono", Menlo, Consolas, monospace;
     color-scheme: dark;
   }
   html, body { margin: 0; }
@@ -36,8 +33,6 @@
   @media (max-width: 720px) { .wordmark { font-size: 24px; } }
   @media (max-width: 480px) { .wordmark { font-size: 17px; } .masthead svg { width: 48px; height: 48px; } .masthead { gap: 14px; } }
 
-  .downloads { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 72px; }
-  .heading { font-family: var(--display); font-weight: 700; font-size: 22px; color: var(--phosphor); margin: 0 0 20px; }
   .btn { display: flex; align-items: center; justify-content: center; min-height: 64px; font-family: var(--sans);
          font-weight: 600; font-size: 18px; letter-spacing: 0.01em; line-height: 1.25; color: var(--ground);
          background: var(--phosphor); padding: 14px 20px; text-align: center; text-decoration: none;
@@ -48,27 +43,7 @@
   @media (max-width: 480px) { .console { grid-template-columns: 1fr; } }
   .btn.secondary { color: var(--phosphor); background: transparent; }
   .btn.secondary:hover { background: var(--raised); border-color: var(--phosphor); }
-  .lead { color: var(--muted); margin: -20px 0 24px; }
-
-  /* the console's panel: corner brackets */
-  .panel { position: relative; padding: 24px; margin-bottom: 24px; }
-  .panel::before, .panel::after, .panel > i::before, .panel > i::after {
-    content: ""; position: absolute; width: 14px; height: 14px; border: 0 solid var(--phosphor); }
-  .panel::before { top: 5px; left: 5px; border-top-width: 1px; border-left-width: 1px; }
-  .panel::after { top: 5px; right: 5px; border-top-width: 1px; border-right-width: 1px; }
-  .panel > i::before { bottom: 5px; left: 5px; border-bottom-width: 1px; border-left-width: 1px; }
-  .panel > i::after { bottom: 5px; right: 5px; border-bottom-width: 1px; border-right-width: 1px; }
-  h2 { font-family: var(--sans); font-weight: 600; font-size: 22px; color: var(--phosphor); margin: 0 0 14px; }
-  h3 { font-family: var(--sans); font-weight: 600; font-size: 18px; color: var(--phosphor); margin: 0 0 8px; }
-  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
-  @media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
-  ol { margin: 0; padding-left: 24px; }
-  li { margin-bottom: 10px; }
-  li::marker { color: var(--muted); }
-  p { margin: 0 0 12px; }
-  .note { border-left: 2px solid var(--rule-strong); padding: 8px 14px; margin-top: 14px; color: var(--body); }
-  code { font-family: var(--mono); font-size: 0.92em; color: var(--ink); background: var(--raised); padding: 1px 5px; }
-  em { font-style: normal; font-weight: 600; color: var(--ink); }
+  .lead { color: var(--muted); margin: 0 0 24px; }
 </style>
 </head>
 <body>
@@ -91,80 +66,11 @@
     </div>
   </header>
 
-  <h2 class="heading">CONSOLE</h2>
-  <p class="lead">Playlists, schedules and the projectors themselves are managed in the console.</p>
+  <p class="lead">Sign in to download the SD Flasher and manage your projectors.</p>
   <div class="console">
     <a class="btn" href="/login">Sign in</a>
     <a class="btn secondary" href="/signup">Create an account</a>
   </div>
-
-  <h2 class="heading">SD FLASHER</h2>
-  <p class="lead">The program that writes a projector's memory card. Install it once on the computer you flash cards with.</p>
-  <div class="downloads">
-    <a class="btn" href="https://github.com/Mattkillsyou/piplayer/releases/download/v0.6.0/Projection5000-SD-Flasher.exe">Download for Windows</a>
-    <a class="btn" href="https://github.com/Mattkillsyou/piplayer/releases/download/v0.6.0/Projection5000-SD-Flasher-mac-arm64.dmg">Download for Mac (Apple Silicon)</a>
-    <a class="btn" href="https://github.com/Mattkillsyou/piplayer/releases/download/v0.6.0/Projection5000-SD-Flasher-mac-intel.dmg">Download for Mac (Intel)</a>
-  </div>
-
-  <h2 class="heading">INSTRUCTIONS</h2>
-
-  <section class="panel"><i></i>
-    <h2>Which Mac do I have?</h2>
-    <p>Click the Apple menu at the top left of the screen and choose <em>About This Mac</em>. A line that says
-      <em>Chip: Apple M1</em> (or M2, M3, M4) means Apple Silicon. A line that says <em>Processor: Intel</em> means Intel.</p>
-  </section>
-
-  <section class="panel"><i></i>
-    <h2>First time on this computer</h2>
-    <div class="cols">
-      <div>
-        <h3>Windows</h3>
-        <ol>
-          <li>Double-click <code>Projection5000-SD-Flasher.exe</code>.</li>
-          <li>If Windows says "Windows protected your PC", click <em>More info</em>, then <em>Run anyway</em>.</li>
-          <li>Click <em>Yes</em> on the "make changes to your device" question. Writing a card needs that.</li>
-        </ol>
-      </div>
-      <div>
-        <h3>Mac</h3>
-        <ol>
-          <li>Open the <code>.dmg</code> and drag <em>Projection5000 SD Flasher</em> into <em>Applications</em>.</li>
-          <li>In Applications, <em>right-click</em> the app, choose <em>Open</em>, then click <em>Open</em> again.
-            On macOS 15 (Sequoia) and newer do this instead: double-click the app, click <em>Done</em>, open
-            <em>System Settings</em>, <em>Privacy &amp; Security</em>, scroll down, click <em>Open Anyway</em>, type
-            your Mac password, click <em>Open</em>.</li>
-          <li>Each time a card is written, macOS asks for your Mac password. When it asks to "access files on a
-            removable volume", click <em>Allow</em>.</li>
-        </ol>
-        <p class="note">If macOS says the app "is damaged and can't be opened", paste this line into Terminal
-          once and open the app again:<br>
-          <code>xattr -d com.apple.quarantine "/Applications/Projection5000 SD Flasher.app"</code></p>
-      </div>
-    </div>
-  </section>
-
-  <section class="panel"><i></i>
-    <h2>Then, every time</h2>
-    <div class="cols">
-      <div>
-        <ol>
-          <li>Put the card in the reader.</li>
-          <li>Type a name for the projector, for example <em>Lobby Projector</em>.</li>
-          <li>Pick the Raspberry Pi model the card is going into.</li>
-          <li>Pick the Wi-Fi network and type its password (leave both empty for a wired projector).</li>
-        </ol>
-      </div>
-      <div>
-        <ol start="5">
-          <li>Pick the card and press <em>FLASH</em>. The first time, a browser page opens to approve this
-            computer: click <em>Approve</em>.</li>
-          <li>Wait for "Done." (a few minutes). The card ejects itself.</li>
-          <li>Put the card in the projector's Pi and turn it on. It shows up on the Devices page within a few
-            minutes.</li>
-        </ol>
-      </div>
-    </div>
-  </section>
 </div>
 </body>
 </html>

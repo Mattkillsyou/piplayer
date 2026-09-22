@@ -17,12 +17,13 @@ const HIDDEN_RX = /<input[^>]*name="csrf_token"[^>]*value="[^"]+"|<input[^>]*val
 const META_RX = /<meta name="csrf-token" content="([^"]+)">/;
 
 let r;            // {admin, editor, viewer}
-let pid, dev;
+let pid, dev, vdev;
 
 beforeAll(async () => {
   r = await roles();
   pid = await playlist("matrix");
-  dev = await device("matrix-dev", "Matrix Dev", { playlist_id: pid });
+  dev = await device("matrix-dev", "Matrix Dev", { playlist_id: pid }); // the editor's (pages_common.device)
+  vdev = await device("matrix-vw", "Matrix Viewer Dev", { owner_id: r.ids.viewer });
 });
 
 // Anonymous callers carry a valid CSRF token from their own anonymous session, so what is
@@ -57,7 +58,8 @@ function table() {
     ["GET", "/playlists", null, null, ALL(200)],
     ["GET", `/playlists/${pid}`, null, null, ALL(200)],
     ["GET", "/devices", null, null, ALL(200)],
-    ["GET", `/devices/${dev.id}/schedule`, null, null, ALL(200)],
+    ["GET", `/devices/${dev.id}/schedule`, null, null, { viewer: 404, editor: 200, admin: 200 }], // the editor's projector: a 404 for anyone else below admin
+    ["GET", "/flasher", null, null, ALL(200)],
     ["GET", `/devices/${NOPE}/screenshot`, null, null, ALL(404)],
     ["GET", "/groups", null, null, ALL(200)],
     ["GET", "/audit", null, null, ALL(200)],
@@ -85,6 +87,7 @@ function table() {
     ["POST", `/devices/${NOPE}/command`, { command: "reboot" }, "form", E(404)],
     ["POST", `/devices/${NOPE}/rename`, { name: "x" }, "form", E(404)],
     ["POST", `/devices/${NOPE}/projector`, { projector_control: "cec", projector_power_mode: "auto" }, "form", E(404)],
+    ["POST", `/devices/${NOPE}/owner`, { owner_id: "" }, "form", AD(404)],
     ["POST", "/devices/update-all", { command: "nope" }, "form", E(400)],
     ["GET", `/devices/${NOPE}/camera`, null, null, ALL(404)],
     ["POST", `/devices/${NOPE}/camera-url`, { camera_live_url: "https://x" }, "form", E(404)],
@@ -144,10 +147,10 @@ describe("authorization matrix", () => {
 
   it("viewers and editors never see device tokens or the install command; admins do", async () => {
     // a device token reads the Wyze login through /api/camera-config, so it is admin-only like the operator token
-    for (const c of [r.viewer, r.editor]) {
+    for (const [c, d] of [[r.viewer, vdev], [r.editor, dev]]) {
       const v = await (await c.get("/devices")).text();
-      expect(v).toContain("Matrix Dev");
-      expect(v).not.toContain(dev.token);
+      expect(v).toContain(d.name);
+      expect(v).not.toContain(d.token);
       expect(v).not.toContain("DEVICE_TOKEN=");
     }
     const t = await (await r.admin.get("/devices")).text();
@@ -167,12 +170,12 @@ describe("authorization matrix", () => {
   });
 
   // /, /login, /logout and /signup are covered by the root check above, the csrf block below and signup.test.js;
-  // /api/* is bearer-authenticated (api.test.js and friends), not a web route.
+  // /download (a redirect either way) by flasher_page.test.js; /api/* is bearer-authenticated (api.test.js and friends), not a web route.
   it("table() has a row for every web route the modules register", () => {
     const router = new Router();
     for (const m of modules) if (m.register) m.register(router);
     const registered = router.routes.map((rt) => `${rt.method} ${rt.pattern}`)
-      .filter((k) => !isApiPath(k.split(" ")[1]) && !["GET /", "GET /login", "POST /login", "POST /logout", "GET /signup", "POST /signup"].includes(k));
+      .filter((k) => !isApiPath(k.split(" ")[1]) && !["GET /", "GET /login", "POST /login", "POST /logout", "GET /signup", "POST /signup", "GET /download"].includes(k));
     expect(registered.length).toBeGreaterThan(50);
     const covered = new Set();
     for (const [method, path] of table()) {

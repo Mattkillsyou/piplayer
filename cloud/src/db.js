@@ -33,7 +33,7 @@ export function isConstraintError(e) {
 
 // The meta.schema_version the code expects: bump with each new migrations/000N file (the last
 // statement of every migration writes it).
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 // Fail loudly (once per isolate) when migrations were never applied or stopped short of this
 // release: a worker deployed before `npm run migrate:remote` must say so on every request

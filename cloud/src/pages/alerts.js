@@ -4,6 +4,7 @@ import * as alerts from "../alerts.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { ageSeconds, ageText, esc, localTime } from "../util.js";
+import { ownedClause } from "./devices.js";
 import { emptyState, layout } from "./layout.js";
 
 const RECENT_LIMIT = 100;
@@ -29,10 +30,11 @@ function table(rows, tz, closed) {
 async function alertsPage(ctx) {
   const user = auth.requireUser(ctx);
   const tz = (await ctx.settings()).timezone;
+  const own = ownedClause(user);
   const select = `SELECT a.id, a.kind, a.opened_at, a.closed_at, a.notified_at, d.name, d.device_id
-       FROM alerts a JOIN devices d ON d.id = a.device_id`;
-  const open = await db.all(ctx.env, `${select} WHERE a.closed_at IS NULL ORDER BY a.opened_at DESC, a.id DESC`);
-  const recent = await db.all(ctx.env, `${select} WHERE a.closed_at IS NOT NULL ORDER BY a.closed_at DESC, a.id DESC LIMIT ?`, RECENT_LIMIT);
+       FROM alerts a JOIN devices d ON d.id = a.device_id WHERE ${own.sql}`;
+  const open = await db.all(ctx.env, `${select} AND a.closed_at IS NULL ORDER BY a.opened_at DESC, a.id DESC`, ...own.params);
+  const recent = await db.all(ctx.env, `${select} AND a.closed_at IS NOT NULL ORDER BY a.closed_at DESC, a.id DESC LIMIT ?`, ...own.params, RECENT_LIMIT);
   const content = `<div class="page-head">
   <h1>Alerts</h1>
   <span class="page-meta"><strong>${open.length} open</strong><br>checked every 5 minutes${user.role === "admin" ? ' · channels on the <a href="/settings">Settings</a> page' : ""}</span>

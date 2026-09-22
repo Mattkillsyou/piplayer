@@ -3,6 +3,7 @@ import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, idParam, intField, json, jsonObject, localTime, redirect, str } from "../util.js";
+import { ownedClause } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -20,13 +21,16 @@ async function playlistsPage(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = user.role !== "viewer";
   const tz = (await ctx.settings()).timezone;
+  // Playlists are shared; "used by" counts only the devices this user may see (the schedule
+  // rule count stays fleet-wide: deleting the playlist removes them all).
+  const own = ownedClause(user);
   const rows = await db.all(ctx.env,
     `SELECT p.id, p.name, p.updated_at,
             (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) AS item_count,
-            (SELECT COUNT(*) FROM devices d WHERE d.playlist_id = p.id) AS device_count,
+            (SELECT COUNT(*) FROM devices d WHERE d.playlist_id = p.id AND ${own.sql}) AS device_count,
             (SELECT COUNT(*) FROM device_groups g WHERE g.playlist_id = p.id) AS group_count,
             (SELECT COUNT(*) FROM device_schedules s WHERE s.playlist_id = p.id) AS schedule_count
-       FROM playlists p ORDER BY p.name`);
+       FROM playlists p ORDER BY p.name`, ...own.params);
   const rowHtml = (p) => {
     const parts = [];
     if (p.schedule_count) parts.push(`${p.schedule_count} schedule rule(s) will be deleted`);

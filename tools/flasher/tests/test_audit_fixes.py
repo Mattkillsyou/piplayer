@@ -160,7 +160,7 @@ def test_api_calls_never_follow_a_redirect(monkeypatch):
 
         def do_GET(self):
             self.send_response(302)
-            self.send_header("Location", "http://127.0.0.1:1/api/operator/enrollment")
+            self.send_header("Location", "http://127.0.0.1:1/api/operator/me")
             self.send_header("Content-Length", "0")
             self.end_headers()
 
@@ -169,10 +169,12 @@ def test_api_calls_never_follow_a_redirect(monkeypatch):
     srv, base = _serve(Redirecting)
     try:
         with pytest.raises(console.ConsoleError, match="HTTP 302.*is this a Projection5000 console") as e:
-            console.fetch_enrollment(base, OPERATOR_TOKEN)
+            console.me(base, OPERATOR_TOKEN)
         assert e.value.code == 302
         with pytest.raises(console.ConsoleError, match="302"):
-            console.request_device_code(base, "pc")
+            console.login(base, "matt", "pw", "pc")
+        with pytest.raises(console.ConsoleError, match="302"):
+            console.register_device(base, OPERATOR_TOKEN, "lobby", "Lobby")
     finally:
         srv.shutdown()
 
@@ -192,12 +194,6 @@ def test_odd_http_answers_become_console_errors():
             console.check_health(base)
     finally:
         srv.shutdown()
-    assert console.GONE["expired"] == "the code expired (press FLASH again)"  # there is no Sign in button
-    assert console.same_site("https://c.example", "https://c.example/authorize")
-    assert console.same_site("https://c.example/", "http://c.example/authorize")
-    assert not console.same_site("https://c.example", "https://evil.example/authorize")
-    assert not console.same_site("https://c.example", "file:///C:/Windows/System32/calc.exe")
-    assert not console.same_site("https://c.example", "javascript:alert(1)")
 
 
 # ---------------------------------------------------------------- imagefetch.py
@@ -301,7 +297,7 @@ def stub():
 
 
 def test_account_buttons_are_off_while_a_flash_runs(monkeypatch):
-    """Connect/Disconnect under Advanced, and FLASH itself, cannot interrupt a running write: a Cancel meant for
+    """Sign in/Sign out under Advanced, and FLASH itself, cannot interrupt a running write: a Cancel meant for
     a sign-in must never abort the card."""
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     root = _root()
@@ -317,10 +313,10 @@ def test_account_buttons_are_off_while_a_flash_runs(monkeypatch):
     app.set_phase("Writing the card")
     app.worker.start()
     assert app.busy()
-    app.connect()  # ignored: nothing changes, the status line keeps the phase
-    assert app.status_label.cget("text") == "Writing the card..." and app._signin_cancel.is_set() is False
+    app.sign_in()  # ignored: nothing changes, the status line keeps the phase, no sign-in box
+    assert app.status_label.cget("text") == "Writing the card..." and not app.signin.winfo_manager()
     app.on_flash()  # ignored too
-    app._connect_done()  # a late sign-in result must not re-enable FLASH or hide Cancel mid-write
+    app._signin_done()  # a late sign-in result must not re-enable FLASH or hide Cancel mid-write
     assert str(app.flash_btn["state"]) == "disabled" and app.cancel_btn.winfo_manager() == "grid"
     release.set()
     assert _pump(root, lambda: not app.busy() and str(app.flash_btn["state"]) == "normal")
@@ -350,85 +346,33 @@ def test_on_flash_disables_the_account_row(monkeypatch, tmp_path):
     root.destroy()
 
 
-def test_cancelled_sign_in_opens_no_browser_and_keeps_no_token(monkeypatch, stub):
+def test_sign_in_answered_after_cancel_is_ignored(monkeypatch, stub):
+    """The console answers the sign-in a moment after Cancel: no token is kept, FLASH's erase confirmation never
+    fires, the box is closed and the status line is back to Ready."""
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher, "console_url", lambda: stub)
-    opened = []
-    monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: opened.append(url) or True)
+    fired = []
     gate = threading.Event()
-    real = console.request_device_code
+    real = console.login
 
     def slow(*a):
-        r = real(*a)
         gate.wait(5)  # Cancel is pressed while the console is still answering
-        return r
+        return real(*a)
 
-    monkeypatch.setattr(flasher.console, "request_device_code", slow)
+    monkeypatch.setattr(flasher.console, "login", slow)
     root = _root()
     app = flasher.App(root)
-    app.connect()
-    app.cancel_btn.invoke()
+    app.sign_in(then=lambda: fired.append(1))
+    app.op_username.set("matt")
+    app.op_password.set("pw")
+    app.submit_signin()
+    app.cancel_signin()
     gate.set()
+    assert _pump(root, lambda: any(path == "/api/operator/login" for path, _ in StubConsole.calls), timeout=5)
     time.sleep(0.5)
     root.update()
-    assert opened == [] and app.op["token"] == "" and app.status_label.cget("text") == "Ready."
-    root.destroy()
-
-
-def test_approved_after_cancel_is_ignored(monkeypatch, stub):
-    """The console approves a moment after Cancel: no token is kept, FLASH's erase confirmation never fires."""
-    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
-    monkeypatch.setattr(flasher, "console_url", lambda: stub)
-    monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: True)
-    fired = []
-    StubConsole.approve_after = 1
-    real_poll = console.poll_device_token
-    cancelled = threading.Event()
-
-    def poll(*a):
-        tok = real_poll(*a)
-        app._signin_cancel.set()  # Cancel pressed just before the answer arrived
-        cancelled.set()
-        return tok
-
-    monkeypatch.setattr(flasher.console, "poll_device_token", poll)
-    root = _root()
-    app = flasher.App(root)
-    app.connect(then=lambda: fired.append(1))
-    assert _pump(root, lambda: cancelled.is_set(), timeout=8)
-    time.sleep(0.3)
-    root.update()
     assert fired == [] and app.op["token"] == "" and not flasher.operator_config_path().exists()
-    root.destroy()
-
-
-def test_network_hiccup_while_polling_keeps_waiting(monkeypatch, stub):
-    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
-    monkeypatch.setattr(flasher, "console_url", lambda: stub)
-    monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: True)
-    StubConsole.approve_after = 3
-    real_poll = console.poll_device_token
-    n = [0]
-
-    def flaky(*a):
-        n[0] += 1
-        if n[0] == 1:
-            raise console.ConsoleError("cannot reach the console: timed out")  # code None: the network
-        if n[0] == 2:
-            err = console.ConsoleError("/api/operator/device-token: HTTP 502 Bad Gateway")
-            err.code = 502
-            raise err
-        return real_poll(*a)
-
-    monkeypatch.setattr(flasher.console, "poll_device_token", flaky)
-    root = _root()
-    app = flasher.App(root)
-    app.connect()
-    assert _pump(root, lambda: app.connected(), timeout=15)
-    log = app.log_text.get("1.0", "end")
-    assert "Still waiting for the approval (cannot reach the console: timed out)." in log
-    assert "Still waiting for the approval (/api/operator/device-token: HTTP 502 Bad Gateway)." in log
-    assert app.status_label.cget("text") == "Ready."
+    assert app.status_label.cget("text") == "Ready." and not app.signin.winfo_manager()
     root.destroy()
 
 
@@ -452,7 +396,7 @@ def test_unwritable_config_keeps_the_sign_in_for_this_run(monkeypatch, tmp_path)
     root = _root()
     app = flasher.App(root)
     then = []
-    app._connected("https://c.example", {"token": OPERATOR_TOKEN, "username": "matt"}, lambda: then.append(1))
+    app._signed_in("https://c.example", {"token": OPERATOR_TOKEN, "username": "matt"}, lambda: then.append(1))
     assert app.op["token"] == OPERATOR_TOKEN and then == [1]
     assert "WARNING: could not save the sign-in (read-only profile)" in app.log_text.get("1.0", "end")
     assert app.status_label.cget("text") == "Ready." and str(app.flash_btn["state"]) == "normal"
@@ -467,38 +411,20 @@ def test_revoked_token_during_flash_is_forgotten_in_plain_words(monkeypatch):
     app = flasher.App(root)
     app.op = {"token": OPERATOR_TOKEN, "username": "matt"}
     flasher.save_operator_config(app.console_url, OPERATOR_TOKEN, "matt")
-    err = console.ConsoleError("/api/operator/enrollment: invalid API token")
+    err = console.ConsoleError("/api/operator/me: invalid API token")
     err.code = 401
     monkeypatch.setattr(flasher, "run_flash", lambda *a, **k: (_ for _ in ()).throw(err))
     app._run_flash(dict(FULL, enrollment_key="", operator_token=OPERATOR_TOKEN))
     assert _pump(root, lambda: not app.connected())
     assert app.status_label.cget("text") == ("The console no longer accepts this computer's sign-in. "
-                                             "Press FLASH to approve it again.")
+                                             "Press FLASH to sign in again.")
     assert dialogs == [] and not flasher.operator_config_path().exists()
-    assert app.account_label.cget("text") == "Not connected" and str(app.flash_btn["state"]) == "normal"
+    assert app.account_label.cget("text") == "Not signed in" and str(app.flash_btn["state"]) == "normal"
     # Any other console error: the dialog as before.
-    other = console.ConsoleError("/api/operator/enrollment: HTTP 503")
+    other = console.ConsoleError("/api/operator/me: HTTP 503")
     other.code = 503
     monkeypatch.setattr(flasher, "run_flash", lambda *a, **k: (_ for _ in ()).throw(other))
     app._run_flash(dict(FULL, enrollment_key="", operator_token=OPERATOR_TOKEN))
     assert _pump(root, lambda: bool(dialogs))
-    assert app.status_label.cget("text") == "Failed: /api/operator/enrollment: HTTP 503"
-    root.destroy()
-
-
-def test_verification_url_off_the_console_is_not_opened(monkeypatch, stub):
-    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
-    monkeypatch.setattr(flasher, "console_url", lambda: stub)
-    opened = []
-    monkeypatch.setattr(flasher.webbrowser, "open", lambda url, *a, **k: opened.append(url) or True)
-    real = console.request_device_code
-    monkeypatch.setattr(flasher.console, "request_device_code",
-                        lambda *a: dict(real(*a), verification_url="https://evil.example/authorize"))
-    StubConsole.approve_after = None
-    root = _root()
-    app = flasher.App(root)
-    app.connect()
-    assert _pump(root, lambda: "Could not open a browser" in app.log_text.get("1.0", "end"), timeout=5)
-    assert opened == [] and "https://evil.example/authorize?code=BCDFGH" in app.status_label.cget("text")
-    app.cancel_connect()
+    assert app.status_label.cget("text") == "Failed: /api/operator/me: HTTP 503"
     root.destroy()

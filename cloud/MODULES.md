@@ -170,7 +170,7 @@ same, so the SQL from web.py/api.py ports verbatim (`?` placeholders, `datetime(
 | `requireCsrf(ctx)` | header `X-CSRF-Token` or form field `csrf_token`; index.js already applies it to every non-`/api/` unsafe request, JSON and raw-body endpoints included (so fetch/PUT callers must send the header) |
 | `loginLockedFor(env, ip, username, max?, seconds?)` / `recordLoginFailure` / `clearLoginFailures` | D1 `login_failures`; 5 failures for one ip+username in 30 s → seconds remaining; also `LOGIN_IP_MAX_FAILURES` (20) from one ip under any username in the same window, and `LOGIN_USER_MAX_FAILURES` (20) for one username from anywhere in `LOGIN_USER_WINDOW_SECONDS` (600). The ip is `util.ipBucket` (IPv4 as is, IPv6 as its /64); rows are kept 10 minutes. `POST /api/enroll` reuses it with username `ENROLL_KEY` and `ENROLL_MAX_FAILURES` (10) / `ENROLL_LOCK_SECONDS` (60), exempt from the per-username ceiling |
 | `deviceFromHeader(ctx)` | `{id, device_id, name, playlist_id, group_id}` for `Authorization: Bearer <token>`; 401 `"Missing bearer token"` / `"Invalid device token"`. The path `device_id` must equal `row.device_id` else 403 — your check |
-| `operatorFromHeader(ctx)` | `{token_id, token_name, id, username, role}` for `Authorization: Bearer p5k_<32 urlsafe>` (api_tokens, looked up by SHA-256 hex, `timingSafeEqual` on the stored hash); 401 `"Missing bearer token"` / `"Invalid API token"`. Role is the caller's check (`GET /api/operator/enrollment` wants admin: the key it returns can enroll any device id) |
+| `operatorFromHeader(ctx)` | `{token_id, token_name, id, username, role}` for `Authorization: Bearer p5k_<32 urlsafe>` (api_tokens, looked up by SHA-256 hex, `timingSafeEqual` on the stored hash); 401 `"Missing bearer token"` / `"Invalid API token"`. Role is the caller's check (`GET /api/operator/enrollment` wants admin: the key it returns can enroll any device id; `api.flasherOperator` wants editor+) |
 | `newApiToken()` / `apiTokenHash(token)` / `touchApiToken(env, id)` | mint `p5k_` + 32 chars; SHA-256 hex; stamp `last_used_at` at most once per `API_TOKEN_USED_AUDIT_HOURS` (returns true when it did, so the caller audits `api_token_used` then) |
 | `issueApiToken(ctx, userId, name, details?)` | mint + insert an `api_tokens` row and audit `api_token_created` (`{name, ...details}`, never the token); returns `{id, token}` for the one-time display. The Settings and Users pages and the device-code sign-in all go through it |
 | `requireSetupToken(ctx, token)` | 403 unless equal to `SETUP_TOKEN` |
@@ -291,7 +291,7 @@ export function register(router) {
 | `camera_interval` | `PIPLAYER_CAMERA_INTERVAL` (10, min 5) | manifest `camera_interval_seconds`, camera snapshot stale badge (`> 3 ×`) |
 | `default_image_duration` | `PIPLAYER_DEFAULT_IMAGE_DURATION` (10) | effective duration of images |
 | `enrollment_key` | random 32-byte urlsafe token, generated on the first `loadSettings` (never from env) | `POST /api/enroll` (the flasher fetches it live through `GET /api/operator/enrollment` and writes it to each card); `/settings` shows it and `POST /settings/enrollment/rotate` replaces it (`db.generateEnrollmentKey`) |
-| `enroll_group_id` / `enroll_playlist_id` | none (int or null; a deleted row reads as none) | applied to a device on its first `POST /api/enroll` only |
+| `enroll_group_id` / `enroll_playlist_id` | none (int or null; a deleted row reads as none) | applied to a device on its first `POST /api/enroll` or `POST /api/operator/devices` only |
 | `player_release` | `PIPLAYER_PLAYER_RELEASE` (`main`); git tag/branch/sha, `db.isGitRef` (alphanumeric first char, `[A-Za-z0-9._/-]`, no `..`, <= 100) | manifest `update.release`: what `update-player` checks out on the Pi |
 | `auto_update` | `PIPLAYER_AUTO_UPDATE` (`off`); `off` or `nightly` (`db.AUTO_UPDATE_MODES`) | manifest `update.auto` |
 | `auto_update_window` | `PIPLAYER_AUTO_UPDATE_WINDOW` (`03:00-05:00`); `HH:MM-HH:MM` Pi time (the Pi evaluates it on its own clock, set to the site zone at flash time), may wrap midnight (`db.UPDATE_WINDOW_RE`) | manifest `update.window` |
@@ -335,6 +335,27 @@ enroll any device id; an editor's token exists but gets 401 here) answers
 wyze_configured}` (`wyze_configured` = `secrets.wyzeConfigured`: a Wyze email and password are set). Audit:
 `api_token_created`, `api_token_revoked` (both carry the name, never the token) and
 `api_token_used` at most once per hour per token (`last_used_at`).
+
+**Flasher sign-in and per-account projectors** (`api.js`, flasher v0.7.0+; migration 0009 adds
+`devices.owner_id` REFERENCES users ON DELETE SET NULL, NULL = no owner). `POST /api/operator/login`
+(no auth, JSON `{username, password, hostname}`) is `/login` without the session: the 64-char
+username cap (400), reserved names answer as a wrong password without a row, `loginLockedFor` /
+`recordLoginFailure` on ip+username (429 + `Retry-After`), `burnPasswordCheck` for unknown names,
+audit `login_failed` with `source: "flasher"`; a good password mints `issueApiToken` named
+`SD Flasher on <hostname>` (`device_codes.cleanHostname`, details `{source: "flasher", hostname}`)
+and answers `{token, username, role}`; a viewer gets 403 "This account can only view; ask an
+admin to make it an editor" and no token. `api.flasherOperator` guards the two bearer endpoints
+(editor+, the same 403 for a viewer's token, `touchApiToken` + `api_token_used`):
+`GET /api/operator/me` -> `{username, role, console_url, timezone, wyze_configured, groups, playlists}`
+and `POST /api/operator/devices` `{device_id, name, pi_model?}` (validation as `/api/enroll`,
+`pi_model` cut to 64) -> `api.registerDevice`, shared with `enroll`: a new id is INSERTed with
+`owner_id` = the token's user and the enroll defaults (201 `{device_id, token, cms_url, owner,
+created: true}`, audit `device_registered` `{device_id, name, owner, group_id?, playlist_id?}`);
+a known id gets a NEW token, name and `pi_model`, `owner_id` set when it was NULL (200 `created:
+false`, audit `device_reregistered` with `renamed_from`), but only the caller's own or, for an
+admin, any id: otherwise 409 "A projector with that ID belongs to another account; pick another
+name". The new-id cap and `tryProvisionDevice` apply as for enroll. `GET /api/operator/enrollment`
+and the device-code flow stay for flashers before v0.7.0.
 
 **Device-code sign-in** (`device_codes.js`, table `device_codes`, migration 0004): how the SD flasher
 gets a token without anyone pasting one. `POST /api/operator/device-code` (no auth, optional JSON
@@ -547,7 +568,7 @@ and the manual live URL keeps working.
 | `cloudflare.provisionDevice(ctx, {id, device_id})` / `tryProvisionDevice` | provision + `UPDATE devices SET tunnel_id, tunnel_hostname, camera_live_url = https://<hostname>/` + audit `device_tunnel_created` (`{device_id, tunnel_id, hostname, emails: n}`); the try variant never throws: it logs, audits `device_tunnel_failed` (`{device_id, error}`) and returns `{error}` |
 | `cloudflare.syncAccess(ctx)` | rewrites the Access policy of every device that has a tunnel to the current `operatorEmails` (settings re-read, not the memoised ctx copy); audits `camera_access_updated` (`{devices, emails}`); returns null when there is nothing to do (not configured, no email known, no tunnels) or on success, else the error text for a banner. Called when the alert email list or the admin user list changes |
 | `cloudflare.rotateTunnel(ctx, device)` | a fresh tunnel for a device whose connector token may have leaked: `DELETE` the old tunnel's connections then the tunnel (a 404 is fine), then `provisionDevice`; the Pi gets a new token on its next sync and the old one stops working. Throws like `provisionDevice` |
-| `POST /api/enroll` (`api.enroll`) | when configured, a first enrollment and a re-enrollment of a device without `tunnel_id` call `tryProvisionDevice` after the audit row; the enrollment answer never depends on it |
+| `POST /api/enroll` / `POST /api/operator/devices` (`api.registerDevice`) | when configured, a first registration and a re-registration of a device without `tunnel_id` call `tryProvisionDevice` after the audit row; the answer never depends on it |
 | `POST /devices/:id/tunnel` (editor+, `pages/devices.devicesCreateTunnel`) | the "Create tunnel" / "Recreate tunnel" button in the Camera block; 400 when not configured, 404 unknown device. Create = `tryProvisionDevice`; Recreate (the device has a `tunnel_id`) = `rotateTunnel`, so the old connector token stops working and the Pi gets a new one on its next sync, audited `device_tunnel_rotated` (`{device_id, old_tunnel_id, tunnel_id, hostname}`). The outcome is flashed ("Tunnel ready: https://..." or the plain-English failure). `POST /devices/:id/regen-token` rotates the tunnel too (its confirm says so). The block also shows the `tunnel · <hostname>` / `no tunnel` badge (every role) |
 | `GET /api/sync/:id` (`api.tunnelBlock`) | manifest `tunnel`: `{token, hostname}` with the token from `GET cfd_tunnel/<id>/token` on every sync (never stored, never rendered; `auth.deviceFromHeader` selects `tunnel_id` / `tunnel_hostname`), `null` when the device has no tunnel, the secrets are unset or the API fails (the sync still answers; the player keeps the token it already wrote) |
 | `/settings` panel "Camera tunnels (Cloudflare)" | configured / not configured badge with the missing secret names and the permissions, the zone, the operator emails the policy will get (or a warning to set `alert_email`), the count of devices with a tunnel. Read-only: the secrets are `wrangler secret put` |

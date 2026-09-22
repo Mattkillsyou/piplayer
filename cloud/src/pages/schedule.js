@@ -5,7 +5,7 @@ import * as auth from "../auth.js";
 import * as db from "../db.js";
 import * as schedules from "../schedules.js";
 import { esc, fail, idParam, intField, isoDateField, normalizeHhmm, redirect, str, wallClock } from "../util.js";
-import { requireRow } from "./devices.js";
+import { requireDevice, requireRow } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -14,8 +14,7 @@ async function schedulePage(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = user.role !== "viewer";
   const deviceId = idParam(ctx.params.device_id, "device_id");
-  const device = await db.first(ctx.env, "SELECT id, device_id, name, playlist_id FROM devices WHERE id = ?", deviceId);
-  if (!device) fail(404, "Not Found");
+  const device = await requireDevice(ctx, deviceId, "d.id, d.device_id, d.name, d.playlist_id");
   const rules = await db.all(ctx.env,
     `SELECT s.id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time,
             s.days_of_week, s.start_date, s.end_date,
@@ -155,7 +154,7 @@ async function scheduleCreate(ctx) {
   const startDate = isoDateField(str(form, "start_date"), "Start date");
   const endDate = isoDateField(str(form, "end_date"), "End date");
   if (startDate && endDate && startDate > endDate) fail(400, "The start date must be on or before the end date");
-  await requireRow(ctx.env, "devices", deviceId, "Device");
+  await requireDevice(ctx, deviceId);
   await requireRow(ctx.env, "playlists", pid, "Playlist");
   const id = (await db.run(ctx.env,
     `INSERT INTO device_schedules
@@ -170,6 +169,7 @@ async function scheduleDelete(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const scheduleId = idParam(ctx.params.schedule_id, "schedule_id");
+  await requireDevice(ctx, deviceId);
   const r = await db.run(ctx.env, "DELETE FROM device_schedules WHERE id = ? AND device_id = ?", scheduleId, deviceId);
   if (!r.changes) fail(404, "Schedule rule not found");
   await audit.log(ctx, "device_schedule_delete", "device_schedule", scheduleId, { device_id: deviceId });

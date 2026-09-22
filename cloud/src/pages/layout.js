@@ -16,6 +16,7 @@ const NAV = [
   ["/audit", "Audit"],
   ["/users", "Users", null, "admin"],
   ["/settings", "Settings", null, "admin"],
+  ["/flasher", "SD Flasher"],
 ];
 
 // Hidden CSRF input for a <form method="post"> (contract 8).

@@ -236,7 +236,7 @@ describe("screenshots", () => {
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ ok: true, size_bytes: 4096 });
     expect((await one("SELECT last_screenshot_at AS t FROM devices WHERE id = ?", dev.id)).t).toBeTruthy();
-    const view = await r.viewer.get(`/devices/${dev.id}/screenshot`);
+    const view = await r.editor.get(`/devices/${dev.id}/screenshot`);
     expect(view.status).toBe(200);
     expect(view.headers.get("content-type")).toMatch(/^image\/jpeg/);
     expect(view.headers.get("x-content-type-options")).toBe("nosniff");
@@ -259,7 +259,7 @@ describe("commands", () => {
     expect((await (await sync(dev2)).json()).commands).toEqual([]);
     expect(await one("SELECT delivery_count, result FROM device_commands WHERE id = ?", cid))
       .toEqual({ delivery_count: 5, result: "undeliverable: no result after 5 deliveries" });
-    const html = await (await r.viewer.get("/devices")).text();
+    const html = await (await r.editor.get("/devices")).text();
     expect(html).toContain("undeliverable: no result after 5 deliveries");
     expect(html).toContain("<details");
   });

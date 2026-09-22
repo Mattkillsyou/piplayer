@@ -66,9 +66,9 @@ function loginPage(ctx, error, status = 200, locked = false, next = "", expired 
   return authPage(ctx, { title: "Sign in", card, status });
 }
 
-// The public home page (public/download.html, served by Workers Assets under /download): the SD
-// flasher downloads and first-run steps plus the Sign in / Create an account buttons. It
-// carries its own <style> block, so it gets a CSP that allows inline styles (scripts still not).
+// The public home page (public/download.html, served by Workers Assets under /download): the
+// Sign in / Create an account buttons; the SD flasher downloads sit behind sign-in on /flasher.
+// It carries its own <style> block, so it gets a CSP that allows inline styles (scripts still not).
 async function homePage(ctx) {
   const asset = await ctx.env.ASSETS.fetch(new Request(new URL("/download", ctx.url), { method: ctx.request.method === "HEAD" ? "HEAD" : "GET" }));
   const page = new Response(asset.body, asset);
@@ -117,6 +117,9 @@ async function logout(ctx) {
 
 export function register(router) {
   router.get("/", (ctx) => (ctx.user ? redirect("/dashboard") : homePage(ctx)));
+  // The old address of the SD flasher downloads (docs and old flashers still print it): signed
+  // in it is the flasher page now, otherwise the home page with its Sign in button.
+  router.get("/download", (ctx) => (ctx.user ? redirect("/flasher") : redirect("/", 301)));
   router.get("/login", (ctx) => loginPage(ctx, ctx.url.searchParams.get("expired") ? "Your session expired; please sign in again" : null,
     200, false, nextPath(ctx, ctx.url.searchParams.get("next")), Boolean(ctx.url.searchParams.get("expired"))));
   router.post("/login", loginSubmit);

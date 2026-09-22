@@ -1,4 +1,22 @@
-# Release notes template for the SD Flasher
+# Release notes for the SD Flasher
+
+## v0.7.0
+
+The flasher signs in with your console username and password, in its own window: no browser, no code to
+approve. Every projector you flash belongs to your account.
+
+- The first time you press FLASH the flasher asks for your console username and password (the same as on the
+  website) right under the form. After that it remembers the sign-in on this computer; Sign out is under
+  Advanced (sign out and sign in again to switch user).
+- Each projector is registered in your account when the card is made and appears under Devices there. The card
+  no longer carries the console's enrollment key: it carries only that projector's own token. Flashing a card
+  again for the same name re-registers the same projector with a fresh token.
+- A name that another account already uses is refused in plain words under Device name; pick another name.
+- A view-only account cannot flash: the flasher says so and asks you to have an admin make it an editor.
+- The flasher downloads moved behind the console sign-in (the Download page in the top bar). The public home
+  page now only offers Sign in and Create an account.
+
+Template for the GitHub release body follows.
 
 Copy the block below into the GitHub release body (`gh release create` is done by hand; the macOS workflow
 `.github/workflows/flasher-mac.yml` attaches the two DMGs when a release is published, the Windows exe is

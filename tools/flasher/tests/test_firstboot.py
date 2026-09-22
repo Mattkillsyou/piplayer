@@ -308,6 +308,11 @@ def test_provision_contents_with_token():
     assert "CONSOLE=http://192.168.1.20:8080\n" in s
     assert "\nDEVICE_ID=lobby-projector\nDEVICE_TOKEN=tok-en_0123456789\nCMS_URL=\"$CONSOLE\"\n" in s
     assert "\nENROLL_KEY=" not in s and "sample-enrollment-key" not in s and "\nDEVICE_NAME=" not in s
+    # The console's cms_url (the flasher's register answer) is the player's address when given, quoted.
+    s2 = firstboot.render_provision(cfg(token="tok-en_0123456789", cms_url="https://c.example/"))
+    assert "\nDEVICE_TOKEN=tok-en_0123456789\nCMS_URL=https://c.example\n" in s2
+    assert "CMS_URL='https://c.example/a b'\n" in firstboot.render_provision(
+        cfg(token="tok-en_0123456789", cms_url="https://c.example/a b"))
     assert "sleep 15" in s
     # The player comes from the card, not from GitHub (the repo is private to the Pi).
     assert "git clone" not in s and "github" not in s.lower()

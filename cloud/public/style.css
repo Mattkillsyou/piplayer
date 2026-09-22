@@ -514,6 +514,11 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
 .panel form { display: contents; }
 .panel .row { margin: 0; }
 .section { margin-bottom: 22px; }
+/* the SD Flasher page's Windows / Mac step columns */
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--p5k-space-4); }
+.cols ol { margin: 0; padding-left: 22px; }
+.cols li { margin-bottom: 8px; }
+@media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
 
 /* bracket corners: `.brackets` draws a top-left + bottom-right corner */
 .brackets { position: relative; }

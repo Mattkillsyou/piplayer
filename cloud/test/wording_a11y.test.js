@@ -25,7 +25,7 @@ beforeAll(async () => {
 const page = (c, p) => c.get(p).then((res) => res.text());
 
 // Every page an owner reads, each with at least one data table rendered by the fixtures above.
-const PAGES = ["/dashboard", "/library", "/playlists", "/playlists/:pid", "/devices", "/devices/:id/schedule", "/groups", "/alerts", "/audit", "/users", "/settings"];
+const PAGES = ["/dashboard", "/library", "/playlists", "/playlists/:pid", "/devices", "/devices/:id/schedule", "/groups", "/alerts", "/audit", "/users", "/settings", "/flasher"];
 const path = (p) => p.replace(":pid", pid).replace(":id", dev.id);
 
 describe("accessibility basics (L32)", () => {
@@ -38,7 +38,7 @@ describe("accessibility basics (L32)", () => {
       expect(found.length, `${p} captions`).toBe((html.match(/<table class="data/g) || []).length);
       tables += found.length;
     }
-    expect(tables).toBeGreaterThanOrEqual(PAGES.length - 1); // the dashboard has no table
+    expect(tables).toBeGreaterThanOrEqual(PAGES.length - 2); // the dashboard and the SD Flasher page have no table
   });
 
   it("every signed-in page has the skip link before the nav and the main landmark; the login card has neither", async () => {

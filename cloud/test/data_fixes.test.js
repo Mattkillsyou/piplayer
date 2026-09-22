@@ -58,10 +58,10 @@ describe("migration 0006 heals duplicates before indexing", () => {
 });
 
 describe("migration 0008", () => {
-  it("login_failures is indexed by username and schema_version is 8", async () => {
+  it("login_failures is indexed by username and schema_version matches db.js", async () => {
     expect(await query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_login_failures_user'")).toEqual([{ name: "idx_login_failures_user" }]);
-    expect(db.SCHEMA_VERSION).toBe(8);
-    expect(await one("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual({ value: "8" });
+    expect(db.SCHEMA_VERSION).toBeGreaterThanOrEqual(8);
+    expect(await one("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual({ value: String(db.SCHEMA_VERSION) });
   });
 });
 

@@ -479,9 +479,11 @@ describe("manifest tunnel block", () => {
     expect(page).toContain("Creates a private web address for this device's camera (<code>lobby-cam.photogen5000.com</code>)");
     expect(page).not.toContain("eyJ");
     expect(fake.calls.length).toBe(0); // rendering never calls the API
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, lobby.id); // a viewer sees only their own
     const viewer = await (await r.viewer.get("/devices")).text();
     expect(viewer).toContain("tunnel · lobby-cam.photogen5000.com");
     expect(viewer).not.toContain(`action="/devices/${lobby.id}/tunnel"`);
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.editor, lobby.id);
     await query("UPDATE devices SET tunnel_id = NULL, tunnel_hostname = NULL, camera_live_url = NULL WHERE id = ?", lobby.id);
     page = await (await r.editor.get("/devices")).text();
     expect(page).toContain('<span class="badge badge-muted">no tunnel</span>');

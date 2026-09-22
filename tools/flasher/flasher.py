@@ -1,7 +1,8 @@
 """Projection5000 SD Flasher: write Raspberry Pi OS Lite to a card and pre-configure the Pi.
 
-One button: the console is fixed (baked in by build.ps1 / build_mac.sh), the sign-in happens in the browser the
-first time FLASH is pressed, and only what changes per Pi is asked (name, model, Wi-Fi, card). Everything else is
+One button: the console is fixed (baked in by build.ps1 / build_mac.sh), the sign-in (console username and
+password, in the window) is asked the first time FLASH is pressed, and only what changes per Pi is asked (name,
+model, Wi-Fi, card). Every projector flashed belongs to the signed-in account. Everything else is
 automatic or under Advanced. The technical log goes to the hidden details box and flasher.log in the data folder
 (%LOCALAPPDATA%\\Projection5000 on Windows, ~/Library/Application Support/Projection5000 on macOS).
 
@@ -28,8 +29,6 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 import traceback
-import urllib.parse
-import webbrowser
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -43,14 +42,15 @@ from sysplat import defaults, disk, host, wifi
 
 APP_TITLE = "Matt Brown's Projection5000"
 EYEBROW = "MATT BROWN'S"
-# Persisted between runs (host.data_dir). Never a secret: the enrollment key is fetched from the console at flash
-# time with the operator token, which lives DPAPI-protected in the operator config (Windows) or in the login
-# keychain (macOS).
+# Persisted between runs (host.data_dir). Never a secret: the device token is issued by the console at flash time
+# with the operator token, which lives DPAPI-protected in the operator config (Windows) or in the login keychain
+# (macOS).
 SETTINGS_KEYS = ("name", "pi_model", "ssid", "wifi_hidden", "timezone", "static_ip", "gateway")
 LOG_NAME, LOG_MAX = "flasher.log", 2_000_000  # the technical log; rotated to flasher.log.1 at 2 MB
 # The status line: plain sentences, one at a time (everything technical goes to the details box and the file).
 READY_TEXT = "Ready."
-CONNECT_TEXT = "Approve this computer in the browser window that just opened, then the card is made automatically."
+SIGNIN_TEXT = "Sign in below, then the card is made automatically."
+SIGNIN_HINT = "Sign in with your console username and password (the same as on the website)."
 DRY_RUN_TEXT = "Dry run finished. Nothing was written."
 # An armhf model with no internet: shown under the model row instead of a dialog.
 OFFLINE_TEXT = (f"This model needs the 32-bit image. Connect to the internet once (about {pimodel.DOWNLOAD_MB} MB) "
@@ -273,7 +273,7 @@ def console_defaults() -> dict:
 
 def write_console_json(path, console_url: str, enrollment_key: str = "") -> None:
     """build.ps1 stages console.json with this (same rules as the form, so a bad key fails the build). The key
-    is optional: without one the flasher fetches it from the console with the operator token (build.ps1 -Key
+    is optional: without one the flasher registers each projector with the sign-in instead (build.ps1 -Key
     bakes one for offline builds)."""
     problems = [firstboot.console_url_problem(console_url)]
     if enrollment_key.strip():
@@ -290,7 +290,7 @@ def console_summary() -> str:
     c = console_defaults()
     if not c["console_url"]:
         return f"console: none baked in (the default {DEFAULT_CONSOLE_URL} is used; build.ps1 -ConsoleUrl sets one)"
-    key = "set" if c["enrollment_key"] else "fetched with the operator token"
+    key = "set" if c["enrollment_key"] else "none; projectors are registered with the sign-in"
     return f"console: {c['console_url']} (enrollment key: {key})"
 
 
@@ -447,6 +447,7 @@ class App:
         self.op = {"token": "", "username": ""}  # the sign-in (operator token), never a widget
         self._password = secrets.token_urlsafe(24)  # the Pi user's password: random, never shown, fresh per flash
         self._signin_cancel = threading.Event()
+        self._then = None  # what runs once the sign-in box yields a token (FLASH passes itself)
         self._phase = ""  # what the progress bar measures ("Writing the card"), shown with the percentage
         self._build()
         self._apply_settings(load_settings())
@@ -459,9 +460,11 @@ class App:
         if self.image_override:
             self.log(f"Image override: {self.image_override}")
         op = load_operator_config()
-        if op["token"] and op["console_url"] in ("", self.console_url):
-            self.op = {"token": op["token"], "username": op["username"]}
-            self.check_token()
+        if op["console_url"] in ("", self.console_url):
+            self.op_username.set(op["username"])  # prefilled in the sign-in box, token or not
+            if op["token"]:
+                self.op = {"token": op["token"], "username": op["username"]}
+                self.check_token()
         self._show_account()
         self.set_status(READY_TEXT)
         # Last, once every widget holds its first text: Tk on macOS (Aqua) never returns from update() when a
@@ -513,7 +516,7 @@ class App:
         form.pack(fill="x")
         self.brackets = draw_brackets(panel)
         form.columnconfigure(1, weight=1)
-        self._entry(form, 0, "Device name", "name")
+        self.name_entry = self._entry(form, 0, "Device name", "name")
         self.id_label = ttk.Label(form, text="", style="Hint.TLabel")
         self.id_label.grid(row=1, column=1, sticky="w", padx=4)
         self._err(form, 2, "name")
@@ -558,15 +561,39 @@ class App:
         ttk.Button(form, text="Refresh", command=self.refresh_disks).grid(row=10, column=2, sticky="w", padx=4)
         self._err(form, 11, "disk")
 
+        # The sign-in box: hidden until FLASH finds no stored sign-in (or Sign in under Advanced). The username and
+        # password go to the console once, for the operator token; neither is a form value or reaches the card.
+        self.op_username, self.op_password = tk.StringVar(), tk.StringVar()
+        self.signin = ttk.Frame(form, padding=(0, 10, 0, 0))
+        self.signin.grid(row=12, column=0, columnspan=3, sticky="we")
+        self.signin.columnconfigure(1, weight=1)
+        ttk.Label(self.signin, text=SIGNIN_HINT, wraplength=560, justify="left").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=4, pady=(0, 4))
+        ttk.Label(self.signin, text="Username").grid(row=1, column=0, sticky="w", padx=4, pady=4)
+        self.user_entry = ttk.Entry(self.signin, textvariable=self.op_username, width=40)
+        self.user_entry.grid(row=1, column=1, sticky="we", padx=4, pady=4)
+        ttk.Label(self.signin, text="Password").grid(row=2, column=0, sticky="w", padx=4, pady=4)
+        self.pass_entry = ttk.Entry(self.signin, textvariable=self.op_password, width=40, show="*")
+        self.pass_entry.grid(row=2, column=1, sticky="we", padx=4, pady=4)
+        for e in (self.user_entry, self.pass_entry):
+            e.bind("<Return>", lambda _e: self.submit_signin())
+        row = ttk.Frame(self.signin)
+        row.grid(row=3, column=1, sticky="w")
+        self.signin_btn = ttk.Button(row, text="Sign in", command=self.submit_signin, style="Primary.TButton")
+        self.signin_btn.pack(side="left", padx=4, pady=4)
+        ttk.Button(row, text="Cancel", command=self.cancel_signin).pack(side="left", padx=4)
+        self._err(self.signin, 4, "signin")
+        self.signin.grid_remove()
+
         # 5. Flash, progress, the one status line.
         buttons = ttk.Frame(form)
-        buttons.grid(row=12, column=0, columnspan=3, sticky="we", pady=(12, 0))
+        buttons.grid(row=13, column=0, columnspan=3, sticky="we", pady=(12, 0))
         buttons.columnconfigure(2, weight=1)
         self.flash_btn = ttk.Button(buttons, text="FLASH", command=self.on_flash, style="Primary.TButton")
         self.flash_btn.grid(row=0, column=0, padx=4)
         self.cancel_btn = ttk.Button(buttons, text="Cancel", command=self.on_cancel)
         self.cancel_btn.grid(row=0, column=1, padx=4)
-        self.cancel_btn.grid_remove()  # shown while a flash runs, and while the browser approval is awaited
+        self.cancel_btn.grid_remove()  # shown while a flash runs
         self.progress = ttk.Progressbar(buttons, maximum=100)
         self.progress.grid(row=0, column=2, sticky="we", padx=8)
         self.status_label = ttk.Label(buttons, text="", style="Status.TLabel", wraplength=560, justify="left")
@@ -603,7 +630,7 @@ class App:
         account.grid(row=5, column=1, columnspan=2, sticky="w")
         self.account_label = ttk.Label(account, text="", style="Mono.TLabel")
         self.account_label.pack(side="left", padx=4)
-        self.account_btn = ttk.Button(account, text="Connect", command=self.toggle_account)
+        self.account_btn = ttk.Button(account, text="Sign in", command=self.toggle_account)
         self.account_btn.pack(side="left", padx=8)
         row6 = ttk.Frame(adv)
         row6.grid(row=6, column=1, columnspan=2, sticky="w")
@@ -684,108 +711,97 @@ class App:
         else:
             self.details.grid_remove()
 
-    # ----- the account (device-code flow: the browser approves, this thread polls). Invisible in normal use: a
-    # stored token is used silently, and FLASH connects first when there is none.
+    # ----- the account (the in-app sign-in: username and password go to POST /api/operator/login once, the
+    # operator token comes back). Invisible in normal use: a stored token is used silently, and FLASH asks first
+    # when there is none.
     def connected(self) -> bool:
         return bool(self.op["token"])
 
     def _show_account(self):
-        """The Account row under Advanced: 'Connected as <name>' with Disconnect, or 'Not connected' with Connect."""
+        """The Account row under Advanced: 'Signed in as <name>' with Sign out, or 'Not signed in' with Sign in."""
         if self.connected():
-            self.account_label.configure(text=f"Connected as {self.op['username'] or 'operator'}")
-            self.account_btn.configure(text="Disconnect", state="normal")
+            self.account_label.configure(text=f"Signed in as {self.op['username'] or 'operator'}")
+            self.account_btn.configure(text="Sign out", state="normal")
         else:
-            self.account_label.configure(text="Not connected")
-            self.account_btn.configure(text="Connect", state="normal")
+            self.account_label.configure(text="Not signed in")
+            self.account_btn.configure(text="Sign in", state="normal")
 
     def toggle_account(self):
         if self.connected():
-            self.disconnect()
+            self.sign_out()
         else:
-            self.connect()
+            self.sign_in()
 
     def busy(self) -> bool:
         """A flash is running: the buttons that would start another action stay off until it ends."""
         return bool(self.worker and self.worker.is_alive())
 
-    def connect(self, then=None):
-        """Open the browser for approval; `then` runs on the Tk thread once the token is in hand (FLASH passes
-        itself so the card is made with no further click). Cancel puts the UI back to Ready."""
+    def sign_in(self, then=None):
+        """Show the sign-in box; `then` runs on the Tk thread once the token is in hand (FLASH passes itself so
+        the card is made with no further click). Cancel puts the UI back to Ready."""
         if self.busy():
             return
+        self._then = then
         self.account_btn.configure(state="disabled")
         self.flash_btn.configure(state="disabled")
-        self.cancel_btn.grid()
-        self.set_status(CONNECT_TEXT)
-        self._signin_cancel = threading.Event()
-        threading.Thread(target=self._connect_work, args=(self._signin_cancel, then), daemon=True).start()
+        self.op_password.set("")
+        self._show_error("signin", "")
+        self.signin.grid()
+        self._grow()
+        self.set_status(SIGNIN_TEXT if then else "Sign in below.")
+        (self.pass_entry if self.op_username.get().strip() else self.user_entry).focus_set()
 
-    def _connect_work(self, cancel: threading.Event, then):
-        """The sign-in thread. Every step checks `cancel`: a cancelled sign-in opens no browser, keeps no token
-        and never fires `then`. A network hiccup while polling is retried until the code expires; only the
-        console's own answer (denied, expired) ends the wait early."""
-        url = self.console_url
-        try:
-            r = console.request_device_code(url, socket.gethostname())
-        except console.ConsoleError as e:
-            msg = f"Could not reach the console: {e}"
-            self.post(lambda: self._connect_failed(msg))
+    def submit_signin(self):
+        """The Sign in button (or Enter): one POST /api/operator/login on a thread. The box stays open, with the
+        console's words under it, until the sign-in succeeds or Cancel is pressed."""
+        if not self.signin.winfo_manager() or str(self.signin_btn["state"]) == "disabled":
             return
-        if cancel.is_set():
+        username, password = self.op_username.get().strip(), self.op_password.get()
+        if not username or not password:
+            self._show_error("signin", "Enter your username and password.")
             return
-        link = f"{r['verification_url']}?code={urllib.parse.quote(r['user_code'])}"
-        opened = console.same_site(url, r["verification_url"]) and self._open_browser(link)
-        self.post(lambda: self._show_code(console.display_code(r["user_code"]), link, opened))
-        deadline = time.monotonic() + r["expires_in"]
-        while time.monotonic() < deadline and not cancel.is_set():
-            time.sleep(r["interval"])
-            if cancel.is_set():
-                break
+        self.signin_btn.configure(state="disabled")
+        self._show_error("signin", "")
+        url, then = self.console_url, self._then
+        self._signin_cancel = threading.Event()
+        cancel = self._signin_cancel
+
+        def work():
             try:
-                tok = console.poll_device_token(url, r["device_code"])
-            except console.Pending:
-                continue
+                tok = console.login(url, username, password, socket.gethostname())
             except console.ConsoleError as e:
-                if e.code is None or e.code >= 500:  # the network or the console hiccuped: keep polling
-                    hiccup = f"Still waiting for the approval ({e})."
-                    self.post(lambda: self.log(hiccup))
-                    continue
-                msg = f"Not approved: {e}"
-                self.post(lambda: self._connect_failed(msg))
+                if e.code == 401:
+                    msg = "Invalid username or password"
+                elif e.code in (403, 429):  # a view-only account; too many failed attempts (the wait is in it)
+                    msg = e.plain()
+                else:
+                    msg = f"Could not reach the console: {e}"
+                if not cancel.is_set():
+                    self.post(lambda: self._signin_failed(msg))
                 return
             if not cancel.is_set():
-                self.post(lambda: self._connected(url, tok, then))
-            return
-        if not cancel.is_set():
-            self.post(lambda: self._connect_failed("The approval took too long (10 minutes). Press FLASH again."))
+                self.post(lambda: self._signed_in(url, tok, then))
 
-    @staticmethod
-    def _open_browser(link: str) -> bool:
-        try:
-            return bool(webbrowser.open(link))
-        except Exception:
-            return False
+        threading.Thread(target=work, daemon=True).start()
 
-    def _show_code(self, code: str, link: str, opened: bool):
-        if opened:
-            self.log(f"Browser opened at {link}: approve the sign-in there (code {code}).")
-        else:
-            self.log(f"Could not open a browser. Open {link} yourself and type the code {code}.")
-            self.set_status(f"Open {link} in a browser and type the code {code}. Then the card is made "
-                            "automatically.")
+    def _signin_failed(self, msg: str):
+        self.log(f"Sign in failed: {msg}")
+        self.signin_btn.configure(state="normal")
+        self._show_error("signin", msg)
+        self.pass_entry.focus_set()
 
-    def _connect_failed(self, msg: str):
-        self.log(f"Connect failed: {msg}")
-        self._connect_done()
-        self.set_status(msg)
-
-    def _connect_done(self):
-        if not self.busy():  # a running flash keeps FLASH off and Cancel on until it ends
+    def _signin_done(self):
+        """The box goes away (the password with it); FLASH comes back unless a flash is running."""
+        self._then = None
+        self.signin.grid_remove()
+        self.op_password.set("")
+        self.signin_btn.configure(state="normal")
+        self._show_error("signin", "")
+        if not self.busy():
             self.flash_btn.configure(state="normal")
-            self.cancel_btn.grid_remove()
         self._show_account()
 
-    def _connected(self, url: str, tok: dict, then):
+    def _signed_in(self, url: str, tok: dict, then):
         self.op = {"token": tok["token"], "username": tok["username"]}  # in hand even if the file cannot be written
         try:
             warning = save_operator_config(url, tok["token"], tok["username"])
@@ -794,28 +810,32 @@ class App:
         if warning:
             self.log(warning)
         self.log(f"Signed in as {tok['username'] or 'operator'}.")
-        self._connect_done()
+        self._signin_done()
         self.set_status(READY_TEXT)
         if then:
             then()
 
-    def cancel_connect(self):
+    def cancel_signin(self):
         self._signin_cancel.set()
-        self.log("Connect cancelled.")
-        self._connect_done()
+        self.log("Sign in cancelled.")
+        self._signin_done()
         self.set_status(READY_TEXT)
 
     def check_token(self):
-        """A stored token is checked in the background against GET /api/operator/enrollment; 401 means the token
-        was revoked, so it is forgotten and the next FLASH connects again. Nothing on the status line."""
+        """A stored token is checked in the background against GET /api/operator/me; 401 means it was revoked and
+        403 that the account can only view now: both forget it, so the next FLASH signs in again. Nothing on the
+        status line, except the view-only case (the console's words say to ask an admin)."""
         url, token = self.console_url, self.op["token"]
 
         def work():
             try:
-                console.fetch_enrollment(url, token)
+                console.me(url, token)
             except console.ConsoleError as e:
                 if e.code == 401:
                     self.post(lambda: self._token_rejected(token))
+                elif e.code == 403:
+                    why = e.plain()
+                    self.post(lambda: (self._token_rejected(token, why), self.set_status(why)))
                 else:
                     msg = f"Console check failed ({e}); the stored sign-in is kept."
                     self.post(lambda: self.log(msg))
@@ -825,16 +845,19 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _token_rejected(self, token: str):
-        """The console answered 401 for `token` (revoked): forget it, unless a newer sign-in replaced it meanwhile."""
+    def _token_rejected(self, token: str,
+                        why: str = "The stored sign-in was rejected by the console: FLASH signs in again."):
+        """The console answered 401 (revoked) or 403 (view-only) for `token`: forget it, unless a newer sign-in
+        replaced it meanwhile."""
         if self.op["token"] != token:
             return
         clear_operator_config()
         self.op = {"token": "", "username": ""}
         self._show_account()
-        self.log("The stored sign-in was rejected by the console: FLASH connects again.")
+        self.log(why)
 
-    def disconnect(self):
+    def sign_out(self):
+        """Forget the token; the username stays prefilled in the sign-in box (switch user: sign out, sign in)."""
         self._signin_cancel.set()
         clear_operator_config()
         self.op = {"token": "", "username": ""}
@@ -1020,8 +1043,6 @@ class App:
             self.cancel.set()
             self.log("Cancelling...")
             self.set_status("Stopping...")
-        else:  # the browser approval is being awaited
-            self.cancel_connect()
 
     def _show_error(self, field: str, text: str):
         lbl = self.err[field]
@@ -1040,8 +1061,8 @@ class App:
         if not v["ssid"] and v["wifi_password"]:
             problems["ssid"] = "Enter the Wi-Fi network name (or clear the password for a wired Pi)."
         cfg = card_cfg(v)
-        if not cfg["enrollment_key"]:  # fetched at flash time with the sign-in (FLASH connects first if needed)
-            cfg["enrollment_key"] = "fetched-at-flash-time-with-the-token"  # the other rules still apply
+        if not cfg["enrollment_key"]:  # the device token comes at flash time with the sign-in (FLASH asks first)
+            cfg["token"] = PLACEHOLDER_TOKEN  # the other rules still apply
         try:
             cfg["ssh_pubkey"] = sshkey.ensure_keypair(self.log)
         except OSError as e:
@@ -1093,8 +1114,8 @@ class App:
         if not v:
             return
         if not v["enrollment_key"] and not self.connected():
-            # First use on this computer: approve it in the browser, then the flash continues by itself.
-            self.connect(then=self.on_flash)
+            # First use on this computer: sign in below, then the flash continues by itself.
+            self.sign_in(then=self.on_flash)
             return
         if not v["dry_run"]:
             # Rescan so the confirmation names the disk as it is now (cards get swapped, numbers move).
@@ -1119,7 +1140,7 @@ class App:
         save_settings(v)
         self.cancel.clear()
         self.flash_btn.configure(state="disabled")
-        self.account_btn.configure(state="disabled")  # no Connect/Disconnect under a running flash
+        self.account_btn.configure(state="disabled")  # no Sign in/Sign out under a running flash
         self.cancel_btn.grid()
         self.set_progress(0, "")
         self.set_phase("Preparing")
@@ -1131,13 +1152,14 @@ class App:
         log = lambda s: self.post(lambda: self.log(s))
         status = lambda s: self.post(lambda: self.set_phase(s))
         try:
-            run_flash(v, log, lambda pct, text: self.post(lambda: self.set_progress(pct, text)), self.cancel,
-                      dry_run=v["dry_run"], status=status)
+            owner = run_flash(v, log, lambda pct, text: self.post(lambda: self.set_progress(pct, text)), self.cancel,
+                              dry_run=v["dry_run"], status=status)
             if v["dry_run"]:
                 self.post(lambda: self.set_status(DRY_RUN_TEXT))
             else:
-                done = DONE_TEXT + f"\n\nDevice id: {v['device_id']}"
-                self.post(lambda: self.set_status(DONE_TEXT))
+                text = done_text(owner)
+                done = text + f"\n\nDevice id: {v['device_id']}"
+                self.post(lambda: self.set_status(text))
                 self.post(lambda: messagebox.showinfo(APP_TITLE, done))
         except (disk.Cancelled, imagefetch.Cancelled) as e:
             msg = f"Cancelled. {e}".rstrip()
@@ -1148,13 +1170,18 @@ class App:
             log(f"FAILED: {msg}")
             self.post(lambda: (self._show_error("pi_model", msg), self.set_status("Could not get the image.")))
         except console.ConsoleError as e:
-            msg = str(e)
+            msg, plain = str(e), e.plain()
             log(f"FAILED: {msg}")
-            if e.code == 401:  # the sign-in was revoked on the console: the next FLASH connects again
-                token = v.get("operator_token") or ""
+            token = v.get("operator_token") or ""
+            if e.code == 401:  # the sign-in was revoked on the console: the next FLASH signs in again
                 self.post(lambda: (self._token_rejected(token),
                                    self.set_status("The console no longer accepts this computer's sign-in. "
-                                                   "Press FLASH to approve it again.")))
+                                                   "Press FLASH to sign in again.")))
+            elif e.code == 403:  # the account can only view now: the console's words, and the token is forgotten
+                self.post(lambda: (self._token_rejected(token, plain), self.set_status(plain)))
+            elif e.code == 409:  # the id belongs to another account: said under the name, which gets the focus
+                self.post(lambda: (self._show_error("name", plain), self.name_entry.focus_set(),
+                                   self.set_status("That name is taken. Pick another name and press FLASH again.")))
             else:
                 self.post(lambda: self.set_status(f"Failed: {msg.splitlines()[0]}"))
                 self.post(lambda: messagebox.showerror(APP_TITLE, msg))
@@ -1172,13 +1199,19 @@ class App:
     def _finished(self):
         self.flash_btn.configure(state="normal")
         self.cancel_btn.grid_remove()
-        self._show_account()  # Connect/Disconnect come back
+        self._show_account()  # Sign in/Sign out come back
         self._password = secrets.token_urlsafe(24)  # never reuse a Pi password across cards
 
 
 # ---------------------------------------------------------------- flash sequence (no widgets here)
 
-DONE_TEXT = "Done. Put the card in the Pi and turn it on. It shows up on the Devices page in a few minutes."
+PLACEHOLDER_TOKEN = "registered-at-flash-time"  # stands in for the device token until the console issues it
+
+
+def done_text(owner: str = "") -> str:
+    """The Done sentence: names the account the projector was registered in (none with a baked enrollment key)."""
+    where = f"under Devices in {owner}'s account" if owner else "on the Devices page"
+    return f"Done. Put the card in the Pi and turn it on. It shows up {where} in a few minutes."
 
 
 class ImageOffline(imagefetch.FetchError):
@@ -1195,6 +1228,7 @@ def card_cfg(v: dict) -> dict:
     cfg["wifi_country"] = v["wifi_country"].strip().upper()
     cfg["console_url"] = v["console_url"].strip().rstrip("/")
     cfg["token"] = (v.get("token") or "").strip()  # an existing device token bypasses enrollment (no widget)
+    cfg["cms_url"] = (v.get("cms_url") or "").strip()  # the player's address as the console answered it
     cfg["with_wyze"] = bool(v.get("with_wyze"))
     return cfg
 
@@ -1203,33 +1237,46 @@ def console_mode(cfg: dict) -> str:
     return "device token given, no enrollment" if cfg["token"] else "enrolls itself on first boot"
 
 
-def fetch_key(cfg: dict, operator_token: str, log) -> None:
-    """No baked key and no device token: fetch the console's enrollment key with the sign-in token. The key is
-    never shown; the answer also says whether the console has a Wyze account (installer --with-wyze)."""
+def register(cfg: dict, operator_token: str, pi_model: str, log, dry_run: bool = False) -> str:
+    """No baked key and no device token: register the projector in the signed-in account
+    (POST /api/operator/devices) and put the device token the console issues on the card, so the Pi never
+    enrolls. GET /api/operator/me first: it checks the sign-in and says whether the console has a Wyze account
+    (installer --with-wyze). A dry run stops there, nothing is registered. Returns the owner's username."""
     if cfg["enrollment_key"] or cfg["token"]:
-        return
+        return ""
     if not operator_token:
         raise ValueError("Sign in first.")
-    r = console.fetch_enrollment(cfg["console_url"], operator_token)
-    cfg["enrollment_key"] = r["enrollment_key"]
-    cfg["with_wyze"] = r["wyze_configured"]
-    log("Enrollment key: ok. " + ("Wyze bridge: will be installed (the console has a Wyze account)."
-                                  if cfg["with_wyze"] else "Wyze bridge: not configured on the console."))
+    who = console.me(cfg["console_url"], operator_token)
+    cfg["with_wyze"] = who["wyze_configured"]
+    log(f"Signed in as {who['username'] or 'operator'}. "
+        + ("Wyze bridge: will be installed (the console has a Wyze account)." if cfg["with_wyze"]
+           else "Wyze bridge: not configured on the console."))
+    if dry_run:
+        cfg["token"] = PLACEHOLDER_TOKEN
+        log("Dry run: the projector is not registered on the console.")
+        return who["username"]
+    r = console.register_device(cfg["console_url"], operator_token, cfg["device_id"], cfg["name"], pi_model)
+    cfg["token"], cfg["cms_url"] = r["token"], r["cms_url"]
+    owner = r["owner"] or who["username"]
+    log(f"Registered {cfg['device_id']} in {owner}'s account "
+        f"({'new projector' if r['created'] else 'already there, new device token'}). Device token: ok.")
+    return owner
 
 
-def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = False, status=lambda s: None):
-    """The flash sequence. Contacts the console only for the enrollment key (the Pi enrolls itself on first
-    boot); dry_run stops after image resolution, before any disk access. `status` gets the plain-words step the
-    progress callbacks measure ("Writing the card"); `log` gets every technical line."""
+def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = False, status=lambda s: None) -> str:
+    """The flash sequence. Contacts the console to register the projector and get its device token (with a
+    baked enrollment key the Pi enrolls itself on first boot instead); dry_run stops after image resolution,
+    before any disk access. `status` gets the plain-words step the progress callbacks measure ("Writing the
+    card"); `log` gets every technical line. Returns the account the projector was registered in ('' if none)."""
     d = v["disk_info"]
     cfg = card_cfg(v)
-    fetch_key(cfg, v.get("operator_token") or "", log)
+    model = pimodel.get(v.get("pi_model"))
+    owner = register(cfg, v.get("operator_token") or "", model.label, log, dry_run)
     problems = firstboot.validate_cfg(cfg)
     if problems:  # checked before anything is written
         raise ValueError(" ".join(problems))
 
     # 1. first-boot files
-    model = pimodel.get(v.get("pi_model"))
     log(f"Pi model: {model.label} ({model.arch}).")
     log(f"Console {cfg['console_url']}: {console_mode(cfg)}.")
     firstrun = firstboot.render_firstrun(cfg)
@@ -1244,7 +1291,7 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
     if dry_run:
         target = f"Disk {d['number']} ({d['name']})" if d else "the selected card (none chosen)"
         log(f"Dry run: would write {disk.source_name(image)} to {target}. Nothing was written.")
-        return
+        return owner
     disk.check_image_magic(image)
     size = disk.image_size(image)
     if size > d["size"]:
@@ -1333,10 +1380,15 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
                                                  else ""))
     log("  The Pi needs internet access on its first boot (apt and pip). Progress is logged on the Pi in")
     log("  /var/log/projection5000-provision.log; firstrun.log and firstrun.ok appear on the boot partition.")
-    log("  A card that never booted still carries the enrollment key: keep it safe or rotate the key on the console.")
+    if cfg["enrollment_key"]:
+        log("  A card that never booted still carries the enrollment key: keep it safe or rotate the key on the console.")
+    else:
+        log("  A card that never booted still carries this projector's device token: keep it safe (flashing again "
+            "issues a new one).")
     log("")
-    log(DONE_TEXT)
+    log(done_text(owner))
     log(f"Device id: {cfg['device_id']}")
+    return owner
 
 
 def obtain_image(v: dict, log, progress, cancel, dry_run: bool = False, status=lambda s: None) -> tuple:

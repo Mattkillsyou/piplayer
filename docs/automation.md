@@ -17,8 +17,9 @@ settings).
 
 ## A. Auto-assign on enrollment (cloud + cms)
 
-**What it does.** When a freshly flashed Pi enrolls itself (`POST /api/enroll`
-with the site's enrollment key), the console can put the new device straight
+**What it does.** When the flasher registers a new projector (`POST
+/api/operator/devices`, section B) or a freshly flashed Pi enrolls itself
+(`POST /api/enroll` with the site's enrollment key), the console can put the new device straight
 into a group and give it a playlist, so a card flashed on Monday is playing
 the right content the moment it boots, with nobody touching the Devices page.
 
@@ -62,136 +63,130 @@ Settings page, which also carries the two auto-assign selects.
 page. Set them before flashing a batch of cards; changing them later affects
 only devices that enroll afterwards.
 
-## B. Flasher fetches the enrollment key live (flasher + cloud)
+## B. Flasher sign-in and per-account projectors (flasher + cloud)
 
-**What it does.** The SD flasher no longer carries the site's enrollment key
-baked into the exe. Instead each operator holds a personal API token; on
-every launch the flasher presents that token to the cloud console, fetches
-the current enrollment key together with the console name and the group and
-playlist lists, and writes the fresh key onto the card. Rotating the key on
-the Settings page takes effect on the next flash, with no rebuild of the exe,
-and one build of the flasher serves every operator. The operator never sees
-the token: the flasher's Sign in button gets one through a device-code
-flow (the same shape as signing a TV in to a streaming app), approved with
-one click in the console. The Settings "My API tokens" panel remains for
-scripts and for anything that is not the flasher.
+**What it does.** The SD flasher signs in with a username and password typed
+into the app itself (no browser, no code to approve, no enrollment key
+anywhere). Every projector it flashes is registered to that account before
+the card is written, and the card carries the projector's own device token.
+On the console, editors and viewers see only their own projectors; admins see
+every projector and can change a projector's owner on the Devices page.
+Playlists and media stay shared. The flasher downloads sit behind sign-in on
+the console's SD Flasher page (top bar); the public home page has only Sign
+in and Create an account. This is flasher v0.7.0. The device-code sign-in and
+the enrollment key of earlier flashers still work and are described at the
+end of this section as legacy.
 
 **Cloud console.**
 
 - Table `api_tokens(id, user_id, name, token_hash, created_at, last_used_at)`.
   A token is `p5k_` followed by 32 URL-safe characters. Only its SHA-256 hash
   is stored and lookups compare in constant time; the plain token is shown
-  once, at creation, and cannot be recovered afterwards.
-- Tokens are managed in two places, both admin only: the "My API tokens"
-  panel of the Settings page (the signed-in admin's own tokens) and the Users
-  page, where each user's row has an "API tokens" fold with that user's
-  tokens (any admin or editor; viewers cannot hold one). Both offer create
-  (name it after the person or laptop that will hold it) and revoke, and show
-  each token's creation and last-use times. A revoked token fails
-  immediately. Routes: Settings page `POST /settings/tokens` (create, shown
-  once) and `POST /settings/tokens/<token_id>/revoke`; Users page
-  `POST /users/<user_id>/tokens` (create, shown once) and
-  `POST /users/<user_id>/tokens/<token_id>/revoke`; viewers cannot hold
-  tokens (400).
-- Device-code sign-in (`cloud/src/device_codes.js`, table `device_codes`,
-  migration `0004_device_codes.sql`). `POST /api/operator/device-code` (no
-  auth; optional JSON `{hostname}`) returns `{device_code, user_code,
-  verification_url, expires_in: 600, interval: 3}`: `user_code` is 6
-  characters from an alphabet without vowels or 0/O/1/I look-alikes, shown
-  as `XXXX-XX`; `verification_url` is `https://<console>/authorize`. Only
-  the SHA-256 hash of `device_code` is stored, with the hostname (stripped
-  of invisible and format characters, so it cannot be made to read as
-  something else) and the caller's address; more than 20 codes in an hour
-  from one address (an IPv4 address or an IPv6 /64) is a 429, and codes that
-  were already claimed, denied or expired keep counting until an hour has
-  passed. `GET /authorize` (any signed-in admin; editors cannot approve,
-  because the token unlocks the enrollment key; there is no menu item, the
-  flasher opens `verification_url?code=<user_code>`) shows "Sign in the
-  SD Flasher on <hostname>?" with the requesting computer's address, how
-  long ago it asked, and Approve and Deny (or a box to type the
-  code when the link did not carry one; case and the hyphen do not matter).
-  Approve creates an `api_tokens` row named `SD Flasher on <hostname>` for
-  the signed-in user and audits `api_token_created` with `source:
-  "device-code"`; deny refuses it and audits `device_code_denied`. `POST /api/operator/device-token`
-  `{device_code}` answers 428 `{status: "pending"}` until then, then 200
-  `{token, username}` exactly once (the code is deleted), or 410
-  `{status: "expired"}` / `{status: "denied"}`. Codes expire 10 minutes
-  after they are issued; expired rows, and a token that was approved but
-  never collected, are pruned by the nightly housekeeping and before every
-  new code, so nothing lingers.
-- `GET /api/operator/enrollment` with `Authorization: Bearer p5k_<token>`
-  returns `{console_url, enrollment_key, groups: [{id, name}],
-  playlists: [{id, name}], timezone, wyze_configured}`. `wyze_configured` is
-  `true` once the Wyze email and password of section D are set, so the
-  flasher's provision script passes `--with-wyze`; `false` otherwise. The endpoint is read-only, answers only tokens whose user
-  is an admin (the key it returns can enroll any device id), and returns 401
-  for anything else: a missing or malformed header, an unknown or revoked
-  token, or an editor's or viewer's token. The
-  token's `last_used_at` is refreshed and an `api_token_used` audit entry is
-  written at most once per hour per token, so the audit log shows who is flashing
-  without filling up on every launch.
+  once, at creation, and cannot be recovered afterwards. Tokens are managed
+  in two places, both admin only: the "My API tokens" panel of the Settings
+  page (the signed-in admin's own tokens) and the Users page, where each
+  user's row has an "API tokens" fold (any admin or editor; viewers cannot
+  hold one). Both offer create and revoke and show each token's creation and
+  last-use times; a revoked token fails immediately.
+- `POST /api/operator/login` (no auth; JSON `{username, password, hostname}`)
+  is the console's sign-in form for the flasher: the same throttle (5 wrong
+  passwords from one address for one name in 30 s, then 429 with
+  `Retry-After`), the same `login_failed` audit row (with `source: "flasher"`)
+  and the same care that an unknown name takes as long as a wrong password.
+  An editor or admin gets 200 `{token, username, role}`: an `api_tokens` row
+  named `SD Flasher on <hostname>` (the hostname stripped of invisible
+  characters, "unknown PC" when missing), audited `api_token_created` with
+  `source: "flasher"`. A viewer gets 403 "This account can only view; ask an
+  admin to make it an editor" and no token; a wrong password 401 "Invalid
+  username or password".
+- `GET /api/operator/me` with `Authorization: Bearer p5k_<token>` returns
+  `{username, role, console_url, timezone, wyze_configured, groups: [{id,
+  name}], playlists: [{id, name}]}`: who the flasher is signed in as and
+  what it shows in its header. `wyze_configured` is `true` once the Wyze
+  email and password of section D are set, so the provision script passes
+  `--with-wyze`. 401 for a missing, unknown or revoked token; 403 with the
+  words above when the token's user has since been made a viewer. The
+  token's `last_used_at` is refreshed and `api_token_used` audited at most
+  once per hour per token.
+- `POST /api/operator/devices` with the bearer, JSON `{device_id, name,
+  pi_model}` (the flasher derives `device_id` from the name; `pi_model` is
+  optional): registers the projector for the token's account and answers
+  with the device token the flasher writes onto the card. A new id is
+  created with `owner_id` = that user and the site-wide group and playlist
+  defaults of section A (201 `{device_id, token, cms_url, owner, created:
+  true}`, audit `device_registered` naming the owner). An id the account
+  already owns gets a NEW device token, its name and `pi_model` updated (200
+  with `created: false`, audit `device_reregistered` with `renamed_from`):
+  the re-flashed card works and the old card stops syncing. An id that
+  belongs to another account is a 409 "A projector with that ID belongs to
+  another account; pick another name". An admin may re-register any id; a
+  projector with no owner (from before this feature, the Devices page "Add
+  device" form or `/api/enroll`) becomes the admin's, while an editor gets
+  the 409 for it. New ids are capped fleet-wide at 20 per hour like
+  enrollment (429, `Retry-After: 3600`, audited `device_enroll_capped`).
+- Table `devices.owner_id` (migration `0009_device_owner.sql`, REFERENCES
+  users, ON DELETE SET NULL): NULL means no owner; deleting a user leaves
+  their projectors ownerless for an admin to reassign.
 
 **Flasher.** The console URL is baked in by `build.ps1` and shown as plain
-text; there is nothing to type. Clicking **Sign in** calls
-`POST /api/operator/device-code`, opens the browser at
-`verification_url?code=<user_code>` (or shows the URL and code to type when
-no browser opens), tells you "Approve in your browser (code XXXX-XX)" and
-polls `POST /api/operator/device-token` every 3 seconds for up to 10
-minutes. Once approved, the token lands in
-`%APPDATA%\Projection5000\flasher.json` protected with Windows DPAPI
-(`CryptProtectData` via ctypes, tied to the Windows user account, no extra
-package); if DPAPI fails the token is stored in plain text and the log warns
-you. (Plain form values such as the last Wi-Fi name live in a separate
-`%LOCALAPPDATA%\Projection5000\flasher.json`.) The header then reads
-"Signed in as <username>"; "Sign out" under Advanced clears it. Every later
-launch calls `GET /api/operator/enrollment` to validate the stored token
-(a 401 brings the Sign in button back) and, at flash time, passes the fresh
-enrollment key into the provision script it writes to the card. There is no
-per-card group or playlist choice: the site-wide defaults from section A
-decide what a new device gets. `build.ps1` no longer bakes a key;
-`-Key <enrollment key>` (with `-ConsoleUrl <url>`, or the env vars
-`FLASHER_ENROLL_KEY` / `FLASHER_CONSOLE_URL`) remains for offline builds
-where the console cannot be reached at flash time. The card layout and
-`firstrun.sh` are unchanged apart from where the key comes from, and the
-paste-a-device-token path still bypasses enrollment. See
-`tools/flasher/README.md` for the tool itself.
+text. The app opens on a sign-in form (username, password); a good sign-in
+stores the token in `%APPDATA%\Projection5000\flasher.json` protected with
+Windows DPAPI (`CryptProtectData` via ctypes, tied to the Windows user
+account, no extra package); if DPAPI fails the token is stored in plain text
+and the log warns you. The header then reads "Signed in as <username>";
+"Sign out" clears it. Every launch calls `GET /api/operator/me` to validate
+the stored token (a 401 brings the form back; a 403 shows the view-only
+message). Flashing a card calls `POST /api/operator/devices` for the name
+typed in and writes the device token it gets into the provision script on
+the card, so the Pi never enrolls: it syncs with its token from first boot.
+There is no per-card group or playlist choice: the site-wide defaults of
+section A decide what a new device gets. See `tools/flasher/README.md` for
+the tool itself.
 
 **Operator steps** (once per operator, on each PC that flashes cards):
 
-1. Start the flasher and click **Sign in**. The browser opens the console's
-   `/authorize` page with the code filled in (if the console asks you to sign
-   in first, do so; it returns to the code afterwards. An admin account is
-   needed: the token the flasher gets fetches the enrollment key).
-2. Check that the page names your PC ("Sign in the SD Flasher on
-   <hostname>?") and that the address it shows is yours, then click
-   **Approve**. The flasher picks the token up by itself within a few
-   seconds and shows "Signed in as <username>".
+1. Create an account on the console (Create an account on the home page),
+   or have an admin make one. Viewers cannot flash; ask an admin to make the
+   account an editor.
+2. Sign in to the console and download the flasher from the SD Flasher page
+   in the top bar.
+3. Start the flasher and sign in with the same username and password. The
+   token appears under "My API tokens" on Settings (admins) and under the
+   user's name on the Users page as `SD Flasher on <hostname>`, where an admin
+   can revoke it like any other.
 
-Nothing is copied or pasted. The token appears under "My API tokens" on
-Settings and under the admin's name on the Users page as `SD Flasher on
-<hostname>`, where it can be revoked like any other. Creating a token by
-hand there is still the way for scripts and other tools.
+**Rotation.** Revoke the operator token under "My API tokens" or on the Users
+page when an operator leaves or a laptop is lost; the flasher on that PC then
+shows the sign-in form again. Re-flash a card to give a projector a new device
+token (the old card stops syncing). Both token pages show each token's last
+use, so a token that has not been used in months is easy to spot and revoke.
+The audit log's `api_token_used` entries name the token behind every flashing
+session and `device_registered` / `device_reregistered` name the account.
 
-**Rotation.** Two independent secrets are involved.
-
-- *Enrollment key* (Settings page): rotate it when a card, a flasher PC or an
-  operator token is lost (a re-flashed card gets a new device token and the
-  old card stops syncing, but the key alone can re-enroll any device id, so
-  a leaked key is worth rotating). Cards written with the old key fail
-  enrollment with a 401; cards flashed after the rotation pick up the new
-  key automatically. Rotating the key does not affect device tokens already
-  issued. No rebuild, no operator action.
-- *Operator token*: revoke it under "My API tokens" or on the Users page when
-  an operator leaves or a laptop is lost; the flasher on that PC then shows
-  Sign in again, and a fresh Sign in mints a new token. Only an admin's token
-  can fetch the enrollment key (an editor's token gets 401), and only an
-  admin can approve a flasher sign-in on `/authorize`. Both places show each token's last use, so a token that has
-  not been used in months is easy to spot and revoke. The audit log's
-  `api_token_used` entries name the token behind every flashing session.
-
-The Python console (`cms/`) has no operator tokens: a LAN-only site flashes
-with the offline `build.ps1 -Key` build, pasting the key from the cms Settings
-page.
+**Legacy (flashers before v0.7.0).** Those flashers sign in through the
+device-code flow (`cloud/src/device_codes.js`, table `device_codes`,
+migration `0004_device_codes.sql`): `POST /api/operator/device-code` (no
+auth; optional JSON `{hostname}`) returns `{device_code, user_code,
+verification_url, expires_in: 600, interval: 3}`; the admin approves the code
+on `GET /authorize` (any signed-in admin; Approve creates an `api_tokens` row
+named `SD Flasher on <hostname>` audited `api_token_created` with `source:
+"device-code"`, deny audits `device_code_denied`); `POST /api/operator/device-token`
+`{device_code}` answers 428 `{status: "pending"}` until then, then 200
+`{token, username}` exactly once, or 410 `{status: "expired" | "denied"}`.
+Only the SHA-256 hash of `device_code` is stored; more than 20 codes in an
+hour from one address is a 429; codes expire after 10 minutes and unclaimed
+tokens are pruned with them. They then call `GET /api/operator/enrollment`
+(admin's token only, 401 for anyone else's) for `{console_url,
+enrollment_key, groups, playlists, timezone, wyze_configured}` and write the
+enrollment key onto the card, which the Pi trades for a device token with
+`POST /api/enroll` on first boot; the projectors that creates have no owner
+until an admin sets one on the Devices page. Rotate the enrollment key on the
+Settings page whenever such a card or PC is lost (cards written with the old
+key fail enrollment with a 401). `build.ps1 -Key <enrollment key>` (with
+`-ConsoleUrl <url>`, or the env vars `FLASHER_ENROLL_KEY` /
+`FLASHER_CONSOLE_URL`) remains for offline builds where the console cannot be
+reached at flash time; the Python console (`cms/`) has no operator tokens and
+flashes that way, pasting the key from the cms Settings page.
 
 ## C. Remote updates: player software and OS packages (player + cloud + cms)
 
@@ -496,7 +491,7 @@ credentials (the installer pre-pulls the bridge image so that first restart
 does not wait on the download). `--upgrade` refreshes the wyze unit whenever
 it is installed. The flasher's
 provision script passes `--with-wyze` automatically when
-`GET /api/operator/enrollment` reports `wyze_configured: true` (section B),
+`GET /api/operator/me` (or, for older flashers, `/api/operator/enrollment`) reports `wyze_configured: true` (section B),
 which it does once the Wyze email and password are set. So the order for a new
 site is: enter the Wyze account on the Settings page first, then flash. Cards
 flashed before the account was entered come up without Docker; run

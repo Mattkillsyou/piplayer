@@ -281,27 +281,25 @@ describe("roles and routing", () => {
     expect(css.status).toBe(200);
     expect(css.headers.get("content-type")).toContain("text/css");
     expect((await c.get("/static/app.js")).status).toBe(200);
-    // The home page is public: the three release links plus the Sign in / Create an account buttons;
-    // the old /download address redirects to it.
+    // The home page is public: the Sign in / Create an account buttons, no downloads (those sit
+    // behind sign-in on /flasher, see flasher_page.test.js); the old /download address redirects to it.
     const old = await c.get("/download");
     expect([old.status, old.headers.get("location")]).toEqual([301, "/"]);
     const dl = await c.get("/");
     expect(dl.status).toBe(200);
     expect(dl.headers.get("content-type")).toContain("text/html");
     const page = await dl.text();
-    for (const f of ["Projection5000-SD-Flasher.exe", "Projection5000-SD-Flasher-mac-arm64.dmg", "Projection5000-SD-Flasher-mac-intel.dmg"]) {
-      expect(page).toContain(`https://github.com/Mattkillsyou/piplayer/releases/download/v0.6.0/${f}`);
-    }
+    expect(page).not.toContain("releases/download/");
     expect(page).toContain('href="/login"');
     expect(page).toContain('href="/signup"');
     expect((await c.get("/download.html")).status).toBe(404);
-    expect((await c.post("/download", {})).status).toBe(404);
+    expect((await c.post("/download", {})).status).toBe(405);
   });
 
   it("every route is registered for a logged-in admin (pages 200, unknown rows 404, device api 401)", async () => {
     const c = new Client();
     await c.login("admin", "test1234");
-    for (const p of ["/dashboard", "/library", "/playlists", "/devices", "/groups", "/audit", "/users", "/settings"]) {
+    for (const p of ["/dashboard", "/library", "/playlists", "/devices", "/groups", "/audit", "/users", "/settings", "/flasher"]) {
       expect((await c.get(p)).status, p).toBe(200);
     }
     for (const p of ["/devices/1/schedule", "/playlists/1", "/library/upload/x", "/api/media/a.mp4"]) {

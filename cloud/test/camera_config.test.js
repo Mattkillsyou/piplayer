@@ -220,6 +220,7 @@ describe("Devices page: camera source", () => {
   });
 
   it("renders the form (disabled for viewers) with the pattern as placeholder and the source in the summary", async () => {
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, dev.id); // a viewer sees only their own
     let page = await (await r.viewer.get("/devices")).text();
     expect(page).toContain(`action="/devices/${dev.id}/camera-source"`);
     expect(page).toContain('<select name="camera_source" disabled>');
@@ -227,9 +228,11 @@ describe("Devices page: camera source", () => {
     expect(page).toContain('name="camera_wyze_name" value="" placeholder="Cam cam-a" maxlength="100" disabled>');
     expect(page).toContain('<input type="password" name="camera_rtsp_url" value="" autocomplete="off" placeholder="rtsp://user:pass@10.0.0.5:554/stream" maxlength="2048" disabled>');
 
-    // a stored RTSP URL (credentials) never reaches the page, for any role
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.editor, dev.id); // loan returned
+
+    // a stored RTSP URL (credentials) never reaches the page, for any role that can see the device
     await post(r.editor, `/devices/${dev.id}/camera-source`, { camera_source: "rtsp", camera_rtsp_url: "rtsp://user:s3cret@10.0.0.9:554/s" });
-    for (const who of [r.viewer, r.editor, r.admin]) {
+    for (const who of [r.editor, r.admin]) {
       page = await (await who.get("/devices")).text();
       expect(page).toContain('name="camera_rtsp_url" value="" autocomplete="off" placeholder="set (leave empty to keep)"');
       expect(page).not.toContain("s3cret");

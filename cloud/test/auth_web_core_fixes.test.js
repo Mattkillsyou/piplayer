@@ -148,7 +148,8 @@ describe("L1 + L2 + L15: response headers", () => {
       expect(res.headers.get("content-security-policy")).toBe("default-src 'self'; img-src 'self' data:; frame-src https:; frame-ancestors 'none'");
       expect(res.headers.get("strict-transport-security")).toBe("max-age=31536000");
     }
-    // The public home page carries its own <style> block: same headers, a CSP that allows inline styles.
+    // The public home page (sign in / create an account) carries its own <style> block: same
+    // headers, a CSP that allows inline styles.
     const dl = await new Client().get("/");
     expect(dl.status).toBe(200);
     expect(dl.headers.get("content-security-policy")).toBe("default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'");
