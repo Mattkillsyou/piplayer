@@ -43,6 +43,13 @@ def _root():
     return root
 
 
+def _signed_in(monkeypatch, username="matt", token="p5k_stored_token"):
+    """Store a sign-in before App() so the form shows straight away (the exe opens on the sign-in box
+    otherwise); the background token check answers without a console."""
+    flasher.save_operator_config(flasher.console_url(), token, username)
+    monkeypatch.setattr(flasher.console, "me", lambda *a: {"username": username, "role": "editor"})
+
+
 @pytest.fixture(autouse=True)
 def _no_leaked_roots():
     """A test that fails before root.destroy() would leave a Tk interpreter whose pump keeps running and whose
@@ -276,9 +283,10 @@ def test_operator_config_falls_back_to_plain_text_with_a_warning(monkeypatch, tm
 
 def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     """One button. The visible top level: the masthead (logo, name, wordmark), Device name, Pi model, Wi-Fi network,
-    Wi-Fi password, SD card, Refresh, FLASH, the status line, Advanced. No console line, no sign-in box (hidden
-    until FLASH needs it), no log box."""
+    Wi-Fi password, SD card, Refresh, FLASH, the status line, Advanced, plus the one line that says whose account
+    the projectors go to. No console line, no sign-in box once signed in, no log box."""
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _signed_in(monkeypatch)
     root = _root()
     app = flasher.App(root)
     root.update()
@@ -287,15 +295,16 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
         _visible_texts(c, fields)
     assert fields == ["Device name", "Pi model", "Wi-Fi network", "Wi-Fi password", "SD card", "Refresh", "FLASH",
                       "Ready.", "Advanced"]
+    assert app.acct_line.winfo_manager() == "pack" and app.acct_label.cget("text") == "Signed in as matt"
     assert root.title() == flasher.APP_TITLE == "Matt Brown's Projection5000"
     # The masthead: the projector icon at 64 px, the name over the wordmark, nothing else in that frame.
     head = app.eyebrow.master.master
     assert app.logo.width() == app.logo.height() == 64 and head.cget("height") == 96
     assert app.eyebrow.cget("text") == "MATT BROWN'S" and app.wordmark.cget("text") == "PROJECTION5000"
     assert _all_texts(head, []) == ["", "MATT BROWN'S", "PROJECTION5000"]  # the icon label (frames have no text)
-    # Nothing on the screen names the console, the fonts or the sign-in; the log box lives under Advanced.
+    # Nothing on the screen names the console or the fonts; the log box lives under Advanced.
     texts = _all_texts(root, [])
-    assert not any("Console" in t or "Signed in" in t or "Fonts" in t or "SD FLASHER" in t for t in texts), texts
+    assert not any("Console" in t or "Fonts" in t or "SD FLASHER" in t for t in texts), texts
     assert not app.signin.winfo_manager() and _visible_texts(app.signin, []) == []  # the sign-in box is hidden
     assert _status(app) == "Ready." and app.status_label.cget("style") == "Status.TLabel"
     assert not app.details.winfo_manager() and app.log_text.master is app.details  # hidden until Show details
@@ -312,8 +321,8 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     # SSH key rows any more: the model picks the image, Windows picks the locale, the key is automatic.
     app.adv_btn.invoke()
     assert app.advanced.winfo_manager() == "pack"
-    assert _visible_texts(app.advanced, []) == ["Time zone", "Static IP", "Gateway", "Account", "Sign in"]
-    assert app.account_label.cget("text") == "Not signed in"
+    assert _visible_texts(app.advanced, []) == ["Time zone", "Static IP", "Gateway", "Account", "Sign out"]
+    assert app.account_label.cget("text") == "Signed in as matt"
     checks = [w.cget("text") for w in _widgets(app.advanced, flasher.ttk.Checkbutton)]
     assert checks == ["Hidden Wi-Fi network", "Show details"]  # the dry-run box exists only under --dry-run
     assert any(isinstance(w, flasher.ttk.Label) and w.cget("text").startswith("Build: ")
@@ -455,6 +464,7 @@ def test_window_grows_inside_the_work_area(monkeypatch):
     the taskbar: capped to the work area and moved up when needed. Under --dry-run the dry-run box appears."""
     top = 25 if sys.platform == "darwin" else 0  # macOS keeps every window under the menu bar
     monkeypatch.setattr(flasher, "work_area", lambda root: (top, 700))  # a short work area
+    _signed_in(monkeypatch)
     root = _root()
     app = flasher.App(root, dry_run=True)
     assert [w.cget("text") for w in _widgets(app.advanced, flasher.ttk.Checkbutton)][-1].startswith("Dry run")
@@ -497,8 +507,9 @@ def test_gui_constructs_with_windows_defaults(monkeypatch):
     app.v["name"].set("---")
     assert app.id_label.cget("text") == ""
     assert root.winfo_reqheight() <= root.winfo_screenheight() - 120
-    # Not signed in, no baked key: nothing says so on the screen; Advanced shows the account state.
-    assert _status(app) == "Ready." and app.account_label.cget("text") == "Not signed in"
+    # Not signed in, no baked key: the sign-in box is up in place of the form until the operator signs in.
+    assert _status(app) == flasher.SIGNIN_FIRST_TEXT and app.account_label.cget("text") == "Not signed in"
+    assert app.signin.winfo_manager() == "pack" and not app.form.winfo_manager() and not app.acct_line.winfo_manager()
     assert app.account_btn.cget("text") == "Sign in"
     app.v["timezone"].set("Europe/Paris")
     app.on_close()  # saves the form
@@ -533,6 +544,7 @@ def test_blank_wifi_means_wired(monkeypatch):
 def test_validate_shows_plain_words_inline(monkeypatch, tmp_path):
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: pytest.fail("dialog instead of inline text"))
+    _signed_in(monkeypatch)
     root = _root()
     app = flasher.App(root, dry_run=True)
     app.baked_key = KEY
@@ -624,41 +636,48 @@ def test_flash_signs_in_then_makes_the_card(monkeypatch, stub):
     monkeypatch.setattr(flasher, "run_flash", lambda v, *a, **k: flashed.append(v) or "matt")
     root = _root()
     app = flasher.App(root)
-    assert app.console_url == stub and not app.connected() and not app.signin.winfo_manager()
-    _fill(app, image_mode="latest")
-    app.v["dry_run"].set(True)
-    app.flash_btn.invoke()
     root.update()
-    assert _status(app) == flasher.SIGNIN_TEXT == "Sign in below, then the card is made automatically."
-    assert app.signin.winfo_manager() == "grid" and str(app.flash_btn["state"]) == "disabled"
-    assert _visible_texts(app.signin, []) == [flasher.SIGNIN_HINT, "Username", "Password", "Sign in", "Cancel"]
+    # Not signed in: the sign-in box is the whole panel, the form waits behind it, FLASH is off.
+    assert app.console_url == stub and not app.connected()
+    assert app.signin.winfo_manager() == "pack" and not app.form.winfo_manager()
+    assert _status(app) == flasher.SIGNIN_FIRST_TEXT == "Sign in to start. The projectors you flash go into your account."
+    assert str(app.flash_btn["state"]) == "disabled"
+    assert _visible_texts(app.signin, []) == [flasher.SIGNIN_HINT, "Username", "Password", "Sign in"]  # no Cancel: nothing to go back to
     assert flasher.SIGNIN_HINT == "Sign in with your console username and password (the same as on the website)."
     assert app.pass_entry.cget("show") == "*" and root.focus_get() in (app.user_entry, None)
-    assert not app.cancel_btn.winfo_manager()  # the box has its own Cancel
+    assert not app.cancel_btn.winfo_manager()
     # Nothing typed: said inline, no request.
     app.signin_btn.invoke()
     assert _shown_errors(app) == {"signin": "Enter your username and password."} and StubConsole.calls == []
     app.op_username.set("matt")
     app.op_password.set("secret")
     app.signin_btn.invoke()
+    assert _pump(root, app, lambda: app.connected(), timeout=8)
+    assert app.op["token"] == OPERATOR_TOKEN
+    # Signed in: the form is up; a dry-run FLASH goes through with the token in hand.
+    _fill(app, image_mode="latest")
+    app.v["dry_run"].set(True)
+    app.flash_btn.invoke()
     assert _pump(root, app, lambda: bool(flashed), timeout=8)
-    assert app.op["token"] == OPERATOR_TOKEN and flashed[0]["operator_token"] == OPERATOR_TOKEN
+    assert flashed[0]["operator_token"] == OPERATOR_TOKEN
     assert flasher.load_operator_config() == {"console_url": stub, "token": OPERATOR_TOKEN, "username": "matt"}
     assert StubConsole.calls[0] == ("/api/operator/login", {"username": "matt", "password": "secret",
                                                            "hostname": flasher.socket.gethostname()})
     assert "Signed in as matt." in _log(app) and "secret" not in _log(app)
     assert not app.signin.winfo_manager() and app.op_password.get() == ""  # the box is gone, the password with it
+    assert app.form.winfo_manager() == "pack" and app.acct_label.cget("text") == "Signed in as matt"
     assert _pump(root, app, lambda: _status(app) == flasher.DRY_RUN_TEXT)
     assert str(app.flash_btn["state"]) == "normal" and not app.cancel_btn.winfo_manager()
     # Advanced names the account; Sign out forgets the token, Sign in comes back with the username prefilled.
     assert app.account_label.cget("text") == "Signed in as matt" and app.account_btn.cget("text") == "Sign out"
     app.account_btn.invoke()
     assert app.op["token"] == "" and not flasher.operator_config_path().exists()
-    assert app.account_label.cget("text") == "Not signed in" and app.account_btn.cget("text") == "Sign in"
-    assert "Signed out" in _log(app) and _status(app) == flasher.DRY_RUN_TEXT
-    app.account_btn.invoke()  # Sign in under Advanced: the same box, no flash afterwards
-    assert app.signin.winfo_manager() == "grid" and app.op_username.get() == "matt" and app._then is None
-    assert _status(app) == "Sign in below." and str(app.account_btn["state"]) == "disabled"
+    assert app.account_label.cget("text") == "Not signed in"
+    assert "Signed out" in _log(app)
+    # Signed out: straight back to the sign-in box with the username prefilled, no flash afterwards.
+    assert app.signin.winfo_manager() == "pack" and not app.form.winfo_manager()
+    assert app.op_username.get() == "matt" and app._then is None
+    assert _status(app) == flasher.SIGNIN_FIRST_TEXT and str(app.account_btn["state"]) == "disabled"
     root.destroy()
 
 
@@ -698,12 +717,12 @@ def test_sign_in_wrong_password_view_only_throttled_and_offline(monkeypatch, stu
     app.signin_btn.invoke()
     assert _pump(root, app, lambda: "cannot reach it" in _shown_errors(app).get("signin", ""))
     assert _shown_errors(app)["signin"] == "Could not reach the console: cannot reach it"
-    assert app.signin.winfo_manager() == "grid" and str(app.flash_btn["state"]) == "disabled"
-    # Cancel: the box goes, FLASH and the Account row come back.
-    app.signin.winfo_children()[-2].winfo_children()[1].invoke()  # the box's Cancel button
-    assert not app.signin.winfo_manager() and _status(app) == "Ready." and app._signin_cancel.is_set()
-    assert str(app.flash_btn["state"]) == "normal" and str(app.account_btn["state"]) == "normal"
-    assert app.account_label.cget("text") == "Not signed in" and app.op_password.get() == ""
+    assert app.signin.winfo_manager() == "pack" and str(app.flash_btn["state"]) == "disabled"
+    # Cancel with no sign-in to go back to: the box stays (only a request in flight is dropped).
+    app.signin_cancel_btn.invoke()
+    assert app.signin.winfo_manager() == "pack" and not app.form.winfo_manager() and app._signin_cancel.is_set()
+    assert str(app.flash_btn["state"]) == "disabled" and str(app.signin_btn["state"]) == "normal"
+    assert app.account_label.cget("text") == "Not signed in"  # the typed password stays for a retry
     assert "Sign in cancelled." in _log(app)
     # Closing the window while the box is open is fine too.
     app.account_btn.invoke()
@@ -737,8 +756,10 @@ def test_gui_uses_a_stored_token_silently(monkeypatch):
     root = _root()
     app = flasher.App(root)
     assert _pump(root, app, lambda: not app.connected())
-    assert app.account_label.cget("text") == "Not signed in" and _status(app) == "Ready."
-    assert "FLASH signs in again" in _log(app)
+    assert app.account_label.cget("text") == "Not signed in"
+    assert _status(app) == "The stored sign-in was rejected by the console: sign in again."
+    assert app.signin.winfo_manager() == "pack" and not app.form.winfo_manager()
+    assert "sign in again" in _log(app)
     assert not flasher.operator_config_path().exists()
     assert app.op_username.get() == "matt"  # still prefilled for the next sign-in
     root.destroy()
@@ -772,6 +793,7 @@ def test_log_goes_to_the_details_box_and_the_file(monkeypatch, tmp_path):
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     path = flasher.log_path()
     assert path.is_relative_to(tmp_path) and path.name == "flasher.log"  # the conftest sandbox
+    _signed_in(monkeypatch)
     root = _root()
     app = flasher.App(root)
     app.log("Using bundled image x.img.xz")
@@ -834,6 +856,7 @@ def test_image_override_flag_and_env(monkeypatch, tmp_path):
     assert flasher.image_arg([], env={"FLASHER_IMAGE": "e.img"}) == "e.img"
     monkeypatch.setenv("FLASHER_IMAGE", "env.img")
     assert flasher.image_arg([]) == "env.img"
+    _signed_in(monkeypatch)
     root = _root()
     app = flasher.App(root, dry_run=True, image=str(img))
     assert app.values()["image_mode"] == "local" and app.values()["image_path"] == str(img)
@@ -910,6 +933,7 @@ def test_failed_flash_reenables_the_form_and_shows_the_error(monkeypatch, tmp_pa
         raise flasher.imagefetch.FetchError("image resolution boom")
 
     monkeypatch.setattr(flasher, "obtain_image", fail)
+    _signed_in(monkeypatch)
     img = tmp_path / "x.img"
     img.write_bytes(b"\x01" * 1024)
     root = _root()
@@ -1141,6 +1165,7 @@ def test_taken_name_is_said_under_the_name_field(monkeypatch):
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     dialogs = []
     monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: dialogs.append(a))
+    _signed_in(monkeypatch, token=OPERATOR_TOKEN)
     root = _root()
     app = flasher.App(root)
     app.op = {"token": OPERATOR_TOKEN, "username": "matt"}

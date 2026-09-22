@@ -50,6 +50,7 @@ LOG_NAME, LOG_MAX = "flasher.log", 2_000_000  # the technical log; rotated to fl
 # The status line: plain sentences, one at a time (everything technical goes to the details box and the file).
 READY_TEXT = "Ready."
 SIGNIN_TEXT = "Sign in below, then the card is made automatically."
+SIGNIN_FIRST_TEXT = "Sign in to start. The projectors you flash go into your account."
 SIGNIN_HINT = "Sign in with your console username and password (the same as on the website)."
 DRY_RUN_TEXT = "Dry run finished. Nothing was written."
 # An armhf model with no internet: shown under the model row instead of a dialog.
@@ -467,6 +468,8 @@ class App:
                 self.check_token()
         self._show_account()
         self.set_status(READY_TEXT)
+        if not self.connected():
+            self.sign_in()
         # Last, once every widget holds its first text: Tk on macOS (Aqua) never returns from update() when a
         # hidden window that is not the process's first gets its geometry set and then its labels change.
         self._fit_to_screen()
@@ -510,9 +513,20 @@ class App:
         self.wordmark.pack(anchor="w")
 
         # 2-4. what changes per Pi, on a panel with the console's corner brackets.
+        # Who the projectors go to: shown above the panel once signed in, with the way to switch user.
+        acct = ttk.Frame(outer)
+        self.acct_line = acct
+        self.acct_label = ttk.Label(acct, text="", style="Hint.TLabel")
+        self.acct_label.pack(side="left", padx=4)
+        switch = ttk.Label(acct, text="Switch user", style="Link.TLabel", cursor="hand2", underline=0)
+        switch.pack(side="left", padx=8)
+        switch.bind("<Button-1>", lambda e: self.switch_user())
+
         panel = tk.Frame(outer, bg=GROUND)
         panel.pack(fill="x")
+        self.panel = panel
         form = ttk.Frame(panel, padding=(16, 14))
+        self.form = form
         form.pack(fill="x")
         self.brackets = draw_brackets(panel)
         form.columnconfigure(1, weight=1)
@@ -561,11 +575,11 @@ class App:
         ttk.Button(form, text="Refresh", command=self.refresh_disks).grid(row=10, column=2, sticky="w", padx=4)
         self._err(form, 11, "disk")
 
-        # The sign-in box: hidden until FLASH finds no stored sign-in (or Sign in under Advanced). The username and
-        # password go to the console once, for the operator token; neither is a form value or reaches the card.
+        # The sign-in box: the first and only thing on the panel until the operator has signed in (the form
+        # takes its place then; Switch user brings it back). The username and password go to the console once,
+        # for the operator token; neither is a form value or reaches the card.
         self.op_username, self.op_password = tk.StringVar(), tk.StringVar()
-        self.signin = ttk.Frame(form, padding=(0, 10, 0, 0))
-        self.signin.grid(row=12, column=0, columnspan=3, sticky="we")
+        self.signin = ttk.Frame(panel, padding=(16, 14))
         self.signin.columnconfigure(1, weight=1)
         ttk.Label(self.signin, text=SIGNIN_HINT, wraplength=560, justify="left").grid(
             row=0, column=0, columnspan=3, sticky="w", padx=4, pady=(0, 4))
@@ -581,9 +595,9 @@ class App:
         row.grid(row=3, column=1, sticky="w")
         self.signin_btn = ttk.Button(row, text="Sign in", command=self.submit_signin, style="Primary.TButton")
         self.signin_btn.pack(side="left", padx=4, pady=4)
-        ttk.Button(row, text="Cancel", command=self.cancel_signin).pack(side="left", padx=4)
+        self.signin_cancel_btn = ttk.Button(row, text="Cancel", command=self.cancel_signin)
+        self.signin_cancel_btn.pack(side="left", padx=4)
         self._err(self.signin, 4, "signin")
-        self.signin.grid_remove()
 
         # 5. Flash, progress, the one status line.
         buttons = ttk.Frame(form)
@@ -697,6 +711,8 @@ class App:
         self.model_hint.configure(text=m.hint)
 
     def _toggle_advanced(self):
+        if not self.adv_btn.winfo_manager():
+            return  # signed out: only the sign-in box is on screen
         if self.advanced.winfo_manager():
             self.advanced.pack_forget()
         else:
@@ -718,13 +734,24 @@ class App:
         return bool(self.op["token"])
 
     def _show_account(self):
-        """The Account row under Advanced: 'Signed in as <name>' with Sign out, or 'Not signed in' with Sign in."""
+        """The line above the panel ('Signed in as <name> · Switch user', signed in only) and the Account row
+        under Advanced: 'Signed in as <name>' with Sign out, or 'Not signed in' with Sign in."""
         if self.connected():
+            self.acct_label.configure(text=f"Signed in as {self.op['username'] or 'operator'}")
+            if not self.acct_line.winfo_manager():
+                self.acct_line.pack(fill="x", pady=(0, 6), before=self.panel)
             self.account_label.configure(text=f"Signed in as {self.op['username'] or 'operator'}")
             self.account_btn.configure(text="Sign out", state="normal")
         else:
+            self.acct_line.pack_forget()
             self.account_label.configure(text="Not signed in")
             self.account_btn.configure(text="Sign in", state="normal")
+
+    def switch_user(self):
+        """Switch user: forget this sign-in and show the box again (the username stays prefilled)."""
+        if self.busy():
+            return
+        self.sign_out()
 
     def toggle_account(self):
         if self.connected():
@@ -746,9 +773,18 @@ class App:
         self.flash_btn.configure(state="disabled")
         self.op_password.set("")
         self._show_error("signin", "")
-        self.signin.grid()
+        self.form.pack_forget()
+        self.adv_btn.pack_forget()  # nothing but the sign-in until it is done
+        if self.advanced.winfo_manager():
+            self.advanced.pack_forget()
+        self.signin.pack(fill="x")
+        # Cancel only makes sense when there is a sign-in to go back to; with none, signing in is the only way on.
+        if self.connected():
+            self.signin_cancel_btn.pack(side="left", padx=4)
+        else:
+            self.signin_cancel_btn.pack_forget()
         self._grow()
-        self.set_status(SIGNIN_TEXT if then else "Sign in below.")
+        self.set_status(SIGNIN_TEXT if then else SIGNIN_FIRST_TEXT)
         (self.pass_entry if self.op_username.get().strip() else self.user_entry).focus_set()
 
     def submit_signin(self):
@@ -791,15 +827,20 @@ class App:
         self.pass_entry.focus_set()
 
     def _signin_done(self):
-        """The box goes away (the password with it); FLASH comes back unless a flash is running."""
+        """The box goes away (the password with it) and the form takes its place; FLASH comes back unless a
+        flash is running."""
         self._then = None
-        self.signin.grid_remove()
+        self.signin.pack_forget()
+        self.form.pack(fill="x")
+        if not self.adv_btn.winfo_manager():
+            self.adv_btn.pack(anchor="w", pady=(12, 0))
         self.op_password.set("")
         self.signin_btn.configure(state="normal")
         self._show_error("signin", "")
         if not self.busy():
             self.flash_btn.configure(state="normal")
         self._show_account()
+        self._grow()
 
     def _signed_in(self, url: str, tok: dict, then):
         self.op = {"token": tok["token"], "username": tok["username"]}  # in hand even if the file cannot be written
@@ -816,8 +857,14 @@ class App:
             then()
 
     def cancel_signin(self):
+        """Back to the form with the sign-in that was there; with no sign-in at all the box stays (nothing to go
+        back to), only a request in flight is dropped."""
         self._signin_cancel.set()
         self.log("Sign in cancelled.")
+        if not self.connected():
+            self.signin_btn.configure(state="normal")
+            self._show_error("signin", "")
+            return
         self._signin_done()
         self.set_status(READY_TEXT)
 
@@ -846,7 +893,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _token_rejected(self, token: str,
-                        why: str = "The stored sign-in was rejected by the console: FLASH signs in again."):
+                        why: str = "The stored sign-in was rejected by the console: sign in again."):
         """The console answered 401 (revoked) or 403 (view-only) for `token`: forget it, unless a newer sign-in
         replaced it meanwhile."""
         if self.op["token"] != token:
@@ -855,6 +902,8 @@ class App:
         self.op = {"token": "", "username": ""}
         self._show_account()
         self.log(why)
+        self.sign_in()
+        self.set_status(why)
 
     def sign_out(self):
         """Forget the token; the username stays prefilled in the sign-in box (switch user: sign out, sign in)."""
@@ -863,6 +912,7 @@ class App:
         self.op = {"token": "", "username": ""}
         self._show_account()
         self.log("Signed out. Revoke the token on the console's Settings page too if this computer changes hands.")
+        self.sign_in()
 
     def _apply_settings(self, s: dict):
         for k in SETTINGS_KEYS:
@@ -1173,10 +1223,10 @@ class App:
             msg, plain = str(e), e.plain()
             log(f"FAILED: {msg}")
             token = v.get("operator_token") or ""
-            if e.code == 401:  # the sign-in was revoked on the console: the next FLASH signs in again
+            if e.code == 401:  # the sign-in was revoked on the console: the sign-in box comes back
                 self.post(lambda: (self._token_rejected(token),
                                    self.set_status("The console no longer accepts this computer's sign-in. "
-                                                   "Press FLASH to sign in again.")))
+                                                   "Sign in again to continue.")))
             elif e.code == 403:  # the account can only view now: the console's words, and the token is forgotten
                 self.post(lambda: (self._token_rejected(token, plain), self.set_status(plain)))
             elif e.code == 409:  # the id belongs to another account: said under the name, which gets the focus
@@ -1197,9 +1247,12 @@ class App:
             self.post(self._finished)
 
     def _finished(self):
-        self.flash_btn.configure(state="normal")
+        gated = bool(self.signin.winfo_manager())  # the console rejected the sign-in mid-flash: the box is up
+        self.flash_btn.configure(state="disabled" if gated else "normal")
         self.cancel_btn.grid_remove()
         self._show_account()  # Sign in/Sign out come back
+        if gated:
+            self.account_btn.configure(state="disabled")
         self._password = secrets.token_urlsafe(24)  # never reuse a Pi password across cards
 
 

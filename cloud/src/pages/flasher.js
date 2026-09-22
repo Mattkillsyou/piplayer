@@ -4,7 +4,7 @@
 import * as auth from "../auth.js";
 import { layout } from "./layout.js";
 
-export const FLASHER_VERSION = "0.7.0";
+export const FLASHER_VERSION = "0.7.1";
 const RELEASE = `https://github.com/Mattkillsyou/piplayer/releases/download/v${FLASHER_VERSION}`;
 
 function flasherPage(ctx) {
@@ -32,7 +32,7 @@ function flasherPage(ctx) {
     <div>
       <h3>Windows</h3>
       <ol>
-        <li>Open <code>Projection5000-SD-Flasher-Setup.exe</code> and click <em>Install</em>. The SD Flasher then sits in the Start menu (and on the desktop if you ticked that).</li>
+        <li>Open <code>Projection5000-SD-Flasher-Setup.exe</code> and click <em>Install</em>. <em>Matt Brown Projection 5000</em> then sits in the Start menu (and on the desktop if you ticked that). Open it and sign in with your console username and password; the projectors you flash go into your account.</li>
         <li>If Windows says "Windows protected your PC", click <em>More info</em>, then <em>Run anyway</em>. The program is not signed with a paid certificate, so Windows does not know it yet.</li>
         <li>Click <em>Yes</em> on the "make changes to your device" question. Writing a card needs that.</li>
       </ol>

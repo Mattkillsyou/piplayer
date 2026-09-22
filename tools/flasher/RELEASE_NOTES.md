@@ -1,5 +1,14 @@
 # Release notes for the SD Flasher
 
+## v0.7.1
+
+Sign in comes first. The flasher opens on the sign-in box (Username, Password, Sign in) and shows nothing
+else until you have signed in; the form appears after that, under a line that says whose account the
+projectors go to ("Signed in as <you>", with Switch user next to it). Once signed in on a computer the box
+does not come back unless you switch user, sign out under Advanced, or the console rejects the stored
+sign-in. The Windows installer now calls the program "Matt Brown Projection 5000" (Program Files folder,
+Start Menu, Programs and Features).
+
 ## v0.7.0
 
 The flasher signs in with your console username and password, in its own window: no browser, no code to

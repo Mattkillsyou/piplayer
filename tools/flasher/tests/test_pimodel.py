@@ -6,6 +6,7 @@ import threading
 import pytest
 
 import flasher
+from conftest import signed_in
 import imagefetch
 import pimodel
 from test_flasher import DISK, FORM, FULL, _bundled_exe, _flash_stubs, _fill, _log, _pump, _root, _shown_errors
@@ -162,6 +163,7 @@ def test_armhf_model_offline_is_plain_words_under_the_row(monkeypatch, tmp_path)
     # In the GUI the worker puts it under the model row, no dialog.
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: pytest.fail("dialog shown"))
+    signed_in(monkeypatch)
     root = _root()
     app = flasher.App(root)
     app._run_flash(dict(FULL, image_mode="bundled", pi_model="pi2", dry_run=True, disk_info=None))

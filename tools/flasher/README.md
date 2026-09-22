@@ -17,8 +17,16 @@ The masthead is the product logo: the projector icon, "MATT BROWN'S" over
 "PROJECTION5000". Under it the form, the white FLASH button, a progress bar and
 one status line in plain words ("Ready.", "Writing the card (43%)...", "Done.
 Put the card in the Pi and turn it on. It shows up under Devices in matt's
-account in a few minutes."). Nothing on the screen names the console, the
-fonts or the account; all of that is under Advanced.
+account in a few minutes."). Nothing on the screen names the console or the
+fonts; all of that is under Advanced.
+
+Sign in comes first. With no stored sign-in the panel holds only the sign-in
+box ("Sign in with your console username and password (the same as on the
+website)": Username, Password, **Sign in**) and the status line says "Sign in
+to start. The projectors you flash go into your account."; nothing else is on
+the screen (not even Advanced) until you have signed in. Then the form takes
+the box's place, under one line above the panel: "Signed in as <you>" with
+**Switch user** next to it (see "Signing in").
 
 1. **Device name**, e.g. "Lobby Projector". The device id / hostname
    (`lobby-projector`) is derived from it and shown in grey under the entry.
@@ -32,13 +40,9 @@ fonts or the account; all of that is under Advanced.
    away as soon as you edit it). A network that is not listed can be typed in as
    before. Leave both blank for a wired Pi.
 3. **SD card**: pick the reader (Refresh rescans), press **FLASH**, confirm
-   the erase warning. The first time on a PC a sign-in box opens under the
-   form ("Sign in with your console username and password (the same as on
-   the website)": Username, Password, **Sign in**) and the status line says
-   "Sign in below, then the card is made automatically."; sign in and the
-   flash continues with no further click (see "Signing in"). When it
-   finishes: "Done. Put the card in the Pi and turn it on. It shows up under
-   Devices in <you>'s account in a few minutes."
+   the erase warning. When it finishes: "Done. Put the card in the Pi and
+   turn it on. It shows up under Devices in <you>'s account in a few
+   minutes."
 
 The console is fixed (baked in by `build.ps1 -ConsoleUrl`, or the product
 default) and never shown. There is no console field, no key field, no token
@@ -135,10 +139,9 @@ show it):
 - **Static IP** (`192.168.1.50/24`) and **Gateway** (also used as the DNS
   server); blank means DHCP. Works for Wi-Fi and wired cards.
 - **Account**: "Signed in as <you>" with **Sign out** (forgets the stored
-  sign-in; revoke the token on the console's Settings page as well if the PC
-  changes hands), or "Not signed in" with **Sign in** (the same box FLASH
-  opens by itself). To switch user: Sign out, then Sign in as the other one;
-  the username stays prefilled.
+  sign-in and puts the sign-in box back in place of the form; revoke the
+  token on the console's Settings page as well if the PC changes hands).
+  Switch user above the panel does the same; the username stays prefilled.
 - **Show details**: reveals the technical log box. **Dry run** (see "Run from
   source"). The build stamp.
 
@@ -146,18 +149,24 @@ A problem in an Advanced field opens the section and shows the words there.
 
 ## Signing in
 
-The console username and password, typed into the flasher; no browser. It is
-invisible in normal use: a stored token is used silently, and FLASH asks
-first when there is none.
+The console username and password, typed into the flasher; no browser. The
+box is the first thing on the screen when there is no stored sign-in and the
+only thing until you have signed in; a stored token is used silently after
+that.
 
-1. FLASH (or Sign in under Advanced) opens the sign-in box under the form:
-   "Sign in with your console username and password (the same as on the
-   website)", Username, Password (masked), **Sign in**, **Cancel**. The
-   status line reads "Sign in below, then the card is made automatically."
-   Cancel (or closing the window) puts the line back to "Ready.".
+1. The sign-in box sits in the panel in place of the form: "Sign in with your
+   console username and password (the same as on the website)", Username,
+   Password (masked), **Sign in**. The status line reads "Sign in to start.
+   The projectors you flash go into your account." There is no Cancel when
+   there is nothing to go back to; Switch user (above the panel) or Sign in
+   under Advanced open the same box with a **Cancel** that returns to the
+   form as you were. If FLASH ever finds no sign-in (the console rejected the
+   stored one), the box comes back with "Sign in below, then the card is made
+   automatically." and the flash continues by itself after the sign-in.
 2. Sign in calls `POST /api/operator/login` (no auth) with the username, the
    password and this PC's hostname. `200` carries the operator token, your
-   username and role; the box closes and the flash continues by itself. A
+   username and role; the form takes the box's place (and the pending flash,
+   if any, continues by itself). A
    refusal is said under the box and the box stays for another try: `401`
    "Invalid username or password", `403` the console's words (a view-only
    account: ask an admin to make it an editor), `429` "Too many failed
@@ -168,14 +177,17 @@ first when there is none.
    together with the console URL and username (on a Mac: in the login
    keychain, the file holds only the URL and username). On later launches it is used
    right away and checked with `GET /api/operator/me` in the background; a
-   `401` (revoked) forgets it so the next FLASH asks again, a `403` (the
+   `401` (revoked) forgets it and puts the sign-in box back ("The stored
+   sign-in was rejected by the console: sign in again."), a `403` (the
    account was made view-only) forgets it and says so on the status line, a
    network error keeps it. A token saved for a different console is ignored.
    The result of the check is a line in the details log, never on the screen.
 4. At flash time `GET /api/operator/me` (the Wyze flag) and
    `POST /api/operator/devices` register the projector in your account (see
-   "What is automatic"); a `401` there forgets the token too ("The console no
-   longer accepts this computer's sign-in. Press FLASH to sign in again.").
+   "What is automatic"); a `401` there forgets the token too and puts the box
+   back ("The console no longer accepts this computer's sign-in. Sign in
+   again to continue."); the flash is not resumed, press FLASH after signing
+   in.
 
 On the console the sign-in appears as an API token named "SD Flasher on
 <hostname>" (Settings, "My API tokens"); revoke it there to lock a PC out.
@@ -203,8 +215,8 @@ Editors and admins can sign in; a viewer cannot.
 
 ## Run the exe
 
-Download `Projection5000-SD-Flasher-Setup.exe` from the console's SD Flasher page and run it (Program Files,
-Start Menu, uninstaller; `installer.iss`, built by `build.ps1` when Inno Setup is installed), or build and run
+Download `Projection5000-SD-Flasher-Setup.exe` from the console's SD Flasher page and run it (installs as "Matt Brown
+Projection 5000": Program Files, Start Menu, uninstaller; `installer.iss`, built by `build.ps1` when Inno Setup is installed), or build and run
 `dist\Projection5000-SD-Flasher.exe` directly; accept
 the UAC prompt. If you decline the prompt the tool shows "Run as administrator"
 and exits. `Projection5000-SD-Flasher.exe --dry-run` works without the prompt

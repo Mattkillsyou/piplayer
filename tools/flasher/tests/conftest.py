@@ -45,6 +45,14 @@ PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIUL3nG/VzzJ6wyH+UdpX4KRzETi9LJnhz
 _shared_tk = []
 
 
+def signed_in(monkeypatch, username="matt", token="p5k_stored_token"):
+    """Store a sign-in before App() so the form shows straight away (the exe opens on the sign-in box otherwise);
+    the background token check answers without a console."""
+    import console
+    flasher.save_operator_config(flasher.console_url(), token, username)
+    monkeypatch.setattr(console, "me", lambda *a: {"username": username, "role": "editor"})
+
+
 def new_root():
     """A window for one GUI test, skipping when there is no display. Windows: a fresh, withdrawn tk.Tk(). macOS:
     a Toplevel of one Tk kept for the whole session, left on screen: Tk/Aqua never returns from update() on a

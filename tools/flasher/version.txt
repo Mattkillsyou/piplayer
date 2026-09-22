@@ -1,8 +1,8 @@
 # PyInstaller version resource (build.ps1 --version-file): what Explorer shows under Properties > Details.
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(0, 7, 0, 0),
-    prodvers=(0, 7, 0, 0),
+    filevers=(0, 7, 1, 0),
+    prodvers=(0, 7, 1, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -15,12 +15,12 @@ VSVersionInfo(
       StringTable('040904B0', [
         StringStruct('CompanyName', 'Matt Brown'),
         StringStruct('FileDescription', "Matt Brown's Projection5000 SD Flasher"),
-        StringStruct('FileVersion', '0.7.0.0'),
+        StringStruct('FileVersion', '0.7.1.0'),
         StringStruct('InternalName', 'Projection5000-SD-Flasher'),
         StringStruct('LegalCopyright', 'Matt Brown'),
         StringStruct('OriginalFilename', 'Projection5000-SD-Flasher.exe'),
-        StringStruct('ProductName', "Matt Brown's Projection5000"),
-        StringStruct('ProductVersion', '0.7.0.0')])
+        StringStruct('ProductName', 'Matt Brown Projection 5000'),
+        StringStruct('ProductVersion', '0.7.1.0')])
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]

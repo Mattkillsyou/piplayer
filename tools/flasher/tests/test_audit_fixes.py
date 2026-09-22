@@ -17,7 +17,7 @@ import imagefetch
 import wifi
 import windisk
 import winlocale
-from conftest import PUBKEY, new_root
+from conftest import PUBKEY, new_root, signed_in
 from test_console import KEY, OPERATOR_TOKEN, StubConsole, _serve
 
 DISK = {"number": 2, "name": "Generic MassStorageClass", "bus": "USB", "size": 31914983424, "sector": 512,
@@ -300,6 +300,8 @@ def test_account_buttons_are_off_while_a_flash_runs(monkeypatch):
     """Sign in/Sign out under Advanced, and FLASH itself, cannot interrupt a running write: a Cancel meant for
     a sign-in must never abort the card."""
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    flasher.save_operator_config(flasher.console_url(), "p5k_stored", "matt")  # signed in: the form is up
+    monkeypatch.setattr(flasher.console, "me", lambda *a: {"username": "matt", "role": "editor"})
     root = _root()
     app = flasher.App(root)
     release = threading.Event()
@@ -333,6 +335,7 @@ def test_on_flash_disables_the_account_row(monkeypatch, tmp_path):
     monkeypatch.setattr(flasher, "run_flash", lambda *a, **k: seen.append(1))
     img = tmp_path / "x.img"
     img.write_bytes(b"\x01" * 1024)
+    signed_in(monkeypatch)
     root = _root()
     app = flasher.App(root)
     app.baked_key = KEY
@@ -372,7 +375,8 @@ def test_sign_in_answered_after_cancel_is_ignored(monkeypatch, stub):
     time.sleep(0.5)
     root.update()
     assert fired == [] and app.op["token"] == "" and not flasher.operator_config_path().exists()
-    assert app.status_label.cget("text") == "Ready." and not app.signin.winfo_manager()
+    # never signed in: the box stays up (there is no form to go back to) and the late answer changed nothing
+    assert app.signin.winfo_manager() == "pack" and not app.form.winfo_manager()
     root.destroy()
 
 
@@ -417,9 +421,11 @@ def test_revoked_token_during_flash_is_forgotten_in_plain_words(monkeypatch):
     app._run_flash(dict(FULL, enrollment_key="", operator_token=OPERATOR_TOKEN))
     assert _pump(root, lambda: not app.connected())
     assert app.status_label.cget("text") == ("The console no longer accepts this computer's sign-in. "
-                                             "Press FLASH to sign in again.")
+                                             "Sign in again to continue.")
     assert dialogs == [] and not flasher.operator_config_path().exists()
-    assert app.account_label.cget("text") == "Not signed in" and str(app.flash_btn["state"]) == "normal"
+    # The sign-in box is back in place of the form; FLASH stays off until the operator has signed in again.
+    assert app.account_label.cget("text") == "Not signed in" and str(app.flash_btn["state"]) == "disabled"
+    assert app.signin.winfo_manager() == "pack" and not app.form.winfo_manager()
     # Any other console error: the dialog as before.
     other = console.ConsoleError("/api/operator/me: HTTP 503")
     other.code = 503
