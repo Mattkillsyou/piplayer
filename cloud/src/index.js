@@ -49,7 +49,7 @@ const SECURITY_HEADERS = {
 
 function withSecurityHeaders(res) {
   const out = new Response(res.body, res);
-  for (const [k, v] of Object.entries(SECURITY_HEADERS)) out.headers.set(k, v);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) if (!out.headers.has(k)) out.headers.set(k, v);
   return out;
 }
 
@@ -107,7 +107,11 @@ async function handle(request, env, exec) {
   if (path === "/download" && (request.method === "GET" || request.method === "HEAD")) {
     // The SD flasher downloads: a public page (no login, no session) for the people who make cards.
     // Workers Assets maps /download to public/download.html itself (and 307s /download.html to /download).
-    return env.ASSETS.fetch(request);
+    // The page carries its own <style> block, so it gets a CSP that allows inline styles (scripts still not).
+    const asset = await env.ASSETS.fetch(request);
+    const page = new Response(asset.body, asset);
+    page.headers.set("content-security-policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'");
+    return page;
   }
   await db.assertMigrated(env);
 
