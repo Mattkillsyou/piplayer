@@ -160,7 +160,9 @@ that.
    under Advanced open the same box with a **Cancel** that returns to the
    form as you were. If FLASH ever finds no sign-in (the console rejected the
    stored one), the box comes back with "Sign in to continue." and the flash
-   continues by itself after the sign-in.
+   continues by itself after the sign-in. Under the button, **Forgot password**
+   and **Create an account** open the console's /forgot and /signup pages in
+   your browser.
 2. Sign in calls `POST /api/operator/login` (no auth) with the username, the
    password and this PC's hostname. `200` carries the operator token, your
    username and role; the form takes the box's place (and the pending flash,

@@ -30,6 +30,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 import traceback
+import webbrowser
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -638,9 +639,18 @@ class App:
         self.signin_btn.grid(row=0, column=0, sticky="we", padx=4)
         self.signin_cancel_btn = ttk.Button(row, text="Cancel", command=self.cancel_signin)
         self.signin_cancel_btn.grid(row=0, column=1, padx=4)
-        self._err(self.signin, 5, "signin", column=0, columnspan=1)
+        # The two ways out for someone with no account or no password: both open the console in the browser.
+        links = ttk.Frame(self.signin)
+        links.grid(row=5, column=0, sticky="w", pady=(8, 0))
+        self.signin_links = {}
+        for text, path in (("Forgot password", "/forgot"), ("Create an account", "/signup")):
+            lbl = ttk.Label(links, text=text, style="Link.TLabel", cursor="hand2", underline=0)
+            lbl.pack(side="left", padx=(4, 16))
+            lbl.bind("<Button-1>", lambda e, path=path: self.open_console(path))
+            self.signin_links[text] = lbl
+        self._err(self.signin, 6, "signin", column=0, columnspan=1)
         self.rain = MatrixRain(self.signin, width=WINDOW_W - 32 - 48 - 8, height=150, family=self.fonts["mono"])
-        self.rain.grid(row=6, column=0, sticky="we", padx=4, pady=(18, 0))
+        self.rain.grid(row=7, column=0, sticky="we", padx=4, pady=(18, 0))
 
         # 5. Flash, progress, the one status line.
         buttons = ttk.Frame(form)
@@ -824,6 +834,12 @@ class App:
         self._grow()
         self.set_status(SIGNIN_TEXT if then else SIGNIN_FIRST_TEXT)
         (self.pass_entry if self.op_username.get().strip() else self.user_entry).focus_set()
+
+    def open_console(self, path: str):
+        """A console page (/forgot, /signup) in the default browser; nothing while a sign-in is in flight."""
+        if str(self.signin_btn["state"]) == "disabled":
+            return
+        webbrowser.open_new_tab(self.console_url + path)
 
     def submit_signin(self):
         """The Sign in button (or Enter): one POST /api/operator/login on a thread. The box stays open, with the

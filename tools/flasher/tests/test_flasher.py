@@ -689,6 +689,29 @@ def test_flash_signs_in_then_makes_the_card(monkeypatch, stub):
     root.destroy()
 
 
+def test_sign_in_box_links_open_the_console_in_the_browser(monkeypatch, stub):
+    """Forgot password and Create an account, under the Sign in button, open the console's /forgot and /signup in
+    the default browser (packed labels: _visible_texts does not count them), and do nothing while a sign-in
+    request is in flight."""
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher, "console_url", lambda: stub)
+    opened = []
+    monkeypatch.setattr(flasher.webbrowser, "open_new_tab", lambda url: opened.append(url))
+    root = _root()
+    app = flasher.App(root)
+    root.update()
+    assert list(app.signin_links) == ["Forgot password", "Create an account"]
+    assert all(lbl.winfo_manager() == "pack" and lbl.cget("style") == "Link.TLabel"
+               for lbl in app.signin_links.values())
+    app.signin_links["Forgot password"].event_generate("<Button-1>")
+    app.signin_links["Create an account"].event_generate("<Button-1>")
+    assert opened == [stub + "/forgot", stub + "/signup"]
+    app.signin_btn.configure(state="disabled")  # a request in flight
+    app.signin_links["Forgot password"].event_generate("<Button-1>")
+    assert opened == [stub + "/forgot", stub + "/signup"]
+    root.destroy()
+
+
 def test_sign_in_wrong_password_view_only_throttled_and_offline(monkeypatch, stub):
     """Every refusal is said inline under the box in plain words, the box stays open for another try, and no
     token is kept. Cancel closes it and puts the status line back to Ready."""

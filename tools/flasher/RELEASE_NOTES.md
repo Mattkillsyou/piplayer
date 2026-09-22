@@ -1,5 +1,11 @@
 # Release notes for the SD Flasher
 
+## v0.7.2
+
+Two links under the Sign in button: Forgot password and Create an account. Each opens the console in
+your browser (the sign-in itself stays in the flasher). Forgot password sends a reset link to the email
+address on the account (set at sign-up, or by an admin on the console's Users page).
+
 ## v0.7.1
 
 Sign in comes first. The flasher opens on the sign-in box (Username, Password, Sign in, no explanation)
