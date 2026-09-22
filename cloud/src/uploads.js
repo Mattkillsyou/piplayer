@@ -288,10 +288,11 @@ async function uploadComplete(ctx) {
     fail(400, `stored object is ${obj.size} bytes, expected ${row.size}`);
   }
   // The browser computed row.sha256 and the Pi rejects any download that does not match it,
-  // so check the stored bytes once here instead of letting every player fail forever. Every
-  // upload is verified ([limits] cpu_ms in wrangler.toml covers a multi-GB hash); a lower
-  // PIPLAYER_VERIFY_SHA_MAX_BYTES skips files above it, and the audit row says so.
-  const shaVerified = row.size <= envInt(ctx.env, "PIPLAYER_VERIFY_SHA_MAX_BYTES", maxBytes(ctx.env));
+  // so check the stored bytes once here instead of letting every player fail forever, up to
+  // PIPLAYER_VERIFY_SHA_MAX_BYTES (8 MiB: the Workers Free CPU budget; on Paid set [limits]
+  // cpu_ms and raise it). Files above it keep the browser's hash and the audit row says so.
+  // ponytail: hash at completion only; per-part hashing would verify any size on Free.
+  const shaVerified = row.size <= envInt(ctx.env, "PIPLAYER_VERIFY_SHA_MAX_BYTES", 8 * 1024 * 1024);
   if (shaVerified) {
     const digest = new crypto.DigestStream("SHA-256");
     await (await ctx.env.MEDIA.get(row.key)).body.pipeTo(digest);

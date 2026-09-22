@@ -16,6 +16,8 @@ export default defineConfig(async () => {
             TEST_MIGRATIONS: migrations,
             SESSION_SECRET: "test-session-secret",
             SETUP_TOKEN: "test-setup-token",
+            // workerd here has no CPU budget: verify every test upload (production defaults to 8 MiB).
+            PIPLAYER_VERIFY_SHA_MAX_BYTES: "5368709120",
           },
         },
       }),

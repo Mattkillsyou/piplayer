@@ -15,7 +15,7 @@ Plain ES-module JavaScript, no framework, no runtime dependencies. Dev dependenc
 wrangler.toml          bindings: DB (D1 piplayer-cloud-db), MEDIA (R2 piplayer-cloud-media),
                        ASSETS (public/, run_worker_first), ALERT_MAIL (send_email), [vars]
                        PIPLAYER_*, crons 0 3 * * * (housekeeping) + */5 * * * * (alerts),
-                       [limits] cpu_ms = 300000 (hashing a multi-GB upload), custom domain route
+                       custom domain route
 migrations/            D1 schema, applied in name order (0001_init.sql = cms/app/db.py + settings,
                        sessions, login_failures, uploads, meta; later files add to it); add
                        000N_*.sql, never edit old ones
@@ -199,12 +199,13 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
 
 ## Limits and design notes
 
-- **The account must be on the Workers Paid plan.** Two platform limits
-  (developers.cloudflare.com/workers/platform/limits) rule out Workers Free: CPU time is
-  10 ms per request on Free (30 s default on Paid; `wrangler.toml` raises it to 5 minutes with
-  `[limits] cpu_ms = 300000` so completing an upload can hash a multi-GB file), and one PBKDF2-SHA256 derivation at
-  100 000 iterations costs ≈ 13-15 ms of CPU, so every `/login`, `/setup` and `/users` password
-  write would die with Cloudflare error 1102 (`Worker exceeded resource limits`). Subrequests
+- **Plan.** The account runs on Workers Free today. Two platform limits
+  (developers.cloudflare.com/workers/platform/limits) matter: CPU time is 10 ms per request on
+  Free (30 s default on Paid, and Paid may raise it with `[limits] cpu_ms`, which Free refuses),
+  so upload completion hashes files only up to `PIPLAYER_VERIFY_SHA_MAX_BYTES` (8 MiB) and a
+  PBKDF2-SHA256 derivation at 100 000 iterations (≈ 13-15 ms) sits at the edge of that budget on
+  `/login`, `/setup` and `/users` (Cloudflare error 1102, `Worker exceeded resource limits`, is
+  the symptom if it ever trips; the Paid plan removes it). Subrequests
   also count against a per-invocation budget and every D1 statement and R2 call is one: Free
   allows 50 external + 1 000 to Cloudflare services, Paid 10 000 (configurable). `/devices`
   and `/dashboard` load the fleet's schedules, group defaults, playlist names, schedule counts,
@@ -231,9 +232,9 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   X GB; the limit is Y GB.", "Already in the library as ...").
 - **Complete verifies the hash**: `POST /library/upload/{id}/complete` re-hashes the stored
   object and refuses a mismatch with 400, deleting the object, so a wrong browser hash never
-  reaches the library or the dedupe check. Every upload is verified: `[limits] cpu_ms = 300000`
-  in `wrangler.toml` (Workers Paid) covers hashing a file at the 5 GiB upload limit.
-  `PIPLAYER_VERIFY_SHA_MAX_BYTES` can only lower the cap; a file above it is recorded with the
+  reaches the library or the dedupe check. Files up to `PIPLAYER_VERIFY_SHA_MAX_BYTES` (8 MiB,
+  the Workers Free CPU budget; on Paid add `[limits] cpu_ms = 300000` and raise the var to the
+  5 GiB upload limit) are verified; a file above it is recorded with the
   browser hash and the audit row carries `sha_verified: false` (the player still verifies every
   download and reports a mismatch as `sync_error` on the Devices page).
 - **Animated GIF**: the server never sees the frames; `upload.js` counts Graphic Control

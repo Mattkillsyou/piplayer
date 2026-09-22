@@ -834,9 +834,9 @@ them as ALERT.
 `"0 3 * * *"` (the existing daily housekeeping) and `"*/5 * * * *"`; the
 worker's `scheduled()` dispatches on `event.cron`, so the alert evaluator
 runs every five minutes and housekeeping still runs once a night. 8,640
-extra invocations a month, negligible against the Workers Paid plan's
-included requests (the account must be on Paid anyway; see README "Limits
-and design notes"). In local development
+extra invocations a month, negligible against either plan's included
+requests (the account runs on Workers Free today; see README "Limits and
+design notes"). In local development
 run `npx wrangler dev --test-scheduled` and hit
 `http://localhost:8787/__scheduled?cron=*/5+*+*+*+*` to force a run.
 

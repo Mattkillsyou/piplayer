@@ -366,10 +366,10 @@ orphan. Tests: `test/device_codes.test.js`.
 
 Other limits stay env vars: `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB), `PIPLAYER_MAX_SCREENSHOT_BYTES`
 (5 MiB), `PIPLAYER_MAX_CAMERA_BYTES` (2 MiB), `PIPLAYER_AUDIT_RETENTION_DAYS` (365),
-`PIPLAYER_VERIFY_SHA_MAX_BYTES` (defaults to the upload limit, so `POST /library/upload/:id/complete`
-re-hashes every stored object and refuses a mismatch with 400, deleting the object; `[limits]
-cpu_ms = 300000` in `wrangler.toml` pays for a multi-GB hash. Set it lower only to skip files
-above it: those keep the browser's hash and the `upload_media` audit row carries `sha_verified: false`). Read them with `envInt(env, name, fallback)`.
+`PIPLAYER_VERIFY_SHA_MAX_BYTES` (8 MiB, the Workers Free CPU budget: `POST /library/upload/:id/complete`
+re-hashes a stored object up to that size and refuses a mismatch with 400, deleting the object;
+on Workers Paid add `[limits] cpu_ms = 300000` to `wrangler.toml` and raise the var so multi-GB
+videos are verified too. Files above it keep the browser's hash and the `upload_media` audit row carries `sha_verified: false`). Read them with `envInt(env, name, fallback)`.
 Optional `PIPLAYER_PUBLIC_BASE_URL`: when set, the Devices install snippet prints it as `CMS_URL`
 and drops the "edit it if this Pi reaches the CMS another way" note (`pages/devices.installBaseUrl`).
 

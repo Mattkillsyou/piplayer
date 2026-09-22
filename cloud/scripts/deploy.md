@@ -6,11 +6,11 @@ R2 `piplayer-cloud-media`). Run every command from `cloud/` with Node 24 / npm 1
 `hackthon-media`; the only change to that worker is that the custom domain is moved.
 
 Prerequisites: `npx wrangler login` with Workers Scripts, D1 and R2 write scopes on the account
-that owns the `photogen5000.com` zone. Check with `npx wrangler whoami`. That account must be on
-the **Workers Paid** plan (dashboard → Workers & Pages → Plans): Workers Free caps CPU at 10 ms
-per request and one PBKDF2 password derivation (100 000 iterations) needs ≈ 15 ms, so login
-and user creation would fail with error 1102 (`wrangler.toml` also raises the CPU limit to 5 minutes,
-`[limits] cpu_ms = 300000`, so finishing an upload can hash a multi-GB file; only Paid allows that); D1/R2 calls are subrequests (Free: 50 external +
+that owns the `photogen5000.com` zone. Check with `npx wrangler whoami`. The account runs on
+**Workers Free** today (dashboard → Workers & Pages → Plans): Free caps CPU at 10 ms per request,
+which is why upload completion verifies files only up to `PIPLAYER_VERIFY_SHA_MAX_BYTES` (8 MiB)
+and why `wrangler.toml` carries no `[limits]` block (Free refuses `cpu_ms`; on Paid add
+`[limits] cpu_ms = 300000` and raise the var so multi-GB videos are verified); D1/R2 calls are subrequests (Free: 50 external +
 1 000 to Cloudflare services per invocation, Paid: 10 000) and the Devices/Dashboard pages
 use a fixed handful of statements regardless of fleet size (see README "Limits and design
 notes"). `wrangler deploy` does not check the plan — a Free-plan deploy only
