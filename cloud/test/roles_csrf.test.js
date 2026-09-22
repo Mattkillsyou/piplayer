@@ -166,13 +166,13 @@ describe("authorization matrix", () => {
     }
   });
 
-  // /, /login and /logout are covered by the root check above and the csrf block below;
+  // /, /login, /logout and /signup are covered by the root check above, the csrf block below and signup.test.js;
   // /api/* is bearer-authenticated (api.test.js and friends), not a web route.
   it("table() has a row for every web route the modules register", () => {
     const router = new Router();
     for (const m of modules) if (m.register) m.register(router);
     const registered = router.routes.map((rt) => `${rt.method} ${rt.pattern}`)
-      .filter((k) => !isApiPath(k.split(" ")[1]) && !["GET /", "GET /login", "POST /login", "POST /logout"].includes(k));
+      .filter((k) => !isApiPath(k.split(" ")[1]) && !["GET /", "GET /login", "POST /login", "POST /logout", "GET /signup", "POST /signup"].includes(k));
     expect(registered.length).toBeGreaterThan(50);
     const covered = new Set();
     for (const [method, path] of table()) {

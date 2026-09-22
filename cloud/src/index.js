@@ -22,13 +22,14 @@ import * as playlists from "./pages/playlists.js";
 import * as schedule from "./pages/schedule.js";
 import * as settings from "./pages/settings.js";
 import * as setup from "./pages/setup.js";
+import * as signup from "./pages/signup.js";
 import * as users from "./pages/users.js";
 import { layout } from "./pages/layout.js";
 import { isApiPath, Router } from "./router.js";
 import { esc, fail, HttpError, json, redirect } from "./util.js";
 
 const MODULES = [
-  login, setup, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings,
+  login, setup, signup, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings,
   api, media, manifest, schedules, uploads, auth, audit, alerts, deviceCodes,
 ];
 
@@ -126,10 +127,10 @@ async function handle(request, env, exec) {
       // (never created) so /api/media can serve logged-in users too.
       await auth.loadSession(ctx, { create: false });
     } else {
-      // Only the two anonymous forms start a session (they need a CSRF token); everything
+      // Only the anonymous forms start a session (they need a CSRF token); everything
       // else just reads the cookie, so a cookieless GET /dashboard redirects without a write.
       // /setup after setup is a 404, so it gets no row either (hasUsers is memoised once true).
-      const anonForm = path === "/login" || path === "/setup";
+      const anonForm = path === "/login" || path === "/setup" || path === "/signup";
       await auth.loadSession(ctx, { create: anonForm && request.method === "GET" && !(path === "/setup" && await auth.hasUsers(env)) });
       if (!SAFE_METHODS.has(request.method)) {
         // Session gone (expired, logged out elsewhere, user deleted): the handler would answer
@@ -138,7 +139,7 @@ async function handle(request, env, exec) {
         // Deliberately ahead of the token check, as in cms/app/auth.py require_csrf (X002):
         // nothing is written, and the 403 is reserved for a live session with a bad token.
         if (!ctx.user && !anonForm) throw redirect("/login?expired=1");
-        if (path === "/login" && !ctx.session) throw redirect("/login?expired=1");
+        if ((path === "/login" || path === "/signup") && !ctx.session) throw redirect(`${path}?expired=1`);
         await auth.requireCsrf(ctx);
       }
       if (path !== "/setup" && !(await auth.hasUsers(env))) throw new Response(null, { status: 303, headers: { location: "/setup" } });

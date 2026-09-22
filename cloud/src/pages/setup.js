@@ -59,7 +59,9 @@ async function setupSubmit(ctx) {
   const username = str(form, "username").trim();
   const password = str(form, "password");
   const password2 = str(form, "password2");
-  if (!username) return setupPage(ctx, token, "username required", 400);
+  if (!username) return setupPage(ctx, token, "Enter a username", 400);
+  const nameProblem = auth.usernameProblem(username);
+  if (nameProblem) return setupPage(ctx, token, nameProblem, 400);
   const problem = auth.passwordProblem(password);
   if (problem) return setupPage(ctx, token, problem, 400);
   if (password !== password2) return setupPage(ctx, token, "passwords do not match", 400);

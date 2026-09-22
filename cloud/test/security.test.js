@@ -130,7 +130,8 @@ describe("xss (contract 9)", () => {
     const xpid = Number(created.headers.get("location").split("/").pop());
     expect((await post(a, "/devices", { device_id: "xss-dev", name: XSS + "dev" })).status).toBe(303);
     expect((await post(a, "/groups", { name: XSS + "grp" })).status).toBe(303);
-    expect((await post(a, "/users", { username: XSS + "usr", password: "pw123456", role: "viewer" })).status).toBe(303);
+    expect((await post(a, "/users", { username: XSS + "usr", password: "pw123456", role: "viewer" })).status).toBe(400); // the username rule
+    await ins("INSERT INTO users (username, password_hash, role) VALUES (?, 'x', 'viewer')", XSS + "usr"); // a row from before the rule
     await media(XSS + "media.png", "image", { filename: "xss.png" });
     const xdev = await one("SELECT id, device_id, token FROM devices WHERE device_id = 'xss-dev'");
     expect((await post(a, `/devices/${xdev.id}/schedule`, { name: XSS + "rule", playlist_id: String(xpid), priority: "1" })).status).toBe(303);

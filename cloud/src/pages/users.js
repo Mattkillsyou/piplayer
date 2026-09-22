@@ -120,7 +120,8 @@ async function usersCreate(ctx) {
   const password = str(form, "password");
   const role = str(form, "role", "editor") || "editor";
   if (!username || password.length < 6) fail(400, "Enter a username and a password of at least 6 characters");
-  if (username.length > auth.MAX_USERNAME_CHARS) fail(400, `Username must be at most ${auth.MAX_USERNAME_CHARS} characters`);
+  const nameProblem = auth.usernameProblem(username);
+  if (nameProblem) fail(400, nameProblem);
   if (!ROLE_OK(role)) fail(400, "Pick a role");
   const problem = auth.passwordProblem(password);
   if (problem) fail(400, problem);

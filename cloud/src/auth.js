@@ -14,8 +14,8 @@ export const PBKDF2_ITERATIONS = 100000;
 // burn CPU in PBKDF2, and keep the CMS's 6-char minimum.
 export const MAX_PASSWORD_BYTES = 1024;
 export const MIN_PASSWORD_CHARS = 6;
-export const PASSWORD_TOO_LONG_MSG = `password must be at most ${MAX_PASSWORD_BYTES} bytes (UTF-8)`;
-export const PASSWORD_TOO_SHORT_MSG = `password must be at least ${MIN_PASSWORD_CHARS} chars`;
+export const PASSWORD_TOO_LONG_MSG = `Password must be at most ${MAX_PASSWORD_BYTES} characters`;
+export const PASSWORD_TOO_SHORT_MSG = `Password must be at least ${MIN_PASSWORD_CHARS} characters`;
 export const CSRF_ERROR = "CSRF token missing or invalid";
 export const LOGIN_MAX_FAILURES = 5;
 export const LOGIN_LOCK_SECONDS = 30;
@@ -25,8 +25,24 @@ export const LOGIN_IP_MAX_FAILURES = 20;
 export const LOGIN_USER_MAX_FAILURES = 20;
 export const LOGIN_USER_WINDOW_SECONDS = 600;
 export const MAX_USERNAME_CHARS = 64;
-// POST /api/enroll shares the login_failures table, keyed by ip + ENROLL_KEY.
+// One rule for every place an account is named (/setup, /users, /signup): letters, digits,
+// . _ - and @ (an admin username may be an email address: cloudflare.operatorEmails), so no
+// invisible characters and no look-alikes of another name. The throttle's synthetic keys below
+// are reserved so a typed name never collides.
+export const USERNAME_RE = /^[a-z0-9][a-z0-9._@-]*$/i;
+export const USERNAME_RULE_MSG = "Username may only contain letters, digits, dots, hyphens, underscores and @";
+// POST /api/enroll and /signup share the login_failures table, keyed by ip + a synthetic name.
 export const ENROLL_KEY = "enroll";
+export const SIGNUP_KEY = "signup";
+export const RESERVED_USERNAMES = new Set([ENROLL_KEY, SIGNUP_KEY]);
+// '' when acceptable, else the message to show.
+export function usernameProblem(username) {
+  if (typeof username !== "string" || !username) return "Enter a username";
+  if (username.length > MAX_USERNAME_CHARS) return `Username must be at most ${MAX_USERNAME_CHARS} characters`;
+  if (!USERNAME_RE.test(username)) return USERNAME_RULE_MSG;
+  if (RESERVED_USERNAMES.has(username.toLowerCase())) return "That username is taken; pick another";
+  return "";
+}
 export const ENROLL_MAX_FAILURES = 10;
 export const ENROLL_LOCK_SECONDS = 60;
 const MAX_LOCK_SECONDS = Math.max(LOGIN_LOCK_SECONDS, ENROLL_LOCK_SECONDS, LOGIN_USER_WINDOW_SECONDS);
@@ -256,8 +272,9 @@ const unix = () => Math.floor(Date.now() / 1000);
 // Seconds remaining on the lock, 0 when not locked. `max` failures for this ip+username within
 // `seconds` lock it (login: 5 / 30 s; enroll: 10 / 60 s), as do LOGIN_IP_MAX_FAILURES from the
 // ip under any username in the same window, or LOGIN_USER_MAX_FAILURES for the username from
-// anywhere in 10 minutes. The last ceiling skips the shared enroll key: twenty stale Pis would
-// otherwise lock enrollment for the whole fleet, and a 32-char random key is not guessable.
+// anywhere in 10 minutes. The last ceiling skips the synthetic keys: twenty stale Pis (or twenty
+// sign-ups) would otherwise lock enrollment or sign-up for everyone; the enroll key itself is
+// 32 random chars, and sign-up has its own per-address cap.
 export async function loginLockedFor(env, ip, username, max = LOGIN_MAX_FAILURES, seconds = LOGIN_LOCK_SECONDS) {
   const now = unix();
   const rows = await db.all(env,
@@ -268,7 +285,7 @@ export async function loginLockedFor(env, ip, username, max = LOGIN_MAX_FAILURES
     const last = rows[rows.length - 1].at;
     return Math.max(1, seconds - (now - last) + 1);
   }
-  if (username === ENROLL_KEY) return 0;
+  if (RESERVED_USERNAMES.has(username)) return 0;
   const all = await db.all(env,
     "SELECT at FROM login_failures WHERE username = ? AND at > ? ORDER BY at",
     username, now - LOGIN_USER_WINDOW_SECONDS);

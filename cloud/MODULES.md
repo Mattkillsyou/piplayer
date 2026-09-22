@@ -3,7 +3,7 @@
 Read this together with `README.md` (see "Limits and design notes"). Everything below exists and is tested
 (`npm test`, `npm run e2e`). Your module plugs in by replacing its stub; do not change the
 scaffold files (`index.js`, `router.js`, `util.js`, `db.js`, `auth.js`, `audit.js`,
-`pages/layout.js`, `pages/login.js`, `pages/setup.js`) without telling the scaffold owner.
+`pages/layout.js`, `pages/login.js`, `pages/setup.js`, `pages/signup.js`) without telling the scaffold owner.
 
 ## Running things
 
@@ -188,7 +188,7 @@ non-empty by `audit.pyJson()` (Python `json.dumps` text: `{"a": 1, "b": [1, 2]}`
 `playlist_rename`, `playlist_delete`, `register_device`, `device_assign_playlist`,
 `device_set_group`, `device_regen_token`, `device_delete`, `device_send_command`,
 `device_schedule_create`, `device_schedule_delete`, `group_create`, `group_assign_playlist`,
-`group_delete`, `user_create`, `user_set_role`, `user_set_password`, `user_delete`
+`group_delete`, `user_create`, `user_signup`, `user_set_role`, `user_set_password`, `user_delete`
 (+ new: `settings_update`, `enrollment_key_rotated`, `device_enrolled`, `device_reenrolled`
 (`renamed_from` when the name changed), `device_enroll_capped` (a new device id refused by the
 20-per-hour cap), `device_rename` (the Devices-page Rename form, `{name}`), `device_update_all`

@@ -3,7 +3,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import * as auth from "../src/auth.js";
 import { Client } from "./helpers.js";
-import { audits, detail, NOPE, one, post, roleMatrix, roles, XSS } from "./pages_common.js";
+import { audits, detail, ins, NOPE, one, post, roleMatrix, roles, XSS } from "./pages_common.js";
 
 let r;
 const uid = (username) => one("SELECT id, role, password_hash FROM users WHERE username = ?", username);
@@ -26,7 +26,8 @@ describe("users", () => {
   });
 
   it("page lists users with (you), disabled self role select, escaped confirm, no maxlength=72", async () => {
-    await post(r.admin, "/users", { username: XSS + "u", password: "pw123456", role: "viewer" });
+    // the username rule refuses such a name on the form now; a row from before the rule still renders escaped
+    await ins("INSERT INTO users (username, password_hash, role) VALUES (?, 'x', 'viewer')", XSS + "u");
     const page = await (await r.admin.get("/users")).text();
     expect(page).toContain('admin <span class="muted small">(you)</span>');
     expect(page).toContain('name="role" data-autosubmit aria-label="Role for admin" disabled');
@@ -78,7 +79,7 @@ describe("users", () => {
     const d = new Client();
     expect((await d.login("vw", "viewer-pass")).status).toBe(303);
     expect((await d.get("/dashboard")).status).toBe(200);
-    expect(await detail(await post(r.admin, `/users/${vw.id}/password`, { password: "short" }), 400)).toBe("password must be at least 6 chars");
+    expect(await detail(await post(r.admin, `/users/${vw.id}/password`, { password: "short" }), 400)).toBe("Password must be at least 6 characters");
     expect(await detail(await post(r.admin, `/users/${vw.id}/password`, { password: "p".repeat(1025) }), 400)).toBe(auth.PASSWORD_TOO_LONG_MSG);
     expect(await detail(await post(r.admin, `/users/${NOPE}/password`, { password: "pw123456" }), 404)).toBe("User not found");
     expect((await uid("vw")).password_hash).toBe(vw.password_hash);

@@ -61,7 +61,7 @@ function loginPage(ctx, error, status = 200, locked = false, next = "", expired 
       </label>
       <button type="submit" class="primary"${dis}>${locked ? "Locked" : "Connect"}</button>
     </form>
-    <span class="auth-foot">p5k-console · sign in to manage your projector fleet</span>
+    <span class="auth-foot">p5k-console · sign in to manage your projector fleet · <a href="/signup">create an account</a></span>
   </div>`;
   return authPage(ctx, { title: "Sign in", card, status });
 }
@@ -73,6 +73,9 @@ async function loginSubmit(ctx) {
   const next = nextPath(ctx, str(form, "next"));
   // Before the throttle and any PBKDF2: the audit and login_failures rows stay bounded.
   if (username.length > auth.MAX_USERNAME_CHARS) return loginPage(ctx, "Username must be at most 64 characters", 400, false, next);
+  // The throttle's synthetic keys are not accounts: answer as a wrong password without writing a
+  // row under that name (it would count against enrollment or sign-up for everyone).
+  if (auth.RESERVED_USERNAMES.has(username.toLowerCase())) return loginPage(ctx, "Invalid username or password", 200, false, next);
   const ip = audit.clientIp(ctx);
   const wait = await auth.loginLockedFor(ctx.env, ip, username);
   if (wait) return loginPage(ctx, `Too many failed attempts; try again in ${wait} s`, 429, true, next);

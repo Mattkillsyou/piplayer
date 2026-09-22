@@ -146,7 +146,12 @@ or missing token → 403; once a user exists `/setup` → 404. Roles are `admin 
 exactly as in the CMS (viewers read; editors manage media, playlists, devices, groups,
 schedules; admins also manage users and `/settings`), except that device tokens (the Token /
 install block and New token on the Devices page) are admin-only here, like the operator tokens
-and `/authorize`. After a POST the pages answer with a one-shot notice (`auth.flashRedirect`,
+and `/authorize`. Anyone can create their own account from the login page (`/signup`, linked as
+"create an account"): it starts as an **editor** straight away, no invite or approval (the owner's
+choice; it means whoever finds the site can edit playlists, schedules and projectors), capped at
+5 attempts per address per 10 minutes and audited as `user_signup`. Usernames everywhere are
+letters, digits, `. _ - @` only (`auth.usernameProblem`), so no invisible or look-alike names;
+`enroll` and `signup` are reserved for the throttle. After a POST the pages answer with a one-shot notice (`auth.flashRedirect`,
 a short-lived `piplayer_flash` cookie the next page shows once), not a `?saved=1` query string.
 
 Passwords: PBKDF2-SHA256 (100 000 iterations, WebCrypto), min 6 chars, max 1024 bytes. Five
