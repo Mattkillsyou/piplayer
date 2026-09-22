@@ -340,7 +340,8 @@ describe("query budget", () => {
     expect(rows[1].active_source).toBe("group: Budget group");
     expect(rows[2].active_source).toBe("schedule: always");
     expect(rows[2].active_playlist_name).toBe("Budget sched PL");
-    expect(rows[5].active_playlist_id).toBeNull();
+    expect(rows[5].active_playlist_id).toBe(settings.default_playlist_id); // nothing of its own: the site default
+    expect(rows[5].active_source).toBe("default playlist");
     for (const d of devs) await query("DELETE FROM devices WHERE id = ?", d.id);
   });
 });

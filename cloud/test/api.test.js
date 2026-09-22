@@ -132,9 +132,10 @@ describe("sync", () => {
     }
   });
 
-  it("device with nothing assigned gets a null playlist", async () => {
+  it("device with nothing assigned plays the site default playlist", async () => {
     const m = await (await sync(ids.other)).json();
-    expect(m.playlist).toBeNull();
+    expect(m.playlist.source).toBe("site-default");
+    expect(m.playlist.name).toBe("Default");
   });
 
   it("stores sync_error (capped at 200, cleared by empty/omitted)", async () => {

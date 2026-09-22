@@ -19,6 +19,7 @@ function uploadGrid(maxBytes, ctx) {
       <input type="file" name="file" id="file-input" accept="video/*,image/*" multiple required aria-label="Choose files">
       <button type="submit" class="primary">Upload</button>
     </form>
+    <p class="help small">New files start playing on every projector that has no playlist of its own; open <a href="/playlists">Playlists</a> to change the order or remove a file.</p>
   </div>
   <div class="upload-panel">
     <div class="upload-panel-head">

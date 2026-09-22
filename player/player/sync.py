@@ -15,6 +15,7 @@ log = logging.getLogger("piplayer.sync")
 
 SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
 PART_SUFFIX = ".part"
+DOWNLOAD_ATTEMPTS = 5       # connections per file per sync before the item is reported missing
 SYNC_ERROR_MAX_LEN = 200
 
 
@@ -135,7 +136,9 @@ def _download_item(cfg: PlayerConfig, item: dict, should_stop: Callable[[], bool
     """Download item into media_dir, resuming an interrupted transfer from
     <filename>.part with an HTTP Range request. Returns the final path.
     `progress` (index/total/filename) is passed through to on_progress with
-    the byte counts, at most once per received chunk."""
+    the byte counts, at most once per received chunk. A transfer that drops
+    or stalls mid-way (Wi-Fi hiccup, read timeout) is resumed in place, up to
+    DOWNLOAD_ATTEMPTS times, without re-reading what is already on disk."""
     filename = item["filename"]
     progress = progress or {"index": 1, "total": 1, "filename": filename}
     total_bytes = item.get("size_bytes") or None
@@ -160,7 +163,9 @@ def _download_item(cfg: PlayerConfig, item: dict, should_stop: Callable[[], bool
             return target
         part.unlink(missing_ok=True)
 
-    for attempt in (1, 2):
+    hasher = hashlib.sha256()
+    done = 0                    # bytes of `part` the hasher has seen
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
         resume_from = part.stat().st_size if part.is_file() else 0
         req_headers = dict(headers)
         if resume_from:
@@ -170,42 +175,52 @@ def _download_item(cfg: PlayerConfig, item: dict, should_stop: Callable[[], bool
             log.info("downloading %s (%.1f MB)", filename, (item.get("size_bytes") or 0) / 1024 / 1024)
 
         on_progress(dict(progress, phase="downloading", bytes_done=resume_from, bytes_total=total_bytes))
-        # (connect, read) timeouts: the read timeout bounds one stalled recv, and
-        # the shutdown flag is only polled between chunks, so keep it below the
-        # unit's TimeoutStopSec.
-        with requests.get(item["url"], headers=req_headers, stream=True, timeout=(10, 15), verify=cfg.verify_tls) as r:
-            if r.status_code == 416 and resume_from:
-                # our partial file is not a prefix the server can extend; start over
-                log.warning("server cannot resume %s (416); restarting download", filename)
-                part.unlink(missing_ok=True)
-                if attempt == 1:
-                    continue
-                raise SyncError(f"cannot resume {filename}: HTTP 416")
-            r.raise_for_status()
-            hasher = hashlib.sha256()
-            if r.status_code == 206 and resume_from:
-                # the sha256 must cover the bytes we already have
-                with part.open("rb") as f:
-                    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+        try:
+            # (connect, read) timeouts: the read timeout bounds one stalled recv, and
+            # the shutdown flag is only polled between chunks, so keep it below the
+            # unit's TimeoutStopSec.
+            with requests.get(item["url"], headers=req_headers, stream=True, timeout=(10, 15), verify=cfg.verify_tls) as r:
+                if r.status_code == 416 and resume_from:
+                    # our partial file is not a prefix the server can extend; start over
+                    log.warning("server cannot resume %s (416); restarting download", filename)
+                    part.unlink(missing_ok=True)
+                    if attempt < DOWNLOAD_ATTEMPTS:
+                        continue
+                    raise SyncError(f"cannot resume {filename}: HTTP 416")
+                r.raise_for_status()
+                if r.status_code == 206 and resume_from:
+                    if done != resume_from:
+                        # a .part left by an earlier run: the sha256 must cover the bytes we already have
+                        hasher = hashlib.sha256()
+                        with part.open("rb") as f:
+                            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                                if should_stop():
+                                    raise SyncInterrupted(f"stopped while resuming {filename}")
+                                hasher.update(chunk)
+                        done = resume_from
+                    mode = "ab"
+                else:
+                    if resume_from:
+                        log.info("server ignored Range for %s; restarting from byte 0", filename)
+                    hasher = hashlib.sha256()
+                    done = 0
+                    mode = "wb"
+                with part.open(mode) as out:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
                         if should_stop():
-                            raise SyncInterrupted(f"stopped while resuming {filename}")
-                        hasher.update(chunk)
-                mode = "ab"
-            else:
-                if resume_from:
-                    log.info("server ignored Range for %s; restarting from byte 0", filename)
-                mode = "wb"
-            done = resume_from if mode == "ab" else 0
-            with part.open(mode) as out:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if should_stop():
-                        # keep the .part so the next start can resume it
-                        raise SyncInterrupted(f"stopped while downloading {filename}")
-                    if chunk:
-                        out.write(chunk)
-                        hasher.update(chunk)
-                        done += len(chunk)
-                        on_progress(dict(progress, phase="downloading", bytes_done=done, bytes_total=total_bytes))
+                            # keep the .part so the next start can resume it
+                            raise SyncInterrupted(f"stopped while downloading {filename}")
+                        if chunk:
+                            out.write(chunk)
+                            hasher.update(chunk)
+                            done += len(chunk)
+                            on_progress(dict(progress, phase="downloading", bytes_done=done, bytes_total=total_bytes))
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as e:
+            # the .part keeps what arrived; pick up from there instead of failing the item
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise
+            log.warning("transfer of %s dropped at byte %d (%s); resuming", filename, done, type(e).__name__)
+            continue
         break
 
     actual_sha = hasher.hexdigest()

@@ -98,7 +98,8 @@ describe("dashboard", () => {
       expect(page).toContain('<div class="device-card">');
       expect(page).toContain('<span class="status status-playing"><span class="lamp"></span>playing</span>');
       expect(page).toContain("1 playing · 3 faults");
-      expect(page).toContain('<span class="now-playlist">no playlist</span>');
+      expect(page).toContain('<span class="now-playlist">Default</span>');
+      expect(page).toContain('<span class="now-via">via default playlist</span>');
     }
     await query("DELETE FROM devices WHERE id = ?", live.id);
   });

@@ -158,26 +158,66 @@ def test_unsafe_filename_is_a_per_item_failure(cfg, cms):
 
 # ------------------------------------------------------ Range resume (F030) ---
 
-def test_dropped_download_leaves_part_and_resumes_with_range(cfg, cms):
+def test_dropped_download_resumes_in_place_with_range(cfg, cms):
     data = bytes(range(256)) * 1000   # 256 000 bytes
     cms.files["big.mp4"] = data
     cms.set_playlist(["big.mp4"])
     cms.drop_after["big.mp4"] = 100_000
     changed, manifest, err = sync_once(cfg)
-    assert err == "download failed: big.mp4: ConnectionError"
-    part = cfg.media_dir / "big.mp4.part"
-    assert part.is_file() and part.stat().st_size == 100_000
-    assert not (cfg.media_dir / "big.mp4").exists()
-    assert "Range" not in cms.media_calls[0][1]
+    # every connection drops after 100 000 bytes: the transfer picks up where it
+    # stopped, in the same sync, with a Range request per resume
+    assert err == "" and changed is True
+    assert [h.get("Range") for _, h in cms.media_calls] == [None, "bytes=100000-", "bytes=200000-"]
+    assert (cfg.media_dir / "big.mp4").read_bytes() == data
+    assert not (cfg.media_dir / "big.mp4.part").exists()
 
-    # the connection is fine now: resume from byte 100000 with a Range header, server answers 206
+
+def test_persistently_dropping_download_is_bounded_and_resumed_next_poll(cfg, cms):
+    data = bytes(range(256)) * 100    # 25 600 bytes
+    cms.files["big.mp4"] = data
+    cms.set_playlist(["big.mp4"])
+    cms.drop_after["big.mp4"] = 4_000
+    changed, manifest, err = sync_once(cfg)
+    assert err == "download failed: big.mp4: ConnectionError"
+    assert len(cms.media_calls) == sync.DOWNLOAD_ATTEMPTS
+    part = cfg.media_dir / "big.mp4.part"
+    assert part.is_file() and part.stat().st_size == 4_000 * sync.DOWNLOAD_ATTEMPTS
+    assert not (cfg.media_dir / "big.mp4").exists()
+
+    # the connection is fine now: the next poll resumes from the .part (hashing what it holds first)
     del cms.drop_after["big.mp4"]
     changed, manifest, err = sync_once(cfg)
     assert err == "" and changed is True
     name, headers = cms.media_calls[-1]
-    assert name == "big.mp4" and headers["Range"] == "bytes=100000-"
+    assert name == "big.mp4" and headers["Range"] == f"bytes={4_000 * sync.DOWNLOAD_ATTEMPTS}-"
     assert (cfg.media_dir / "big.mp4").read_bytes() == data
     assert not part.exists()
+
+
+def test_read_timeout_mid_transfer_resumes_too(cfg, cms, monkeypatch):
+    data = b"T" * 3000
+    cms.files["t.mp4"] = data
+    cms.set_playlist(["t.mp4"])
+    real_get = cms.get
+    ranges = []
+
+    def stalling(first: bytes):
+        yield first
+        raise requests.ReadTimeout("read timed out")     # what requests raises for a silent socket
+
+    def get(url, headers=None, **kw):
+        r = real_get(url, headers=headers, **kw)
+        if "/api/media/" in url:
+            ranges.append(headers.get("Range"))
+            if len(ranges) == 1:
+                r.iter_content = lambda chunk_size=1: stalling(data[:1000])
+        return r
+
+    monkeypatch.setattr(sync.requests, "get", get)
+    changed, manifest, err = sync_once(cfg)
+    assert err == ""
+    assert ranges == [None, "bytes=1000-"]
+    assert (cfg.media_dir / "t.mp4").read_bytes() == data
 
 
 def test_server_answering_200_to_range_restarts_from_scratch(cfg, cms):

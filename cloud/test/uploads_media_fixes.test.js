@@ -143,13 +143,14 @@ describe("M10: complete verifies the browser-supplied sha256", () => {
     const { media_id } = await r.json();
     expect((await query("SELECT sha256 FROM media WHERE id = ?", media_id))[0].sha256).toBe(claimed);
     const a = (await query("SELECT details FROM audit_log WHERE action = 'upload_media' AND target_id = ?", String(media_id)))[0];
-    expect(a.details).toBe('{"filename": "big.mp4", "type": "video", "sha_verified": false}');
+    const dflt = (await query("SELECT value FROM settings WHERE key = 'default_playlist_id'"))[0].value;
+    expect(a.details).toBe(`{"filename": "big.mp4", "type": "video", "playlist": ${dflt}, "sha_verified": false}`);
     // an honest upload under the cap audits without the flag
     const ok = fakeFile(650, 7);
     const r2 = await complete(editor, editorCsrf, await stage(editor, editorCsrf, "ok.mp4", ok));
     expect(r2.status).toBe(200);
     const b = (await query("SELECT details FROM audit_log WHERE action = 'upload_media' AND target_id = ?", String((await r2.json()).media_id)))[0];
-    expect(b.details).toBe('{"filename": "ok.mp4", "type": "video"}');
+    expect(b.details).toBe(`{"filename": "ok.mp4", "type": "video", "playlist": ${dflt}}`);
   });
 });
 
@@ -166,7 +167,8 @@ describe("L10: library delete survives an R2 delete failure", () => {
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/library");
     expect(await query("SELECT id FROM media WHERE id = ?", media_id)).toEqual([]);
-    expect(await query("SELECT details FROM audit_log WHERE action = 'delete_media'")).toEqual([{ details: '{"filename": "orphan.png", "playlists": []}' }]);
+    const dflt = (await query("SELECT value FROM settings WHERE key = 'default_playlist_id'"))[0].value;
+    expect(await query("SELECT details FROM audit_log WHERE action = 'delete_media'")).toEqual([{ details: `{"filename": "orphan.png", "playlists": [${dflt}]}` }]); // the upload put it in the site default
     expect(await env.MEDIA.head("media/" + filename)).not.toBeNull();
     expect(errors).toHaveBeenCalledWith(`R2 delete failed for media/${filename}:`, expect.stringContaining("R2 is down"));
     errors.mockRestore();

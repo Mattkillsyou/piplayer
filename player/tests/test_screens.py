@@ -45,33 +45,64 @@ def test_every_kind_renders_full_frame_inside_safe_area(st):
     assert_safe(st)
 
 
-@pytest.mark.parametrize("st", ALL[:-1], ids=[s.kind for s in ALL[:-1]])
-def test_full_screens_carry_identity_and_console(st):
+FULL = [s for s in ALL if s.kind not in ("pairing", "nowplaying")]
+
+
+@pytest.mark.parametrize("st", FULL, ids=[s.kind for s in FULL])
+def test_full_screens_carry_name_version_and_clock_but_no_id_or_console(st):
     joined = "\n".join(texts(st))
-    assert "dev-1" in joined and "LOBBY" in joined and "http://cms.test" in joined
-    assert "v0.2.0" in joined and "12:00:00" in joined
+    assert "LOBBY" in joined and "v0.2.0" in joined and "12:00:00" in joined
+    assert "dev-1" not in joined and "http://cms.test" not in joined
     assert headline(st) in texts(st)
+
+
+@pytest.mark.parametrize("st", FULL + [ALL[1]], ids=[s.kind for s in FULL] + ["pairing"])
+def test_no_screen_gives_instructions(st):
+    joined = "\n".join(texts(st)).lower()
+    for word in ("devices page", "assign", "check", "regenerate", "free space", "restart"):
+        assert word not in joined, (st.kind, word)
+
+
+def test_standby_shows_only_the_name_centered():
+    it = layout(ALL[1])
+    assert [t["text"] for t in it] == ["LOBBY"]
+    assert it[0]["font"] == "display"
+    assert abs(it[0]["x"] + it[0]["w"] / 2 - WIDTH / 2) <= 1
+    assert abs(it[0]["y"] + it[0]["h"] / 2 - HEIGHT / 2) <= 1
+
+
+def test_name_equal_to_id_shows_once_on_every_screen():
+    for kind in ("pairing", "boot", "waiting", "syncing", "offline", "error"):
+        t = texts(ScreenState(kind=kind, device_id="test", device_name="TEST", version="1", clock="12:00:00"))
+        assert sum("test" in x.lower() for x in t) == 1, (kind, t)
+
+
+def test_id_stands_in_only_when_the_name_is_empty():
+    assert texts(ScreenState(kind="pairing", device_id="dev-1")) == ["DEV-1"]
+    assert "DEV-1" in texts(ScreenState(kind="boot", device_id="dev-1", version="1", clock="12:00:00"))
 
 
 def test_syncing_layout_has_filename_and_count():
     t = texts(ALL[3])
-    assert "downloading 3 of 7" in t and "clip.mp4" in t and "1.0 MB / 4.0 MB" in t
+    assert "Downloading 3 of 7" in t and "clip.mp4" in t and "1.0 MB / 4.0 MB" in t
     verifying = state("syncing", phase="verifying", progress_done=2, progress_total=7, current_file="clip.mp4")
-    assert "verifying 2 of 7" in texts(verifying)
+    assert "Verifying 2 of 7" in texts(verifying)
 
 
 def test_waiting_layout_names_next_rule():
     t = texts(ALL[2])
-    assert "playlist Day has no items" in t
-    assert any(x.startswith("next: Night") and "After" in x and "Tue 22:00" in x for x in t)
-    assert "no schedule rule is active" in texts(state("waiting", playlist_name=None))
+    assert "Playlist Day has no items" in t
+    assert any(x.startswith("Next: Night") and "After" in x and "Tue 22:00" in x for x in t)
+    assert "No schedule rule is active" in texts(state("waiting", playlist_name=None))
 
 
 def test_error_and_offline_wording():
-    assert any("token" in x for x in texts(ALL[5]))
-    assert "no cached content" in texts(ALL[4]) and "last contact 4 min ago" in texts(ALL[4])
-    assert "playing cached content" in texts(state("offline", cached=True))
-    assert "the console refused this device's token" in texts(ALL[5])
+    assert "No cached content" in texts(ALL[4]) and "Last contact 4 min ago" in texts(ALL[4])
+    assert "Cannot reach the console" in texts(ALL[4])
+    assert "Playing cached content" in texts(state("offline", cached=True))
+    assert "The console refused this projector's token" in texts(ALL[5])
+    assert "mpv exited" in texts(state("error", reason="player", message="mpv exited"))
+    assert "Waiting for the first sync" in texts(ALL[0])
 
 
 def test_nowplaying_layout():
@@ -84,8 +115,8 @@ def test_long_filename_and_url_are_truncated_into_safe_area():
     assert_safe(st)
     shown = next(x for x in texts(st) if x.startswith("fff"))
     assert "…" in shown and len(shown) < 300
-    long_url = ScreenState(kind="boot", device_id="d" * 120, console_url="http://" + "x" * 400, version="1")
-    assert_safe(long_url)
+    assert_safe(ScreenState(kind="boot", device_id="d" * 120, version="1"))
+    assert_safe(ScreenState(kind="pairing", device_name="N" * 120))
     assert_safe(ScreenState(kind="nowplaying", playlist_name="P" * 200, item_count=1))
 
 

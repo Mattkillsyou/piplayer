@@ -106,7 +106,7 @@ describe("GET /api/operator/me", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       username: "ed", role: "editor", console_url: BASE, timezone: "UTC", wyze_configured: false,
-      groups: [{ id: gid, name: "Me group" }], playlists: [{ id: pid, name: "Me loop" }],
+      groups: [{ id: gid, name: "Me group" }], playlists: [{ id: 1, name: "Default" }, { id: pid, name: "Me loop" }], // migration 0010 seeds Default
     });
     expect(await detail(await me(), 401)).toBe("Missing bearer token");
     expect(await detail(await me(bearer(auth.newApiToken())), 401)).toBe("Invalid API token");

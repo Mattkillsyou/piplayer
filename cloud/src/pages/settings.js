@@ -1,5 +1,6 @@
 // /settings (admin only, cloud-only page): site timezone, screenshot and camera intervals,
-// default image duration, the group/playlist new devices get on first enrollment and the remote
+// default image duration, the site default playlist (every upload joins it; projectors with
+// nothing of their own play it), the group/playlist new devices get on first enrollment and the remote
 // update policy (player release, nightly auto-update + window), stored in the settings table
 // (db.loadSettings / saveSetting), plus the device enrollment key (shown
 // masked, rotatable; POST /api/enroll checks it) and the admin's personal API tokens
@@ -229,6 +230,11 @@ async function settingsPage(ctx, newToken = "") {
       <label>Default image duration (seconds)
         <input type="number" name="default_image_duration" value="${esc(s.default_image_duration)}" min="0.5" max="86400" step="0.5" required>
       </label>
+      <label>Default playlist (every upload joins it; projectors play it unless they have a playlist of their own)
+        <select name="default_playlist_id">
+          ${optionList(playlists, s.default_playlist_id)}
+        </select>
+      </label>
       <label>New devices join group
         <select name="enroll_group_id">
           <option value="">— none —</option>
@@ -318,6 +324,8 @@ async function settingsSave(ctx) {
   // Update policy: an omitted (empty) field keeps its current value, so older callers that
   // only post the four site fields never lose it.
   const current = await ctx.settings();
+  const defaultPlaylist = intField(str(form, "default_playlist_id"), "Default playlist") ?? current.default_playlist_id;
+  if (defaultPlaylist !== null && !(await db.first(ctx.env, "SELECT id FROM playlists WHERE id = ?", defaultPlaylist))) fail(400, "Default playlist: pick a playlist from the list");
   const release = str(form, "player_release").trim() || current.player_release;
   if (!db.isGitRef(release)) fail(400, "Player software version may only contain letters, digits, dots, slashes, hyphens and underscores (at most 100)");
   const autoUpdate = str(form, "auto_update").trim() || current.auto_update;
@@ -325,7 +333,7 @@ async function settingsSave(ctx) {
   const window = str(form, "auto_update_window").trim() || current.auto_update_window;
   if (!db.UPDATE_WINDOW_RE.test(window)) fail(400, "Auto-update window must be HH:MM-HH:MM");
   const values = { timezone, screenshot_interval: interval, camera_interval: camera, default_image_duration: duration,
-    enroll_group_id: enrollGroup, enroll_playlist_id: enrollPlaylist,
+    enroll_group_id: enrollGroup, enroll_playlist_id: enrollPlaylist, default_playlist_id: defaultPlaylist,
     player_release: release, auto_update: autoUpdate, auto_update_window: window };
   // Projector lead / idle minutes: stored (and audited) only when the form posts them.
   for (const [key, label] of [["projector_lead_minutes", "Switch on before a schedule starts"], ["projector_idle_minutes", "Switch off after playback ends"]]) {

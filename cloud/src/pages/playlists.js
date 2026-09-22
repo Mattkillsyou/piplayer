@@ -20,7 +20,7 @@ const TOUCH_SQL = "UPDATE playlists SET updated_at = datetime('now') WHERE id = 
 async function playlistsPage(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = user.role !== "viewer";
-  const tz = (await ctx.settings()).timezone;
+  const { timezone: tz, default_playlist_id: defaultId } = await ctx.settings();
   // Playlists are shared; "used by" counts only the devices this user may see (the schedule
   // rule count stays fleet-wide: deleting the playlist removes them all).
   const own = ownedClause(user);
@@ -38,7 +38,7 @@ async function playlistsPage(ctx) {
     if (p.group_count) parts.push(`${p.group_count} group(s) will lose it as their default playlist`);
     const confirm = `Delete playlist ${p.name}?` + (parts.length ? ` ${parts.join("; ")}.` : "");
     return `<tr>
-      <td class="name"><a href="/playlists/${p.id}">${esc(p.name)}</a></td>
+      <td class="name"><a href="/playlists/${p.id}">${esc(p.name)}</a>${p.id === defaultId ? ' <span class="badge" title="Every upload joins this playlist; projectors with no playlist of their own play it">default</span>' : ""}</td>
       <td>${p.item_count}</td>
       <td class="muted">
         <span title="devices with this as their default playlist">${plural(p.device_count, "device")}</span>
@@ -49,7 +49,7 @@ async function playlistsPage(ctx) {
       <td>
         <div class="action-buttons">
           <a href="/playlists/${p.id}" class="button small">${canEdit ? "Edit" : "View"}</a>
-          ${canEdit ? `<form method="post" action="/playlists/${p.id}/delete" class="inline" data-confirm="${esc(confirm)}">
+          ${canEdit && p.id !== defaultId ? `<form method="post" action="/playlists/${p.id}/delete" class="inline" data-confirm="${esc(confirm)}">
             ${csrfInput(ctx)}
             <button type="submit" class="danger small">Delete</button>
           </form>` : ""}
@@ -303,6 +303,7 @@ async function playlistDelete(ctx) {
   const env = ctx.env;
   const row = await db.first(env, "SELECT name FROM playlists WHERE id = ?", playlistId);
   if (!row) fail(404, "Playlist not found");
+  if (playlistId === (await ctx.settings()).default_playlist_id) fail(400, "This is the default playlist. Pick another default on Settings first.");
   // Record what the cascade is about to remove so the audit trail explains it.
   const rules = await db.all(env, "SELECT id, device_id, name FROM device_schedules WHERE playlist_id = ?", playlistId);
   const devices = (await db.all(env, "SELECT id FROM devices WHERE playlist_id = ?", playlistId)).map((r) => r.id);

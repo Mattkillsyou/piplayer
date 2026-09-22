@@ -50,9 +50,11 @@ export async function playlist_hash(playlistId, items) {
 }
 
 // [playlist_id, source]: matching schedule (highest priority, then highest id) ->
-// device default -> group default -> [null, null]. `device` needs id, playlist_id, group_id;
-// `now` is a util.wallClock() in the site timezone.
-export async function resolve_active_playlist_id(env, device, now) {
+// device default -> group default -> site default -> [null, null]. `device` needs id,
+// playlist_id, group_id; `now` is a util.wallClock() in the site timezone; `defaultPlaylistId`
+// is settings.default_playlist_id (loaded here when the caller has no settings in hand).
+export async function resolve_active_playlist_id(env, device, now, defaultPlaylistId = undefined) {
+  if (defaultPlaylistId === undefined) defaultPlaylistId = (await db.loadSettings(env)).default_playlist_id;
   const rows = await db.all(env,
     `SELECT id, playlist_id, name, priority, start_time, end_time,
             days_of_week, start_date, end_date
@@ -62,18 +64,21 @@ export async function resolve_active_playlist_id(env, device, now) {
     const grow = await db.first(env, "SELECT playlist_id FROM device_groups WHERE id = ?", device.group_id);
     groupPlaylistId = grow ? grow.playlist_id : null;
   }
-  return pick_playlist(device, rows, groupPlaylistId, now);
+  return pick_playlist(device, rows, groupPlaylistId, now, defaultPlaylistId);
 }
 
 // The decision half of resolve_active_playlist_id, on rows the caller already has: the
-// device's schedules and its group's default playlist_id (null when it has no group). The
-// /devices and /dashboard pages fetch those for the whole fleet in a few statements and
-// call this per device instead of issuing per-device queries.
-export function pick_playlist(device, scheduleRows, groupPlaylistId, now) {
+// device's schedules, its group's default playlist_id (null when it has no group) and the
+// site default playlist (settings.default_playlist_id, migration 0010: the last fallback, so
+// a projector with nothing of its own still plays). The /devices and /dashboard pages fetch
+// those for the whole fleet in a few statements and call this per device instead of issuing
+// per-device queries.
+export function pick_playlist(device, scheduleRows, groupPlaylistId, now, defaultPlaylistId = null) {
   const active = schedules.pick_active(scheduleRows, now);
   if (active) return [active.playlist_id, `schedule:${active.name}`];
   if (device.playlist_id) return [device.playlist_id, "device-default"];
   if (groupPlaylistId) return [groupPlaylistId, "group-default"];
+  if (defaultPlaylistId) return [defaultPlaylistId, "site-default"];
   return [null, null];
 }
 
@@ -102,7 +107,9 @@ export function ir_codes(raw) {
 
 // "on" | "off" for a device's projector in auto mode, from the same rows pick_playlist uses:
 // on while a playlist is active, from projector_lead_minutes before the next schedule rule
-// starts, and until nothing has been active for projector_idle_minutes; off otherwise.
+// starts, and until nothing has been active for projector_idle_minutes; off otherwise. The
+// site default playlist does not count: it is always there, so it would keep every auto-mode
+// projector on around the clock; auto mode follows schedules and assigned playlists only.
 export function projector_want(device, scheduleRows, groupPlaylistId, now, settings) {
   const lead = settings.projector_lead_minutes ?? db.PROJECTOR_LEAD_MINUTES;
   const idle = settings.projector_idle_minutes ?? db.PROJECTOR_IDLE_MINUTES;
@@ -192,7 +199,7 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
     const grow = await db.first(env, "SELECT playlist_id FROM device_groups WHERE id = ?", device.group_id);
     groupPlaylistId = grow ? grow.playlist_id : null;
   }
-  const [activePlaylistId, source] = pick_playlist(device, rows, groupPlaylistId, wall);
+  const [activePlaylistId, source] = pick_playlist(device, rows, groupPlaylistId, wall, settings.default_playlist_id);
 
   let playlistBlock = null;
   if (activePlaylistId) {

@@ -253,6 +253,10 @@ async function uploadComplete(ctx) {
     fail(409, `Already in the library as '${existing.original_name}'.`);
   }
   const filename = row.key.slice("media/".length);
+  // Every upload joins the site default playlist (migration 0010) at the end, in the same
+  // transaction as the media row: the new file is found by its sha256 (UNIQUE), so the item
+  // and the media row land or fail together.
+  const defaultPlaylist = (await ctx.settings()).default_playlist_id;
   let mediaId;
   try {
     // The media row is inserted before R2 completes the object, so a name or sha256 clash
@@ -261,6 +265,12 @@ async function uploadComplete(ctx) {
       [`INSERT INTO media (filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256)
         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       filename, row.name, row.media_type, row.size, row.duration_seconds, row.width, row.height, row.sha256],
+      ...(defaultPlaylist ? [
+        [`INSERT INTO playlist_items (playlist_id, media_id, position)
+          SELECT ?1, (SELECT id FROM media WHERE sha256 = ?2), COALESCE(MAX(position), -1) + 1 FROM playlist_items WHERE playlist_id = ?1`,
+        defaultPlaylist, row.sha256],
+        ["UPDATE playlists SET updated_at = datetime('now') WHERE id = ?", defaultPlaylist],
+      ] : []),
       ["DELETE FROM uploads WHERE id = ?", row.id],
     ]);
     mediaId = ins.meta.last_row_id;
@@ -302,7 +312,8 @@ async function uploadComplete(ctx) {
       fail(400, "The file did not arrive intact; please upload it again.");
     }
   }
-  await audit.log(ctx, "upload_media", "media", mediaId, { filename: row.name, type: row.media_type, sha_verified: shaVerified ? undefined : false });
+  await audit.log(ctx, "upload_media", "media", mediaId,
+    { filename: row.name, type: row.media_type, playlist: defaultPlaylist ?? undefined, sha_verified: shaVerified ? undefined : false });
   return json({ media_id: mediaId });
 }
 

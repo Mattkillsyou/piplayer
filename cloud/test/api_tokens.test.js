@@ -187,7 +187,7 @@ describe("GET /api/operator/enrollment", () => {
     const key = (await db.loadSettings(env)).enrollment_key;
     expect(body).toEqual({
       console_url: BASE, enrollment_key: key, timezone: "Europe/Berlin", wyze_configured: false,
-      groups: [{ id: gid, name: "Lobby group" }], playlists: [{ id: pid, name: "Lobby loop" }],
+      groups: [{ id: gid, name: "Lobby group" }], playlists: [{ id: 1, name: "Default" }, { id: pid, name: "Lobby loop" }], // migration 0010 seeds Default
     });
     // rotating the key is reflected on the next call (the flasher never caches it)
     await post(r.admin, "/settings/enrollment/rotate");

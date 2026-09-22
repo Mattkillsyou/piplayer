@@ -29,12 +29,27 @@ the right content the moment it boots, with nobody touching the Devices page.
 |---|---|---|
 | New devices join group | `enroll_group_id` | none, or any existing group |
 | New devices get playlist | `enroll_playlist_id` | none, or any existing playlist |
+| Default playlist | `default_playlist_id` | any existing playlist (the "Default" playlist migration 0010 creates, until changed) |
 
-Both are optional and independent. Saving a value that does not name an
+The first two are optional and independent. Saving a value that does not name an
 existing row is rejected with 400. If the chosen group or playlist is later
 deleted, the setting is treated as "none" at enrollment time (nothing is
 cleared on disk; the dangling id is just ignored), so pick a replacement on
 the Settings page when you delete one.
+
+**The default playlist.** Nobody has to assign a playlist for a projector to
+play. Every upload is appended to the site default playlist (the Library says
+so under the drop zone), and a projector plays that playlist whenever nothing
+more specific applies. The order the player resolves in is unchanged, with the
+default as the last step: a matching schedule rule → the device's own default
+playlist → its group's default playlist → the site default playlist. The
+Devices and Dashboard pages show "via default playlist" when that is what a
+projector is on, and the empty choice in the Devices and Groups playlist
+selects reads "Default" for the same reason. The Playlists page marks the
+default with a badge and refuses to delete it; pick another default on the
+Settings page first. Projector auto mode (section E) does not count the site
+default as "something to play", or every projector in auto mode would stay on
+around the clock: it still follows schedules and assigned playlists.
 
 **Behaviour.**
 

@@ -12,6 +12,7 @@ export const JPEG_MAGIC = [0xff, 0xd8, 0xff];
 export const mediaKey = (filename) => `media/${filename}`;
 export const screenshotKey = (deviceId) => `screenshots/${deviceId}.jpg`;
 export const cameraKey = (deviceId) => `camera/${deviceId}.jpg`;
+export const MEDIA_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 // ---------------------------------------------------------------------------
 // Serving an R2 object the way Starlette's FileResponse does: Content-Type from the stored
@@ -185,7 +186,20 @@ async function getMedia(ctx) {
   if (!isUser && !(await deviceMayFetch(ctx.env, device, filename, (await ctx.settings()).timezone))) {
     fail(403, "file is not in this device's playlist");
   }
-  return serveObject(ctx.request, ctx.env.MEDIA, mediaKey(filename));
+  // A media filename starts with 16 hex chars of the object's sha256 (uploads.js), so the bytes
+  // behind a name never change: a year of immutable caching, and the edge cache in front of R2
+  // (keyed on the URL alone, only after the checks above) so the next projector on the same
+  // edge gets the edge copy. Range requests go to R2: a 206 must not be stored, and the Cache
+  // API's own range answers do not match the FileResponse shapes above.
+  const cacheable = ctx.request.method === "GET" && !ctx.request.headers.has("range");
+  const cacheKey = new Request(ctx.url.origin + ctx.url.pathname);
+  if (cacheable) {
+    const hit = await caches.default.match(cacheKey);
+    if (hit) return hit;
+  }
+  const res = await serveObject(ctx.request, ctx.env.MEDIA, mediaKey(filename), { "cache-control": MEDIA_CACHE_CONTROL });
+  if (cacheable && res.status === 200) ctx.exec.waitUntil(caches.default.put(cacheKey, res.clone()));
+  return res;
 }
 
 // ---------------------------------------------------------------------------

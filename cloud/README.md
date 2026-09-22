@@ -68,10 +68,13 @@ real request origin.
 ## Migrations
 
 `migrations/0001_init.sql` is the base schema; `0002_camera`, `0003_automation`,
-`0004_device_codes`, `0005_pi_model`, `0006_indexes`, `0007_command_undeliverable` and
-`0008_login_failures_index` add to it (see the Schema section of MODULES.md for what each one
-adds; the database is at `schema_version` 8). `0006` heals duplicate media rows and duplicate
-open alerts itself before its unique indexes go on, so no manual step precedes it. To change the schema, add the next `migrations/000N_<name>.sql`
+`0004_device_codes`, `0005_pi_model`, `0006_indexes`, `0007_command_undeliverable`,
+`0008_login_failures_index`, `0009_device_owner` and `0010_default_playlist` add to it (see the
+Schema section of MODULES.md for what each one adds; the database is at `schema_version` 10).
+`0006` heals duplicate media rows and duplicate open alerts itself before its unique indexes go
+on, so no manual step precedes it. `0010` creates the "Default" playlist (unless one of that name
+exists), points `settings.default_playlist_id` at it and appends every media file that is in no
+playlist at all, so nothing that was uploaded before it stays silent. To change the schema, add the next `migrations/000N_<name>.sql`
 (one higher than the last file present; never edit an existing one; `ALTER TABLE ... ADD COLUMN`,
 new tables, indexes; end it with the `schema_version` write and bump `db.SCHEMA_VERSION` to match)
 and apply with `npm run migrate:local` (dev) / `npm run migrate:remote` (production; `npm run
@@ -245,6 +248,15 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   in either. The size is checked against `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB) at init too. Upload
   error messages are plain English ("That file type (.exe) is not supported...", "This file is
   X GB; the limit is Y GB.", "Already in the library as ...").
+- **Every upload joins the default playlist**: `complete` appends the new media row to the
+  site default playlist (`settings.default_playlist_id`, the "Default" playlist migration 0010
+  creates; the Settings page can point it at another playlist) in the same transaction as the
+  media row, after its last item, and bumps that playlist's `updated_at`; the `upload_media`
+  audit row carries `playlist: <id>`. A projector plays it whenever no schedule rule matches and
+  neither the device nor its group has a playlist of its own (`manifest.pick_playlist`:
+  schedule → device default → group default → site default), so a fresh upload plays on every
+  projector that nobody has assigned anything to. The Playlists page marks it with a `default`
+  badge and refuses to delete it until another playlist is made the default on Settings.
 - **Complete verifies the hash**: `POST /library/upload/{id}/complete` re-hashes the stored
   object and refuses a mismatch with 400, deleting the object, so a wrong browser hash never
   reaches the library or the dedupe check. Files up to `PIPLAYER_VERIFY_SHA_MAX_BYTES` (8 MiB,
@@ -294,8 +306,13 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   `FileResponse`, 416 when unsatisfiable, `If-Range` honoured, more than 100 parts → the whole
   object) and HEAD. Malformed and inverted ranges are 400; like Starlette these 400/416 answers
   are `text/plain`, not the JSON `{detail}` envelope. A device token only unlocks the files of the playlist
-  it currently resolves to (schedule → device default → group default); logged-in users may
-  fetch anything.
+  it currently resolves to (schedule → device default → group default → site default); logged-in users may
+  fetch anything. A media filename starts with 16 hex chars of the file's sha256, so the bytes
+  behind a name never change: media goes out with `Cache-Control: public, max-age=31536000,
+  immutable` and a plain GET is kept in the edge cache (`caches.default`, keyed on the URL, looked
+  up only after the auth and scoping checks) so the next projector on the same edge gets the edge
+  copy instead of another read from R2. Range requests always go to R2. Screenshots and camera
+  snapshots stay `no-store`.
 - **Screenshots** must start with the JPEG magic `FF D8 FF` and stay under
   `PIPLAYER_MAX_SCREENSHOT_BYTES` (5 MiB, 413 otherwise); they live at
   `screenshots/<device_id>.jpg` in R2 and a stale badge appears after 3 × the screenshot interval.

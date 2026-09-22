@@ -210,7 +210,9 @@ describe("upload protocol", () => {
     const stored = new Uint8Array(await (await env.MEDIA.get("media/" + media.filename)).arrayBuffer());
     expect(await digest(stored)).toBe(sha);
     const audit = await query("SELECT username, action, target_id, details FROM audit_log WHERE action = 'upload_media'");
-    expect(audit).toEqual([{ username: "ed", action: "upload_media", target_id: String(mediaId), details: '{"filename": "My Clip (1).mp4", "type": "video"}' }]);
+    // every upload joins the site default playlist (migration 0010; test/default_playlist.test.js)
+    const dflt = (await query("SELECT value FROM settings WHERE key = 'default_playlist_id'"))[0].value;
+    expect(audit).toEqual([{ username: "ed", action: "upload_media", target_id: String(mediaId), details: `{"filename": "My Clip (1).mp4", "type": "video", "playlist": ${dflt}}` }]);
     // the completed upload is gone on the R2 side too
     r = await editor.postJson(`/library/upload/${uploadId}/complete`, {}, { "X-CSRF-Token": editorCsrf });
     expect(r.status).toBe(404);
@@ -455,7 +457,8 @@ describe("library page", () => {
       .toEqual([{ media_id: other, position: 0 }, { media_id: other, position: 1 }]);
     expect((await query("SELECT updated_at FROM playlists WHERE id = 77"))[0].updated_at).not.toBe("2000-01-01 00:00:00");
     const a = (await query("SELECT details FROM audit_log WHERE action = 'delete_media'"))[0];
-    expect(JSON.parse(a.details)).toEqual({ filename: "todelete.png", playlists: [77] });
+    const dflt = Number((await query("SELECT value FROM settings WHERE key = 'default_playlist_id'"))[0].value);
+    expect(JSON.parse(a.details)).toEqual({ filename: "todelete.png", playlists: [dflt, 77] }); // the upload put it in the site default too
     r = await editor.post(`/library/${media_id}/delete`, { csrf_token: editorCsrf });
     expect(r.status).toBe(404);
   });

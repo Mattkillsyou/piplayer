@@ -26,7 +26,7 @@ async function groupsPage(ctx) {
         <form method="post" action="/groups/${g.id}/assign" class="inline">
           ${csrfInput(ctx)}
           <select name="playlist_id" data-autosubmit aria-label="Default playlist for ${esc(g.name)}"${canEdit ? "" : " disabled"}>
-            <option value="">— none —</option>
+            <option value="">Default</option>
             ${playlists.map((p) => `<option value="${p.id}"${p.id === g.playlist_id ? " selected" : ""}>${esc(p.name)}</option>`).join("\n            ")}
           </select>
         </form>
@@ -48,7 +48,7 @@ async function groupsPage(ctx) {
     <button type="submit" class="primary">Create</button>
   </form>` : ""}
 </div>
-<p class="help small">Devices in a group use the group's playlist as their default playlist (when the device has none of its own and no schedule matches).</p>
+<p class="help small">Devices in a group use the group's playlist as their default playlist (when the device has none of its own and no schedule matches). Groups without one play the site default playlist.</p>
 
 ${!groups.length ? emptyState("NO GROUPS", `No groups yet.${canEdit ? " Create one above." : ""}`) : `<div class="table-wrap">
 <table class="data">

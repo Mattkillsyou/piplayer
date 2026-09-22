@@ -33,7 +33,7 @@ const lampText = (s) => (s === "mpv-down" ? "player down" : s);
 // A failed remote update (last_update_ok = 0, api.storeUpdateStatus) is a fault until the next report.
 export const isFault = (d) => d.lamp === "mpv-down" || d.lamp === "offline" || d.last_update_ok === 0;
 
-// Fill in the served playlist (schedule/default/group), screenshot age + stale flag and
+// Fill in the served playlist (schedule/device/group/site default), screenshot age + stale flag and
 // last-seen age for a list of device rows (web._decorate_device), with the fleet's
 // schedules, group defaults and playlist names fetched in three statements rather than
 // a few per device (D1 statements count against the per-invocation subrequest budget).
@@ -51,17 +51,20 @@ export async function decorateDevices(env, rows, settings, now = new Date()) {
     if (bucket) bucket.push(s);
   }
   const groupPl = new Map((await db.all(env, "SELECT id, playlist_id FROM device_groups")).map((g) => [g.id, g.playlist_id]));
-  const plName = new Map((await db.all(env, "SELECT id, name FROM playlists")).map((p) => [p.id, p.name]));
+  const pl = new Map((await db.all(env, "SELECT p.id, p.name, (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) AS item_count FROM playlists p")).map((p) => [p.id, p]));
   for (const dd of rows) {
-    const [pid, source] = manifest.pick_playlist(dd, byDevice.get(dd.id), groupPl.get(dd.group_id) ?? null, wall);
+    const [pid, source] = manifest.pick_playlist(dd, byDevice.get(dd.id), groupPl.get(dd.group_id) ?? null, wall, settings.default_playlist_id);
     dd.projector_want = manifest.projector_want(dd, byDevice.get(dd.id), groupPl.get(dd.group_id) ?? null, wall, settings);
     dd.active_playlist_id = pid;
     dd.active_playlist_name = null;
     dd.active_source = null;
+    dd.active_playlist_empty = false; // true when the served playlist has no items (the row shows where to add some)
     if (pid) {
-      dd.active_playlist_name = plName.get(pid) ?? null;
+      dd.active_playlist_name = pl.get(pid)?.name ?? null;
+      dd.active_playlist_empty = pl.get(pid)?.item_count === 0;
       if (source.startsWith("schedule:")) dd.active_source = "schedule: " + source.slice("schedule:".length);
       else if (source === "group-default") dd.active_source = `group: ${dd.group_name || ""}`;
+      else if (source === "site-default") dd.active_source = "default playlist";
       else dd.active_source = "device default";
     }
     const shotAge = ageSeconds(dd.last_screenshot_at, now);
@@ -412,7 +415,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
           ${csrfInput(ctx)}
           <label>default playlist
             <select name="playlist_id" data-autosubmit${dis}>
-              <option value="">— none —</option>
+              <option value="">Default (plays unless you pick one)</option>
               ${optionList(playlists, d.playlist_id)}
             </select>
           </label>
@@ -432,6 +435,9 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
       <div class="now-block${d.active_playlist_name ? "" : " none"}">
         <span class="now-label">active now${d.active_playlist_name ? ` · via ${esc(d.active_source)}` : ""}</span>
         <span class="now-playlist">${d.active_playlist_name ? esc(d.active_playlist_name) : "no playlist"}</span>
+        ${d.active_playlist_name && d.active_playlist_empty
+    ? `<span class="now-file">nothing in it yet · ${d.active_source === "default playlist" ? '<a href="/library">upload files in the Library</a>' : `<a href="/playlists/${d.active_playlist_id}">add files to it</a>`}</span>`
+    : ""}
         ${d.current_filename
     ? `<span class="now-file">#${(d.current_position || 0) + 1} ${esc(d.current_filename)}${d.player_status ? ` · ${esc(lampText(d.player_status))}` : ""}</span>`
     : ""}

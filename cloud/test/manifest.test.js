@@ -1,5 +1,6 @@
 // Playlist hash golden values (computed with the Python CMS formula), Python float
-// formatting, and the resolution order schedule -> device default -> group default.
+// formatting, and the resolution order schedule -> device default -> group default -> site
+// default (the "Default" playlist migration 0010 seeds; test/default_playlist.test.js covers it).
 import { beforeAll, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import * as manifest from "../src/manifest.js";
@@ -89,12 +90,15 @@ describe("resolve_active_playlist_id / manifest_for_device", () => {
   const device = () => query("SELECT id, device_id, name, playlist_id, group_id FROM devices WHERE id = ?", ids.dev).then((r) => r[0]);
   const now = () => wallClock("UTC", new Date(Date.UTC(2026, 8, 14, 12, 0))); // Monday noon
 
-  it("device default, then group default, then null", async () => {
+  it("device default, then group default, then the site default, then null", async () => {
     expect(await manifest.resolve_active_playlist_id(env, await device(), now())).toEqual([ids.plA, "device-default"]);
     const d2 = (await query("SELECT * FROM devices WHERE id = ?", ids.devGroupOnly))[0];
     expect(await manifest.resolve_active_playlist_id(env, d2, now())).toEqual([ids.plC, "group-default"]);
     const d3 = (await query("SELECT * FROM devices WHERE id = ?", ids.devNone))[0];
-    expect(await manifest.resolve_active_playlist_id(env, d3, now())).toEqual([null, null]);
+    const site = (await query("SELECT value FROM settings WHERE key = 'default_playlist_id'"))[0].value;
+    expect(await manifest.resolve_active_playlist_id(env, d3, now())).toEqual([Number(site), "site-default"]); // loads settings itself
+    expect(await manifest.resolve_active_playlist_id(env, d3, now(), Number(site))).toEqual([Number(site), "site-default"]);
+    expect(await manifest.resolve_active_playlist_id(env, d3, now(), null)).toEqual([null, null]);
   });
 
   it("a matching schedule wins (highest priority, then highest id); a bad row is ignored", async () => {

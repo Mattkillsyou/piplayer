@@ -96,7 +96,7 @@ def test_no_cache_and_offline_shows_offline_screen(cfg, cms, mpv, client, screen
     assert screen_loads(mpv) == ["offline.png"]
     assert state.last_manifest is None
     assert state.last_failure == "unreachable"
-    assert screens.current.kind == "offline" and "no cached content" in screen_texts(screens)
+    assert screens.current.kind == "offline" and "No cached content" in screen_texts(screens)
     run_cycle(cfg, client, state, screens=screens)
     assert screen_loads(mpv) == ["offline.png"]      # same screen: not reloaded
 
@@ -330,7 +330,7 @@ def test_unassigned_device_shows_pairing_screen_without_clearing_mpv(cfg, cms, m
     state = fresh_state(cfg)
     run_cycle(cfg, client, state, screens=screens)
     assert screen_loads(mpv) == ["pairing.png"]
-    assert screens.current.kind == "pairing" and "assign a playlist to this device in the console" in screen_texts(screens)
+    assert screens.current.kind == "pairing" and screen_texts(screens) == ["DEV-1"]
     assert mpv.commands("stop") == [] and mpv.commands("playlist-clear") == []
     mpv.restart()                                   # new mpv instance starts black: screen is re-shown
     run_cycle(cfg, client, state, screens=screens)
@@ -344,11 +344,11 @@ def test_empty_playlist_shows_waiting_with_next_rule(cfg, cms, mpv, client, scre
     run_cycle(cfg, client, state, screens=screens)
     assert screens.current.kind == "waiting"
     texts = screen_texts(screens)
-    assert "playlist Day has no items" in texts
-    assert "next: Night \u00b7 After hours at Tue 22:00" in texts
+    assert "Playlist Day has no items" in texts
+    assert "Next: Night \u00b7 After hours at Tue 22:00" in texts
     cms.manifest["playlist"] = None                  # rules exist but none active: still waiting, not pairing
     run_cycle(cfg, client, state, screens=screens)
-    assert screens.current.kind == "waiting" and "no schedule rule is active" in screen_texts(screens)
+    assert screens.current.kind == "waiting" and "No schedule rule is active" in screen_texts(screens)
 
 
 def test_rejected_token_shows_error_screen(cfg, cms, mpv, client, screens):
@@ -358,7 +358,7 @@ def test_rejected_token_shows_error_screen(cfg, cms, mpv, client, screens):
     assert state.last_failure == "token"
     assert screen_loads(mpv) == ["error.png"]
     assert screens.current.kind == "error" and screens.current.reason == "token"
-    assert "the console refused this device's token" in screen_texts(screens)
+    assert "The console refused this projector's token" in screen_texts(screens)
 
 
 def test_content_replaces_status_screen_and_announces_now_playing(cfg, cms, mpv, client, screens):

@@ -3,7 +3,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { parseRange } from "../src/media.js";
+import { MEDIA_CACHE_CONTROL, parseRange } from "../src/media.js";
 import { BASE, query, setupAdmin } from "./helpers.js";
 
 const SHA = (c) => c.repeat(64);
@@ -185,6 +185,43 @@ describe("serving", () => {
     expect([...body]).toEqual([...part(0, 1), ...part(5, 6), ...part(990, 999), ...new TextEncoder().encode(`--${boundary}--`)]);
     // one part past the end still poisons the whole request
     expect((await get("/api/media/a.mp4", { ...bearer("tok-a"), range: "bytes=0-1,1000-" })).status).toBe(416);
+  });
+
+  it("marks media immutable for a year, on 200 and 206 alike", async () => {
+    expect((await admin.get("/api/media/a.mp4")).headers.get("cache-control")).toBe(MEDIA_CACHE_CONTROL);
+    const part = await get("/api/media/a.mp4", { ...bearer("tok-a"), range: "bytes=0-9" });
+    expect([part.status, part.headers.get("cache-control")]).toEqual([206, MEDIA_CACHE_CONTROL]);
+    expect((await get("/api/media/a.mp4", bearer("tok-a"), "HEAD")).headers.get("cache-control")).toBe(MEDIA_CACHE_CONTROL);
+  });
+
+  it("serves the second full GET from the edge cache, still behind the auth and scoping checks", async () => {
+    const data = new Uint8Array(500).map((_, i) => (i * 7) % 253);
+    await env.MEDIA.put("media/c.mp4", data, { httpMetadata: { contentType: "video/mp4" } });
+    const first = await admin.get("/api/media/c.mp4");
+    expect(first.status).toBe(200);
+    expect(await bytes(first)).toEqual(data);
+    // the put runs in waitUntil after the response went out
+    const cacheKey = new Request(BASE + "/api/media/c.mp4");
+    let cached = null;
+    for (let i = 0; i < 50 && !cached; i++) {
+      cached = await caches.default.match(cacheKey);
+      if (!cached) await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(cached).toBeTruthy();
+    expect(cached.headers.get("cache-control")).toBe(MEDIA_CACHE_CONTROL);
+    // gone from R2: the edge copy still answers a plain GET ...
+    await env.MEDIA.delete("media/c.mp4");
+    const second = await admin.get("/api/media/c.mp4");
+    expect(second.status).toBe(200);
+    expect(second.headers.get("content-type")).toBe("video/mp4");
+    expect(second.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await bytes(second)).toEqual(data);
+    // ... never a caller the checks above reject ...
+    expect((await get("/api/media/c.mp4")).status).toBe(401);
+    expect((await get("/api/media/c.mp4", bearer("tok-a"))).status).toBe(403);
+    // ... and Range requests go to R2 (a 206 is never stored)
+    expect((await admin.fetch("/api/media/c.mp4", { headers: { range: "bytes=0-9" } })).status).toBe(404);
+    await caches.default.delete(cacheKey);
   });
 
   it("supports HEAD", async () => {

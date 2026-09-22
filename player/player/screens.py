@@ -6,6 +6,8 @@ change.
 layout() is the testable contract: it returns every text item with its
 position and ink extent, and render() draws exactly that list (plus the
 non-text decorations: scanlines, brackets, rule, pill, keycap, progress bar).
+The pairing (standby) screen is the exception: the projector's name alone,
+centered, with nothing else on screen.
 """
 import functools
 import logging
@@ -156,45 +158,48 @@ def _next_rule_text(rule: dict) -> str:
         when = at.strftime("%H:%M") if at.date() == datetime.now(at.tzinfo).date() else at.strftime("%a %H:%M")
     except ValueError:
         pass
-    return f"next: {rule.get('name') or '?'}{DOT}{rule.get('playlist') or '?'} at {when}"
+    return f"Next: {rule.get('name') or '?'}{DOT}{rule.get('playlist') or '?'} at {when}"
 
 
 def _mb(n: int) -> str:
     return f"{n / 1048576:.1f} MB"
 
 
-def _details(state: ScreenState) -> tuple[list[str], str]:
-    """Detail lines and the optional help line for a full screen."""
-    k, url = state.kind, state.console_url
+def _details(state: ScreenState) -> list[str]:
+    """One or two plain-English lines saying what is happening. No instructions, no addresses."""
+    k = state.kind
     if k == "boot":
-        return [f"waiting for the console at {url}", f"device {state.device_id}"], ""
-    if k == "pairing":
-        return ([f"{state.device_name}{DOT}{state.device_id}", "assign a playlist to this device in the console", url],
-                "Devices page: pick a default playlist, a group, or add a schedule rule.")
+        return ["Waiting for the first sync"]
     if k == "waiting":
-        lines = [f"playlist {state.playlist_name} has no items" if state.playlist_name else "no schedule rule is active"]
+        lines = [f"Playlist {state.playlist_name} has no items" if state.playlist_name else "No schedule rule is active"]
         if state.next_rule:
             lines.append(_next_rule_text(state.next_rule))
-        return lines, ""
+        return lines
     if k == "syncing":
-        lines = [f"{state.phase} {state.progress_done} of {state.progress_total}", state.current_file]
+        lines = [f"{state.phase.capitalize()} {state.progress_done} of {state.progress_total}", state.current_file]
         if state.bytes_done is not None and state.bytes_total:
             lines.append(f"{_mb(state.bytes_done)} / {_mb(state.bytes_total)}")
-        return lines, ""
+        return lines
     if k == "offline":
-        return ([f"console unreachable: {url}", f"last contact {state.last_contact or 'never'}",
-                 "playing cached content" if state.cached else "no cached content"],
-                "Check network, the console address and that the console is running.")
+        return ["Cannot reach the console", f"Last contact {state.last_contact or 'never'}",
+                "Playing cached content" if state.cached else "No cached content"]
     if k == "error":
         if state.reason == "token":
-            return ["the console refused this device's token", state.device_id,
-                    "regenerate the token on the Devices page and re-run the installer"], ""
-        if state.reason == "player":
-            return [state.message, "check the projector is on, then restart the player from the console"], ""
-        if state.reason == "storage":
-            return [state.message, "free space on the SD card or shrink the playlist"], ""
-        return [state.message], ""
-    return [], ""
+            return ["The console refused this projector's token"]
+        return [state.message]
+    return []
+
+
+def _compose_standby(state: ScreenState) -> tuple[list[dict], dict]:
+    """No playlist yet: the projector's name alone, centered, and nothing else."""
+    text = (state.device_name or state.device_id or "").upper()
+    size = 160
+    while size > 100 and _width(text, _font("display", size)) > SAFE_W:
+        size -= 10
+    name = _item(text, 0, 0, "display", size, "phosphor", max_width=SAFE_W)
+    name["x"] = (WIDTH - name["w"]) // 2
+    name["y"] = (HEIGHT - name["h"]) // 2
+    return [name], {}
 
 
 def _compose_full(state: ScreenState) -> tuple[list[dict], dict]:
@@ -208,35 +213,32 @@ def _compose_full(state: ScreenState) -> tuple[list[dict], dict]:
     extras["keycap"] = (cap["x"] - 4, cap["y"] + cap["top"] - 4, cap["x"] + cap["w"] + 4, cap["y"] + cap["h"] + 4)
     items += [eyebrow, word, cap]
 
-    # header, right: device name, id, status pill
+    # header, right: device name (the id only when there is no name), status pill
     half = SAFE_W // 2 - 40
     name = _right((state.device_name or state.device_id or "").upper(), RIGHT, SAFE_Y, "display", 44, "phosphor", half)
-    dev = _right(state.device_id, RIGHT, SAFE_Y + 62, "mono", 30, "muted", half)
     style, label = PILLS.get(state.kind, ("fault", state.reason or "error"))
-    pill = _right(label.upper(), RIGHT - 14, SAFE_Y + 112, "mono", 26, "pill-solid" if style == "ok" else "pill", half)
+    pill = _right(label.upper(), RIGHT - 14, SAFE_Y + 70, "mono", 26, "pill-solid" if style == "ok" else "pill", half)
     extras["pill"] = ((pill["x"] - 14, pill["y"] + pill["top"] - 8, RIGHT, pill["y"] + pill["h"] + 8), style)
-    items += [name, dev, pill]
+    items += [name, pill]
 
     rule_y = SAFE_Y + 172
     extras["rule"] = rule_y
 
-    # footer
+    # footer: version and clock only
     foot_font = _font("mono", 28)
     foot_y = BOTTOM - foot_font.getbbox("Xg")[3] - 2
-    right = _right(f"player v{state.version}{DOT}{state.clock or datetime.now().strftime('%H:%M:%S')}",
-                   RIGHT, foot_y, "mono", 28, "dim", half)
-    left = _item(f"console {state.console_url}", SAFE_X, foot_y, "mono", 28, "muted", max_width=RIGHT - 40 - right["w"] - SAFE_X)
-    items += [left, right]
+    items.append(_right(f"player v{state.version}{DOT}{state.clock or datetime.now().strftime('%H:%M:%S')}",
+                        RIGHT, foot_y, "mono", 28, "dim", half))
 
-    # middle band: headline, detail lines, optional bar, optional help line
+    # middle band: headline, detail lines, optional bar
     word_text = headline(state)
     size = 160
     while size > 100 and _width(word_text, _font("display", size)) > SAFE_W:
         size -= 10
     head = _item(word_text, SAFE_X, 0, "display", size, "phosphor", max_width=SAFE_W)
-    details, help_line = _details(state)
+    details = _details(state)
     bar = state.kind == "syncing"
-    height = head["h"] + 36 + len(details) * 58 + (46 if bar else 0) + (58 if help_line else 0)
+    height = head["h"] + 36 + len(details) * 58 + (46 if bar else 0)
     top = rule_y + 1
     y = top + (foot_y - 24 - top - height) // 2
     head["y"] = y
@@ -252,8 +254,6 @@ def _compose_full(state: ScreenState) -> tuple[list[dict], dict]:
             pct = ((state.progress_done - 1) + frac) / state.progress_total if state.progress_total else 0.0
             extras["bar"] = ((SAFE_X, y, RIGHT, y + 22), max(0.0, min(1.0, pct)), state.phase)
             y += 46
-    if help_line:
-        items.append(_item(help_line, SAFE_X, y + 6, "sans", 34, "muted", max_width=SAFE_W))
     return items, extras
 
 
@@ -276,6 +276,8 @@ def _compose_overlay(state: ScreenState) -> tuple[list[dict], dict]:
 def _compose(state: ScreenState) -> tuple[list[dict], dict]:
     if state.kind == "nowplaying":
         return _compose_overlay(state)
+    if state.kind == "pairing":
+        return _compose_standby(state)
     return _compose_full(state)
 
 
@@ -370,9 +372,10 @@ def render(state: ScreenState) -> Image.Image:
     img = Image.new("RGB", (WIDTH, HEIGHT), BLACK)
     d = ImageDraw.Draw(img)
     _decorate(d)
-    d.line([(SAFE_X, extras["rule"]), (RIGHT, extras["rule"])], fill=RULE, width=1)
-    d.rectangle(extras["keycap"], fill=PHOSPHOR)
-    _frame(d, *extras["pill"])
+    if "rule" in extras:        # the standby screen has no header, rule or pill
+        d.line([(SAFE_X, extras["rule"]), (RIGHT, extras["rule"])], fill=RULE, width=1)
+        d.rectangle(extras["keycap"], fill=PHOSPHOR)
+        _frame(d, *extras["pill"])
     if "bar" in extras:
         (x0, y0, x1, y1), pct, phase = extras["bar"]
         d.rectangle((x0, y0, x1, y1), outline=PHOSPHOR, width=1)

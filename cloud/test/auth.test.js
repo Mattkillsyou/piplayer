@@ -302,7 +302,7 @@ describe("roles and routing", () => {
     for (const p of ["/dashboard", "/library", "/playlists", "/devices", "/groups", "/audit", "/users", "/settings", "/flasher"]) {
       expect((await c.get(p)).status, p).toBe(200);
     }
-    for (const p of ["/devices/1/schedule", "/playlists/1", "/library/upload/x", "/api/media/a.mp4"]) {
+    for (const p of ["/devices/1/schedule", "/playlists/999999", "/library/upload/x", "/api/media/a.mp4"]) { // playlist 1 is the seeded Default
       expect((await c.get(p)).status, p).toBe(404);
     }
     expect((await c.get("/api/sync/x")).status).toBe(401);

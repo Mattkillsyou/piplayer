@@ -192,6 +192,7 @@ describe("media scoping and Range (contracts 6, 15)", () => {
     expect(full.headers.get("x-content-type-options")).toBe("nosniff");
     expect(full.headers.get("content-length")).toBe("1000");
     expect(full.headers.get("etag")).toBeTruthy();
+    expect(full.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
     expect(new Uint8Array(await full.arrayBuffer())).toEqual(FULL);
     expect((await api("/api/media/sec-a.mp4", { headers: bearer(dev.token) })).status).toBe(200);
     expect((await api("/api/media/sec-b.png", { headers: bearer(dev.token) })).status).toBe(403);

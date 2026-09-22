@@ -12,8 +12,9 @@ const GOOD = { timezone: "America/Los_Angeles", screenshot_interval: "120", came
 const UPDATE_ROWS = [{ key: "auto_update", value: "off" }, { key: "auto_update_window", value: "03:00-05:00" }, { key: "player_release", value: "main" }];
 const withUpdate = (rows) => [...rows, ...UPDATE_ROWS].sort((a, b) => (a.key < b.key ? -1 : 1));
 const UPDATE_AUDIT = { player_release: "main", auto_update: "off", auto_update_window: "03:00-05:00" };
-// The enrollment key is generated on first read, so it is always present; keep it out of the diffs.
-const settings = () => query("SELECT key, value FROM settings WHERE key != 'enrollment_key' ORDER BY key");
+// The enrollment key is generated on first read, so it is always present, and migration 0010 seeds
+// default_playlist_id (test/default_playlist.test.js covers it); keep both out of the diffs.
+const settings = () => query("SELECT key, value FROM settings WHERE key NOT IN ('enrollment_key', 'default_playlist_id') ORDER BY key");
 const enrollmentKey = () => query("SELECT value FROM settings WHERE key = 'enrollment_key'").then((r) => r[0]?.value);
 
 beforeAll(async () => {
@@ -103,7 +104,7 @@ describe("settings", () => {
     const [a] = await audits("settings_update");
     expect(a.username).toBe("admin");
     expect(JSON.parse(a.details)).toEqual({ timezone: "Europe/Berlin", screenshot_interval: 120, camera_interval: 20, default_image_duration: 7.5,
-      enroll_group_id: null, enroll_playlist_id: null, ...UPDATE_AUDIT });
+      enroll_group_id: null, enroll_playlist_id: null, default_playlist_id: null, ...UPDATE_AUDIT }); // null: the "admin only" save above wiped the settings table
     const page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('<div class="alert ok" role="alert">Settings saved.</div>');
     // one-shot: the next load, and a forged query string, show nothing
