@@ -66,6 +66,16 @@ function loginPage(ctx, error, status = 200, locked = false, next = "", expired 
   return authPage(ctx, { title: "Sign in", card, status });
 }
 
+// The public home page (public/download.html, served by Workers Assets under /download): the SD
+// flasher downloads and first-run steps plus the Sign in / Create an account buttons. It
+// carries its own <style> block, so it gets a CSP that allows inline styles (scripts still not).
+async function homePage(ctx) {
+  const asset = await ctx.env.ASSETS.fetch(new Request(new URL("/download", ctx.url), { method: ctx.request.method === "HEAD" ? "HEAD" : "GET" }));
+  const page = new Response(asset.body, asset);
+  page.headers.set("content-security-policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'");
+  return page;
+}
+
 async function loginSubmit(ctx) {
   const form = await ctx.form();
   const username = str(form, "username").trim();
@@ -106,7 +116,7 @@ async function logout(ctx) {
 }
 
 export function register(router) {
-  router.get("/", (ctx) => redirect(ctx.user ? "/dashboard" : "/login"));
+  router.get("/", (ctx) => (ctx.user ? redirect("/dashboard") : homePage(ctx)));
   router.get("/login", (ctx) => loginPage(ctx, ctx.url.searchParams.get("expired") ? "Your session expired; please sign in again" : null,
     200, false, nextPath(ctx, ctx.url.searchParams.get("next")), Boolean(ctx.url.searchParams.get("expired"))));
   router.post("/login", loginSubmit);

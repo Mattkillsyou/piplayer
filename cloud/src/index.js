@@ -106,13 +106,9 @@ async function handle(request, env, exec) {
     return env.ASSETS.fetch(new Request(assetUrl, request));
   }
   if (path === "/download" && (request.method === "GET" || request.method === "HEAD")) {
-    // The SD flasher downloads: a public page (no login, no session) for the people who make cards.
-    // Workers Assets maps /download to public/download.html itself (and 307s /download.html to /download).
-    // The page carries its own <style> block, so it gets a CSP that allows inline styles (scripts still not).
-    const asset = await env.ASSETS.fetch(request);
-    const page = new Response(asset.body, asset);
-    page.headers.set("content-security-policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'");
-    return page;
+    // The old address of the SD flasher downloads (docs and the flasher still print it): the
+    // home page carries them now (pages/login.js).
+    return redirect("/", 301);
   }
   await db.assertMigrated(env);
 

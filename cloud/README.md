@@ -140,6 +140,8 @@ npm run deploy                                    # = npm run migrate:remote && 
 
 ## First-run setup and accounts
 
+`/` is the public home page (`public/download.html`: Sign in / Create an account, the SD flasher
+downloads and first-run steps; `/download` redirects there); signed in, `/` goes to `/dashboard`.
 While the `users` table is empty every page redirects to `/setup`; `GET /setup?token=<SETUP_TOKEN>`
 shows the form (username, password twice), `POST /setup` creates the admin and logs in. Wrong
 or missing token → 403; once a user exists `/setup` → 404. Roles are `admin > editor > viewer`

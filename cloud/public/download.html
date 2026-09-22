@@ -1,10 +1,10 @@
 <!doctype html>
-<!-- /download: the SD flasher downloads and the first-run steps (a public page, no login; served from public/ by src/index.js). -->
+<!-- The home page: sign in / create an account, the SD flasher downloads and the first-run steps (public, no login; served at / by src/pages/login.js, /download redirects here). -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Projection5000 SD Flasher</title>
+<title>Projection5000</title>
 <style>
   @font-face { font-family: "Silkscreen"; font-style: normal; font-weight: 400; font-display: swap;
     src: url("/static/fonts/Silkscreen-Regular.woff2") format("woff2"); }
@@ -34,6 +34,7 @@
   .eyebrow { font-family: var(--display); font-size: 15px; color: var(--ink); letter-spacing: 0.02em; }
   .wordmark { font-family: var(--display); font-weight: 700; font-size: 30px; color: var(--phosphor); line-height: 1.15; }
   @media (max-width: 720px) { .wordmark { font-size: 24px; } }
+  @media (max-width: 480px) { .wordmark { font-size: 17px; } .masthead svg { width: 48px; height: 48px; } .masthead { gap: 14px; } }
 
   .downloads { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 72px; }
   .heading { font-family: var(--display); font-weight: 700; font-size: 22px; color: var(--phosphor); margin: 0 0 20px; }
@@ -43,6 +44,11 @@
          border: 1px solid var(--phosphor); white-space: nowrap; }
   @media (max-width: 480px) { .btn { font-size: 16px; } }
   .btn:hover { background: var(--ink); border-color: var(--ink); }
+  .console { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 56px; }
+  @media (max-width: 480px) { .console { grid-template-columns: 1fr; } }
+  .btn.secondary { color: var(--phosphor); background: transparent; }
+  .btn.secondary:hover { background: var(--raised); border-color: var(--phosphor); }
+  .lead { color: var(--muted); margin: -20px 0 24px; }
 
   /* the console's panel: corner brackets */
   .panel { position: relative; padding: 24px; margin-bottom: 24px; }
@@ -81,10 +87,19 @@
     </svg>
     <div>
       <div class="eyebrow">MATT BROWN'S</div>
-      <div class="wordmark">PROJECTION5000<br>SD FLASHER</div>
+      <div class="wordmark">PROJECTION5000</div>
     </div>
   </header>
 
+  <h2 class="heading">CONSOLE</h2>
+  <p class="lead">Playlists, schedules and the projectors themselves are managed in the console.</p>
+  <div class="console">
+    <a class="btn" href="/login">Sign in</a>
+    <a class="btn secondary" href="/signup">Create an account</a>
+  </div>
+
+  <h2 class="heading">SD FLASHER</h2>
+  <p class="lead">The program that writes a projector's memory card. Install it once on the computer you flash cards with.</p>
   <div class="downloads">
     <a class="btn" href="https://github.com/Mattkillsyou/piplayer/releases/download/v0.6.0/Projection5000-SD-Flasher.exe">Download for Windows</a>
     <a class="btn" href="https://github.com/Mattkillsyou/piplayer/releases/download/v0.6.0/Projection5000-SD-Flasher-mac-arm64.dmg">Download for Mac (Apple Silicon)</a>

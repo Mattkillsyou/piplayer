@@ -126,7 +126,7 @@ describe("authorization matrix", () => {
       if (want === A) expect(res.headers.get("location"), `anon ${method} ${path}`).toBe(method === "GET" ? "/login" : "/login?expired=1");
     }
     const root = await new Client().get("/");
-    expect([root.status, root.headers.get("location")]).toEqual([303, "/login"]);
+    expect(root.status).toBe(200); // the public home page (downloads + sign in)
   });
 
   for (const role of ["viewer", "editor", "admin"]) {
