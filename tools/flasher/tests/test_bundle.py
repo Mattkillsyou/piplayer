@@ -164,3 +164,29 @@ def test_bundled_raw_img_and_padding_streams(tmp_path):
     b2 = bundle.append_bundle(exe2, xz, "two.img.xz")
     assert windisk.image_size(b2) == 70000
     assert b"".join(d for d, _ in windisk.iter_image(b2, chunk=4096)) == a + c
+
+
+def test_find_bundle_looks_in_the_app_resources_too(fake_exe, tmp_path, monkeypatch):
+    """A macOS .app cannot carry the trailer on its Mach-O (the signature would break): build_mac.sh writes the
+    image plus trailer to Contents/Resources/bundle.bin, the second place find_bundle() looks when frozen."""
+    exe, original, raw, xz = fake_exe
+    app = tmp_path / "Projection5000 SD Flasher.app" / "Contents"
+    (app / "MacOS").mkdir(parents=True)
+    (app / "Resources").mkdir()
+    binary = app / "MacOS" / "Projection5000 SD Flasher"
+    binary.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 100)  # a Mach-O with nothing appended
+    monkeypatch.setattr(bundle.sys, "executable", str(binary))
+    monkeypatch.setattr(bundle.sys, "frozen", True, raising=False)
+    assert bundle.bundle_paths() == [str(binary), str(app / "Resources" / "bundle.bin")]
+    assert bundle.find_bundle() is None
+    bin_path = app / "Resources" / "bundle.bin"
+    bin_path.write_bytes(b"")  # the trailer file starts empty: the image lands at offset 0
+    b = bundle.append_bundle(bin_path, xz, "raspios-lite-arm64.img.xz")
+    assert (b.offset, b.length) == (0, xz.stat().st_size) and bin_path.stat().st_size == b.length + bundle.TRAILER_SIZE
+    found = bundle.find_bundle()
+    assert found == b and found.path == str(bin_path)
+    assert windisk.image_size(found) == len(raw)
+    assert b"".join(d for d, _ in windisk.iter_image(found, chunk=256 * 1024)) == raw
+    # The exe's own trailer wins when both exist (never the case in a real build).
+    monkeypatch.setattr(bundle.sys, "executable", str(exe))
+    assert bundle.find_bundle().name == "fake-os-lite.img.xz"

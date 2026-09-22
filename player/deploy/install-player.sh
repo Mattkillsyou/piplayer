@@ -57,6 +57,8 @@ pi_caps() {
     PI_MODEL="$(tr -d '\0' < "${proc}/device-tree/model" 2>/dev/null || true)"
     PI_MODEL="${PI_MODEL:-unknown board}"
     PI_SOC="$(tr '\0' ' ' < "${proc}/device-tree/compatible" 2>/dev/null || true)"
+    # First HDMI sound card (vc4hdmi on Pi 0-3, vc4hdmi0 on Pi 4/5); empty off a Pi.
+    PI_HDMI_CARD="$(awk -F'[][]' '/vc4hdmi/ {gsub(/ /, "", $2); print $2; exit}' "${proc}/asound/cards" 2>/dev/null || true)"
     CAMERA_SUPPORTED=0
     if [[ "${PI_ARCH}" == arm64 && "${PI_MEM_KB}" -ge "${CAMERA_MIN_MEM_KB}" ]]; then
         CAMERA_SUPPORTED=1
@@ -173,6 +175,11 @@ if [[ "${UPGRADE}" == 0 ]]; then
     screen_init
     screen "Setting up this projector" "Step 3 of 4: installing the player (about 10 minutes)"
 fi
+# Runs unattended (provision service on first boot, systemd-run on updates): never wait on a prompt.
+export DEBIAN_FRONTEND=noninteractive
+# A power cut mid-apt leaves dpkg interrupted and every later apt-get refuses to run: repair first.
+dpkg --configure -a || true
+apt-get -y -f install || true
 apt-get update
 # git and rsync are not part of Raspberry Pi OS Lite; both are needed here.
 # ffmpeg grabs the room-camera snapshots ([camera] in config.toml).
@@ -210,6 +217,14 @@ if [[ -f "${MPV_CONF}" ]]; then
     fi
 else
     cp "${SRC_DIR}/deploy/mpv.conf" "${MPV_CONF}"
+    if [[ -n "${PI_HDMI_CARD}" ]]; then
+        # ALSA "default" is whichever card probed first (the 3.5 mm jack on most
+        # boards), so name the HDMI card. Pi 4/5: vc4hdmi0 is the HDMI socket
+        # next to the power connector; vc4hdmi1 is the other one.
+        echo "    sound to HDMI (ALSA card ${PI_HDMI_CARD})"
+        printf '\n# Sound goes to the projector over HDMI, not the headphone jack (alsa/default:CARD=Headphones)\nao=alsa\naudio-device=alsa/default:CARD=%s\n' \
+            "${PI_HDMI_CARD}" >> "${MPV_CONF}"
+    fi
     if [[ "${PI_SOC}" == *bcm283[567]* ]]; then
         # VideoCore IV boards (Pi 0/1/2/3, any arch): auto-safe finds no decoder
         # there; the V4L2 M2M copy path (bcm2835-codec) is the H.264 hardware

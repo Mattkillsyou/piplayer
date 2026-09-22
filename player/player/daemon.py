@@ -229,7 +229,7 @@ def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
                 need_push = True
             elif screens is not None and state.idle_streak >= 4:
                 # the re-push did not help either: stop retrying and say so on screen
-                message = f"mpv could not start any of {len(items)} items"
+                message = f"the player could not start any of {len(items)} items"
                 if screens.show(screens.state("error", device_name=_device_name(manifest), reason="player", message=message)):
                     log.warning("%s; showing the player fault screen", message)
             elif state.idle_cycles >= 2:
@@ -305,9 +305,14 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
     verify_all = state.force_verify or (
         time.monotonic() - state.last_full_verify >= FULL_VERIFY_INTERVAL_SECONDS
     )
+    sync_error = state.last_sync_error
+    if screens is not None and screens.current is not None and screens.current.reason == "player":
+        # the fault screen goes up on the console too (as the device's sync error); it clears by
+        # itself once the screen is gone, since sync_once returns the fresh download-failure text
+        sync_error = sync_error or screens.current.message
     try:
         _changed, manifest, state.last_sync_error = sync_once(
-            cfg, status=status, sync_error=state.last_sync_error,
+            cfg, status=status, sync_error=sync_error,
             verify_all=verify_all, should_stop=_stop_requested, on_progress=on_progress,
         )
         state.backoff = cfg.poll_interval_seconds

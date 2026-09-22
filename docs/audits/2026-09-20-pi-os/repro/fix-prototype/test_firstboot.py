@@ -1,0 +1,643 @@
+import hashlib
+import io
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+
+import pytest
+
+import firstboot
+
+
+def cfg(**over):
+    c = firstboot.sample_config()
+    c.update(over)
+    return c
+
+
+def test_derive_device_id():
+    assert firstboot.derive_device_id("Lobby Projector") == "lobby-projector"
+    assert firstboot.derive_device_id("  --Hall #2 (East)!  ") == "hall-2-east"
+    assert firstboot.derive_device_id("x" * 100) == "x" * 63
+    assert firstboot.derive_device_id("a" * 62 + "-bb") == "a" * 62
+    assert firstboot.derive_device_id("Café Étage") == "cafe-etage"
+    assert firstboot.derive_device_id("Übersicht İstanbul") == "ubersicht-istanbul"
+    assert firstboot.derive_device_id("---") == ""
+    assert firstboot.valid_device_id(firstboot.derive_device_id("Lobby Projector"))
+    assert not firstboot.valid_device_id("Lobby")
+    assert not firstboot.valid_device_id("-a")
+    assert not firstboot.valid_device_id("hall-2-")  # systemd strips the trailing hyphen
+    assert not firstboot.valid_device_id("lobby-projector\n")  # $ would match before a trailing newline
+    assert firstboot.valid_device_id("a") and firstboot.valid_device_id("a" * 63)
+    assert not firstboot.valid_device_id("a" * 64)
+
+
+def test_firstrun_contents_and_quoting():
+    s = firstboot.render_firstrun(cfg(password="pa'ss $(rm -rf /)", ssid="Venue WiFi"))
+    assert "\r" not in s and s.startswith("#!/bin/bash\n")
+    assert 'BOOT=/boot/firmware; [ -d "$BOOT" ] || BOOT=/boot' in s
+    assert "set +e" in s
+    assert 'run "$IMAGER" set_hostname lobby-projector' in s
+    assert shlex.quote("pa'ss $(rm -rf /)") in s
+    assert "$(rm -rf /)" not in s.replace(shlex.quote("pa'ss $(rm -rf /)"), "")
+    assert 'run "$IMAGER" enable_ssh' in s
+    # The passphrase is pre-hashed (PBKDF2, as Raspberry Pi Imager does): the card never holds it.
+    psk = hashlib.pbkdf2_hmac("sha1", b"it's a $ecret", b"Venue WiFi", 4096, 32).hex()
+    assert f"set_wlan 'Venue WiFi' {psk} US" in s
+    assert "ssid=Venue WiFi" in s
+    assert f"psk={psk}" in s
+    assert "$ecret" not in s
+    assert 'run "$IMAGER" set_timezone America/Los_Angeles' in s
+    assert "projection5000-provision.service" in s
+    assert "WantedBy=multi-user.target" in s
+    # Token-wise cmdline cleanup keeps the cfg80211.ieee80211_regdom=CC raspi-config appends after our args.
+    assert "sed -i -E 's/ ?systemd\\.(run|run_success_action|unit)=[^ ]*//g' \"$BOOT/cmdline.txt\"" in s
+    # Secrets are zero-filled before unlink and moved off the FAT partition on the first boot.
+    assert 'wipe "$BOOT/projection5000-provision.sh"' in s
+    assert 'wipe "$BOOT/firstrun.sh"' in s
+    assert 'install -m 0700 "$BOOT/projection5000-provision.sh" /usr/local/sbin/projection5000-provision.sh' in s
+    assert 'install -m 0600 "$BOOT/projection5000-player.tar.gz" /opt/projection5000-player.tar.gz' in s
+    assert 'rm -f "$BOOT/projection5000-player.tar.gz"' in s
+    # Every step logs its exit status and a success marker is left behind.
+    assert "rc=$rc" in s and 'touch "$BOOT/firstrun.ok"' in s
+    assert s.rstrip("\n").endswith("finish")
+    # Order: hostname, user, ssh, wifi, locale, provisioning, cleanup.
+    marks = ["# hostname", "# user", "# ssh", "# wifi", "# locale", "# provisioning", "# cleanup"]
+    positions = [s.index(m) for m in marks]
+    assert positions == sorted(positions)
+
+
+def test_setup_screen_in_firstrun_and_provision():
+    """No login prompt on the HDMI console: getty@tty1 is masked before anything else, the console font is
+    guarded, and the branded screen function plus each step text land in the right order."""
+    s = firstboot.render_firstrun(cfg())
+    marks = ["systemctl mask --now getty@tty1.service", "setterm --blank 0 --cursor off --powersave off",
+             '[ -f "$f" ] && setfont "$f" -C "$SCREEN_TTY"', "screen() {", "centre \"MATT BROWN'S\"",
+             'centre "PROJECTION5000"', "\nscreen_init\n", 'screen "Setting up this projector" "Step 1 of 4: first start"',
+             "# hostname"]
+    positions = [s.index(m) for m in marks]
+    assert positions == sorted(positions), marks
+    assert s.count("Lat15-TerminusBold32x16.psf.gz") == 1
+    assert "run systemctl mask" not in s  # cosmetic: never counted as a failed step
+    p = firstboot.render_provision(cfg())
+    marks = ["screen() {", "\nscreen_init\n", '"Step 2 of 4: joining the network"',
+             "check the Wi-Fi name and password", "install-player.sh",
+             'screen "Ready. Waiting for the first video."',
+             'cp /var/log/projection5000-provision.log "$BOOT/setup-failed.log"',
+             'screen "Setup did not finish." "$REASON" "Log: /boot/firmware/setup-failed.log"']
+    positions = [p.index(m) for m in marks]
+    assert positions == sorted(positions), marks
+    assert p.index('REASON="The console could not be reached') < p.index("install attempt")
+    installer = os.path.join(os.path.dirname(firstboot.__file__), "..", "..", "player", "deploy", "install-player.sh")
+    with open(installer, encoding="utf-8") as f:
+        installer = f.read()
+    assert "\n".join(firstboot.SCREEN_FN) in installer  # install-player.sh carries the same copy
+    assert '"Step 3 of 4: installing the player (about 10 minutes)"' in installer
+    assert '"Step 4 of 4: connecting to the console"' in installer
+
+
+def test_wifi_psk_rules():
+    hexkey = "ab" * 32
+    assert firstboot.wifi_psk("x", hexkey) == hexkey  # a 64-hex key is passed through
+    assert firstboot.wifi_psk("x", "") == ""  # open network
+    assert firstboot.wifi_psk("Venue", "pass\\word1") == hashlib.pbkdf2_hmac(
+        "sha1", b"pass\\word1", b"Venue", 4096, 32).hex()
+    s = firstboot.render_firstrun(cfg(wifi_password="pass\\word1"))
+    assert "pass\\word1" not in s
+    s = firstboot.render_firstrun(cfg(wifi_password=""))
+    assert "set_wlan 'Venue WiFi' '' US" in s and "[wifi-security]" not in s
+
+
+def test_firstrun_ethernet_only_and_hidden_and_no_ssh():
+    s = firstboot.render_firstrun(cfg(ethernet_only=True, ssid="", ssh=False))
+    assert "set_wlan" not in s and "nmconnection" not in s
+    assert "enable_ssh" not in s and "systemctl enable ssh" not in s
+    s = firstboot.render_firstrun(cfg(wifi_hidden=True))
+    assert "set_wlan -h 'Venue WiFi'" in s
+    assert "hidden=true" in s
+
+
+PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIUL3nG/VzzJ6wyH+UdpX4KRzETi9LJnhz6FuBwRr0U5 projection5000-flasher@pc"
+
+
+def test_firstrun_key_only_ssh():
+    """With ssh_pubkey the card installs authorized_keys for the user and turns password login off."""
+    s = firstboot.render_firstrun(cfg(username="projector-admin", ssh_pubkey=PUBKEY))
+    assert 'run "$IMAGER" enable_ssh' in s
+    assert ('HOME_DIR=$(getent passwd projector-admin | cut -d: -f6); [ -n "$HOME_DIR" ] || '
+            "HOME_DIR=/home/projector-admin") in s
+    assert 'run install -d -m 0700 -o projector-admin -g projector-admin "$HOME_DIR/.ssh"' in s
+    assert f'printf "%s\\n" {shlex.quote(PUBKEY)} >"$HOME_DIR/.ssh/authorized_keys"' in s
+    assert 'run chown projector-admin:projector-admin "$HOME_DIR/.ssh/authorized_keys"' in s
+    assert 'run chmod 0600 "$HOME_DIR/.ssh/authorized_keys"' in s
+    assert ('printf "%s\\n" "PasswordAuthentication no" "KbdInteractiveAuthentication no" '
+            ">/etc/ssh/sshd_config.d/projection5000.conf") in s
+    assert s.index("# user") < s.index("# key-only login") < s.index("# wifi")
+    # Without a key: the previous behaviour (password login), nothing about sshd_config.d.
+    plain = firstboot.render_firstrun(cfg())
+    assert "authorized_keys" not in plain and "sshd_config.d" not in plain
+    assert "authorized_keys" not in firstboot.render_firstrun(cfg(ssh=False, ssh_pubkey=PUBKEY))
+    # Only one ssh-ed25519 line is accepted.
+    for bad in ("ssh-rsa AAAAB3 x", "ssh-ed25519", PUBKEY + "\nssh-ed25519 AAAA", "ssh-ed25519 AAAA'; rm -rf / '"):
+        assert any("SSH public key" in p or "line breaks" in p for p in firstboot.validate_cfg(cfg(ssh_pubkey=bad))), bad
+    assert firstboot.validate_cfg(cfg(ssh_pubkey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIUL3nG")) == []  # no comment
+
+
+def test_static_ip_rendering():
+    static = dict(static_ip="192.168.1.50/24", gateway="192.168.1.1")
+    s = firstboot.render_firstrun(cfg(**static))
+    # Wi-Fi with a static address: always the keyfile (imager_custom set_wlan only does DHCP), country still set.
+    assert "set_wlan" not in s and "# wifi (static IP)" in s
+    assert "[ipv4]\nmethod=manual\naddress1=192.168.1.50/24,192.168.1.1\ndns=192.168.1.1;\n\n[ipv6]\nmethod=auto\nNMEOF" in s
+    assert "cat >/etc/NetworkManager/system-connections/preconfigured.nmconnection <<'NMEOF'" in s
+    assert "chmod 0600 /etc/NetworkManager/system-connections/preconfigured.nmconnection" in s
+    assert "rfkill unblock wifi" in s and "run raspi-config nonint do_wifi_country US" in s
+    assert "ssid=Venue WiFi" in s and "psk=" in s
+    # Ethernet with a static address: its own keyfile.
+    e = firstboot.render_firstrun(cfg(ethernet_only=True, ssid="", **static))
+    assert "# ethernet (static IP)" in e and "type=ethernet" in e and "id=wired-static" in e
+    assert "cat >/etc/NetworkManager/system-connections/wired-static.nmconnection <<'NMEOF'" in e
+    assert "address1=192.168.1.50/24,192.168.1.1" in e and "wifi" not in e.split("# ethernet")[1].split("# locale")[0]
+    # DHCP (the default): unchanged, no ethernet block at all.
+    d = firstboot.render_firstrun(cfg(ethernet_only=True, ssid=""))
+    assert "nmconnection" not in d and "method=manual" not in d
+    assert "method=auto" in firstboot.render_firstrun(cfg()) and "method=manual" not in firstboot.render_firstrun(cfg())
+
+
+@pytest.mark.parametrize("static_ip,gateway,fragment", [
+    ("192.168.1.50", "192.168.1.1", "Static IP"),  # no prefix
+    ("192.168.1.0/24", "192.168.1.1", "Static IP"),  # network address
+    ("192.168.1.255/24", "192.168.1.1", "Static IP"),  # broadcast
+    ("192.168.1.50/32", "192.168.1.1", "Static IP"),
+    ("192.168.1.300/24", "192.168.1.1", "Static IP"),
+    ("fe80::1/64", "fe80::2", "Static IP"),
+    ("192.168.1.50/24", "", "Gateway"),
+    ("192.168.1.50/24", "10.0.0.1", "Gateway"),
+    ("192.168.1.50/24", "gateway", "Gateway"),
+    ("192.168.1.50/24", "192.168.1.1\n", "line breaks"),
+])
+def test_static_ip_rejects(static_ip, gateway, fragment):
+    problems = firstboot.validate_cfg(cfg(static_ip=static_ip, gateway=gateway))
+    assert any(fragment in p for p in problems), problems
+
+
+@pytest.mark.parametrize("static_ip,gateway", [
+    ("192.168.1.50/24", "192.168.1.1"), ("10.0.0.5/8", "10.255.255.254"), ("172.16.4.9/30", "172.16.4.10"),
+    ("", ""), ("", "ignored-without-a-static-ip"),
+])
+def test_static_ip_accepts(static_ip, gateway):
+    assert firstboot.validate_cfg(cfg(static_ip=static_ip, gateway=gateway)) == []
+
+
+def test_sed_cleanup_keeps_regdom(tmp_path):
+    """The exact sed from firstrun.sh, run on what cmdline.txt looks like after raspi-config appended
+    the regulatory domain: only the systemd.* tokens go."""
+    if shutil.which("bash") is None or shutil.which("sed") is None:
+        pytest.skip("bash/sed not available")
+    line = "console=tty1 root=PARTUUID=abc rootwait " + firstboot.CMDLINE_ARGS + " cfg80211.ieee80211_regdom=US\n"
+    p = tmp_path / "cmdline.txt"
+    p.write_text(line)
+    script = [ln for ln in firstboot.render_firstrun(cfg()).splitlines() if ln.startswith("sed -i -E")][0]
+    subprocess.run(["bash", "-c", f'BOOT={shlex.quote(str(tmp_path))}; {script}'], check=True)
+    assert p.read_text() == "console=tty1 root=PARTUUID=abc rootwait cfg80211.ieee80211_regdom=US\n"
+    p.write_text(firstboot.CMDLINE_ARGS + "\n")  # no leading space: still nothing left over
+    subprocess.run(["bash", "-c", f'BOOT={shlex.quote(str(tmp_path))}; {script}'], check=True)
+    assert p.read_text().strip() == ""
+
+
+@pytest.mark.parametrize("field,value,fragment", [
+    ("ssid", "", "SSID is required"),
+    ("ssid", "a\nb", "line breaks"),
+    ("ssid", " Lead", "start or end with a space"),
+    ("ssid", "C:\\net", "backslash"),
+    ("ssid", "-h", "not allowed"),
+    ("ssid", "x" * 33, "1-32 bytes"),
+    ("wifi_password", "1234567", "8-63 characters"),
+    ("wifi_password", "é" * 40, "8-63 characters"),
+    ("wifi_password", "a\nb12345", "line breaks"),
+    ("wifi_country", "UK", "use GB"),
+    ("wifi_country", "1!", "ISO 3166"),
+    ("wifi_country", "EU", "ISO 3166"),
+    ("device_id", "Bad Name", "device_id"),
+    ("device_id", "hall-2-", "device_id"),
+    ("device_id", "abc\n", "line breaks"),
+    ("username", "root", "not be root"),
+    ("username", "Matt", "Pi username"),
+    ("username", "Matt Brown", "Pi username"),
+    ("username", " pi ", "Pi username"),
+    ("username", "pi\n", "line breaks"),
+    ("username", "a" * 33, "Pi username"),
+    ("password", "", "Pi password is required"),
+    ("password", "sec\nret", "line breaks"),
+    ("name", "", "Device name"),
+    ("name", "x" * 121, "Device name"),
+    ("enrollment_key", "", "Enrollment key"),
+    ("enrollment_key", "short-key_0123456", "Enrollment key"),
+    ("enrollment_key", "k" * 129, "Enrollment key"),
+    ("enrollment_key", "not base64!! 0123456789", "Enrollment key"),
+    ("enrollment_key", "a=b" + "0123456789" * 3, "Enrollment key"),
+    ("enrollment_key", "key\n0123456789abcdefghij", "line breaks"),
+    ("token", "tok'en", "Device token"),
+    ("token", 'to"k\\en-0123456789', "Device token"),
+    ("token", "short", "Device token"),
+    ("console_url", "projectors.photogen5000.com", "http:// or https://"),
+    ("console_url", "http://projectors.photogen5000.com", "https://"),
+    ("timezone", "Europe/Londn ", "Timezone"),
+    ("timezone", "America/Los Angeles", "Timezone"),
+    ("timezone", "Mars/Phobos/X/Y", "Timezone"),
+    ("keymap", "us/dvorak", "Keyboard layout"),
+    ("keymap", "u&s", "Keyboard layout"),
+])
+def test_validation_rejects(field, value, fragment):
+    problems = firstboot.validate_cfg(cfg(**{field: value}))
+    assert any(fragment in p for p in problems), problems
+    with pytest.raises(ValueError):
+        firstboot.render_firstrun(cfg(**{field: value}))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("wifi_password", ""), ("wifi_password", "12345678"), ("wifi_password", "x" * 63), ("wifi_password", "ab" * 32),
+    ("wifi_password", "--hidden"), ("wifi_country", "gb"), ("wifi_country", "DE"), ("username", "matt-b2"),
+    ("timezone", "UTC"), ("timezone", "America/Argentina/Buenos_Aires"), ("timezone", "Etc/GMT+1"),
+    ("console_url", "http://192.168.1.20:8080"), ("console_url", "http://console.local"),
+    ("console_url", "http://localhost:8080"), ("console_url", "http://controller:8080"),
+    ("console_url", "https://projectors.photogen5000.com"), ("token", "A-z_0123456789ab"),
+    ("enrollment_key", "k" * 20), ("enrollment_key", "k" * 128), ("enrollment_key", "a" * 43 + "="),
+    ("enrollment_key", "aB0-_" * 8 + "=="),
+])
+def test_validation_accepts(field, value):
+    assert firstboot.validate_cfg(cfg(**{field: value})) == []
+
+
+def test_console_url_problem():
+    assert firstboot.console_url_problem("https://projectors.photogen5000.com") is None
+    assert firstboot.console_url_problem("http://10.0.0.5") is None
+    assert "https://" in firstboot.console_url_problem("http://8.8.8.8")
+    assert "https://" in firstboot.console_url_problem("http://projectors.photogen5000.com/")
+    assert "http://" in firstboot.console_url_problem("ftp://x.example")
+
+
+INSTALL_LINE = ('DEVICE_ID="$DEVICE_ID" DEVICE_TOKEN="$DEVICE_TOKEN" CMS_URL="$CMS_URL" '
+                'bash deploy/install-player.sh')
+
+
+def test_provision_contents_with_token():
+    """A token on the card bypasses enrollment: no key, no /api/enroll call."""
+    s = firstboot.render_provision(cfg(token="tok-en_0123456789", console_url="http://192.168.1.20:8080/"))
+    assert "curl -fsS --max-time 10 \"$CONSOLE/api/health\"" in s
+    assert "CONSOLE=http://192.168.1.20:8080\n" in s
+    assert "\nDEVICE_ID=lobby-projector\nDEVICE_TOKEN=tok-en_0123456789\nCMS_URL=\"$CONSOLE\"\n" in s
+    assert "\nENROLL_KEY=" not in s and "sample-enrollment-key" not in s and "\nDEVICE_NAME=" not in s
+    assert "sleep 15" in s
+    # The player comes from the card, not from GitHub (the repo is private to the Pi).
+    assert "git clone" not in s and "github" not in s.lower()
+    assert 'tar -xzf "$SRC" -C /opt/projection5000-src' in s
+    assert "SRC=/opt/projection5000-player.tar.gz" in s
+    assert INSTALL_LINE in s
+    assert "-ge 20" in s and "sleep 60" in s
+    assert "systemctl disable projection5000-provision.service" in s
+    assert 'rm -f /usr/local/sbin/projection5000-provision.sh "$SRC"' in s
+    assert "/var/log/projection5000-provision.log" in s
+    # Stale image clock: wait for NTP, else seed from the console's Date header.
+    assert "NTPSynchronized" in s and 'date -s "$D"' in s
+
+
+def test_provision_contents_with_enrollment_key():
+    key = "aB0-_" * 8
+    name = "Lobby $(rm -rf /) 'Hall' \"2\""
+    s = firstboot.render_provision(cfg(enrollment_key=key, name=name))
+    assert "\nDEVICE_ID=lobby-projector\n" in s and f"\nENROLL_KEY={key}\n" in s
+    assert "\nDEVICE_TOKEN=\nCMS_URL=\n" in s  # filled in by enroll()
+    assert f"DEVICE_NAME={shlex.quote(name)}\n" in s
+    assert "$(rm -rf /)" not in s.replace(shlex.quote(name), "")
+    # JSON via python3 json.dumps, piped to curl (-d @-): the key never appears on a command line.
+    assert 'python3 -c \'import json, os; print(json.dumps({"key": os.environ["ENROLL_KEY"], ' \
+           '"device_id": os.environ["DEVICE_ID"], "name": os.environ["DEVICE_NAME"]}))\'' in s
+    assert ('| curl -sS --max-time 30 -X POST "$CONSOLE/api/enroll" -H "content-type: application/json" -d @- -o "$out" '
+            '-w "%{http_code}"') in s
+    assert "json.load(sys.stdin)[\"token\"]" in s and 'json.load(sys.stdin).get("cms_url")' in s
+    assert '{ [ -n "$DEVICE_TOKEN" ] || enroll; }' in s and INSTALL_LINE in s
+    # The health wait comes before the first enrollment attempt.
+    assert s.index('"$CONSOLE/api/health" >/dev/null') < s.index("TRIES=0")
+
+
+def test_provision_with_wyze_flag():
+    """wyze_configured from the console: the installer gets --with-wyze; nothing else changes."""
+    plain = firstboot.render_provision(cfg())
+    assert INSTALL_LINE + ")" in plain and "--with-wyze" not in plain
+    s = firstboot.render_provision(cfg(with_wyze=True))
+    assert INSTALL_LINE + " --with-wyze)" in s
+    assert s.replace(INSTALL_LINE + " --with-wyze", INSTALL_LINE) == plain
+    assert firstboot.render_provision(cfg(with_wyze=False)) == plain
+
+
+def test_patch_cmdline():
+    base = "console=serial0,115200 console=tty1 root=PARTUUID=abc rootfstype=ext4 fsck.repair=yes rootwait quiet"
+    out = firstboot.patch_cmdline(base + "\n")
+    assert out == base + " " + firstboot.CMDLINE_ARGS + "\n"
+    assert out.count("\n") == 1
+    # Idempotent: patching twice does not duplicate the args.
+    assert firstboot.patch_cmdline(out) == out
+    # CRLF, no trailing newline, multi-line and tabs all collapse to one LF-terminated line.
+    assert firstboot.patch_cmdline(base + "\r\n") == out
+    assert firstboot.patch_cmdline(base) == out
+    assert firstboot.patch_cmdline(base.replace(" quiet", "\nquiet\t")) == out
+    # Older args in the middle are removed.
+    assert firstboot.patch_cmdline("a systemd.run=/x systemd.unit=y b") == "a b " + firstboot.CMDLINE_ARGS + "\n"
+    with pytest.raises(ValueError):
+        firstboot.patch_cmdline("")
+    with pytest.raises(ValueError):
+        firstboot.patch_cmdline("  \n")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_scripts_parse_in_bash(tmp_path):
+    hostile = cfg(name="Lobby $(rm -rf /) 'Hall' \"2\" `x`", password="pa'ss $(x)", ssid="It's \"here\"")
+    static = dict(static_ip="192.168.1.50/24", gateway="192.168.1.1", ssh_pubkey=PUBKEY)
+    for name, text in (("firstrun.sh", firstboot.render_firstrun(hostile)),
+                       ("firstrun-key-static.sh", firstboot.render_firstrun(cfg(**static))),
+                       ("firstrun-wired-static.sh", firstboot.render_firstrun(cfg(ethernet_only=True, ssid="", **static))),
+                       ("provision.sh", firstboot.render_provision(hostile)),
+                       ("provision-token.sh", firstboot.render_provision(cfg(token="tok-en_0123456789")))):
+        p = tmp_path / name
+        p.write_bytes(text.encode("utf-8"))
+        subprocess.run(["bash", "-n", str(p)], check=True)
+
+
+def _msys(p) -> str:
+    """C:/x -> /c/x so bash tools (tar sees 'C:' as a remote host) accept the path."""
+    s = str(p).replace(chr(92), "/")
+    return f"/{s[0].lower()}{s[2:]}" if len(s) > 2 and s[1] == ":" else s
+
+
+def _provision_harness(tmp_path, script: str, responses: list, install_fails: bool = False) -> dict:
+    """Run a rendered provision.sh under bash with the world stubbed: curl answers /api/health and returns
+    the queued responses for /api/enroll (an int is a curl exit code, a dict a JSON body), the player
+    archive holds a stub installer that records its environment, timedatectl says the clock is synced.
+    Returns the log and what the stubs recorded."""
+    tmp = _msys(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    if install_fails:
+        (rec / "install-fails").write_text("")
+
+    def stub(name, body):
+        p = bin_dir / name
+        p.write_bytes(("#!/bin/bash\n" + body).encode())
+        p.chmod(0o755)
+
+    stub("python3", f'exec {shlex.quote(_msys(sys.executable))} "$@"\n')
+    stub("timedatectl", "echo yes\n")
+    stub("systemctl", f'echo "$@" >>{shlex.quote(_msys(rec))}/systemctl\n')
+    for i, r in enumerate(responses, 1):
+        if isinstance(r, tuple):  # (http status, body)
+            (rec / f"resp.{i}").write_text(f"0\n{r[0]}\n" + json.dumps(r[1]))
+        else:
+            (rec / f"resp.{i}").write_text(str(r) if isinstance(r, int) else "0\n" + json.dumps(r))
+    stub("curl", "\n".join([
+        f"REC={shlex.quote(_msys(rec))}",
+        'out=; url=',
+        'while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; http*) url=$1;; esac; shift; done',
+        'case "$url" in */api/health) echo "$url" >>"$REC/health"; exit 0;; esac',
+        'n=$(cat "$REC/count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$REC/count"',
+        'cat >"$REC/body.$n"',
+        'echo "$url" >>"$REC/enroll"',
+        'rc=$(head -n1 "$REC/resp.$n" 2>/dev/null || echo 7)',
+        '[ "$rc" = 0 ] || exit "$rc"',
+        # line 2 of resp.N is an HTTP status when it is three digits (the body follows); otherwise 200 + body
+        'code=$(sed -n 2p "$REC/resp.$n"); case "$code" in [0-9][0-9][0-9]) tail -n +3 "$REC/resp.$n" >"$out";; *) code=200; tail -n +2 "$REC/resp.$n" >"$out";; esac',
+        'printf "%s" "$code"',
+        "",
+    ]))
+    # The player archive: a stub installer that records DEVICE_ID/DEVICE_TOKEN/CMS_URL.
+    installer = (f'#!/bin/bash\nprintf "%s\\n" "$DEVICE_ID" "$DEVICE_TOKEN" "$CMS_URL" >{shlex.quote(_msys(rec))}/install\n'
+                 f'[ -f {shlex.quote(_msys(rec))}/install-fails ] && exit 9\nexit 0\n').encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        ti = tarfile.TarInfo("player/deploy/install-player.sh")
+        ti.size = len(installer)
+        tar.addfile(ti, io.BytesIO(installer))
+    archive = tmp_path / "player.tar.gz"
+    archive.write_bytes(buf.getvalue())
+    log = tmp_path / "provision.log"
+    boot = tmp_path / "bootfs"
+    boot.mkdir()
+    sbin = tmp_path / "sbin-provision.sh"
+    sbin.write_text("copy on the pi")
+    s = (script.replace("/var/log/projection5000-provision.log", shlex.quote(_msys(log)))
+               .replace("BOOT=/boot/firmware;", f"BOOT={shlex.quote(_msys(boot))};")
+               .replace("SRC=/opt/projection5000-player.tar.gz", f"SRC={shlex.quote(_msys(archive))}")
+               .replace("/opt/projection5000-src", tmp + "/src")
+               .replace("/usr/local/sbin/projection5000-provision.sh", _msys(sbin))
+               .replace("sleep 60", "sleep 0").replace("sleep 15", "sleep 0").replace("-ge 20", "-ge 3"))
+    p = tmp_path / "provision.sh"
+    p.write_bytes(s.encode())
+    (rec / "tty").write_text("")  # stands in for /dev/tty1: the setup screen lands here
+    env = dict(os.environ, PATH=_msys(bin_dir) + ":" + os.environ.get("PATH", ""), SCREEN_TTY=_msys(rec / "tty"))
+    r = subprocess.run(["bash", str(p)], capture_output=True, text=True, timeout=120, env=env)
+    read = lambda n: (rec / n).read_text().replace("\r", "") if (rec / n).exists() else ""
+    bodies = [json.loads((rec / f"body.{i}").read_text()) for i in range(1, int(read("count") or 0) + 1)]
+    return {"rc": r.returncode, "log": log.read_text() + r.stderr, "bodies": bodies,
+            "install": read("install").split("\n")[:3], "systemctl": read("systemctl"),
+            "enroll_calls": read("enroll").count("/api/enroll"), "health_calls": read("health").count("/api/health"),
+            "sbin": sbin.exists(), "archive": archive.exists(), "rec": rec, "tty": read("tty"),
+            "boot_log": (boot / "setup-failed.log").read_text() if (boot / "setup-failed.log").exists() else None}
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_provision_enrolls_then_installs(tmp_path):
+    key = "aB0-_" * 8 + "=="
+    name = "Lobby $(rm -rf /) 'Hall' \"2\" \\ é"
+    s = firstboot.render_provision(cfg(enrollment_key=key, name=name))
+    r = _provision_harness(tmp_path, s, [{"device_id": "lobby-projector", "token": "tok-from-console-0123456789",
+                                         "cms_url": "https://console.example/"}])
+    assert r["rc"] == 0, r["log"]
+    assert r["health_calls"] >= 1 and r["enroll_calls"] == 1
+    # The JSON the console receives is exactly the shared contract, with the hostile name intact.
+    assert r["bodies"] == [{"key": key, "device_id": "lobby-projector", "name": name}]
+    # The installer got the token and the cms_url from the response.
+    assert r["install"] == ["lobby-projector", "tok-from-console-0123456789", "https://console.example/"]
+    assert "enrolled as lobby-projector at https://console.example/" in r["log"]
+    assert "install succeeded" in r["log"]
+    # Secret hygiene: the script and archive are gone, the service is disabled, no secret in the log.
+    assert not r["sbin"] and not r["archive"] and "disable projection5000-provision.service" in r["systemctl"]
+    assert key not in r["log"] and "tok-from-console" not in r["log"]
+    assert r["boot_log"] is None  # the FAT copy only appears on give-up
+    # The HDMI console showed step 2, then the success screen (the last clear wins), centred on 80 columns.
+    assert "Step 2 of 4: joining the network" in r["tty"]
+    last = r["tty"][r["tty"].rindex("\033[2J"):]
+    assert "Ready. Waiting for the first video." in last and "Step 2 of 4" not in last
+    assert "\n" + " " * 34 + "MATT BROWN'S\n" in last and "PROJECTION5000" in last
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_provision_retries_enrollment_and_install(tmp_path):
+    """Network flap (curl fails), then a response without a token, then success; a failing installer retries
+    without enrolling again (the token is kept)."""
+    s = firstboot.render_provision(cfg())
+    r = _provision_harness(tmp_path, s, [22, {"detail": "odd"}, {"token": "tok-0123456789abcdef", "cms_url": ""}])
+    assert r["rc"] == 0, r["log"]
+    assert r["enroll_calls"] == 3 and r["log"].count("enrollment failed (curl rc=22)") == 1
+    assert "enrollment failed (curl rc=0)" in r["log"]  # 200 without a token is a failure too
+    assert "attempt 2 failed, retrying" in r["log"] and "install attempt 3" in r["log"]
+    assert r["install"][1:] == ["tok-0123456789abcdef", "https://projectors.photogen5000.com"]  # empty cms_url: CONSOLE
+    # Installer failure: retried up to the limit without re-enrolling, then gives up with instructions.
+    (tmp_path / "fails").mkdir()
+    r = _provision_harness(tmp_path / "fails", s, [{"token": "tok-0123456789abcdef", "cms_url": "https://c"}],
+                           install_fails=True)
+    assert r["rc"] == 1 and "GAVE UP after 3 attempts" in r["log"], r["log"]
+    assert r["enroll_calls"] == 1 and r["sbin"] and r["archive"]  # nothing deleted: the next boot retries
+    last = r["tty"][r["tty"].rindex("\033[2J"):]
+    assert "Setup did not finish." in last and "The player did not install." in last
+    assert "Log: /boot/firmware/setup-failed.log" in last
+    assert r["boot_log"] and "GAVE UP after 3 attempts" in r["boot_log"]  # the log named on screen is really there
+    assert "Try 2 did not finish: The player did not install." in r["tty"]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_provision_reason_names_the_real_failure(tmp_path):
+    """A network drop is reported as such and retried; a 401 (rotated key) or 400 is permanent: it gives up at
+    once and says why. 429 and 5xx keep retrying. Nothing claims the console rejected a projector it never heard."""
+    s = firstboot.render_provision(cfg())
+    r = _provision_harness(tmp_path, s, [7, 7, 7])
+    assert r["rc"] == 1 and r["enroll_calls"] == 3, r["log"]
+    last = r["tty"][r["tty"].rindex("\033[2J"):]
+    assert "The console could not be reached (network problem, curl error 7)." in last
+    assert "did not accept" not in r["log"] and "rejected" not in r["log"]
+    (tmp_path / "k").mkdir()
+    r = _provision_harness(tmp_path / "k", s, [(401, {"detail": "invalid enrollment key"}), {"token": "never-used-0123456789"}])
+    assert r["rc"] == 1 and r["enroll_calls"] == 1, r["log"]  # permanent: no second try
+    last = r["tty"][r["tty"].rindex("\033[2J"):]
+    assert "This card is out of date" in last and "Make a new card with the flasher." in last
+    assert "HTTP 401" in r["log"] and r["sbin"] and r["archive"]
+    (tmp_path / "b").mkdir()
+    r = _provision_harness(tmp_path / "b", s, [(400, {"detail": "name must be 1-80 chars"})])
+    assert r["rc"] == 1 and r["enroll_calls"] == 1
+    assert "The console rejected this projector (name must be 1-80 chars)." in r["tty"]
+    (tmp_path / "t").mkdir()
+    r = _provision_harness(tmp_path / "t", s, [(429, {"detail": "Too many failed attempts"}), (503, {"detail": "down"}),
+                                                {"token": "tok-0123456789abcdef"}])
+    assert r["rc"] == 0 and r["enroll_calls"] == 3, r["log"]  # 429 and 5xx keep retrying
+    assert "HTTP 429" in r["log"] and "HTTP 503" in r["log"]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_provision_with_token_never_enrolls(tmp_path):
+    s = firstboot.render_provision(cfg(token="tok-on-card-0123456789", console_url="http://console.local:8080"))
+    r = _provision_harness(tmp_path, s, [])
+    assert r["rc"] == 0, r["log"]
+    assert r["enroll_calls"] == 0 and r["bodies"] == []
+    assert r["install"] == ["lobby-projector", "tok-on-card-0123456789", "http://console.local:8080"]
+    assert not r["sbin"] and not r["archive"]
+
+
+def _run_firstrun(tmp_path, c, stubs=()):
+    """Run render_firstrun(c) under bash with the machine stubbed: BOOT, a fake imager (set_keymap fails),
+    a stub userconf, /etc and /usr/local paths moved into tmp_path, plus extra stub commands on PATH.
+    Real coreutils (openssl, install, dd, stat, sed, ...) do the work. Forward slashes: Git Bash on Windows."""
+    boot = tmp_path / "boot"
+    boot.mkdir()
+    tmp = tmp_path.as_posix()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    imager = bin_dir / "imager_custom"
+    imager.write_text('#!/bin/bash\necho "imager $1"\n[ "$1" = set_keymap ] && exit 3\nexit 0\n')
+    (bin_dir / "userconf").write_text("#!/bin/bash\nexit 0\n")
+    for name, body in stubs:
+        (bin_dir / name).write_text("#!/bin/bash\n" + body)
+    for f in bin_dir.iterdir():
+        f.chmod(0o755)
+    s = (firstboot.render_firstrun(c)
+         .replace('BOOT=/boot/firmware; [ -d "$BOOT" ] || BOOT=/boot', f"BOOT={shlex.quote(boot.as_posix())}")
+         .replace("IMAGER=/usr/lib/raspberrypi-sys-mods/imager_custom", f"IMAGER={shlex.quote(imager.as_posix())}")
+         .replace("/usr/lib/userconf-pi/userconf", (bin_dir / "userconf").as_posix())
+         .replace("/usr/local/sbin/", tmp + "/sbin-")
+         .replace("/opt/", tmp + "/opt-")
+         .replace("/etc/systemd/system/", tmp + "/unit-")
+         .replace("/etc/ssh/", tmp + "/etc-ssh/")
+         .replace("/etc/NetworkManager/", tmp + "/etc-nm/")
+         .replace("run systemctl enable", "run true systemctl enable"))
+    (boot / "firstrun.sh").write_bytes(s.encode())
+    (boot / "projection5000-provision.sh").write_bytes(b"#!/bin/bash\nDEVICE_TOKEN=supersecrettoken0000\n")
+    (boot / firstboot.PLAYER_ARCHIVE).write_bytes(b"tarball")
+    (boot / "cmdline.txt").write_text("console=tty1 rootwait " + firstboot.CMDLINE_ARGS + " cfg80211.ieee80211_regdom=US\n")
+    (tmp_path / "tty").write_text("")  # stands in for /dev/tty1
+    env = dict(os.environ, PATH=bin_dir.as_posix() + ":" + os.environ.get("PATH", ""),
+               SCREEN_TTY=(tmp_path / "tty").as_posix())
+    r = subprocess.run(["bash", str(boot / "firstrun.sh")], capture_output=True, text=True, timeout=60, env=env)
+    log = (boot / "firstrun.log").read_text()
+    assert r.returncode == 0, log + r.stderr
+    return boot, log
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_firstrun_wipes_itself_and_logs_rc(tmp_path):
+    """Run the rendered firstrun.sh with stubbed tools: it must finish, log each step's rc, zero-fill and
+    remove the secret-bearing files, and write firstrun.ok."""
+    boot, log = _run_firstrun(tmp_path, cfg())
+    assert "set_hostname -> rc=0" in log and "set_keymap -> rc=3" in log and "userconf pi -> rc=0" in log, log
+    assert "firstrun done" in log and "1 step(s) failed" in log
+    assert not (boot / "firstrun.ok").exists()  # one step failed: no success marker
+    assert not (boot / "firstrun.sh").exists() and not (boot / "projection5000-provision.sh").exists()
+    assert not (boot / firstboot.PLAYER_ARCHIVE).exists()
+    assert (tmp_path / "sbin-projection5000-provision.sh").read_bytes() == b"#!/bin/bash\nDEVICE_TOKEN=supersecrettoken0000\n"
+    assert (tmp_path / "opt-projection5000-player.tar.gz").read_bytes() == b"tarball"
+    assert (boot / "cmdline.txt").read_text() == "console=tty1 rootwait cfg80211.ieee80211_regdom=US\n"
+    # No secret is left in the log.
+    assert "correct horse battery" not in log and "supersecret" not in log and "$ecret" not in log
+    # The HDMI console got the step 1 screen (setterm/setfont missing here: swallowed, not counted as failures).
+    tty = (tmp_path / "tty").read_text()
+    assert tty.startswith("\033[2J\033[H") and "MATT BROWN'S" in tty and "PROJECTION5000" in tty
+    assert "Setting up this projector" in tty and "Step 1 of 4: first start" in tty
+    assert "command not found" not in log
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_firstrun_key_and_static_ip_under_bash(tmp_path):
+    """The key-only SSH and static-IP lines run end to end: getent resolves the home, install/chown/chmod
+    set up authorized_keys, sshd gets the no-password drop-in, NetworkManager gets the static keyfile.
+    getent and chown are stubbed and install loses -o/-g (Git Bash has no Linux users or groups)."""
+    home = tmp_path / "home"
+    msys_home = _msys(str(home))  # /c/... : a C: drive letter would be one more field for cut -d:
+    stubs = [
+        ("getent", f'echo "projector-admin:x:1000:1000::{msys_home}:/bin/bash"\n'),
+        ("chown", 'echo "chown $*" >>"$(dirname "$0")/../chown.log"\n'),
+        # -o/-g dropped; MSYS install -d creates the directory but cannot chmod it, so that counts as done.
+        ("install", 'a=(); while [ $# -gt 0 ]; do case $1 in -o|-g) shift;; *) a+=("$1");; esac; shift; done\n'
+                    '/usr/bin/install "${a[@]}" 2>/dev/null || { [ "${a[0]}" = -d ] && [ -d "${a[-1]}" ]; }\n'),
+    ]
+    c = cfg(username="projector-admin", ssh_pubkey=PUBKEY, static_ip="192.168.1.50/24", gateway="192.168.1.1")
+    boot, log = _run_firstrun(tmp_path, c, stubs)
+    assert (home / ".ssh" / "authorized_keys").read_text() == PUBKEY + "\n"
+    assert "install -d -> rc=0" in log and "chown projector-admin:projector-admin -> rc=0" in log, log
+    assert "chmod 0600 -> rc=0" in log
+    assert (tmp_path / "chown.log").read_text() == f"chown projector-admin:projector-admin {msys_home}/.ssh/authorized_keys\n"
+    assert (tmp_path / "etc-ssh" / "sshd_config.d" / "projection5000.conf").read_text() == (
+        "PasswordAuthentication no\nKbdInteractiveAuthentication no\n")
+    nm = (tmp_path / "etc-nm" / "system-connections" / "preconfigured.nmconnection").read_text()
+    assert "ssid=Venue WiFi" in nm and "[ipv4]\nmethod=manual\naddress1=192.168.1.50/24,192.168.1.1\ndns=192.168.1.1;\n" in nm
+    assert "psk=" in nm and "correct horse battery" not in nm  # the PSK is the pbkdf2 hex, not the passphrase
+    assert "set_wlan" not in log  # static IP: the keyfile, not imager_custom set_wlan (DHCP only)
+    assert "firstrun done" in log and not (boot / "firstrun.sh").exists()
+    assert "supersecret" not in log and "AAAAC3" not in log  # run() logs two words: never the key or a secret
+
+
+def test_wipe_zero_fills_before_unlink(tmp_path):
+    """The wipe helper overwrites the bytes in place (a plain rm leaves them in the free FAT clusters)."""
+    if shutil.which("bash") is None:
+        pytest.skip("bash not available")
+    f = tmp_path / "secret.sh"
+    f.write_bytes(b"WIFI=hunter2hunter2\n" * 50)
+    wipe = [ln for ln in firstboot.render_firstrun(cfg()).splitlines() if ln.startswith("wipe()")][0]
+    # Replace rm with a copy so the zero-filled content can be inspected.
+    script = wipe.replace('rm -f "$1"', 'cp "$1" "$1.after"; rm -f "$1"') + f"\nwipe {shlex.quote(str(f))}\n"
+    subprocess.run(["bash", "-c", script], check=True)
+    after = (tmp_path / "secret.sh.after").read_bytes()
+    assert len(after) == 20 * 50 and after == b"\0" * len(after)
+    assert not f.exists()

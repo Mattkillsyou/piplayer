@@ -1,4 +1,7 @@
 import subprocess
+import sys
+
+import pytest
 
 import wifi
 
@@ -201,6 +204,7 @@ def test_parse_saved_password_and_profiles():
     assert wifi.parse_profiles("\nProfiles on interface Wi-Fi:\n\nUser profiles\n-------------\n    <None>\n") == []
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the oem codec and CREATE_NO_WINDOW are Windows")
 def test_run_wraps_netsh_hidden_with_timeout_and_swallows_errors(monkeypatch):
     calls = []
 
@@ -222,7 +226,7 @@ def test_run_wraps_netsh_hidden_with_timeout_and_swallows_errors(monkeypatch):
 
     P.stdout = PROFILE.encode("oem", "replace")
     assert wifi.saved_password("Venue") == "p4ss: word 1"
-    assert calls[-1][0][2:] == ["show", "profile", 'name="Venue"', "key=clear"]
+    assert calls[-1][0][2:] == ["show", "profile", "name=Venue", "key=clear"]  # no inner quotes: netsh rejects them
     assert wifi.saved_password("") is None
 
     P.stdout = CONNECTED.encode("oem", "replace")

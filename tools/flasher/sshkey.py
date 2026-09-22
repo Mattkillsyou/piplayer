@@ -1,22 +1,23 @@
-"""One ed25519 SSH keypair per Windows user for the flasher (%APPDATA%\\Projection5000\\ssh\\id_ed25519).
+"""One ed25519 SSH keypair per user for the flasher (host.config_dir()/ssh/id_ed25519:
+%APPDATA%\\Projection5000\\ssh on Windows, ~/Library/Application Support/Projection5000/ssh on macOS).
 
-Pure Python (RFC 8032 key derivation, OpenSSH key file formats), no third-party package and no ssh-keygen.exe:
+Pure Python (RFC 8032 key derivation, OpenSSH key file formats), no third-party package and no ssh-keygen:
 `cryptography` would make the build depend on a native wheel the build machine may not have, and Windows' OpenSSH
 client is an optional feature that can be removed, so ssh-keygen could only be a second generator beside a
 pure-Python fallback. Key generation from a 32-byte seed is ~40 lines of arithmetic; the tests check it against
 an RFC 8032 vector and against ssh-keygen -y / -l when present.
 
-The private key is a plain OpenSSH file (ssh.exe must read it, so DPAPI is out) with its ACL cut down to the
-current user via icacls, which is what ssh.exe demands before it uses a key ("UNPROTECTED PRIVATE KEY FILE").
+The private key is a plain OpenSSH file (ssh must read it, so DPAPI is out) made owner-only by the host (icacls
+on Windows, 0600 on macOS), which is what ssh demands before it uses a key ("UNPROTECTED PRIVATE KEY FILE").
 """
 import base64
 import hashlib
-import os
 import secrets
 import socket
 import struct
-import subprocess
 from pathlib import Path
+
+from sysplat import host
 
 KEY_NAME = "id_ed25519"
 KEY_TYPE = b"ssh-ed25519"
@@ -78,8 +79,7 @@ def private_file(seed: bytes, pub: bytes, comment: str) -> str:
 
 
 def key_dir() -> Path:
-    base = os.environ.get("APPDATA") or str(Path.home())
-    return Path(base) / "Projection5000" / "ssh"
+    return host.config_dir() / "ssh"
 
 
 def private_path() -> Path:
@@ -87,26 +87,73 @@ def private_path() -> Path:
 
 
 def restrict_acl(path: Path) -> str:
-    """Owner-only ACL through icacls (the file is created by the elevated flasher, read by the user's ssh.exe).
-    Returns '' or a warning; a failed icacls is not fatal (ssh.exe then says which file to fix)."""
-    user = os.environ.get("USERNAME") or os.getlogin()
+    """Owner-only (icacls on Windows, chmod 0600 on macOS). Returns '' or a warning; a failure is not fatal
+    (ssh then says which file to fix)."""
+    return host.restrict_file(path)
+
+
+def _fields(blob: bytes, start: int = 0):
+    """The length-prefixed strings of an SSH wire blob, from `start`."""
+    pos = start
+    while pos < len(blob):
+        n = struct.unpack(">I", blob[pos:pos + 4])[0]
+        yield blob[pos + 4:pos + 4 + n]
+        pos += 4 + n
+
+
+def read_private(path: Path):
+    """(seed, comment) from an unencrypted openssh-key-v1 ed25519 file (what private_file writes), else None.
+    Walks the file's structure (cipher, kdf, options, count, public blob, private blob; then the two check
+    values, key type, public key, seed+public, comment), so no field is mistaken for another."""
     try:
-        r = subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"], capture_output=True,
-                           text=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except (OSError, subprocess.SubprocessError) as e:
-        return f"WARNING: could not restrict the ACL of {path} ({e}); ssh may refuse the key until you do."
-    if r.returncode:
-        return f"WARNING: icacls failed on {path}: {(r.stderr or r.stdout).strip()}"
-    return ""
+        lines = path.read_text("utf-8").splitlines()
+        if not lines or lines[0] != "-----BEGIN OPENSSH PRIVATE KEY-----":
+            return None
+        blob = base64.b64decode("".join(lines[1:-1]))
+        if not blob.startswith(b"openssh-key-v1\0"):
+            return None
+        outer = _fields(blob, len(b"openssh-key-v1\0"))
+        cipher, kdf, _options = next(outer), next(outer), next(outer)
+        if cipher != b"none" or kdf != b"none":
+            return None  # encrypted: not ours
+        pos = len(b"openssh-key-v1\0") + 12 + len(cipher) + len(kdf) + len(_options)
+        if struct.unpack(">I", blob[pos:pos + 4])[0] != 1:
+            return None
+        inner = _fields(blob, pos + 4)
+        next(inner)  # the public key blob
+        private = next(inner)
+        inner = _fields(private, 8)  # after the two check values
+        key_type, pub, seed_pub, comment = next(inner), next(inner), next(inner), next(inner)
+        if key_type != KEY_TYPE or len(seed_pub) != 64 or seed_pub[32:] != pub or public_key(seed_pub[:32]) != pub:
+            return None
+        return seed_pub[:32], comment.decode("utf-8", "replace")
+    except Exception:
+        return None
 
 
 def ensure_keypair(log=None) -> str:
-    """Create %APPDATA%\\Projection5000\\ssh\\id_ed25519(.pub) on first use; returns the public key line."""
+    """Create key_dir()/id_ed25519(.pub) on first use; returns the public key line. An existing private key is
+    never replaced: a lost or damaged .pub is derived from it again (every Pi flashed so far trusts that key);
+    an unreadable private file is set aside as id_ed25519.bak before a new pair is made."""
     priv, pub_path = private_path(), private_path().with_suffix(".pub")
     if priv.is_file() and pub_path.is_file():
         line = pub_path.read_text("utf-8").strip()
-        if line.startswith("ssh-ed25519 "):
+        if line.startswith("ssh-ed25519 ") and read_private(priv) is not None:
             return line
+    if priv.is_file():
+        found = read_private(priv)
+        if found:
+            seed, comment = found
+            line = public_line(public_key(seed), comment)
+            pub_path.write_text(line + "\n", "utf-8")
+            if log:
+                log(f"Restored {pub_path.name} from the private key {priv}.")
+            return line
+        bak = priv.with_suffix(".bak")
+        priv.replace(bak)
+        if log:
+            log(f"WARNING: {priv} could not be read; moved to {bak} and a new key was made. Pis flashed before "
+                "need the old key or a fresh card.")
     seed = secrets.token_bytes(32)
     pub = public_key(seed)
     comment = f"projection5000-flasher@{socket.gethostname()}"

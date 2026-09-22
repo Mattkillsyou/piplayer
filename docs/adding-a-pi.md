@@ -15,7 +15,9 @@ You'll need:
 - The Pi connected to the same network as the controller, or Tailscale
   installed on both
 
-> **On Windows: use the Projection5000 SD Flasher** (`tools/flasher/README.md`).
+> **On Windows or a Mac: use the Projection5000 SD Flasher.** Get it from
+> <https://projectors.photogen5000.com/download> (Windows exe, Apple Silicon
+> and Intel Mac downloads; `tools/flasher/README.md` is the manual).
 > It replaces sections 1, 2, 4 and 5 below. There is one button. Fill in the
 > form, press **Flash**, and the card is made; no console login on the Pi and
 > nothing to copy and paste:
@@ -70,6 +72,35 @@ You'll need:
 > build the flasher with the offline `build.ps1 -ConsoleUrl <url> -Key <key>`
 > override (the key from the cms Settings page), which flashes without
 > connecting. The manual path that follows still works.
+>
+> **On a Mac.** The same flasher exists for macOS: on the download page pick
+> **Apple Silicon** (M1, M2, M3, M4) or **Intel Mac**, open the `.dmg` and
+> drag **Projection5000 SD Flasher** to Applications.
+> The app is signed but not notarized, so macOS blocks the very first open.
+> Once only: in Applications, **right-click** the app, choose **Open**, then
+> click **Open** again in the box that appears. On macOS 15 (Sequoia) and
+> newer do this instead: double-click the app and click **Done** on the
+> "Not Opened" box, open **System Settings**, **Privacy & Security**, scroll
+> down to the line saying the app was blocked, click **Open Anyway**, enter
+> your Mac password and click **Open**. From then on it opens normally. The
+> screen and the button are the same as on Windows; the only extra step is
+> that macOS asks for your Mac password once per flash when the card is
+> written (Apple's standard prompt, as Raspberry Pi Imager shows it), and
+> may put up the keychain prompt (your Mac user name and password, then
+> **Allow**) when the flasher reads a saved Wi-Fi password; Cancel just
+> leaves the password field for you to type. Cards are listed as
+> `disk4  SanDisk  32 GB`. Two more one-time boxes can appear: "would like
+> to access files on a removable volume" (click **Allow**; it is how the
+> first-boot files get onto the card), and, on some Macs, "is damaged and
+> can't be opened" at the very first start instead of the Open box; then
+> paste this line into Terminal once and open the app again:
+> `xattr -d com.apple.quarantine "/Applications/Projection5000 SD Flasher.app"`.
+> The log and the remembered form live in
+> `~/Library/Application Support/Projection5000`, the SSH key in
+> `ssh/id_ed25519` there (`ssh -i ~/"Library/Application
+> Support/Projection5000/ssh/id_ed25519" projector-admin@<device-id>.local`).
+> Making the first open silent needs an Apple Developer account for
+> notarization; see `tools/flasher/README.md`, "On a Mac".
 >
 > **First boot.** Put the card in the Pi, plug in HDMI and power. The
 > projector shows a black screen with "MATT BROWN'S PROJECTION5000" and the

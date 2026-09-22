@@ -1,0 +1,105 @@
+# Build the macOS SD Flasher (tools/flasher/build_mac.sh) for Apple Silicon and Intel, run the flasher tests on
+# macOS, and attach the DMGs to a release. Manual (workflow_dispatch, optionally naming a release tag to upload
+# to) or on every published release. Needs nothing but GITHUB_TOKEN; the app is ad hoc signed, not notarized.
+# The Windows exe is built by hand with build.ps1 and is not touched here.
+name: flasher-mac
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to upload the DMGs to (blank: build only, keep them as workflow artifacts)"
+        required: false
+        default: ""
+      console_url:
+        description: "Console URL to bake in (blank: the product default)"
+        required: false
+        default: ""
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14        # Apple Silicon
+            arch: arm64
+          - runner: macos-15-intel  # the last Intel image GitHub offers (macos-13 is retired)
+            arch: intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: tools/flasher
+    env:
+      FLASHER_CONSOLE_URL: ${{ github.event.inputs.console_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check Python has Tk
+        run: |
+          python -c "import sys, tkinter; print(sys.version); print('Tk', tkinter.TkVersion)"
+          python -c "import tkinter; r = tkinter.Tk(); r.withdraw(); print('Tk window ok'); r.destroy()"
+
+      - name: GNU sed, stat and openssl for the first-boot script tests (what the Pi has)
+        run: |
+          brew list gnu-sed >/dev/null 2>&1 || brew install gnu-sed
+          brew list coreutils >/dev/null 2>&1 || brew install coreutils
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          echo "$(brew --prefix)/opt/gnu-sed/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix)/opt/openssl@3/bin" >> "$GITHUB_PATH"
+
+      - name: Install PyInstaller and pytest
+        run: python -m pip install --upgrade pip pyinstaller pytest pytest-timeout
+
+      - name: Run the flasher tests on macOS
+        # -v and a per-test timeout: a test that hangs on a Mac (a dialog, a tool that waits) names itself.
+        run: python -m pytest -v -p no:cacheprovider --timeout=120 --timeout-method=thread
+
+      - name: Resolve the Raspberry Pi OS image (name and sha256, for the cache key)
+        id: image
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import imagefetch
+          url, name = imagefetch.resolve_latest(imagefetch.LATEST_URLS["arm64"])
+          print(f"name={name}")
+          print(f"sha256={imagefetch.fetch_sha256(url)}")
+          PY
+          cat "$GITHUB_OUTPUT"
+
+      - name: Cache the OS image
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Application Support/Projection5000/images
+          key: raspios-${{ steps.image.outputs.name }}-${{ steps.image.outputs.sha256 }}
+
+      - name: Build the .app and the DMG
+        run: bash build_mac.sh
+
+      - name: Keep the DMG and the self-check as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Projection5000-SD-Flasher-mac-${{ matrix.arch }}
+          path: |
+            tools/flasher/dist/Projection5000-SD-Flasher-mac-${{ matrix.arch }}.dmg
+            tools/flasher/dist/selfcheck-mac-${{ matrix.arch }}.txt
+          if-no-files-found: error
+
+      - name: Attach the DMG to the release
+        if: github.event_name == 'release' || github.event.inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release_tag }}
+        run: |
+          gh release upload "$TAG" "dist/Projection5000-SD-Flasher-mac-${{ matrix.arch }}.dmg" \
+            "dist/selfcheck-mac-${{ matrix.arch }}.txt" --clobber --repo "$GITHUB_REPOSITORY"

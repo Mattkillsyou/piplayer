@@ -75,10 +75,13 @@ def test_download_cancel_and_404(server, tmp_path):
         imagefetch.resolve_latest(f"{server}/missing")
 
 
-def test_cached_path_is_under_localappdata(monkeypatch, tmp_path):
+def test_cached_path_is_under_the_data_folder(monkeypatch, tmp_path):
+    """%LOCALAPPDATA%\\Projection5000\\images on Windows, ~/Library/Application Support/Projection5000/images on a
+    Mac (both moved under tmp_path by the conftest sandbox); the file name never escapes it."""
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
     p = imagefetch.cached_path("../evil/" + NAME)
-    assert p == tmp_path / "Projection5000" / "images" / NAME
+    assert p == imagefetch.app_dir() / "images" / NAME and p.is_relative_to(tmp_path)
     assert p.parent.is_dir()
 
 

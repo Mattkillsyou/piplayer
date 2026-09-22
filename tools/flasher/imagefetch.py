@@ -1,11 +1,12 @@
 """Download and cache Raspberry Pi OS images (stdlib urllib only)."""
 import hashlib
-import os
 import shutil
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+from sysplat import host
 
 LATEST_URLS = {"arm64": "https://downloads.raspberrypi.com/raspios_lite_arm64_latest",
                "armhf": "https://downloads.raspberrypi.com/raspios_lite_armhf_latest"}
@@ -26,8 +27,8 @@ def _request(url: str) -> urllib.request.Request:
 
 
 def app_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    return Path(base) / "Projection5000"
+    """The data folder: %LOCALAPPDATA%\\Projection5000 or ~/Library/Application Support/Projection5000."""
+    return host.data_dir()
 
 
 def cached_path(filename: str) -> Path:
@@ -36,12 +37,43 @@ def cached_path(filename: str) -> Path:
     return d / Path(filename).name
 
 
+def remember_sha256(path, expected: str) -> None:
+    """Keep the published sha256 next to a verified download (<name>.sha256), so the image can be checked and
+    used again without the network. Never raises."""
+    try:
+        Path(path).with_name(Path(path).name + ".sha256").write_text(f"{expected.strip().lower()}  {Path(path).name}\n")
+    except OSError:
+        pass
+
+
+def newest_cached(arch: str):
+    """(path, sha256) of the newest cached Raspberry Pi OS image for arch ('arm64' / 'armhf') that has its
+    sha256 alongside, else None. Newest by the date in the official file name (2026-09-15-raspios-...)."""
+    d = app_dir() / "images"
+    try:
+        files = sorted(p for p in d.iterdir() if p.suffix == ".xz" and f"_{arch}" in p.name.replace("-", "_"))
+    except OSError:
+        return None
+    for p in reversed(files):
+        try:
+            sha = p.with_name(p.name + ".sha256").read_text().split()[0].lower()
+        except (OSError, IndexError):
+            continue
+        if len(sha) == 64:
+            return p, sha
+    return None
+
+
+def _open(req, timeout: int):
+    return urllib.request.urlopen(req, timeout=timeout, context=host.ssl_context())
+
+
 def resolve_latest(url: str = LATEST_URL) -> tuple:
     """Follow redirects and return (final_url, filename). The redirect must stay on the same origin:
     the .sha256 is fetched from the final URL too, so a hop to another host or to http:// would let
     that host vouch for its own image."""
     try:
-        with urllib.request.urlopen(_request(url), timeout=30) as resp:
+        with _open(_request(url), timeout=30) as resp:
             final = resp.geturl()
     except Exception as e:
         raise FetchError(f"cannot resolve {url}: {e}") from e
@@ -57,8 +89,7 @@ def resolve_latest(url: str = LATEST_URL) -> tuple:
 def remote_size(url: str):
     """Content-Length of url (HEAD), or None when the server does not say: only for a log line."""
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD"),
-                                    timeout=30) as resp:
+        with _open(urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD"), timeout=30) as resp:
             return int(resp.headers.get("Content-Length") or 0) or None
     except Exception:
         return None
@@ -67,7 +98,7 @@ def remote_size(url: str):
 def fetch_sha256(url: str) -> str:
     """Read '<hex>  <filename>' from <url>.sha256."""
     try:
-        with urllib.request.urlopen(_request(url + ".sha256"), timeout=30) as resp:
+        with _open(_request(url + ".sha256"), timeout=30) as resp:
             text = resp.read(4096).decode("utf-8", "replace")
     except Exception as e:
         raise FetchError(f"cannot fetch checksum: {e}") from e
@@ -82,7 +113,7 @@ def download(url: str, dest, progress_cb=None, cancel_event=None) -> Path:
     dest = Path(dest)
     part = dest.with_name(dest.name + ".part")
     try:
-        resp = urllib.request.urlopen(_request(url), timeout=60)
+        resp = _open(_request(url), timeout=60)
     except Exception as e:
         raise FetchError(f"download failed: {e}") from e
     total = resp.headers.get("Content-Length")
@@ -94,7 +125,10 @@ def download(url: str, dest, progress_cb=None, cancel_event=None) -> Path:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise Cancelled()
-                buf = resp.read(1024 * 1024)
+                try:
+                    buf = resp.read(1024 * 1024)
+                except (OSError, ValueError) as e:  # a reset or stalled connection mid-download
+                    raise FetchError(f"download interrupted after {done / 1e6:.0f} MB: {e}") from e
                 if not buf:
                     break
                 out.write(buf)

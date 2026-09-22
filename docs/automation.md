@@ -294,7 +294,13 @@ service and writes a failed status with the reason, so the Devices page shows
 the rollback and the Pi keeps playing on the previous code. The console does
 nothing on its own: it only records what the Pi reports. To roll back by
 hand, set `player_release` to the previous tag or sha and issue
-`update-player` again.
+`update-player` again. Power lost in the middle of an update (after the
+running code moved to `.prev`, before the new venv exists) is caught at the
+next boot: `projector-player.service` runs
+`/opt/piplayer/player.prev/deploy/update-player.sh --recover` before
+starting, which puts `.prev` back and reports "restored the previous
+version: the last update was interrupted before it finished (power lost?)"
+as the update status.
 
 **`update-os`.** `update-os.sh` (detached the same way) runs `apt-get
 update`, `apt-get -y -o Dpkg::Options::=--force-confold upgrade` (existing
@@ -618,10 +624,12 @@ leaves the stored codes alone. Learning blocks the player's poll for up to
    power button once, inside the 30 s. Some remotes have separate on and
    off buttons, some a single toggle. With a toggle, learn the same button
    as both `power_on` and `power_off`; auto mode still behaves, because the
-   player only sends a code when the wanted state changes, never blindly.
-   (The one weak spot: a send that half-fails and is retried can toggle the
-   projector straight back. Discrete on and off buttons, where the remote
-   has them, are the safer choice.)
+   player only sends a code when the wanted state changes, never blindly:
+   when the player starts (reboot, nightly update) and sees the two codes
+   are the same, it adopts the current `want` without sending and acts on
+   the next change. (The one weak spot: a send that half-fails and is
+   retried can toggle the projector straight back. Discrete on and off
+   buttons, where the remote has them, are the safer choice.)
 4. When the command result arrives (next poll), the **power_on** badge
    appears. Repeat for **Learn Power Off** and, if the projector has to be
    told which input to show after powering on, **Learn Input HDMI1**.
@@ -667,8 +675,9 @@ nothing) and reports the outcome in the `projector_state` and
 `projector_error` sync parameters, which the Devices page shows as the lamp
 and, when set, an error line. `projector_error` clears on the next
 successful send; a transition that failed (after its one immediate retry)
-is not tried again until `want` changes, so the error stays visible until
-someone fixes the blaster or the next scheduled change comes round. The
+is tried again every 5 minutes until it succeeds or `want` changes, so a
+blaster that was still joining Wi-Fi when the schedule started catches up
+by itself and the error stays visible on the console until it does. The
 object carries `want` in `manual` mode too, but the player then ignores it
 and only acts on the On/Off commands. A player that never sees the key
 (older console, control `none`) does nothing, like every other manifest key

@@ -160,7 +160,7 @@ def partition_style(number: int) -> str:
 
 
 def find_boot_volume(number: int, timeout: float = 30.0, cancel_event=None, log=None) -> str:
-    """Wait for the FAT boot partition of disk N and return its drive letter (e.g. 'E')."""
+    """Wait for the FAT boot partition of disk N and return its mount path (e.g. 'E:/', a Path root)."""
     deadline = time.monotonic() + timeout
     polls = 0
     while True:
@@ -172,7 +172,7 @@ def find_boot_volume(number: int, timeout: float = 30.0, cancel_event=None, log=
             fs = (p.get("FS") or "").upper()
             if label in ("bootfs", "boot") or fs in ("FAT32", "FAT"):
                 if p.get("DriveLetter"):
-                    return p["DriveLetter"]
+                    return f"{p['DriveLetter']}:/"
                 _ps(f"Add-PartitionAccessPath -DiskNumber {int(number)} -PartitionNumber "
                     f"{int(p['PartitionNumber'])} -AssignDriveLetter -ErrorAction Stop")
                 break
@@ -360,8 +360,8 @@ def volume_paths(number: int) -> list:
     """'\\\\?\\Volume{guid}\\' access paths of every partition on disk N (what PhysicalDrive.lock needs)."""
     paths = []
     for p in _partitions(number):
-        for ap in p.get("AccessPaths") or []:
-            if ap.startswith("\\\\?\\Volume{"):
+        for ap in p.get("AccessPaths") or []:  # @($null) serialises as [null]: a partition with no path
+            if ap and ap.startswith("\\\\?\\Volume{"):
                 paths.append(ap)
     return paths
 
@@ -487,6 +487,11 @@ def iter_image(src, chunk: int = CHUNK, hasher=None):
                 buf = buf.lstrip(b"\0")
                 if not buf:
                     continue
+                if len(buf) < len(XZ_MAGIC):  # the next header straddles the read boundary
+                    more = f.read(1024 * 1024)
+                    if hasher:
+                        hasher.update(more)
+                    buf += more
                 if not buf.startswith(XZ_MAGIC):
                     raise DiskError("trailing data after the xz stream (corrupt image?)")
                 dec = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)

@@ -189,21 +189,29 @@ def validate_cfg(cfg: dict) -> list:
     return problems
 
 
+STATIC_IP_RE = re.compile(r"\d{1,3}(\.\d{1,3}){3}/\d{1,2}")
+
+
 def static_ip_problems(static_ip: str, gateway: str) -> list:
-    """Empty static_ip means DHCP (gateway ignored); otherwise IPv4/prefix plus a gateway in that network."""
+    """Empty static_ip means DHCP (gateway ignored); otherwise IPv4/prefix plus a gateway in that network that is
+    not the Pi itself. Only the /N form: NetworkManager's keyfile reader cannot take a dotted netmask, which
+    ipaddress would accept silently."""
     if not static_ip:
         return []
     try:
+        if not STATIC_IP_RE.fullmatch(static_ip):
+            raise ValueError
         iface = ipaddress.IPv4Interface(static_ip)
         if iface.network.prefixlen > 30 or iface.ip in (iface.network.network_address, iface.network.broadcast_address):
             raise ValueError
     except ValueError:
         return ["Static IP must be an IPv4 address with a prefix (e.g. 192.168.1.50/24)."]
     try:
-        if ipaddress.IPv4Address(gateway) not in iface.network:
+        gw = ipaddress.IPv4Address(gateway)
+        if gw not in iface.network or gw in (iface.ip, iface.network.network_address, iface.network.broadcast_address):
             raise ValueError
     except ValueError:
-        return [f"Gateway must be an IPv4 address in {iface.network} (e.g. {iface.network.network_address + 1})."]
+        return [f"Gateway must be another IPv4 address in {iface.network} (e.g. {iface.network.network_address + 1})."]
     return []
 
 
@@ -274,10 +282,15 @@ def render_firstrun(cfg: dict) -> str:
         f'  run /usr/lib/userconf-pi/userconf {user} "$HASH"',
         "else",
         f"  id -u {user} >/dev/null 2>&1 || run useradd -m -G sudo,video,render,audio,input,tty -s /bin/bash {user}",
-        f'  printf "%s:%s\\n" {user} "$HASH" | run chpasswd -e',
+        f'  run chpasswd -e <<<"{c["username"]}:$HASH"',  # a here-string: a pipeline would lose run()\'s FAILS
         "  systemctl disable userconfig 2>/dev/null",
         "  rm -f /etc/xdg/autostart/piwiz.desktop",
         "fi",
+        "# sudo without a password: the SSH key is the credential. Pi OS images from 2026-04-13 on no longer",
+        "# ship 010_pi-nopasswd, and the random password above is never shown to anyone.",
+        "install -d -m 0755 /etc/sudoers.d",
+        f'printf "%s ALL=(ALL) NOPASSWD: ALL\\n" {user} >/etc/sudoers.d/010_projection5000-nopasswd',
+        "run chmod 0440 /etc/sudoers.d/010_projection5000-nopasswd",
         "",
     ]
     if c["ssh"]:
@@ -468,7 +481,7 @@ def render_provision(cfg: dict) -> str:
         '  echo "waiting for console at $CONSOLE"',
         "  WAITS=$((WAITS + 1))",
         '  [ "$WAITS" -lt 8 ] || screen "Setting up this projector" "Step 2 of 4: joining the network" \\',
-        '    "This is taking longer than usual: check the Wi-Fi name and password."',
+        f'    {q("This is taking longer than usual: " + _network_hint(c))}',
         "  sleep 15",
         "done",
         "",
@@ -503,6 +516,16 @@ def render_provision(cfg: dict) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _network_hint(c: dict) -> str:
+    """What to check when the console stays out of reach, for the network this card was made for."""
+    if c["static_ip"]:
+        return "check the static IP and gateway" + (" and the network cable." if c["ethernet_only"] else
+                                                     ", the Wi-Fi name and the password.")
+    if c["ethernet_only"]:
+        return "check the network cable."
+    return "check the Wi-Fi name and password."
 
 
 def patch_cmdline(text: str) -> str:

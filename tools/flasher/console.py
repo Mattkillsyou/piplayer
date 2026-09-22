@@ -6,13 +6,31 @@ fetch_enrollment() trades the operator's API token for the console's current enr
 request_device_code() / poll_device_token() are the flasher's half of the browser sign-in
 (POST /api/operator/device-code, GET /authorize in the browser, POST /api/operator/device-token).
 """
+import functools
+import http.client
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
+
+from sysplat import host
 
 TIMEOUT = 30
 NOT_A_CONSOLE = "is this a Projection5000 console?"
 HEADERS = {"User-Agent": "Projection5000-SD-Flasher", "Content-Type": "application/json"}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """The API endpoints never redirect; following one would re-send the operator token to wherever it points
+    (another host, plain http) and turn a POST into a GET. A 3xx is an error like any other."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+@functools.lru_cache(maxsize=None)
+def _opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=host.ssl_context()))
 
 
 class ConsoleError(Exception):
@@ -35,17 +53,18 @@ def _request(base: str, path: str, body: dict = None, headers: dict = None) -> d
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(base + path, data=data, headers={**HEADERS, **(headers or {})})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        with _opener().open(req, timeout=TIMEOUT) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
-        hint = f" ({NOT_A_CONSOLE})" if e.code == 404 else ""
+        hint = f" ({NOT_A_CONSOLE})" if e.code in (404, 301, 302, 303, 307, 308) else ""
         body = _body(e)
         err = (Pending if e.code == 428 else ConsoleError)(f"{path}: {_detail(e, body)}{hint}")
         err.code, err.body = e.code, body
         raise err from e
     except urllib.error.URLError as e:
         raise ConsoleError(f"cannot reach {base}{path}: {e.reason}") from e
-    except OSError as e:  # a timeout while waiting for headers or body is a bare TimeoutError
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        # a bare TimeoutError while waiting for headers, an IncompleteRead, a malformed status line ...
         raise ConsoleError(f"cannot reach {base}{path}: {e}") from e
     try:
         parsed = json.loads(raw)
@@ -107,6 +126,13 @@ def fetch_enrollment(console_url: str, token: str) -> dict:
     return r
 
 
+def same_site(console_url: str, url: str) -> bool:
+    """True when url is an http(s) page on the console's own host: the only kind of verification_url the
+    flasher hands to the browser (it runs elevated on Windows; a stray URL from a bad answer stays a log line)."""
+    want, got = urllib.parse.urlsplit(console_url.strip()), urllib.parse.urlsplit(url.strip())
+    return got.scheme in ("http", "https") and bool(got.hostname) and got.hostname == want.hostname
+
+
 def request_device_code(console_url: str, hostname: str) -> dict:
     """POST /api/operator/device-code (no auth). Returns {device_code, user_code, verification_url, expires_in,
     interval}; the browser opens verification_url?code=<user_code> and the operator approves there."""
@@ -126,7 +152,7 @@ def display_code(user_code: str) -> str:
     return f"{c[:4]}-{c[4:]}" if len(c) == 6 and c.isalnum() else c
 
 
-GONE = {"denied": "denied on the console", "expired": "the code expired (click Sign in again)"}
+GONE = {"denied": "denied on the console", "expired": "the code expired (press FLASH again)"}
 
 
 def poll_device_token(console_url: str, device_code: str) -> dict:

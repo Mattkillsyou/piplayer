@@ -19,6 +19,20 @@ def cfg(**over):
     return c
 
 
+def _gnu(tool: str) -> bool:
+    """True when `tool --version` says GNU: the scripts run on the Pi's coreutils (stat -c, sed -i -E). Git Bash
+    on Windows has them; a Mac needs Homebrew's coreutils and gnu-sed first on PATH (the CI workflow does that)."""
+    try:
+        r = subprocess.run([tool, "--version"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "GNU" in (r.stdout + r.stderr)
+
+
+gnu_tools = pytest.mark.skipif(shutil.which("bash") is None or not (_gnu("sed") and _gnu("stat")),
+                               reason="bash with GNU sed and stat not available")
+
+
 def test_derive_device_id():
     assert firstboot.derive_device_id("Lobby Projector") == "lobby-projector"
     assert firstboot.derive_device_id("  --Hall #2 (East)!  ") == "hall-2-east"
@@ -136,7 +150,10 @@ def test_firstrun_key_only_ssh():
     assert 'run chmod 0600 "$HOME_DIR/.ssh/authorized_keys"' in s
     assert ('printf "%s\\n" "PasswordAuthentication no" "KbdInteractiveAuthentication no" '
             ">/etc/ssh/sshd_config.d/projection5000.conf") in s
-    assert s.index("# user") < s.index("# key-only login") < s.index("# wifi")
+    assert s.index("# user") < s.index("# sudo without a password") < s.index("# key-only login") < s.index("# wifi")
+    # The admin user can run sudo without the (never shown) password: current Pi OS images ship no 010_pi-nopasswd.
+    assert 'printf "%s ALL=(ALL) NOPASSWD: ALL\\n" projector-admin >/etc/sudoers.d/010_projection5000-nopasswd' in s
+    assert "run chmod 0440 /etc/sudoers.d/010_projection5000-nopasswd" in s
     # Without a key: the previous behaviour (password login), nothing about sshd_config.d.
     plain = firstboot.render_firstrun(cfg())
     assert "authorized_keys" not in plain and "sshd_config.d" not in plain
@@ -193,11 +210,10 @@ def test_static_ip_accepts(static_ip, gateway):
     assert firstboot.validate_cfg(cfg(static_ip=static_ip, gateway=gateway)) == []
 
 
+@gnu_tools
 def test_sed_cleanup_keeps_regdom(tmp_path):
     """The exact sed from firstrun.sh, run on what cmdline.txt looks like after raspi-config appended
     the regulatory domain: only the systemd.* tokens go."""
-    if shutil.which("bash") is None or shutil.which("sed") is None:
-        pytest.skip("bash/sed not available")
     line = "console=tty1 root=PARTUUID=abc rootwait " + firstboot.CMDLINE_ARGS + " cfg80211.ieee80211_regdom=US\n"
     p = tmp_path / "cmdline.txt"
     p.write_text(line)
@@ -528,6 +544,7 @@ def _run_firstrun(tmp_path, c, stubs=()):
          .replace("/opt/", tmp + "/opt-")
          .replace("/etc/systemd/system/", tmp + "/unit-")
          .replace("/etc/ssh/", tmp + "/etc-ssh/")
+         .replace("/etc/sudoers.d", tmp + "/etc-sudoers")
          .replace("/etc/NetworkManager/", tmp + "/etc-nm/")
          .replace("run systemctl enable", "run true systemctl enable"))
     (boot / "firstrun.sh").write_bytes(s.encode())
@@ -543,7 +560,7 @@ def _run_firstrun(tmp_path, c, stubs=()):
     return boot, log
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@gnu_tools
 def test_firstrun_wipes_itself_and_logs_rc(tmp_path):
     """Run the rendered firstrun.sh with stubbed tools: it must finish, log each step's rc, zero-fill and
     remove the secret-bearing files, and write firstrun.ok."""
@@ -565,7 +582,7 @@ def test_firstrun_wipes_itself_and_logs_rc(tmp_path):
     assert "command not found" not in log
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@gnu_tools
 def test_firstrun_key_and_static_ip_under_bash(tmp_path):
     """The key-only SSH and static-IP lines run end to end: getent resolves the home, install/chown/chmod
     set up authorized_keys, sshd gets the no-password drop-in, NetworkManager gets the static keyfile.
@@ -584,6 +601,9 @@ def test_firstrun_key_and_static_ip_under_bash(tmp_path):
     assert (home / ".ssh" / "authorized_keys").read_text() == PUBKEY + "\n"
     assert "install -d -> rc=0" in log and "chown projector-admin:projector-admin -> rc=0" in log, log
     assert "chmod 0600 -> rc=0" in log
+    # sudo without a password for the admin user: the drop-in is written and made 0440
+    assert (tmp_path / "etc-sudoers" / "010_projection5000-nopasswd").read_text() == "projector-admin ALL=(ALL) NOPASSWD: ALL\n"
+    assert "chmod 0440 -> rc=0" in log
     assert (tmp_path / "chown.log").read_text() == f"chown projector-admin:projector-admin {msys_home}/.ssh/authorized_keys\n"
     assert (tmp_path / "etc-ssh" / "sshd_config.d" / "projection5000.conf").read_text() == (
         "PasswordAuthentication no\nKbdInteractiveAuthentication no\n")
@@ -595,10 +615,9 @@ def test_firstrun_key_and_static_ip_under_bash(tmp_path):
     assert "supersecret" not in log and "AAAAC3" not in log  # run() logs two words: never the key or a secret
 
 
+@gnu_tools
 def test_wipe_zero_fills_before_unlink(tmp_path):
     """The wipe helper overwrites the bytes in place (a plain rm leaves them in the free FAT clusters)."""
-    if shutil.which("bash") is None:
-        pytest.skip("bash not available")
     f = tmp_path / "secret.sh"
     f.write_bytes(b"WIFI=hunter2hunter2\n" * 50)
     wipe = [ln for ln in firstboot.render_firstrun(cfg()).splitlines() if ln.startswith("wipe()")][0]

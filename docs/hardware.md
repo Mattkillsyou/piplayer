@@ -66,7 +66,7 @@ Not included in the totals.
 | VESA / wall bracket for the Pi case, or heavy-duty Velcro | Fix the Pi near the projector, off the floor. | 1 | $8-15 | any retailer |
 | Cable ties and adhesive cable clips | Dress the HDMI, power and IR cables so nobody trips or unplugs them. | 1 pack each | $8 | any retailer |
 | Labels | Two per unit: the `device_id` on the Pi case and on the HDMI plug at the projector end. Label maker tape or a Sharpie on a sticker. | 2 | $2 | any retailer |
-| Spare pre-flashed microSD | Same endurance card as above, flashed with the same device id (a re-flash enrolls the same device). Swap in on site if a card dies. | 1 | $11 | see Compute |
+| Spare pre-flashed microSD | Same endurance card as above, flashed with the same device id (a re-flash enrolls the same device). Kept by the operator, not at the projector: a card that has not booted yet holds the console's enrollment key. Bring it on site if a card dies. | 1 | $11 | see Compute |
 
 Subtotal: about $36.
 
@@ -171,13 +171,15 @@ Per unit, in order. Steps 1-4 happen at the desk; 5-10 at the projector.
 
 1. **Label.** Write the `device_id` (e.g. `lobby-projector`) on a label on
    the Pi case and another on the HDMI plug that will go into the projector.
-2. **Flash the card.** On Windows run the Projection5000 SD Flasher
-   (`tools/flasher/README.md`): fill in the device id, name, Wi-Fi (if not
-   wired) and timezone, insert the card, click Flash. On first run enter
-   the console URL and your operator token; the flasher fetches the
-   enrollment key itself (`docs/automation.md` section B). Flash the spare
-   card the same way with the same device id. (No Windows? Follow
-   [adding-a-pi.md](adding-a-pi.md) with Raspberry Pi Imager instead.)
+2. **Flash the card.** Get the Projection5000 SD Flasher for Windows or
+   Mac from <https://projectors.photogen5000.com/download>: fill in the
+   device name, pick the Pi model and the Wi-Fi network (blank if wired),
+   insert the card, click Flash. The first time on a computer the flasher
+   opens the console in your browser and asks you to approve that computer;
+   after that it fetches the enrollment key itself (`docs/automation.md`
+   section B). Flash the spare card the same way with the same device id;
+   it stays with you, not at the projector (step 12). (No Windows or Mac?
+   Follow [adding-a-pi.md](adding-a-pi.md) with Raspberry Pi Imager instead.)
 3. **Assemble.** Pi into the case (fan header connected), microSD in. If you
    use the PoE+ HAT, fit it now.
 4. **Camera prep (Wyze only).** Set the camera up in the Wyze app on the
@@ -215,5 +217,10 @@ Per unit, in order. Steps 1-4 happen at the desk; 5-10 at the projector.
     and the picture comes back after the projector warms up. Set Mode to
     `auto` if the device runs on schedules ([automation.md](automation.md),
     section E).
-12. **Pocket the spare card** in a labelled bag taped inside the projector
-    mount, and write the date on it.
+12. **Take the spare card home.** A flashed card that has not booted yet
+    carries the console's enrollment key in plain text
+    (`tools/flasher/README.md`, Security note), and that key unlocks every
+    device on the console. Keep it with the operator, labelled and dated,
+    never at the projector; if a card dies, bring the spare or flash a new
+    one (ten minutes, same device id). If a spare goes missing, rotate the
+    enrollment key on the console's Settings page and re-flash the others.

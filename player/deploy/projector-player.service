@@ -9,6 +9,11 @@ User=projector
 Group=projector
 WorkingDirectory=/opt/piplayer/player
 EnvironmentFile=-/etc/projector-player/env
+# Power lost in the middle of update-player.sh leaves /opt/piplayer/player
+# without its venv and the old code at player.prev; put it back before
+# starting (as root: the "+" prefix; "-" ignores a missing .prev). The script
+# does nothing while an update is still running or the tree is complete.
+ExecStartPre=-+/bin/sh -c 'test -e /opt/piplayer/player/.venv/bin/python || exec /opt/piplayer/player.prev/deploy/update-player.sh --recover'
 ExecStart=/opt/piplayer/player/.venv/bin/python -m player.daemon
 Restart=always
 RestartSec=5

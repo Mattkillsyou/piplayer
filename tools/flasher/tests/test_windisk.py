@@ -1,11 +1,14 @@
 import hashlib
 import lzma
 import os
+import sys
 import threading
 
 import pytest
 
 import windisk
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="live PowerShell")
 
 IMG_SIZE = 3 * 1024 * 1024 + 100  # deliberately not a multiple of 512
 
@@ -94,6 +97,7 @@ def test_disk_label():
     assert windisk.disk_label({"number": 3, "name": "SD Reader", "size": 0}) == "Disk 3  SD Reader  (no card)"
 
 
+@windows_only
 def test_list_disks_runs_without_admin():
     # Live smoke test (no card inserted here): PowerShell enumeration must parse (may be empty).
     disks = windisk.list_disks()
@@ -103,6 +107,7 @@ def test_list_disks_runs_without_admin():
         assert isinstance(d["size"], int) and d["sector"] >= 512
 
 
+@windows_only
 def test_partitions_query_runs_on_empty_disk():
     # Live: a reader with no card has no partitions; the query must return [] rather than exit 1.
     disks = [d for d in windisk.list_disks() if d["size"] == 0]
@@ -214,7 +219,7 @@ def test_find_boot_volume_assigns_letter_then_returns(monkeypatch):
     monkeypatch.setattr(windisk, "_ps", fake_ps)
     monkeypatch.setattr(windisk, "_partitions", fake_partitions)
     monkeypatch.setattr(windisk.time, "sleep", lambda s: None)
-    assert windisk.find_boot_volume(2) == "E"
+    assert windisk.find_boot_volume(2) == "E:/"  # a mount path, like macdisk's '/Volumes/bootfs'
     assert any(s.startswith("Add-PartitionAccessPath -DiskNumber 2 -PartitionNumber 1") for s in calls)
 
     monkeypatch.setattr(windisk, "_partitions", lambda number: [])
@@ -229,7 +234,8 @@ def test_find_boot_volume_assigns_letter_then_returns(monkeypatch):
 def test_volume_paths(monkeypatch):
     monkeypatch.setattr(windisk, "_partitions", lambda number: [
         {"PartitionNumber": 1, "AccessPaths": ["E:\\", "\\\\?\\Volume{19adc575-6bdf-4c12-8ab6-8589f39a5267}\\"]},
-        {"PartitionNumber": 2, "AccessPaths": None}])
+        {"PartitionNumber": 2, "AccessPaths": [None]},  # an MSR or bare Linux partition: @($null) -> [null]
+        {"PartitionNumber": 3, "AccessPaths": []}])
     assert windisk.volume_paths(2) == ["\\\\?\\Volume{19adc575-6bdf-4c12-8ab6-8589f39a5267}\\"]
 
 
@@ -237,9 +243,11 @@ def test_ps_error_is_trimmed():
     rec = ("Clear-Disk : The requested operation cannot be performed.\nAt line:1 char:1\n+ Clear-Disk ...\n"
            "+ ~~~~~\n    + CategoryInfo : ...\n")
     assert windisk._ps_error(rec) == "Clear-Disk : The requested operation cannot be performed."
-    assert windisk.POWERSHELL.lower().endswith("\\system32\\windowspowershell\\v1.0\\powershell.exe")
+    if sys.platform == "win32":
+        assert windisk.POWERSHELL.lower().endswith("\\system32\\windowspowershell\\v1.0\\powershell.exe")
 
 
+@windows_only
 def test_ps_live_utf8_and_timeout():
     # Live: non-ASCII output survives the round trip, and a hung command becomes a short DiskError.
     assert windisk._ps("Write-Output 'caf\u00e9 \u00fc'").strip() == "caf\u00e9 \u00fc"

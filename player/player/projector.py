@@ -8,7 +8,9 @@ or automatically from the manifest's `projector` block:
 
 The console decides `want` (playlist active / schedule about to start -> on,
 idle for a while -> off); the player only applies a transition when `want`
-changes, retries it once and reports the outcome as the sync params
+changes (a toggle-code remote is adopted, not re-sent, after a restart),
+retries it once at the time and again every five minutes while it keeps
+failing, and reports the outcome as the sync params
 `projector_state` (on/off/unknown, best effort: the last transition that
 succeeded) and `projector_error`. `broadlink` is imported lazily so a player
 without the package (or with control none/cec) never needs it."""
@@ -25,6 +27,9 @@ DISCOVER_TIMEOUT_SECONDS = 5
 CEC_DEVICE = "/dev/cec0"
 CEC_TIMEOUT_SECONDS = 15
 ERROR_MAX_LEN = 200
+# auto mode: a transition that failed (blaster still joining Wi-Fi after a power cut, projector
+# unwired) is tried again this often until it succeeds or `want` changes
+RETRY_COOLDOWN_SECONDS = 300
 
 # --- Broadlink RM4 ---
 
@@ -103,6 +108,7 @@ class Projector:
         self.state = "unknown"      # sync param projector_state
         self.error = ""             # sync param projector_error
         self.applied_want: str | None = None
+        self.retry_at: float | None = None   # monotonic time of the next attempt after a failed transition
 
     def set_block(self, block) -> None:
         self.block = block if isinstance(block, dict) else {}
@@ -147,16 +153,30 @@ class Projector:
 
     def maybe_apply(self) -> bool:
         """Auto mode: apply the block's `want` when it differs from the one
-        applied last. Returns True when a transition was attempted."""
+        applied last, and retry a failed transition every RETRY_COOLDOWN_SECONDS.
+        Returns True when a transition was attempted."""
         block = self.block
         if block.get("mode") != "auto" or block.get("control") not in ("broadlink", "cec"):
             return False
         want = block.get("want")
-        if want not in ("on", "off") or want == self.applied_want:
+        if want not in ("on", "off"):
             return False
-        # ponytail: a failed transition is not retried until `want` changes (the
-        # error stays visible on the console); add a cooldown retry if RM4s flake
-        self.applied_want = want
+        if want == self.applied_want and not (self.retry_at and time.monotonic() >= self.retry_at):
+            return False
+        codes = block.get("codes") or {}
+        if (self.applied_want is None and block.get("control") == "broadlink"
+                and codes.get("power_on") == codes.get("power_off")):
+            # Fresh process (reboot, nightly update, crash) with a single-button toggle
+            # remote: the projector is presumably already where `want` says, and a blind
+            # send would flip it. Adopt the state; the next change of `want` sends.
+            self.applied_want = want
+            log.info("projector auto: adopting want=%s after a restart, nothing sent (toggle code)", want)
+            return False
+        self.applied_want, self.retry_at = want, None
         log.info("projector auto: %s -> %s", self.state, want)
         self.power(want)
+        if self.error:
+            # blaster unreachable or the send failed: try again after the cooldown
+            # (the error stays visible on the console meanwhile)
+            self.retry_at = time.monotonic() + RETRY_COOLDOWN_SECONDS
         return True

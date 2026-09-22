@@ -72,8 +72,11 @@ def rm(monkeypatch):
     return dev
 
 
+B64_OFF = base64.b64encode(PACKET + b"\x01").decode()   # a remote with separate on and off buttons
+
+
 def block(control="broadlink", mode="manual", want=None, host=None, codes=None):
-    b = {"control": control, "mode": mode, "codes": codes if codes is not None else {"power_on": B64, "power_off": B64}}
+    b = {"control": control, "mode": mode, "codes": codes if codes is not None else {"power_on": B64, "power_off": B64_OFF}}
     if want:
         b["want"] = want
     if host:
@@ -253,10 +256,40 @@ def test_auto_mode_failure_is_reported_not_retried_until_want_changes(rm):
     assert p.maybe_apply() is True
     assert (p.state, p.error) == ("unknown", "projector on: timed out")
     assert rm.fail_sends == 3                          # exactly two attempts
-    assert p.maybe_apply() is False
+    assert p.maybe_apply() is False                    # not on the very next poll (cooldown)
     p.set_block(block(mode="auto", want="off"))
     rm.fail_sends = 0
     assert p.maybe_apply() is True and p.state == "off" and p.error == ""
+
+
+def test_auto_mode_failure_is_retried_after_the_cooldown(rm, monkeypatch):
+    """An RM4 still joining Wi-Fi after a power cut must not leave the projector off all day: a failed
+    transition is tried again every cooldown until it lands, then it is change-only again."""
+    monkeypatch.setattr(projector, "RETRY_COOLDOWN_SECONDS", 0)
+    p = Projector()
+    p.set_block(block(mode="auto", want="on"))
+    rm.fail_sends = 5
+    assert p.maybe_apply() is True and rm.fail_sends == 3 and p.error
+    assert p.maybe_apply() is True and rm.fail_sends == 1 and p.error
+    assert p.maybe_apply() is True and p.state == "on" and p.error == "" and rm.sent == [PACKET]
+    assert p.maybe_apply() is False and rm.sent == [PACKET]
+
+
+def test_auto_mode_toggle_code_is_adopted_not_resent_after_restart(rm):
+    """A remote with one Power button is learned as both codes. A fresh daemon (reboot, nightly update)
+    must not re-send the current want: the projector is already there and the toggle would flip it."""
+    toggle = {"power_on": B64, "power_off": B64}
+    p = Projector()
+    p.set_block(block(mode="auto", want="off", codes=toggle))
+    assert p.maybe_apply() is False and p.applied_want == "off" and rm.sent == []
+    assert p.maybe_apply() is False and rm.sent == []
+    p.set_block(block(mode="auto", want="on", codes=toggle))
+    assert p.maybe_apply() is True and rm.sent == [PACKET] and p.state == "on"
+    # separate on/off buttons (and CEC) still send on the first apply: harmless, and it recovers a
+    # projector that was switched off at the wall
+    q = Projector()
+    q.set_block(block(mode="auto", want="on"))
+    assert q.maybe_apply() is True and rm.sent == [PACKET, PACKET]
 
 
 # ---------------------------------------------------------------- commands ---
@@ -280,7 +313,7 @@ def test_projector_commands_report_their_result(cfg, cms, rm):
     assert results[0] == "projector on sent via broadlink"
     assert json.loads(results[1]) == {"learned": "power_off", "code": B64}
     assert results[2] == "projector off sent via broadlink"
-    assert rm.sent == [PACKET, PACKET]
+    assert rm.sent == [PACKET, PACKET + b"\x01"]
     # re-delivered: never sent twice
     execute_commands(cfg, None, [{"id": 1, "command": "projector-on"}], lambda: None, projector=p)
     assert cms.post_calls[-1][1] == {"result": "already executed: projector-on"}
