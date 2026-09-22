@@ -336,7 +336,6 @@ function projectorBlock(ctx, d, canEdit, dis) {
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          <p class="help small">broadlink sends the learned remote-control codes below through a Broadlink IR blaster; cec switches the projector through the HDMI cable. In auto mode the player switches the projector on when a playlist is active or a schedule starts within the lead time, and off after the idle delay (${settingsRef(ctx)}).</p>
           ${control === "none" || !canEdit ? "" : `<div class="action-buttons">
             ${commandForm(ctx, d, "projector-on", "Projector on", "small primary", "Switch the projector on now")}
             ${commandForm(ctx, d, "projector-off", "Projector off", "small", "Switch the projector off now")}
@@ -363,14 +362,12 @@ function tunnelBlock(ctx, d, canEdit, tunnelOn) {
             ${csrfInput(ctx)}
             <button type="submit" class="small${d.tunnel_hostname ? "" : " primary"}" title="Set up a private web address for this device's camera">${d.tunnel_hostname ? "Recreate tunnel" : "Create tunnel"}</button>
           </form>` : "";
-  const help = tunnelOn
-    ? `Creates a private web address for this device's camera (<code>${esc(cloudflare.hostnameFor(ctx.env, d.device_id))}</code>) that only the operator emails from Settings can open, and sets the live URL to it; the Pi picks up the tunnel key on its next check-in. New devices get this when they are added.`
-    : `Automatic tunnels are not configured (${settingsRef(ctx)}): paste a live URL above.`;
+  const help = tunnelOn ? "" : `Automatic tunnels are not configured (${settingsRef(ctx)}): paste a live URL above.`;
   return `<div class="action-buttons tunnel-block">
             ${badge}
             ${button}
           </div>
-          <p class="help small">${help}</p>`;
+          ${help ? `<p class="help small">${help}</p>` : ""}`;
 }
 
 function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
@@ -482,7 +479,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          <p class="help small">The Pi picks this up on start and whenever it changes, and restarts its camera feed with the account from ${settingsRef(ctx)}${wyzeOn ? "" : " (no Wyze account set yet)"}. Leave the name empty to use the Settings pattern shown.</p>
+          ${wyzeOn ? "" : `<p class="help small">No Wyze account set (${settingsRef(ctx)}).</p>`}
           <form method="post" action="/devices/${d.id}/camera-url" class="row">
             ${csrfInput(ctx)}
             <label>Camera live URL
@@ -490,7 +487,6 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          <p class="help small">The page shown in the live view (usually the device's camera address from "Create tunnel" below, or any https page that shows the camera). Snapshots come from the Pi on their own.</p>
           ${tunnelBlock(ctx, d, canEdit, tunnelOn)}
           ${live ? `<div class="action-buttons">
             <a href="${esc(live)}" target="_blank" rel="noopener noreferrer" class="button small">Live</a>
@@ -532,7 +528,6 @@ DEVICE_ID=${esc(d.device_id)} \\
 DEVICE_TOKEN=${esc(d.token)} \\
 CMS_URL=${esc(install.base)} \\
 sudo -E bash deploy/install-player.sh</pre>
-          ${install.configured ? "" : `<p class="muted small">CMS_URL is the address your browser is using; edit it if this Pi reaches the CMS another way (e.g. a LAN address instead of Tailscale).</p>`}
           <div class="action-buttons">
             <form method="post" action="/devices/${d.id}/regen-token" class="inline" data-confirm="Make a new token for ${esc(d.name)}? The Pi stops syncing until you run the install command with the new token${d.tunnel_id ? "; its camera tunnel is recreated too" : ""}.">
               ${csrfInput(ctx)}
@@ -628,8 +623,6 @@ async function devicesPage(ctx) {
     <button type="submit" title="Update the player software on every device that is not already waiting for an update">Update all players</button>
   </form>` : ""}` : ""}
 </div>
-${isAdmin ? '<p class="help small">Device ID: lowercase letters, digits and hyphens, e.g. lobby-projector. After adding the device, open "Token / install" on it and run that command on the Pi.</p>'
-    : canEdit ? '<p class="help small">Device ID: lowercase letters, digits and hyphens, e.g. lobby-projector. After adding the device, an administrator opens "Token / install" on it and runs that command on the Pi.</p>' : ""}
 
 ${!devices.length
     ? (isAdmin ? emptyState("NO DEVICES", "No devices yet. Add one above.") : noProjectors())

@@ -28,7 +28,7 @@ async function tokensRow(ctx, u, tz, newToken) {
   const canHold = u.role !== "viewer";
   if (!tokens.length && !canHold) return "";
   return `<tr class="user-tokens">
-      <td colspan="7">
+      <td colspan="8">
         <details${newToken ? " open" : ""}>
           <summary class="small">API tokens (${tokens.length})</summary>
           ${newToken ? newTokenBlock(newToken) : ""}
@@ -43,11 +43,19 @@ async function usersPage(ctx, created = null) {
   const me = auth.requireRole(ctx, "admin");
   const tz = (await ctx.settings()).timezone;
   const users = await db.all(ctx.env,
-    `SELECT u.id, u.username, u.role, u.created_at, (SELECT COUNT(*) FROM devices d WHERE d.owner_id = u.id) AS device_count
+    `SELECT u.id, u.username, u.email, u.role, u.created_at, (SELECT COUNT(*) FROM devices d WHERE d.owner_id = u.id) AS device_count
        FROM users u ORDER BY u.username`);
   const row = (u) => `<tr>
       <td class="name">${esc(u.username)}${u.id === me.id ? ' <span class="muted small">(you)</span>' : ""}</td>
       <td><span class="badge badge-${esc(u.role)}">${esc(u.role)}</span></td>
+      <td>
+        ${u.email ? `<div class="small">${esc(u.email)}</div>` : ""}
+        <form method="post" action="/users/${u.id}/email" class="inline duration-form">
+          ${csrfInput(ctx)}
+          <input type="email" name="email" placeholder="${u.email ? "replace" : "not set"}" maxlength="${auth.MAX_EMAIL_CHARS}" required autocomplete="off" aria-label="Email for ${esc(u.username)}">
+          <button type="submit" class="small">Set</button>
+        </form>
+      </td>
       <td title="Projectors this account owns (set on the Devices page)">${u.device_count}</td>
       <td class="muted nowrap">${esc(localTime(u.created_at, tz))}</td>
       <td>
@@ -106,13 +114,13 @@ async function usersPage(ctx, created = null) {
 <div class="table-wrap">
 <table class="data">
   <caption class="sr-only">Users</caption>
-  <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Projectors</th><th scope="col">Created</th><th scope="col">Change role</th><th scope="col">Set password</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+  <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Email</th><th scope="col">Projectors</th><th scope="col">Created</th><th scope="col">Change role</th><th scope="col">Set password</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
   <tbody>
     ${rows.filter(Boolean).join("\n    ")}
   </tbody>
 </table>
 </div>
-<p class="help small">Resetting a password also signs that user out everywhere; their API tokens keep working until revoked. Operator API tokens let the flasher fetch the enrollment key (<code>GET /api/operator/enrollment</code>); only an admin's token can fetch it, so editor tokens are for scripts that need nothing more than a login. The plain token is shown once, at creation.</p>`;
+<p class="help small">Resetting a password signs that user out everywhere.</p>`;
   return layout(ctx, { title: "Users", content });
 }
 
@@ -171,10 +179,33 @@ async function usersSetPassword(ctx) {
   const [r] = await db.batch(ctx.env, [
     ["UPDATE users SET password_hash = ? WHERE id = ?", hash, userId],
     ["DELETE FROM sessions WHERE user_id = ? AND id != ?", userId, ctx.session.id],
+    ["UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL", userId],
   ]);
   if (!r.meta.changes) fail(404, "User not found");
   await audit.log(ctx, "user_set_password", "user", userId);
   return auth.flashRedirect(ctx, "/users", "Password changed.");
+}
+
+// The address /forgot mails the reset link to; accounts from before sign-up asked for one get
+// theirs here. A value replaces, the form refuses an empty one (nothing is ever cleared).
+async function usersSetEmail(ctx) {
+  auth.requireRole(ctx, "admin");
+  const userId = idParam(ctx.params.user_id, "user_id");
+  const email = str(await ctx.form(), "email").trim();
+  const problem = auth.emailProblem(email);
+  if (problem) fail(400, problem);
+  let r;
+  try {
+    r = await db.run(ctx.env, "UPDATE users SET email = ? WHERE id = ?", email, userId);
+  } catch (e) {
+    if (db.isConstraintError(e)) fail(409, "Another account already uses that email address");
+    throw e;
+  }
+  if (!r.changes) fail(404, "User not found");
+  // A reset link mailed to the old address must not change the password after this.
+  await db.run(ctx.env, "UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL", userId);
+  await audit.log(ctx, "user_set_email", "user", userId, { email });
+  return auth.flashRedirect(ctx, "/users", "Email address saved.");
 }
 
 async function usersDelete(ctx) {
@@ -224,5 +255,6 @@ export function register(router) {
   router.post("/users", usersCreate);
   router.post("/users/:user_id/role", usersSetRole);
   router.post("/users/:user_id/password", usersSetPassword);
+  router.post("/users/:user_id/email", usersSetEmail);
   router.post("/users/:user_id/delete", usersDelete);
 }

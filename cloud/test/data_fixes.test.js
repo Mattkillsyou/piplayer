@@ -65,6 +65,24 @@ describe("migration 0008", () => {
   });
 });
 
+describe("migration 0011", () => {
+  it("adds users.email (unique, case-insensitive) and the password_resets table", async () => {
+    expect((await query("PRAGMA table_info(users)")).map((c) => c.name)).toContain("email");
+    expect((await query("PRAGMA table_info(password_resets)")).map((c) => c.name))
+      .toEqual(["id", "user_id", "token_hash", "created_at", "expires_at", "used_at", "ip"]);
+    expect(await query("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('users_email_lower', 'idx_password_resets_user') ORDER BY name"))
+      .toEqual([{ name: "idx_password_resets_user" }, { name: "users_email_lower" }]);
+    await query("DELETE FROM users WHERE username LIKE 'm11-%'");
+    await ins("INSERT INTO users (username, password_hash, role, email) VALUES ('m11-a', 'x', 'viewer', 'Same@Example.com')");
+    await expect(env.DB.prepare("INSERT INTO users (username, password_hash, role, email) VALUES ('m11-b', 'x', 'viewer', 'same@example.com')").run())
+      .rejects.toThrow(/UNIQUE constraint failed/);
+    // several accounts without an address are fine
+    await ins("INSERT INTO users (username, password_hash, role) VALUES ('m11-c', 'x', 'viewer')");
+    await ins("INSERT INTO users (username, password_hash, role) VALUES ('m11-d', 'x', 'viewer')");
+    await query("DELETE FROM users WHERE username LIKE 'm11-%'");
+  });
+});
+
 describe("loadSettings", () => {
   it("a stored timezone that is no longer accepted falls back to UTC and is reported as timezone_problem", async () => {
     await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('timezone', ?)", "Mars/" + "x".repeat(100));

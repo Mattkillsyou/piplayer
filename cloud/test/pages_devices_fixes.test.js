@@ -219,14 +219,12 @@ describe("L28 / L41 / H6: wording and links", () => {
     const ed = await (await r.editor.get("/devices")).text();
     expect(ed).toContain('<span class="now-file">#1 clip.mp4 · player down</span>');
     expect(ed).not.toContain("docs/camera.md");
-    expect(ed).toContain("Snapshots come from the Pi on their own.</p>");
+    expect(ed).not.toContain("Snapshots come from the Pi on their own.");
     expect(ed).not.toContain('href="/settings"');
-    expect(ed).toContain("with the account from Settings");
-    expect(ed).toContain("(Settings).</p>");
+    expect(ed).toContain("No Wyze account set (Settings).</p>");
     expect(ed).toContain("Automatic tunnels are not configured (Settings): paste a live URL above.");
     const ad = await (await r.admin.get("/devices")).text();
-    expect(ad).toContain('with the account from <a href="/settings">Settings</a>');
-    expect(ad).toContain('(<a href="/settings">Settings</a>).</p>');
+    expect(ad).toContain('No Wyze account set (<a href="/settings">Settings</a>).</p>');
     expect(ad).toContain('Automatic tunnels are not configured (<a href="/settings">Settings</a>): paste a live URL above.');
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });

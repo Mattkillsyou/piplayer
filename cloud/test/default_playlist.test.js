@@ -52,9 +52,9 @@ async function upload(name, data) {
 }
 
 describe("migration 0010", () => {
-  it("seeded the Default playlist and the setting; db.js is at schema 10", async () => {
-    expect(db.SCHEMA_VERSION).toBe(10);
-    expect(await one("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual({ value: "10" });
+  it("seeded the Default playlist and the setting; db.js is at schema 10 or later", async () => {
+    expect(db.SCHEMA_VERSION).toBeGreaterThanOrEqual(10);
+    expect(await one("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual({ value: String(db.SCHEMA_VERSION) });
     expect(await one("SELECT name FROM playlists WHERE id = ?", DEFAULT)).toEqual({ name: "Default" });
     expect((await db.loadSettings(env)).default_playlist_id).toBe(DEFAULT);
     expect(db.SETTING_KEYS).toContain("default_playlist_id");
@@ -106,9 +106,11 @@ describe("uploads join the default playlist", () => {
     const [a] = await audits("upload_media");
     expect(a.target_id).toBe(String(second));
     expect(JSON.parse(a.details)).toEqual({ filename: "two.png", type: "image", playlist: DEFAULT });
-    // the Library says so
+    // the Library does not explain it (the owner wants no how-it-works prose on the pages)
     const lib = await (await r.editor.get("/library")).text();
-    expect(lib).toContain('New files start playing on every projector that has no playlist of its own; open <a href="/playlists">Playlists</a> to change the order or remove a file.');
+    expect(lib).not.toContain("New files start playing");
+    expect(lib).not.toContain("hashed before sending");
+    expect(lib).not.toContain("Duration and resolution are read");
   });
 
   it("with no default playlist on file the upload still lands, in no playlist", async () => {
@@ -197,7 +199,7 @@ describe("pages", () => {
     expect(await (await r.editor.get("/devices")).text()).toContain('<option value="">Default (plays unless you pick one)</option>');
     const groups = await (await r.editor.get("/groups")).text();
     expect(groups).toContain('<option value="">Default</option>');
-    expect(groups).toContain("Groups without one play the site default playlist.");
+    expect(groups).not.toContain("Groups without one play the site default playlist.");
     expect(await (await r.editor.get("/dashboard")).text()).toContain("new uploads join the default playlist");
     await query("DELETE FROM devices WHERE id = ?", dev.id);
     await query("DELETE FROM device_groups WHERE id = ?", gid);

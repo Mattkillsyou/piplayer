@@ -38,6 +38,16 @@ PIPLAYER_AUDIT_RETENTION_DAYS = "365"
 [[send_email]]
 name = "ALERT_MAIL"
 
+# Password reset (src/pages/forgot.js): the link mail goes out through this binding from
+# no-reply@photogen5000.com (the MAIL_FROM var overrides the sender). On the Workers Free plan
+# Email Routing sends only to destination addresses verified in the dashboard (fine while the
+# accounts are the owner's own). Sending to any address needs the Workers Paid plan (US$5/month)
+# plus Email Sending with photogen5000.com onboarded as a sending domain; the code is the same.
+# Absent in wrangler dev / tests: the request is answered as sent, the audit log says
+# password_reset_mail_failed.
+[[send_email]]
+name = "EMAIL"
+
 # Finishing an upload hashes the stored object (src/uploads.js uploadComplete) up to
 # PIPLAYER_VERIFY_SHA_MAX_BYTES (default 8 MiB: what fits the Workers Free CPU budget). On the
 # Workers Paid plan add a [limits] block with cpu_ms = 300000 (Free refuses it) and raise the

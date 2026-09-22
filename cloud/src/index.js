@@ -16,6 +16,7 @@ import * as auditPage from "./pages/audit.js";
 import * as dashboard from "./pages/dashboard.js";
 import * as devices from "./pages/devices.js";
 import * as flasher from "./pages/flasher.js";
+import * as forgot from "./pages/forgot.js";
 import * as groups from "./pages/groups.js";
 import * as library from "./pages/library.js";
 import * as login from "./pages/login.js";
@@ -30,7 +31,7 @@ import { isApiPath, Router } from "./router.js";
 import { esc, fail, HttpError, json, redirect } from "./util.js";
 
 const MODULES = [
-  login, setup, signup, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings, flasher,
+  login, setup, signup, forgot, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings, flasher,
   api, media, manifest, schedules, uploads, auth, audit, alerts, deviceCodes,
 ];
 
@@ -38,6 +39,8 @@ const router = new Router();
 for (const m of MODULES) if (m.register) m.register(router);
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+// The forms anyone may post: they start an anonymous session on GET for the CSRF token.
+const ANON_FORMS = new Set(["/login", "/setup", "/signup", "/forgot", "/reset"]);
 
 // On every response, pages and JSON alike. frame-src stays "https:" because the Devices page
 // frames any operator-pasted live camera URL; img-src needs data: for style.css's select arrow.
@@ -122,7 +125,7 @@ async function handle(request, env, exec) {
       // Only the anonymous forms start a session (they need a CSRF token); everything
       // else just reads the cookie, so a cookieless GET /dashboard redirects without a write.
       // /setup after setup is a 404, so it gets no row either (hasUsers is memoised once true).
-      const anonForm = path === "/login" || path === "/setup" || path === "/signup";
+      const anonForm = ANON_FORMS.has(path);
       await auth.loadSession(ctx, { create: anonForm && request.method === "GET" && !(path === "/setup" && await auth.hasUsers(env)) });
       if (!SAFE_METHODS.has(request.method)) {
         // Session gone (expired, logged out elsewhere, user deleted): the handler would answer
@@ -131,7 +134,7 @@ async function handle(request, env, exec) {
         // Deliberately ahead of the token check, as in cms/app/auth.py require_csrf (X002):
         // nothing is written, and the 403 is reserved for a live session with a bad token.
         if (!ctx.user && !anonForm) throw redirect("/login?expired=1");
-        if ((path === "/login" || path === "/signup") && !ctx.session) throw redirect(`${path}?expired=1`);
+        if (anonForm && path !== "/setup" && !ctx.session) throw redirect(`${path}?expired=1`);
         await auth.requireCsrf(ctx);
       }
       if (path !== "/setup" && !(await auth.hasUsers(env))) throw new Response(null, { status: 303, headers: { location: "/setup" } });

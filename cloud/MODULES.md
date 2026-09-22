@@ -3,7 +3,7 @@
 Read this together with `README.md` (see "Limits and design notes"). Everything below exists and is tested
 (`npm test`, `npm run e2e`). Your module plugs in by replacing its stub; do not change the
 scaffold files (`index.js`, `router.js`, `util.js`, `db.js`, `auth.js`, `audit.js`,
-`pages/layout.js`, `pages/login.js`, `pages/setup.js`, `pages/signup.js`) without telling the scaffold owner.
+`pages/layout.js`, `pages/login.js`, `pages/setup.js`, `pages/signup.js`, `pages/forgot.js`) without telling the scaffold owner.
 
 ## Running things
 
@@ -34,15 +34,15 @@ vitest-pool-workers 0.22 accepts (a later date makes `npm test` fail to boot).
    with an `Allow` header; a `:param` with a broken percent sequence → 400 `{"detail":"malformed path"}`.
    `/openapi.json`, `/docs`, `/redoc` are therefore 404 for free — do not register them.
 4. `ctx` is built (below).
-5. Non-`/api/` paths: `auth.loadSession(ctx, {create})` — `create` only for `GET /login` and
-   `GET /setup` while no user exists (an anonymous 1 h session + cookie so the form has a CSRF
+5. Non-`/api/` paths: `auth.loadSession(ctx, {create})` — `create` only for the anonymous forms
+   (`GET /login`, `/signup`, `/forgot`, `/reset`, and `/setup` while no user exists; `ANON_FORMS`) (an anonymous 1 h session + cookie so the form has a CSRF
    token; `createSession` prunes expired rows in the same batch); every other
    request just reads the cookie, so a cookieless `GET /dashboard` redirects without a D1
    write. Then for any method other than GET/HEAD/OPTIONS:
    no logged-in user (session expired, logged out elsewhere, user deleted) and the path is not
-   `/login` or `/setup` → 303 `/login?expired=1` (the login page shows "Your session expired;
-   please sign in again"); a `/login` POST whose cookie carried no live session → the same 303
-   (a fresh form instead of a JSON 403); otherwise `auth.requireCsrf(ctx)` (403
+   one of those forms → 303 `/login?expired=1` (the login page shows "Your session expired;
+   please sign in again"); a `/login`, `/signup`, `/forgot` or `/reset` POST whose cookie carried no
+   live session → 303 to that path with `?expired=1` (a fresh form instead of a JSON 403); otherwise `auth.requireCsrf(ctx)` (403
    `{"detail":"CSRF token missing or invalid"}`). Then the first-run gate: while `users` is
    empty every path except `/setup` → 303 `/setup`.
    `/api/` paths: the session is only *read* (`loadSession(ctx, {create:false})`) so
@@ -157,6 +157,7 @@ same, so the SQL from web.py/api.py ports verbatim (`?` placeholders, `datetime(
 | `hashPassword(pw)` | `pbkdf2$100000$<salt b64url>$<hash b64url>` (WebCrypto PBKDF2-SHA256); >1024 bytes → HttpError 400 |
 | `verifyPassword(pw, hash)` | constant-time; false for any malformed hash |
 | `passwordProblem(pw)` | `''` when OK, else the 400 message (`< 6 chars` / `> 1024 bytes`). Use it in users create/password/setup |
+| `emailProblem(email)` | `''` when OK, else the message: one `@` with something either side, no whitespace or control characters, at most `MAX_EMAIL_CHARS` (254). /signup and `POST /users/:id/email` use it; `users.email` is unique case-insensitively |
 | `MIN_PASSWORD_CHARS`, `MAX_PASSWORD_BYTES`, `MAX_USERNAME_CHARS` (64, the login form's cap), `PASSWORD_TOO_SHORT_MSG`, `PASSWORD_TOO_LONG_MSG`, `CSRF_ERROR`, `ROLES` | constants |
 | `timingSafeEqual(a, b)` | strings or bytes |
 | `burnPasswordCheck(pw)` | equalises timing when the username does not exist |
@@ -175,7 +176,7 @@ same, so the SQL from web.py/api.py ports verbatim (`?` placeholders, `datetime(
 | `issueApiToken(ctx, userId, name, details?)` | mint + insert an `api_tokens` row and audit `api_token_created` (`{name, ...details}`, never the token); returns `{id, token}` for the one-time display. The Settings and Users pages and the device-code sign-in all go through it |
 | `requireSetupToken(ctx, token)` | 403 unless equal to `SETUP_TOKEN` |
 | `hasUsers(env)` | cached once true |
-| `housekeeping(env)` | expired sessions + throttle rows |
+| `housekeeping(env)` | expired sessions + throttle rows + `password_resets` rows older than a day |
 
 ## audit.js
 
@@ -188,7 +189,8 @@ non-empty by `audit.pyJson()` (Python `json.dumps` text: `{"a": 1, "b": [1, 2]}`
 `playlist_rename`, `playlist_delete`, `register_device`, `device_assign_playlist`,
 `device_set_group`, `device_regen_token`, `device_delete`, `device_send_command`,
 `device_schedule_create`, `device_schedule_delete`, `group_create`, `group_assign_playlist`,
-`group_delete`, `user_create`, `user_signup`, `user_set_role`, `user_set_password`, `user_delete`
+`group_delete`, `user_create`, `user_signup` (`{username, email, role}`), `user_set_role`, `user_set_password`, `user_set_email`, `user_delete`,
+`password_reset_requested`, `password_reset_mail_failed`, `password_reset` (target the user; never the token)
 (+ new: `settings_update`, `enrollment_key_rotated`, `device_enrolled`, `device_reenrolled`
 (`renamed_from` when the name changed), `device_enroll_capped` (a new device id refused by the
 20-per-hour cap), `device_rename` (the Devices-page Rename form, `{name}`), `device_update_all`
@@ -281,6 +283,26 @@ export function register(router) {
 - Library modules (`manifest.js`, `schedules.js`) export functions + an empty `register`.
 - Housekeeping: export `housekeeping(env)`; keep it idempotent.
 - No console noise except `console.warn` for failed logins and `console.error` for real failures.
+
+## Password reset (`pages/forgot.js`, migration 0011)
+
+`GET/POST /forgot` and `GET/POST /reset` are anonymous forms like `/signup` (same auth card; a
+signed-in user is sent to `/dashboard`). `POST /forgot` takes `who` (username exactly, or email matched case-insensitively), is throttled 5 per address per 10 minutes under `auth.FORGOT_KEY` (429) and
+always answers the same 200 card ("If that account has an email address on file, a reset link is
+on its way. It works for 30 minutes."). With an address on file and fewer than `RESETS_PER_HOUR`
+(3) rows in the last hour it retires the account's earlier links (`expires_at = now`), inserts a
+row with the sha256 of a 32-byte token and `expires_at = now + 30 minutes`, and sends
+`{from: MAIL_FROM var || no-reply@photogen5000.com, to, subject, text}` (the link on
+`PIPLAYER_PUBLIC_BASE_URL` or the request origin) through `env.EMAIL` (`[[send_email]] name = "EMAIL"`;
+`forgot.mail.send` is the test hook, consulted first). A missing binding or a throwing send is
+logged and audited as `password_reset_mail_failed`, the card is the same. `GET /reset?token=` renders
+the new-password form for a live (unused, unexpired) token, else "This link has expired or was
+already used." with a link to `/forgot` (400). `POST /reset` re-checks the token, applies
+`passwordProblem` and the match, then in one batch sets the hash, marks the account's open rows
+used and deletes every session of the user, audits `password_reset` and `flashRedirect`s to
+`/login`. Plan facts: Workers Free sends only to Email Routing destination addresses verified in
+the Cloudflare dashboard; any address needs Workers Paid with Email Sending and the domain
+onboarded (the `wrangler.toml` comment).
 
 ## Settings (`settings` table, `/settings` page)
 
@@ -442,7 +464,10 @@ sign-in). `migrations/0010_default_playlist.sql` (schema_version 10) adds no col
 the `Default` playlist when no playlist of that name exists, writes its id to
 `settings.default_playlist_id` (INSERT ... SELECT, so a re-run changes nothing) and appends
 every media row that is in no playlist to it in upload order, after its last item.
-`db.js` exports `SCHEMA_VERSION` (10) and `assertMigrated` compares `meta.schema_version`
+`migrations/0011_password_reset.sql` (schema_version 11) adds `users.email` (nullable; the partial
+UNIQUE index `users_email_lower` on `lower(email)`) and `password_resets(id, user_id → users ON
+DELETE CASCADE, token_hash UNIQUE, created_at, expires_at, used_at, ip)` + `idx_password_resets_user`.
+`db.js` exports `SCHEMA_VERSION` (11) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.

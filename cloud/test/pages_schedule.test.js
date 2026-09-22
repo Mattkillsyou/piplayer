@@ -74,7 +74,7 @@ describe("page", () => {
     expect(page).toContain('name="days_of_week_chk" value="6"');
     expect(page).toContain(`<option value="${w.pid}">Morning</option>`);
     expect(page).not.toContain("onsubmit");
-    expect(page).toContain("belongs to the day it starts on");
+    expect(page).not.toContain("belongs to the day it starts on");
     // the site timezone shows up in the zone name
     await query("INSERT INTO settings (key, value) VALUES ('timezone', 'Europe/Berlin')");
     page = await (await r.editor.get(base())).text();

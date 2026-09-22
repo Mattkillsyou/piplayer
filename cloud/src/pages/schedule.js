@@ -65,7 +65,6 @@ async function schedulePage(ctx) {
 <p class="zone-note">If this is not your venue's time, ${zoneHelp}</p>
 
 <h2>Rules (${rules.length})</h2>
-<p class="help small">When multiple rules match, the one with the highest priority wins. If no rule matches, the device's default playlist (set on the Devices page) plays. A window that crosses midnight (e.g. 22:00–02:00) belongs to the day it starts on, so "Fri 22:00–02:00" runs until Saturday 02:00.</p>
 ${!rules.length ? emptyState("NO RULES", "The device plays its default playlist always.") : `<div class="table-wrap">
 <table class="data">
   <caption class="sr-only">Schedule rules</caption>
@@ -110,7 +109,6 @@ ${canEdit ? `<div class="panel">
         <input type="date" name="end_date" placeholder="never">
       </label>
     </div>
-    <p class="help small">Leave both times empty for all day. An end time earlier than the start time wraps past midnight and counts as the start day.</p>
 
     <fieldset class="days-fieldset">
       <legend>Days (leave blank for all days)</legend>

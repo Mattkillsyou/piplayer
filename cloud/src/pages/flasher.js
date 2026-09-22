@@ -4,7 +4,7 @@
 import * as auth from "../auth.js";
 import { layout } from "./layout.js";
 
-export const FLASHER_VERSION = "0.7.1";
+export const FLASHER_VERSION = "0.7.2";
 const RELEASE = `https://github.com/Mattkillsyou/piplayer/releases/download/v${FLASHER_VERSION}`;
 
 function flasherPage(ctx) {
@@ -13,7 +13,6 @@ function flasherPage(ctx) {
   <h1>SD Flasher</h1>
   <span class="page-meta">version <strong>${FLASHER_VERSION}</strong></span>
 </div>
-<p class="help">The program that writes a projector's memory card. Install it once on the computer you flash cards with; sign in to it with the same username and password as here.</p>
 
 <div class="panel">
   <h2>Download</h2>

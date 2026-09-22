@@ -59,10 +59,10 @@ describe("role matrix", () => {
     expect(ed).not.toContain("DEVICE_TOKEN=");
     expect(ed).not.toContain("<summary>Token / install</summary>");
     expect(ed).not.toContain("New token");
-    expect(ed).toContain('<p class="help small">Device ID: lowercase letters, digits and hyphens, e.g. lobby-projector. After adding the device, an administrator opens "Token / install" on it and runs that command on the Pi.</p>');
+    expect(ed).not.toContain("Device ID: lowercase letters, digits and hyphens");
     expect(ed).toContain("Delete device");
     const ad = await (await r.admin.get("/devices")).text();
-    expect(ad).toContain('<p class="help small">Device ID: lowercase letters, digits and hyphens, e.g. lobby-projector. After adding the device, open "Token / install" on it and run that command on the Pi.</p>');
+    expect(ad).not.toContain("Device ID: lowercase letters, digits and hyphens");
     expect(ad).toContain("<summary>Token / install</summary>");
     expect(ad).toContain(`<code class="token">${w.dev.token}</code>`);
     expect(ad).toContain("cd piplayer/player");
@@ -70,7 +70,7 @@ describe("role matrix", () => {
     expect(ad).toContain(`DEVICE_TOKEN=${w.dev.token}`);
     expect(ad).toContain("CMS_URL=http://piplayer.test");
     expect(ad).toContain("deploy/install-player.sh");
-    expect(ad).toContain("CMS_URL is the address your browser is using; edit it if this Pi reaches the CMS another way");
+    expect(ad).not.toContain("CMS_URL is the address your browser is using");
     expect(ad).toContain(">New token</button>");
     for (const c of [r.editor, r.admin]) {
       const page = await (await c.get("/devices")).text();

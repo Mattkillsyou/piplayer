@@ -143,7 +143,7 @@ npm run deploy                                    # = npm run migrate:remote && 
 
 ## First-run setup and accounts
 
-`/` is the public home page (`public/download.html`: Sign in / Create an account); signed in, `/`
+`/` is the public home page (`public/download.html`: Sign in / Create an account, a Forgot password link); signed in, `/`
 goes to `/dashboard`. `/flasher` (any signed-in role, "SD Flasher" in the top bar) has the SD
 flasher downloads (`FLASHER_VERSION` in `src/pages/flasher.js` names the release) and the
 first-run steps; the old `/download` address goes there when signed in, to `/` otherwise.
@@ -156,9 +156,17 @@ install block and New token on the Devices page) are admin-only here, like the o
 and `/authorize`. Anyone can create their own account from the login page (`/signup`, linked as
 "create an account"): it starts as an **editor** straight away, no invite or approval (the owner's
 choice; it means whoever finds the site can edit playlists, schedules and projectors), capped at
-5 attempts per address per 10 minutes and audited as `user_signup`. Usernames everywhere are
+5 attempts per address per 10 minutes and audited as `user_signup`. Sign-up asks for an email
+address (`users.email`, one account per address, `auth.emailProblem`); admins put one on older
+accounts from the Users page. Forgot password (`/forgot`, linked from the sign-in card and the
+home page) takes a username or email and always answers the same card; when the account has an
+address a link with a one-off token goes out through the `EMAIL` send_email binding (only the
+token's sha256 is stored, 30 minutes, 3 per account per hour), and `/reset?token=` changes the
+password and ends every session of that account. On the Workers Free plan Email Routing delivers
+only to addresses verified in the Cloudflare dashboard; any address needs Workers Paid plus
+Email Sending with `photogen5000.com` onboarded (`wrangler.toml` has the notes). Usernames everywhere are
 letters, digits, `. _ - @` only (`auth.usernameProblem`), so no invisible or look-alike names;
-`enroll` and `signup` are reserved for the throttle. After a POST the pages answer with a one-shot notice (`auth.flashRedirect`,
+`enroll`, `signup` and `forgot` are reserved for the throttle. After a POST the pages answer with a one-shot notice (`auth.flashRedirect`,
 a short-lived `piplayer_flash` cookie the next page shows once), not a `?saved=1` query string.
 
 Passwords: PBKDF2-SHA256 (100 000 iterations, WebCrypto), min 6 chars, max 1024 bytes. Five
@@ -171,7 +179,7 @@ was typed). Sessions are D1 rows referenced by an HMAC-signed cookie
 (`piplayer_session`, `HttpOnly; Secure; SameSite=Lax; Max-Age=14 days`). `Secure` is always
 set; plain-http `wrangler dev` needs `--var PIPLAYER_INSECURE_COOKIES:1` (`npm run dev` and the
 e2e runners pass it, production never does) or browsers and `requests` drop the cookie. Only
-`GET /login` (and `GET /setup` while no user exists yet) starts an anonymous session (1 h, just
+`GET /login`, `/signup`, `/forgot`, `/reset` (and `GET /setup` while no user exists yet) start an anonymous session (1 h, just
 a CSRF token for the form); any other cookieless request is answered without touching D1. Every
 session insert also prunes the expired rows (the daily housekeeping does too). Login rotates the
 session; logout, deleting the user or an admin resetting their password invalidates it

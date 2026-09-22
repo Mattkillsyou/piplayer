@@ -163,7 +163,6 @@ async function playlistsEdit(ctx) {
 </div>
 
 <h2>Playlist order (${items.length})</h2>
-<p class="help small">Empty duration = play natural length for videos, ${esc(defaultImageDuration)}s default for images.</p>
 ${!items.length ? emptyState("EMPTY REEL", `Nothing queued.${canEdit ? " Add media below." : ""}`) : `<div class="table-wrap">
 <table class="data sortable-table" id="playlist-items">
   <caption class="sr-only">Playlist items</caption>
@@ -178,7 +177,7 @@ ${!items.length ? emptyState("EMPTY REEL", `Nothing queued.${canEdit ? " Add med
 
 ${canEdit ? `<h2>Add media</h2>
 ${!available.length
-    ? `<p class="help small">All uploaded media is already in this playlist, or you haven't uploaded anything. <a href="/library">Go to Library</a>.</p>`
+    ? `<p class="help small">Nothing to add. <a href="/library">Library</a>.</p>`
     : `<div class="table-foot">
   <form method="post" action="/playlists/${playlist.id}/items">
     ${csrfInput(ctx)}

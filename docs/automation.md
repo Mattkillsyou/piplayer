@@ -88,7 +88,7 @@ On the console, editors and viewers see only their own projectors; admins see
 every projector and can change a projector's owner on the Devices page.
 Playlists and media stay shared. The flasher downloads sit behind sign-in on
 the console's SD Flasher page (top bar); the public home page has only Sign
-in and Create an account. This is flasher v0.7.0. The device-code sign-in and
+in, Create an account and a Forgot password link. This is flasher v0.7.2. The device-code sign-in and
 the enrollment key of earlier flashers still work and are described at the
 end of this section as legacy.
 
@@ -160,9 +160,10 @@ the tool itself.
 
 **Operator steps** (once per operator, on each PC that flashes cards):
 
-1. Create an account on the console (Create an account on the home page),
-   or have an admin make one. Viewers cannot flash; ask an admin to make the
-   account an editor.
+1. Create an account on the console (Create an account on the home page:
+   username, email, password), or have an admin make one. Viewers cannot
+   flash; ask an admin to make the account an editor. Forgot password on the
+   sign-in page mails a reset link to the account's email.
 2. Sign in to the console and download the flasher from the SD Flasher page
    in the top bar.
 3. Start the flasher and sign in with the same username and password. The

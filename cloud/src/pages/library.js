@@ -19,17 +19,14 @@ function uploadGrid(maxBytes, ctx) {
       <input type="file" name="file" id="file-input" accept="video/*,image/*" multiple required aria-label="Choose files">
       <button type="submit" class="primary">Upload</button>
     </form>
-    <p class="help small">New files start playing on every projector that has no playlist of its own; open <a href="/playlists">Playlists</a> to change the order or remove a file.</p>
   </div>
   <div class="upload-panel">
     <div class="upload-panel-head">
       <h2>Upload queue</h2>
-      <span class="tag">hashed before sending</span>
     </div>
     <div class="upload-panel-body">
       <ul id="upload-queue" class="upload-queue"></ul>
       <div id="upload-status" class="muted"></div>
-      <p class="help small">Duration and resolution are read in your browser before the upload; the file is hashed first, so a duplicate is refused before any bytes are sent.</p>
     </div>
   </div>
 </div>`;

@@ -31,16 +31,27 @@ export const MAX_USERNAME_CHARS = 64;
 // are reserved so a typed name never collides.
 export const USERNAME_RE = /^[a-z0-9][a-z0-9._@-]*$/i;
 export const USERNAME_RULE_MSG = "Username may only contain letters, digits, dots, hyphens, underscores and @";
-// POST /api/enroll and /signup share the login_failures table, keyed by ip + a synthetic name.
+// POST /api/enroll, /signup and /forgot share the login_failures table, keyed by ip + a synthetic name.
 export const ENROLL_KEY = "enroll";
 export const SIGNUP_KEY = "signup";
-export const RESERVED_USERNAMES = new Set([ENROLL_KEY, SIGNUP_KEY]);
+export const FORGOT_KEY = "forgot";
+export const RESERVED_USERNAMES = new Set([ENROLL_KEY, SIGNUP_KEY, FORGOT_KEY]);
 // '' when acceptable, else the message to show.
 export function usernameProblem(username) {
   if (typeof username !== "string" || !username) return "Enter a username";
   if (username.length > MAX_USERNAME_CHARS) return `Username must be at most ${MAX_USERNAME_CHARS} characters`;
   if (!USERNAME_RE.test(username)) return USERNAME_RULE_MSG;
   if (RESERVED_USERNAMES.has(username.toLowerCase())) return "That username is taken; pick another";
+  return "";
+}
+// An email address as /signup and the Users page accept it (users.email, unique case-insensitively):
+// one @ with something either side, no whitespace or control characters, at most 254 chars. The
+// caller trims. '' when acceptable, else the message to show.
+export const MAX_EMAIL_CHARS = 254;
+export function emailProblem(email) {
+  if (typeof email !== "string" || !email) return "Enter an email address";
+  if (email.length > MAX_EMAIL_CHARS) return `Email address must be at most ${MAX_EMAIL_CHARS} characters`;
+  if (email.length < 3 || !/^[^\s\x00-\x1f\x7f@]+@[^\s\x00-\x1f\x7f@]+$/.test(email)) return "That does not look like an email address";
   return "";
 }
 export const ENROLL_MAX_FAILURES = 10;
@@ -389,10 +400,11 @@ export async function hasUsers(env) {
   return anyUsers;
 }
 
-// Daily housekeeping: expired sessions and stale throttle rows.
+// Daily housekeeping: expired sessions, stale throttle rows and day-old password reset rows.
 export async function housekeeping(env) {
   await db.batch(env, [
     ["DELETE FROM sessions WHERE expires_at <= datetime('now')"],
     ["DELETE FROM login_failures WHERE at <= ?", unix() - MAX_LOCK_SECONDS],
+    ["DELETE FROM password_resets WHERE created_at <= datetime('now', '-1 day')"],
   ]);
 }

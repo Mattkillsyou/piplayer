@@ -540,6 +540,7 @@ def route_table(w):
         ("POST", "/users", {"username": "u-" + w.tok, "password": "short", "role": "viewer"}, "form", AD(400)),
         ("POST", "/users/%d/role" % NOPE, {"role": "viewer"}, "form", AD(404)),
         ("POST", "/users/%d/password" % NOPE, {"password": "pw123456"}, "form", AD(404)),
+        ("POST", "/users/%d/email" % NOPE, {"email": "nope@example.com"}, "form", AD(404)),
         ("POST", "/users/%d/delete" % NOPE, {}, "form", AD(404)),
         ("POST", "/settings", {"timezone": "Not/AZone", "screenshot_interval": "60", "default_image_duration": "10", "camera_interval": "10"}, "form", AD(400)),
     ]

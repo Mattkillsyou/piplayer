@@ -90,7 +90,6 @@ async function tokensPanel(ctx, me, newToken, tz) {
   const tokens = await userTokens(ctx.env, me.id);
   return `<div class="panel">
   <h2>My API tokens</h2>
-  <p class="muted small">Personal tokens for the flasher (<code>GET /api/operator/enrollment</code>, <code>Authorization: Bearer p5k_...</code>): it fetches the current enrollment key on every launch, so cards never carry a stale key. A token acts with your role; revoke it if the machine holding it is lost. Tokens for other admins and editors are issued on the <a href="/users">Users</a> page.</p>
   ${newTokenBlock(newToken)}
   ${tokenCreateForm(ctx, "/settings/tokens")}
   ${tokenTable(ctx, tokens, tz, (t) => `/settings/tokens/${t.id}/revoke`)}
@@ -108,7 +107,7 @@ async function wyzePanel(ctx, s) {
   const configured = have.has("wyze_email") && have.has("wyze_password");
   return `<div class="panel">
   <h2>Wyze account (camera zero-config)</h2>
-  <p class="muted small">Every Pi fetches this Wyze login on its own and uses it to show its camera, so a freshly flashed Pi needs no per-device setup. Stored encrypted; never shown again. Status: <strong>${configured ? "configured" : "not configured"}</strong>${configured ? "" : " (the flasher's provision script only installs the bridge once an email and password are set)"}.</p>
+  <p class="muted small">Status: <strong>${configured ? "configured" : "not configured"}</strong>.</p>
   <form method="post" action="/settings/wyze">
     ${csrfInput(ctx)}
     <div class="form-grid">
@@ -119,7 +118,6 @@ async function wyzePanel(ctx, s) {
         <input type="text" name="wyze_camera_pattern" value="${esc(s.wyze_camera_pattern)}" placeholder="${esc(db.DEFAULT_WYZE_CAMERA_PATTERN)}" maxlength="100" required>
       </label>
     </div>
-    <p class="help small">The API key id and key come from the Wyze developer portal. The pattern names each device's camera in the Wyze app: <code>{device_name}</code> and <code>{device_id}</code> are substituted; a device can override it on the Devices page. Saving any change makes every player pick up the new camera settings on its next sync.</p>
     <div class="row">
       <button type="submit" class="primary">Save Wyze settings</button>
     </div>
@@ -148,7 +146,6 @@ async function alertsPanel(ctx, s) {
     </form>`;
   return `<div class="panel">
   <h2>Alerts</h2>
-  <p class="muted small">Every 5 minutes the console checks each device for: ${alerts.KINDS.map((k) => esc(alerts.KIND_TEXT[k] || k)).join(", ")}. An alert opens once per device and condition, is sent again while it stays open (repeat interval), and a recovery message follows when it clears. <a href="/alerts">Open and recent alerts</a>.</p>
   <form method="post" action="/settings/alerts">
     ${csrfInput(ctx)}
     <div class="form-grid">
@@ -168,7 +165,7 @@ async function alertsPanel(ctx, s) {
         <input type="password" name="${n}" value="" placeholder="${have.has(n) ? "leave empty to keep" : "not set"}" autocomplete="off" spellcheck="false" maxlength="200">
       </label>`).join("\n      ")}
     </div>
-    <p class="help small">Email is sent from <code>${esc(alerts.EMAIL_FROM)}</code> through Cloudflare Email Routing (each destination must be verified there; comma-separate several). ${cloudflare.configured(ctx.env) ? "These addresses are also the only people allowed to open a device's live camera page (Cloudflare Access); saving updates every device's camera access. " : ""}The webhook gets a JSON POST with <code>title</code>, <code>text</code>, <code>content</code> and <code>message</code>, so a Slack, Discord or ntfy URL works as is. SMS ${badge(c.sms)}: Twilio credentials are stored encrypted and never shown again.</p>
+    <p class="help small">Each email address must be verified in Cloudflare Email Routing first.</p>
     <div class="row">
       <button type="submit" class="primary">Save alert settings</button>
     </div>
@@ -195,8 +192,8 @@ async function tunnelPanel(ctx, s) {
   const n = (await db.first(ctx.env, "SELECT COUNT(*) AS n FROM devices WHERE tunnel_id IS NOT NULL")).n;
   return `<div class="panel">
   <h2>Camera tunnels (Cloudflare) ${badge(on, on ? "configured" : "not configured")}</h2>
-  <p class="muted small">With the worker secrets set, every device gets its own private camera address when it enrolls (or from "Create tunnel" on the Devices page): <code>&lt;device_id&gt;-cam.${esc(cloudflare.zoneName(ctx.env))}</code>, which only the operators below can open (Cloudflare Access). The Pi receives the tunnel key on its next sync; nothing is stored here.${on ? "" : ` Missing: ${cloudflare.missing(ctx.env).map((k) => `<code>${k}</code>`).join(", ")} (set as worker secrets by whoever deploys the console; the API token needs Account &gt; Cloudflare Tunnel: Edit, Zone &gt; DNS: Edit, Account &gt; Access: Apps and Policies: Edit). Until then, paste a live URL per device.`}</p>
-  <p class="muted small">Operator emails (Access policy): ${emails ? emails.map((e) => `<code>${esc(e)}</code>`).join(", ") : '<span class="badge badge-stale">none</span> set the alert email addresses above (or make an admin username an email address) before creating a tunnel'}. Devices with a tunnel: ${n}.</p>
+  ${on ? "" : `<p class="muted small">Missing: ${cloudflare.missing(ctx.env).map((k) => `<code>${k}</code>`).join(", ")} (worker secrets).</p>`}
+  <p class="muted small">Operators: ${emails ? emails.map((e) => `<code>${esc(e)}</code>`).join(", ") : '<span class="badge badge-stale">none</span> (set the alert email addresses above)'}. Devices with a tunnel: ${n}.</p>
 </div>`;
 }
 
@@ -248,7 +245,6 @@ async function settingsPage(ctx, newToken = "") {
         </select>
       </label>
     </div>
-    <p class="help small">Zone ${esc(zoneName(s.timezone))}. The screenshot interval is sent to every player on its next sync; a device is flagged stale after 3 intervals without a screenshot; the camera interval works the same way for room camera snapshots. The image duration applies to images without a per-item override. The group and playlist are applied when a new Pi enrolls for the first time; a known device that enrolls again keeps its current assignment.</p>
     <h3>Player updates</h3>
     <div class="form-grid">
       <label>Player software version (release name)
@@ -263,7 +259,6 @@ async function settingsPage(ctx, newToken = "") {
         <input type="text" name="auto_update_window" value="${esc(s.auto_update_window)}" placeholder="03:00-05:00" pattern="([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]" required>
       </label>
     </div>
-    <p class="help small">"Update player" on the Devices page (and "Update all players") checks this release out on the Pi and reinstalls the player. With auto-update <code>nightly</code> every player does the same by itself inside the window, at most once a day, and skips when it is already on that release. Each Pi reports the outcome on its next sync (Devices page).</p>
     <h3>Projector power</h3>
     <div class="form-grid">
       <label>Switch on before a schedule starts (minutes)
@@ -273,7 +268,6 @@ async function settingsPage(ctx, newToken = "") {
         <input type="number" name="projector_idle_minutes" value="${esc(s.projector_idle_minutes)}" min="0" max="${db.MAX_PROJECTOR_MINUTES}" step="1" required>
       </label>
     </div>
-    <p class="help small">For devices whose projector power mode is <code>auto</code> (Devices page): the player switches the projector on while a playlist is active or this many minutes before the next schedule rule starts, and off once nothing has played for the idle delay.</p>
     <div class="row">
       <button type="submit" class="primary">Save settings</button>
     </div>
@@ -282,7 +276,6 @@ async function settingsPage(ctx, newToken = "") {
 
 <div class="panel">
   <h2>Device enrollment</h2>
-  <p class="muted small">The flasher fetches this key with an API token (below) and writes it to every card; a Pi presents it on first boot and receives its own device token. Rotate it if a card is lost: cards flashed with the old key that have not booted yet stop working.</p>
   <div class="enrollment-key">
     <label for="enrollment-key" class="small">Enrollment key</label>
     <input type="password" id="enrollment-key" value="${esc(s.enrollment_key)}" readonly spellcheck="false" autocomplete="off">

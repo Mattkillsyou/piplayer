@@ -113,7 +113,8 @@ describe("H4 + M21: the alert addresses are the camera operator list", () => {
     expect(await help()).not.toContain("live camera page");
     configure();
     const page = await (await r.admin.get("/settings")).text();
-    expect(page).toContain("These addresses are also the only people allowed to open a device's live camera page (Cloudflare Access); saving updates every device's camera access.");
+    expect(page).not.toContain("These addresses are also the only people allowed to open a device's live camera page");
+    expect(page).toContain("Each email address must be verified in Cloudflare Email Routing first.");
     expect(page).toContain('<input type="email" multiple name="alert_email"');
     expect(page).toContain('name="alert_webhook_url" value="" placeholder="https://hooks.slack.com/services/..." pattern="https://.*"');
   });
@@ -136,7 +137,7 @@ describe("H1 + H6: the Users page", () => {
     expect((await post(r.admin, "/users", { username: "u".repeat(64), password: "pw123456", role: "viewer" })).status).toBe(303);
     const page = await (await r.admin.get("/users")).text();
     expect(page).toContain('minlength="6" required autocomplete="new-password"');
-    expect(page).toContain("Resetting a password also signs that user out everywhere");
+    expect(page).toContain("Resetting a password signs that user out everywhere.");
   });
 });
 

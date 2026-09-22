@@ -15,15 +15,15 @@ beforeAll(async () => {
 });
 
 describe("/flasher", () => {
-  it("every signed-in role gets the three v0.7.1 links and the steps", async () => {
-    expect(FLASHER_VERSION).toBe("0.7.1");
+  it("every signed-in role gets the three v0.7.2 links and the steps", async () => {
+    expect(FLASHER_VERSION).toBe("0.7.2");
     for (const role of ["viewer", "editor", "admin"]) {
       const res = await r[role].get("/flasher");
       expect(res.status, role).toBe(200);
       const html = await res.text();
       expect(html).toContain("<h1>SD Flasher</h1>");
       for (const f of FILES) expect(html, `${role} ${f}`).toContain(`href="${RELEASE}/${f}"`);
-      expect(html).toContain("sign in to it with the same username and password as here.");
+      expect(html).not.toContain("sign in to it with the same username and password as here.");
       expect(html).toContain("Which Mac do I have?");
       expect(html).toContain("First time on this computer");
       expect(html).toContain("Then, every time");

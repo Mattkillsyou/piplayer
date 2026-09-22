@@ -48,7 +48,6 @@ async function groupsPage(ctx) {
     <button type="submit" class="primary">Create</button>
   </form>` : ""}
 </div>
-<p class="help small">Devices in a group use the group's playlist as their default playlist (when the device has none of its own and no schedule matches). Groups without one play the site default playlist.</p>
 
 ${!groups.length ? emptyState("NO GROUPS", `No groups yet.${canEdit ? " Create one above." : ""}`) : `<div class="table-wrap">
 <table class="data">

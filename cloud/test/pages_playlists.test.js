@@ -54,7 +54,7 @@ describe("role matrix", () => {
     expect(page).toContain("three.png");           // available to add
     expect(page).toContain("12.3 s");              // natural duration
     expect(page).toContain('placeholder="10.0"');  // default image duration, float repr like Python
-    expect(page).toContain("10.0s default for images");
+    expect(page).not.toContain("default for images");
   });
 });
 

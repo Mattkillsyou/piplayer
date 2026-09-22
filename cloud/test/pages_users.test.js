@@ -1,5 +1,5 @@
 // /users (admin only): create (validation, 409), role (self-demote guard), password
-// (min 6 / max 1024), delete (self + last-admin guards), escaping.
+// (min 6 / max 1024), email (validation, 409), delete (self + last-admin guards), escaping.
 import { beforeAll, describe, expect, it } from "vitest";
 import * as auth from "../src/auth.js";
 import { Client } from "./helpers.js";
@@ -19,6 +19,7 @@ describe("users", () => {
     const m = await uid("matrix");
     await roleMatrix(r, "POST", `/users/${m.id}/role`, { minRole: "admin", fields: { role: "editor" } });
     await roleMatrix(r, "POST", `/users/${m.id}/password`, { minRole: "admin", fields: { password: "newpass1" } });
+    await roleMatrix(r, "POST", `/users/${m.id}/email`, { minRole: "admin", fields: { email: "matrix@example.com" } });
     await roleMatrix(r, "POST", `/users/${m.id}/delete`, { minRole: "admin" });
     expect(await uid("matrix")).toBeNull();
     // the viewer's failed attempt created nothing
@@ -95,6 +96,32 @@ describe("users", () => {
     expect((await r.admin.get("/users")).status).toBe(200);
     expect((await new Client().login("vw", "brand-new-1")).status).toBe(303);
     expect((await audits("user_set_password")).slice(0, 2).map((a) => a.target_id)).toEqual([String(me.id), String(vw.id)]);
+  });
+
+  it("email: column shows the address escaped, 400 invalid, 404 unknown, 409 duplicate, sets + audits", async () => {
+    const ed = await uid("ed");
+    const vw = await uid("vw");
+    let page = await (await r.admin.get("/users")).text();
+    expect(page).toContain('<th scope="col">Email</th>');
+    expect(page).toContain(`<form method="post" action="/users/${ed.id}/email" class="inline duration-form">`);
+    expect(page).toContain('name="email" placeholder="not set" maxlength="254" required');
+    for (const [email, msg] of [["", "Enter an email address"], ["nope", "That does not look like an email address"], ["a b@example.com", "That does not look like an email address"]]) {
+      expect(await detail(await post(r.admin, `/users/${ed.id}/email`, { email }), 400)).toBe(msg);
+    }
+    expect(await detail(await post(r.admin, `/users/${NOPE}/email`, { email: "x@example.com" }), 404)).toBe("User not found");
+    expect((await post(r.admin, `/users/${ed.id}/email`, { email: " Ed@Example.com " })).status).toBe(303);
+    expect(await one("SELECT email FROM users WHERE id = ?", ed.id)).toEqual({ email: "Ed@Example.com" });
+    page = await (await r.admin.get("/users")).text();
+    expect(page).toContain('<div class="alert ok" role="alert">Email address saved.</div>');
+    expect(page).toContain('<div class="small">Ed@Example.com</div>');
+    expect(page).toContain('name="email" placeholder="replace" maxlength="254" required');
+    expect(await detail(await post(r.admin, `/users/${vw.id}/email`, { email: "ed@EXAMPLE.com" }), 409)).toBe("Another account already uses that email address");
+    expect(await one("SELECT email FROM users WHERE id = ?", vw.id)).toEqual({ email: null });
+    expect((await post(r.admin, `/users/${vw.id}/email`, { email: "<vw>@example.com" })).status).toBe(303);
+    page = await (await r.admin.get("/users")).text();
+    expect(page).toContain("&lt;vw&gt;@example.com");
+    expect(page).not.toContain("<vw>@example.com");
+    expect((await audits("user_set_email"))[0]).toMatchObject({ username: "admin", target_id: String(vw.id), details: '{"email": "<vw>@example.com"}' });
   });
 
   it("delete: self 400, last admin 400, 404 unknown, otherwise deletes + audits", async () => {

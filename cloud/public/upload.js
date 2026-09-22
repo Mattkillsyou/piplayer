@@ -1,9 +1,12 @@
 // Library upload queue: for each selected file read its metadata in the browser, hash it
 // (sha256.js, 8 MiB slices) and drive the chunk protocol of src/uploads.js:
-// POST init -> PUT parts (skipping the ones the server already has) -> POST complete.
+// POST init -> PUT parts (skipping the ones the server already has, PARALLEL at a time so
+// the round trip of one part does not idle the connection) -> POST complete.
 // Progress shows the hashing percentage first, then the upload percentage; a server error
-// is shown as its {"detail"} text (plain English from src/uploads.js). No CDN scripts, no
-// inline handlers.
+// is shown as its {"detail"} text (plain English from src/uploads.js). While files are in
+// flight the browser asks before the page is left or reloaded (the upload would stop; the
+// server keeps the parts, so dropping the file again resumes). No CDN scripts, no inline
+// handlers.
 (function () {
   'use strict';
 
@@ -13,6 +16,14 @@
   var queue = document.getElementById('upload-queue');
   var status = document.getElementById('upload-status');
   var SLICE = 8 * 1024 * 1024;
+  var PARALLEL = 4; // parts in flight per file (the server claims each part, so this is safe)
+  var busy = false;
+
+  window.addEventListener('beforeunload', function (e) {
+    if (!busy) return;
+    e.preventDefault();
+    e.returnValue = ''; // the browser shows its own "leave page?" wording
+  });
 
   function csrf() {
     var m = document.querySelector('meta[name="csrf-token"]');
@@ -169,23 +180,43 @@
       var partSize = init.part_size;
       var total = Math.ceil(file.size / partSize);
       var received = st.received || 0;
-      function progress(extra) {
-        var pct = (received + extra) / file.size * 100;
-        row.set(pct, 'Uploading ' + mb(received + extra) + ' / ' + mb(file.size) + ' MB (' + pct.toFixed(0) + '%)');
+      var inflight = {}; // part number -> bytes the browser has sent of it so far
+      function progress() {
+        var extra = 0;
+        Object.keys(inflight).forEach(function (k) { extra += inflight[k]; });
+        var done = Math.min(received + extra, file.size);
+        var pct = done / file.size * 100;
+        row.set(pct, 'Uploading ' + mb(done) + ' / ' + mb(file.size) + ' MB (' + pct.toFixed(0) + '%)');
       }
-      function put(n) {
-        if (n > total) return Promise.resolve();
-        if (have[n]) return put(n + 1);
+      var next = 1;
+      var failed = null;
+      // One lane: take the next part nobody holds, send it, repeat until the parts run out
+      // (or another lane failed; that error is the one reported).
+      function lane() {
+        while (next <= total && have[next]) next++;
+        if (failed || next > total) return Promise.resolve();
+        var n = next++;
         var start = (n - 1) * partSize;
         var blob = file.slice(start, Math.min(start + partSize, file.size));
-        return request('PUT', '/library/upload/' + init.upload_id + '/part/' + n, blob, progress).then(function (r) {
-          received = r.received;
-          progress(0);
-          return put(n + 1);
+        inflight[n] = 0;
+        return request('PUT', '/library/upload/' + init.upload_id + '/part/' + n, blob, function (loaded) {
+          inflight[n] = loaded;
+          progress();
+        }).then(function () {
+          delete inflight[n];
+          received += blob.size;
+          progress();
+          return lane();
+        }, function (err) {
+          delete inflight[n];
+          failed = failed || err;
+          throw err;
         });
       }
-      progress(0);
-      return put(1);
+      progress();
+      var lanes = [];
+      for (var i = 0; i < PARALLEL; i++) lanes.push(lane());
+      return Promise.all(lanes);
     }).then(function () {
       row.set(100, 'Upload received, saving...');
       return request('POST', '/library/upload/' + init.upload_id + '/complete');
@@ -204,6 +235,7 @@
     if (!files.length) return;
     var button = form.querySelector('button');
     button.disabled = true;
+    busy = true;
     status.textContent = '';
     var rows = files.map(addRow);
     var ok = 0;
@@ -212,6 +244,7 @@
       chain = chain.then(function () { return uploadOne(file, rows[i]); }).then(function (r) { if (r) ok++; });
     });
     chain.then(function () {
+      busy = false;
       button.disabled = false;
       input.value = '';
       if (ok === files.length) {

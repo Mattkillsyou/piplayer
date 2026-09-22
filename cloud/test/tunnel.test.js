@@ -476,7 +476,7 @@ describe("manifest tunnel block", () => {
     page = await (await r.editor.get("/devices")).text();
     expect(page).toContain(`action="/devices/${lobby.id}/tunnel"`);
     expect(page).toContain(">Recreate tunnel</button>");
-    expect(page).toContain("Creates a private web address for this device's camera (<code>lobby-cam.photogen5000.com</code>)");
+    expect(page).not.toContain("Creates a private web address for this device's camera");
     expect(page).not.toContain("eyJ");
     expect(fake.calls.length).toBe(0); // rendering never calls the API
     await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, lobby.id); // a viewer sees only their own
@@ -488,7 +488,6 @@ describe("manifest tunnel block", () => {
     page = await (await r.editor.get("/devices")).text();
     expect(page).toContain('<span class="badge badge-muted">no tunnel</span>');
     expect(page).toContain(">Create tunnel</button>");
-    expect(page).toContain("<code>lobby-cam.photogen5000.com</code>");
   });
 });
 
@@ -497,7 +496,7 @@ describe("settings panel", () => {
     let page = await (await r.admin.get("/settings")).text();
     expect(page).toContain("Camera tunnels (Cloudflare) <span class=\"badge badge-muted\">not configured</span>");
     expect(page).toContain("Missing: <code>CF_API_TOKEN</code>, <code>CF_ACCOUNT_ID</code>, <code>CF_ZONE_ID</code>");
-    expect(page).toContain('<span class="badge badge-stale">none</span> set the alert email addresses');
+    expect(page).toContain('<span class="badge badge-stale">none</span> (set the alert email addresses above)');
     expect(page).toContain("Devices with a tunnel: 0.");
     env.CF_API_TOKEN = "x";
     page = await (await r.admin.get("/settings")).text();
@@ -511,8 +510,7 @@ describe("settings panel", () => {
     await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net, matt@example.net')");
     await query("UPDATE devices SET tunnel_id = 't' WHERE id = ?", lobby.id);
     page = await (await r.admin.get("/settings")).text();
-    expect(page).toContain("Operator emails (Access policy): <code>ops@example.net</code>, <code>matt@example.net</code>. Devices with a tunnel: 1.");
-    expect(page).toContain("<code>&lt;device_id&gt;-cam.photogen5000.com</code>");
+    expect(page).toContain("Operators: <code>ops@example.net</code>, <code>matt@example.net</code>. Devices with a tunnel: 1.");
     await query("DELETE FROM settings WHERE key = 'alert_email'");
     await query("UPDATE devices SET tunnel_id = NULL WHERE id = ?", lobby.id);
   });

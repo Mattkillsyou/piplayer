@@ -69,14 +69,14 @@ describe("owner wording (L27, L29)", () => {
     expect(html).not.toContain(">Register<");
     expect(html).toContain("Restart playback →"); // the queued restart-mpv row
     expect(html).toContain('<span class="label">player version</span><span class="value">v1.2.3</span>');
-    expect(html).toContain("cec switches the projector through the HDMI cable");
+    expect(html).not.toContain("cec switches the projector through the HDMI cable");
     expect(html).toContain("<label>Broadlink address (optional)");
     expect(html).toContain("<label>Stream address (for the rtsp source)");
   });
 
   it("Settings: alert kinds in plain words, timezone / release / phone labels, New key", async () => {
     const html = await page(r.admin, "/settings");
-    expect(html).toContain("checks each device for: offline (no sync), player down, no new screenshot, sync error, remote update failed, camera error, projector error.");
+    expect(html).not.toContain("checks each device for:");
     expect(html).toContain("<label>Site timezone (e.g. America/New_York)");
     expect(html).toContain("<label>Player software version (release name)");
     expect(html).toContain("<label>Text messages from (phone number with country code, e.g. +15551234567)");
@@ -88,7 +88,7 @@ describe("owner wording (L27, L29)", () => {
 
   it("one name per concept: default playlist on Groups and Playlists, Set password on Users, no NO SIGNAL for an empty fleet", async () => {
     const groups = await page(r.editor, "/groups");
-    expect(groups).toContain("use the group's playlist as their default playlist");
+    expect(groups).not.toContain("use the group's playlist as their default playlist");
     expect(groups).toContain("will lose this default playlist.");
     expect(groups).not.toContain("fallback");
     const playlists = await page(r.editor, "/playlists");
