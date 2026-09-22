@@ -114,6 +114,7 @@ $p = Start-Process -FilePath $exe -ArgumentList '--selfcheck' -Wait -PassThru
 if ($p.ExitCode -ne 0) { throw "exe --selfcheck exited $($p.ExitCode)" }
 $out = Join-Path $PSScriptRoot 'dist\selfcheck.txt'
 if (-not (Select-String -Path $out -Pattern 'install-player.sh' -Quiet)) { throw "selfcheck output looks wrong" }
+if (-not (Select-String -Path $out -Pattern '^https roots: [1-9]' -Quiet)) { throw "exe trusts no https roots" }
 if (-not (Select-String -Path $out -Pattern '^tk: ok' -Quiet)) { throw "frozen exe cannot start Tk" }
 $bundled = (Select-String -Path $out -Pattern '^bundled image: ' | Select-Object -First 1).Line
 if ($env:FLASHER_NO_BUNDLE -ne '1' -and -not ($bundled -like '*(trailer ok)')) { throw "exe does not see its bundled image: '$bundled'" }

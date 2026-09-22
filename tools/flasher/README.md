@@ -254,6 +254,10 @@ pick the card, press **FLASH**, confirm the erase warning. What differs:
 - **The sign-in** (first FLASH, browser approval) is the same; the token is
   kept in the login keychain as "Matt Brown's Projection5000" (Keychain
   Access shows it), never in a file.
+- **HTTPS**: the console and the Raspberry Pi download site are verified
+  against the roots in the System Roots and System keychains (Apple's plus
+  anything an administrator added). A certificate in your login keychain only
+  is not used. `--selfcheck` prints `https roots: N`.
 - **Ejecting**: the card is ejected when the flash finishes, as on Windows.
   macOS's own files (`._*`, `.fseventsd`, `.Spotlight-V100`) are removed from
   the boot partition first.
@@ -309,8 +313,8 @@ How the code is split: `flasher.py` (the screen and the flash sequence) never
 asks which system it is on. `sysplat.py` picks, once, by `sys.platform`:
 `windisk.py` / `macdisk.py` (cards), `wifi.py` / `macwifi.py` (networks),
 `winlocale.py` / `maclocale.py` (time zone, keymap, country) and
-`winhost.py` / `machost.py` (folders, the token store, fonts, elevation, the
-window). The pairs expose the same function names; the streaming and verify
+`winhost.py` / `machost.py` (folders, the token store, the HTTPS roots, fonts,
+elevation, the window). The pairs expose the same function names; the streaming and verify
 engine (`write_image`, `verify_image`, the deferred first MiB) is one piece of
 code in `windisk.py` used by both. `tests/test_mac*.py` drive the macOS
 modules on any system with `diskutil`, `authopen`, `system_profiler`,

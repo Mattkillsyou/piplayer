@@ -1451,6 +1451,7 @@ def selfcheck() -> int:
         f"player archive: {len(archive)} bytes, {len(names)} entries",
         f"bundled image: {b.name} {b.length} bytes sha256 {b.sha256} (trailer ok)" if b else "bundled image: none",
         console_summary(),
+        f"https roots: {host.ssl_context().cert_store_stats()['x509_ca']}",
         "pi models (key, image arch, label; the armhf image is downloaded once):", pimodel.table(),
         f"defaults from {host.NAME}: timezone {defaults.timezone()}, keymap {defaults.keymap()}, "
         f"country {defaults.country(firstboot.ISO3166)}, ssh key {sshkey.private_path()}",

@@ -7,7 +7,10 @@ and where the .app leaves selfcheck.txt. Stdlib only; every subprocess is the `s
 """
 import ctypes
 import ctypes.util
+import functools
 import os
+import re
+import ssl
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +28,8 @@ KEYCHAIN_SERVICE = "Matt Brown's Projection5000"
 KEYCHAIN_ACCOUNT = "operator"
 MENU_BAR = 25  # px; Tk cannot ask AppKit for the visible frame without pyobjc
 TIMEOUT = 60  # s; the keychain may put up an Allow/Deny prompt
+# Where macOS keeps the roots it trusts: Apple's own, then whatever an admin added.
+SYSTEM_KEYCHAINS = ("/System/Library/Keychains/SystemRootCertificates.keychain", "/Library/Keychains/System.keychain")
 
 
 class HostError(Exception):
@@ -53,6 +58,31 @@ def is_admin() -> bool:
 
 def relaunch_elevated(argv=()) -> bool:
     return False
+
+
+# ---------------------------------------------------------------- https
+
+@functools.lru_cache(maxsize=None)
+def ssl_context() -> ssl.SSLContext:
+    """The default context plus the roots this Mac trusts. The Python inside the .app brings its own OpenSSL,
+    which looks for a certificate file where the build machine kept one; on any other Mac there is none, so it
+    trusts nothing and every https:// URL fails with CERTIFICATE_VERIFY_FAILED. `security` prints the system
+    keychains as PEM; one certificate it cannot parse must not take the rest down. Everything in them is trusted,
+    including roots macOS itself has marked as not trusted: the flasher only ever talks to the console and
+    the Raspberry Pi download site. A certificate added only to the login keychain is not seen."""
+    ctx = ssl.create_default_context()
+    ctx.set_alpn_protocols(["http/1.1"])  # what http.client would have set on a context of its own
+    for keychain in SYSTEM_KEYCHAINS:
+        try:
+            pem = _security("find-certificate", "-a", "-p", keychain, timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for cert in re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", pem, re.S):
+            try:
+                ctx.load_verify_locations(cadata=cert)
+            except ssl.SSLError:
+                pass
+    return ctx
 
 
 # ---------------------------------------------------------------- the sign-in token (login keychain)

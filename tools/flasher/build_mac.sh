@@ -137,13 +137,17 @@ fi
 codesign --verify --deep --strict "$app"
 
 # Smoke test the app: --selfcheck needs no rights, starts Tk once, checks the bundled player archive and writes
-# dist/selfcheck.txt next to the .app (a windowed app has no reliable stdout).
+# dist/selfcheck.txt next to the .app (a windowed app has no reliable stdout). OpenSSL is pointed at no
+# certificate file, as on a Mac that never had this Python installed: the roots must come from the keychains.
 rm -f dist/selfcheck.txt
-"$app/Contents/MacOS/$name" --selfcheck >/dev/null 2>&1 || { echo "app --selfcheck failed" >&2; exit 1; }
+mkdir -p "$stage/no-certs"
+SSL_CERT_FILE=/dev/null SSL_CERT_DIR="$stage/no-certs" "$app/Contents/MacOS/$name" --selfcheck >/dev/null 2>&1 ||
+    { echo "app --selfcheck failed" >&2; exit 1; }
 out=dist/selfcheck.txt
 [ -f "$out" ] || { echo "selfcheck wrote no $out" >&2; exit 1; }
 grep -q 'install-player.sh' "$out" || { echo "selfcheck output looks wrong" >&2; exit 1; }
 grep -q '^tk: ok' "$out" || { echo "frozen app cannot start Tk" >&2; exit 1; }
+grep -Eq '^https roots: [1-9]' "$out" || { echo "app trusts no https roots: $(grep '^https roots' "$out")" >&2; exit 1; }
 bundled=$(grep '^bundled image: ' "$out" | head -1)
 if [ "${FLASHER_NO_BUNDLE:-}" != "1" ] && [[ "$bundled" != *"(trailer ok)" ]]; then
     echo "app does not see its bundled image: '$bundled'" >&2; exit 1

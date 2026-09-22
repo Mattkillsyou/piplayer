@@ -6,11 +6,14 @@ fetch_enrollment() trades the operator's API token for the console's current enr
 request_device_code() / poll_device_token() are the flasher's half of the browser sign-in
 (POST /api/operator/device-code, GET /authorize in the browser, POST /api/operator/device-token).
 """
+import functools
 import http.client
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from sysplat import host
 
 TIMEOUT = 30
 NOT_A_CONSOLE = "is this a Projection5000 console?"
@@ -25,7 +28,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_opener = urllib.request.build_opener(_NoRedirect)
+@functools.lru_cache(maxsize=None)
+def _opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=host.ssl_context()))
 
 
 class ConsoleError(Exception):
@@ -48,7 +53,7 @@ def _request(base: str, path: str, body: dict = None, headers: dict = None) -> d
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(base + path, data=data, headers={**HEADERS, **(headers or {})})
     try:
-        with _opener.open(req, timeout=TIMEOUT) as resp:
+        with _opener().open(req, timeout=TIMEOUT) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         hint = f" ({NOT_A_CONSOLE})" if e.code in (404, 301, 302, 303, 307, 308) else ""

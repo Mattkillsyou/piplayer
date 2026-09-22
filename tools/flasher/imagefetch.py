@@ -64,12 +64,16 @@ def newest_cached(arch: str):
     return None
 
 
+def _open(req, timeout: int):
+    return urllib.request.urlopen(req, timeout=timeout, context=host.ssl_context())
+
+
 def resolve_latest(url: str = LATEST_URL) -> tuple:
     """Follow redirects and return (final_url, filename). The redirect must stay on the same origin:
     the .sha256 is fetched from the final URL too, so a hop to another host or to http:// would let
     that host vouch for its own image."""
     try:
-        with urllib.request.urlopen(_request(url), timeout=30) as resp:
+        with _open(_request(url), timeout=30) as resp:
             final = resp.geturl()
     except Exception as e:
         raise FetchError(f"cannot resolve {url}: {e}") from e
@@ -85,8 +89,7 @@ def resolve_latest(url: str = LATEST_URL) -> tuple:
 def remote_size(url: str):
     """Content-Length of url (HEAD), or None when the server does not say: only for a log line."""
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD"),
-                                    timeout=30) as resp:
+        with _open(urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD"), timeout=30) as resp:
             return int(resp.headers.get("Content-Length") or 0) or None
     except Exception:
         return None
@@ -95,7 +98,7 @@ def remote_size(url: str):
 def fetch_sha256(url: str) -> str:
     """Read '<hex>  <filename>' from <url>.sha256."""
     try:
-        with urllib.request.urlopen(_request(url + ".sha256"), timeout=30) as resp:
+        with _open(_request(url + ".sha256"), timeout=30) as resp:
             text = resp.read(4096).decode("utf-8", "replace")
     except Exception as e:
         raise FetchError(f"cannot fetch checksum: {e}") from e
@@ -110,7 +113,7 @@ def download(url: str, dest, progress_cb=None, cancel_event=None) -> Path:
     dest = Path(dest)
     part = dest.with_name(dest.name + ".part")
     try:
-        resp = urllib.request.urlopen(_request(url), timeout=60)
+        resp = _open(_request(url), timeout=60)
     except Exception as e:
         raise FetchError(f"download failed: {e}") from e
     total = resp.headers.get("Content-Length")

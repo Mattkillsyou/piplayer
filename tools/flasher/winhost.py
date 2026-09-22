@@ -7,6 +7,7 @@ frozen exe's console. Every function is safe to call from a non-elevated process
 import base64
 import ctypes
 import os
+import ssl
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +40,13 @@ def config_dir() -> Path:
 
 
 # ---------------------------------------------------------------- elevation
+
+def ssl_context() -> ssl.SSLContext:
+    """Python on Windows reads the roots from the Windows certificate store: the default context is enough."""
+    ctx = ssl.create_default_context()
+    ctx.set_alpn_protocols(["http/1.1"])  # what http.client would have set on a context of its own
+    return ctx
+
 
 def is_admin() -> bool:
     """True when raw disk writes are possible in this process (elevated)."""

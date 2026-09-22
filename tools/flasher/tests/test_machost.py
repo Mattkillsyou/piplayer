@@ -2,14 +2,18 @@
 login keychain (`security` faked) as the flasher's operator config uses it, the CoreText font registration
 (the frameworks faked), the 0600 key file, the work area and where the .app leaves selfcheck.txt."""
 import os
+import ssl
 import subprocess
 import sys
 
 import pytest
 
+import console
 import flasher
+import imagefetch
 import machost
 import sshkey
+import sysplat
 from conftest import new_root
 from test_console import OPERATOR_TOKEN
 
@@ -21,12 +25,19 @@ class FakeSecurity:
         self.calls = []
         self.stored = None
         self.deny = False
+        self.pem = ""  # what find-certificate prints for a keychain
+        self.missing = False  # no /usr/bin/security at all
         monkeypatch.setattr(machost.subprocess, "run", self)
 
     def __call__(self, argv, **kw):
         assert argv[0] == machost.SECURITY and kw["stdin"] is subprocess.DEVNULL and kw["capture_output"]
         self.calls.append(argv[1:])
         verb = argv[1]
+        if self.missing:
+            raise FileNotFoundError(argv[0])
+        if verb == "find-certificate":
+            assert argv[2:4] == ["-a", "-p"] and argv[4] in machost.SYSTEM_KEYCHAINS
+            return subprocess.CompletedProcess(argv, 0, self.pem, "")
         if self.deny:
             return subprocess.CompletedProcess(argv, 51, "", "security: SecKeychainSearchCopyNext: User interaction is not allowed.\n")
         if verb == "add-generic-password":
@@ -241,3 +252,62 @@ def test_the_whole_gui_runs_on_the_mac_host(monkeypatch, tmp_path):
             root.destroy()
         except tk.TclError:
             pass
+
+
+def _bare_context():
+    """A context that trusts nothing (create_default_context on the test machine would load its own roots)."""
+    return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
+def _a_root_pem() -> str:
+    ders = ssl.create_default_context().get_ca_certs(binary_form=True)
+    if not ders and hasattr(ssl, "enum_certificates"):  # Windows keeps them in its store, not in the context
+        ders = [der for der, enc, _ in ssl.enum_certificates("ROOT") if enc == "x509_asn"]
+    if not ders:
+        pytest.skip("no trusted roots on this machine to borrow")
+    return ssl.DER_cert_to_PEM_cert(ders[0])
+
+
+def test_https_trusts_the_roots_this_mac_trusts(monkeypatch):
+    """The bundled OpenSSL finds no certificate file on a Mac: the roots come from the system keychains via
+    `security find-certificate -a -p`, one certificate at a time so a bad one is skipped, not fatal."""
+    root = _a_root_pem()  # before the patch below empties create_default_context()
+    monkeypatch.setattr(machost.ssl, "create_default_context", _bare_context)
+    sec = FakeSecurity(monkeypatch)
+    sec.pem = "\n".join(["-----BEGIN CERTIFICATE-----", "not a certificate", "-----END CERTIFICATE-----", ""]) + root
+    machost.ssl_context.cache_clear()
+    ctx = machost.ssl_context()
+    assert [c[:3] + [c[3]] for c in sec.calls] == [["find-certificate", "-a", "-p", k] for k in machost.SYSTEM_KEYCHAINS]
+    assert ctx.cert_store_stats()["x509_ca"] == 1  # the same root from both keychains counts once
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
+    assert machost.ssl_context() is ctx  # built once
+
+    sec.missing = True
+    machost.ssl_context.cache_clear()
+    assert machost.ssl_context().cert_store_stats()["x509_ca"] == 0  # no security tool: still a verifying context
+    machost.ssl_context.cache_clear()
+
+
+def test_console_and_image_download_use_the_host_context(monkeypatch):
+    marker = _bare_context()
+    monkeypatch.setattr(sysplat.host, "ssl_context", lambda: marker)
+    console._opener.cache_clear()
+    https = [h for h in console._opener().handlers if isinstance(h, console.urllib.request.HTTPSHandler)]
+    assert https and https[0]._context is marker
+    console._opener.cache_clear()
+
+    seen = {}
+    monkeypatch.setattr(imagefetch.urllib.request, "urlopen", lambda req, **kw: seen.update(kw) or (_ for _ in ()).throw(OSError("stop")))
+    assert imagefetch.remote_size("https://example.invalid/x") is None
+    assert seen["context"] is marker and seen["timeout"] == 30
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the real security tool and keychains")
+def test_the_real_keychains_give_the_roots(monkeypatch):
+    """On a Mac: with OpenSSL's own file taken away, the keychains alone give Apple's ~150 roots."""
+    monkeypatch.setattr(machost.ssl, "create_default_context", _bare_context)
+    machost.ssl_context.cache_clear()
+    try:
+        assert machost.ssl_context().cert_store_stats()["x509_ca"] > 100
+    finally:
+        machost.ssl_context.cache_clear()
