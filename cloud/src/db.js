@@ -49,7 +49,7 @@ export async function assertMigrated(env) {
     throw new HttpError(500, "The database has not been set up yet: run npm run migrate:remote (or npm run migrate:local on a dev machine) and try again");
   }
   if (Number(v) < SCHEMA_VERSION) {
-    throw new HttpError(500, `The database is behind this version of the console (it is at version ${v}, this release needs ${SCHEMA_VERSION}): run npm run migrate:remote and try again`);
+    throw new HttpError(500, `The database is behind this release of Projection5000 (it is at version ${v}, this release needs ${SCHEMA_VERSION}): run npm run migrate:remote and try again`);
   }
   migrated = true;
 }

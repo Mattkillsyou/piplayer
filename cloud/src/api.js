@@ -10,6 +10,7 @@ import * as manifest from "./manifest.js";
 import * as media from "./media.js";
 import * as secrets from "./secrets.js";
 import { installBaseUrl, MAX_DEVICE_NAME } from "./pages/devices.js";
+import { FLASHER_VERSION, RELEASE } from "./pages/flasher.js";
 import { envInt, fail, HttpError, json, jsonObject, nowUtc, randomToken, utf8Len } from "./util.js";
 import { cameraConfig } from "./pages/devices.js";
 
@@ -441,8 +442,21 @@ async function getCameraConfig(ctx) {
   return json(body);
 }
 
+// What the flasher polls weekly to decide whether to update itself: the keys here are a
+// contract with every installed flasher, so add to them but do not rename or drop one.
+function flasherLatest() {
+  return json({
+    version: FLASHER_VERSION,
+    windows: `${RELEASE}/Projection5000-SD-Flasher-Setup.exe`,
+    mac_arm64: `${RELEASE}/Projection5000-SD-Flasher-mac-arm64.dmg`,
+    mac_intel: `${RELEASE}/Projection5000-SD-Flasher-mac-intel.dmg`,
+    notes: `https://github.com/Mattkillsyou/piplayer/releases/tag/v${FLASHER_VERSION}`,
+  }, 200, { "cache-control": "public, max-age=3600" });
+}
+
 export function register(router) {
   router.get("/api/health", () => json({ ok: true }));
+  router.get("/api/flasher/latest", flasherLatest);
   router.post("/api/enroll", enroll);
   router.post("/api/operator/login", operatorLogin);
   router.get("/api/operator/me", operatorMe);

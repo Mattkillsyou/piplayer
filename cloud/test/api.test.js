@@ -4,6 +4,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { FLASHER_VERSION } from "../src/pages/flasher.js";
 import { BASE, query, setupAdmin } from "./helpers.js";
 
 const SHA = (c) => c.repeat(64);
@@ -60,6 +61,22 @@ describe("auth", () => {
     r = await sync({ device_id: "dev-1", token: "tok-2" });
     expect(r.status).toBe(403);
     expect(await r.json()).toEqual({ detail: "Token does not match device id" });
+  });
+
+  it("flasher/latest is public, cached and points at this version's assets", async () => {
+    const r = await SELF.fetch(`${BASE}/api/flasher/latest`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toContain("application/json");
+    expect(r.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(r.headers.get("set-cookie")).toBeNull();
+    const body = await r.json();
+    expect(Object.keys(body).sort()).toEqual(["mac_arm64", "mac_intel", "notes", "version", "windows"]);
+    expect(body.version).toBe(FLASHER_VERSION);
+    for (const k of ["windows", "mac_arm64", "mac_intel", "notes"]) {
+      expect(body[k], k).toContain(`v${FLASHER_VERSION}`);
+    }
+    expect(body.windows).toContain("Projection5000-SD-Flasher-Setup.exe");
+    expect(body.notes).toContain("/releases/tag/");
   });
 
   it("docs routes are 404", async () => {

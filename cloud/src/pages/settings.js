@@ -208,7 +208,7 @@ async function settingsPage(ctx, newToken = "") {
 </div>
 <div class="panel">
   <h2>Site settings</h2>
-  ${s.timezone_problem ? alertBox(`The saved timezone "${s.timezone_problem}" is no longer accepted, so the console is using UTC. Pick a timezone from the list and save.`, "warn") : ""}
+  ${s.timezone_problem ? alertBox(`The saved timezone "${s.timezone_problem}" is no longer accepted, so times are shown in UTC. Pick a timezone from the list and save.`, "warn") : ""}
   <form method="post" action="/settings">
     ${csrfInput(ctx)}
     <div class="form-grid">

@@ -2,13 +2,15 @@
 
 Folders (~/Library/Application Support/Projection5000), no elevation (authopen asks for the password per
 flash, see macdisk.py), the sign-in token in the login keychain (`security`), the bundled fonts registered
-for this process through CoreText (ctypes, no pyobjc), the work area under the menu bar, the 0600 SSH key
-and where the .app leaves selfcheck.txt. Stdlib only; every subprocess is the `security` tool.
+for this process through CoreText (ctypes, no pyobjc), the work area under the menu bar, the 0600 SSH key,
+where the .app leaves selfcheck.txt and opening a downloaded update. Stdlib only; every subprocess is
+`security` or `open`.
 """
 import ctypes
 import ctypes.util
 import functools
 import os
+import platform
 import re
 import ssl
 import subprocess
@@ -23,7 +25,11 @@ FALLBACK_FONTS = {"display": "Menlo", "mono": "Menlo", "sans": "Helvetica Neue"}
 # system_profiler needs no Location permission, so an empty scan just means: nothing in range.
 NO_SCAN_HINT = "type the network name"
 SEAL_NAME = "the keychain"
+# Which asset of /api/flasher/latest this Mac installs, and that a .dmg cannot install itself.
+UPDATE_ASSET = "mac_arm64" if platform.machine() == "arm64" else "mac_intel"
+UPDATE_QUITS = False
 SECURITY = "/usr/bin/security"
+OPEN = "/usr/bin/open"
 KEYCHAIN_SERVICE = "Matt Brown's Projection5000"
 KEYCHAIN_ACCOUNT = "operator"
 MENU_BAR = 25  # px; Tk cannot ask AppKit for the visible frame without pyobjc
@@ -83,6 +89,27 @@ def ssl_context() -> ssl.SSLContext:
             except ssl.SSLError:
                 pass
     return ctx
+
+
+def updates_dir() -> Path:
+    """Where a downloaded disk image waits. Nothing is executed on macOS (the image is opened and dragged by
+    hand), so the app's own data folder is enough."""
+    d = data_dir() / "updates"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def install_update(path) -> str:
+    """Open the downloaded disk image in Finder. A .dmg cannot install itself: the new app has to be dragged
+    to Applications, so nothing is replaced here and the flasher stays open. OSError when it will not open."""
+    try:
+        r = subprocess.run([OPEN, str(path)], capture_output=True, text=True, timeout=TIMEOUT,
+                           stdin=subprocess.DEVNULL)
+    except subprocess.SubprocessError as e:
+        raise OSError(str(e))
+    if r.returncode:
+        raise OSError((r.stderr or r.stdout).strip() or f"open exited {r.returncode}")
+    return "Drag the new app to Applications to finish."
 
 
 # ---------------------------------------------------------------- the sign-in token (login keychain)

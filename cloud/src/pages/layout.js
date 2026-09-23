@@ -65,7 +65,7 @@ function navHtml(ctx) {
       </a>
     </div>
     <button type="button" class="nav-toggle" aria-label="Menu" aria-expanded="false" aria-controls="site-nav">&#8801;</button>
-    <nav id="site-nav" aria-label="Console">
+    <nav id="site-nav" aria-label="Main">
       ${links}
     </nav>
     <div class="user">

@@ -91,7 +91,7 @@ describe("Settings warns when the stored timezone is no longer accepted", () => 
   it("shows the offending value with UTC in use, gone after a real zone is saved", async () => {
     await query("INSERT INTO settings (key, value) VALUES ('timezone', 'EST') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
     let page = await (await r.admin.get("/settings")).text();
-    expect(page).toContain('The saved timezone &quot;EST&quot; is no longer accepted, so the console is using UTC. Pick a timezone from the list and save.');
+    expect(page).toContain('The saved timezone &quot;EST&quot; is no longer accepted, so times are shown in UTC. Pick a timezone from the list and save.');
     expect((await post(r.admin, "/settings", { ...SETTINGS, timezone: "Europe/London" })).status).toBe(303);
     page = await (await r.admin.get("/settings")).text();
     expect(page).not.toContain("is no longer accepted");

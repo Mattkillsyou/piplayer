@@ -234,7 +234,7 @@ export const smsBody = (msg) => `${msg.subject}\n${msg.text}`.slice(0, 600);
 export function sendTest(env, settings, channel, user) {
   return send(env, settings, channel, {
     subject: `${SITE}: test alert`,
-    text: `Test message from the ${SITE} console alert settings (${channel}), requested by ${user}. If you can read this, the channel works.`,
+    text: `Test message from ${SITE} alert settings (${channel}), requested by ${user}. If you can read this, the channel works.`,
   });
 }
 

@@ -40,6 +40,7 @@ import firstboot
 import imagefetch
 import pimodel
 import sshkey
+import updater
 from sysplat import defaults, disk, host, wifi
 
 APP_TITLE = "Matt Brown Projection 5000"
@@ -55,6 +56,7 @@ READY_TEXT = "Ready."
 SIGNIN_TEXT = "Sign in to continue."  # FLASH found no sign-in: the flash goes on by itself after it
 SIGNIN_FIRST_TEXT = "Sign in."
 DRY_RUN_TEXT = "Dry run finished. Nothing was written."
+UP_TO_DATE_TEXT = "You are up to date."  # the Check for updates button, when there is nothing to fetch
 # An armhf model with no internet: shown under the model row instead of a dialog.
 OFFLINE_TEXT = (f"This model needs the 32-bit image. Connect to the internet once (about {pimodel.DOWNLOAD_MB} MB) "
                 "and press FLASH again.")
@@ -493,6 +495,7 @@ class App:
         self._signin_cancel = threading.Event()
         self._then = None  # what runs once the sign-in box yields a token (FLASH passes itself)
         self._phase = ""  # what the progress bar measures ("Writing the card"), shown with the percentage
+        self._update_thread = None  # the weekly update check and its download
         self._build()
         self._apply_settings(load_settings())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -511,8 +514,11 @@ class App:
                 self.check_token()
         self._show_account()
         self.set_status(READY_TEXT)
-        if not self.connected():
-            self.sign_in()
+        # An update downloaded on an earlier run goes in before anything else is put on screen.
+        if not self.install_downloaded_update():
+            if not self.connected():
+                self.sign_in()
+            self.check_updates()
         # Last, once every widget holds its first text: Tk on macOS (Aqua) never returns from update() when a
         # hidden window that is not the process's first gets its geometry set and then its labels change.
         self._grow()
@@ -722,6 +728,12 @@ class App:
         self.log_text.pack(side="left", fill="both", expand=True)
         ttk.Label(adv, text=f"Build: {build_info()}", style="Hint.TLabel", wraplength=520, justify="left"
                   ).grid(row=8, column=1, columnspan=2, sticky="w", padx=4)
+        version = ttk.Frame(adv)
+        version.grid(row=9, column=1, columnspan=2, sticky="w", padx=4, pady=(6, 0))
+        ttk.Label(version, text=f"Version {updater.VERSION}", style="Mono.TLabel").pack(side="left")
+        self.update_btn = ttk.Button(version, text="Check for updates",
+                                     command=lambda: self.check_updates(manual=True))
+        self.update_btn.pack(side="left", padx=8)
 
     def _grow(self):
         """The window is not resizable: it is always exactly as tall as its contents (the sign-in box or the
@@ -959,6 +971,99 @@ class App:
         self.log(why)
         self.sign_in()
         self.set_status(why)
+
+    # ----- updates (updater.py does the work; the flash is never interrupted for one)
+    def check_updates(self, manual: bool = False):
+        """Ask the console what the newest build is and fetch it in the background. Weekly on its own (the
+        state file remembers when), or now when the button was pressed."""
+        if self._update_thread and self._update_thread.is_alive():
+            return
+        manual = manual and not self.busy()  # the check still runs; the status line belongs to the flash
+        state = updater.load_state()
+        if not manual:
+            if not state:
+                # First run: this build is the newest there was, so only start the weekly clock.
+                updater.save_state({"last_check": time.time()})
+                return
+            if not updater.due(state, time.time()):
+                return
+        url = self.console_url
+        if manual:
+            self.set_status("Checking for updates...")
+
+        def work():
+            try:
+                info = updater.latest(url)
+            except console.ConsoleError as e:
+                info, msg = None, f"Update check failed: {e}"  # `e` is gone once the except block ends
+                self.post(lambda: self._update_failed(msg, manual))
+            # The clock moves whatever the answer: a console that is down must not mean a check every start.
+            state = dict(updater.load_state(), last_check=time.time())
+            if info:
+                state["last_seen_version"] = info["version"]
+            updater.save_state(state)
+            if not info:
+                return
+            version = info["version"]
+            if not updater.newer(version, updater.VERSION):
+                self.post(lambda: self._up_to_date(manual))
+                return
+            self.post(lambda: self.log(f"Version {version} is available; downloading it."))
+            asset = info[host.UPDATE_ASSET]
+            try:
+                path = updater.download(asset, updater.download_path(asset), url)
+            except (console.ConsoleError, OSError) as e:
+                msg = f"Update download failed: {e}"
+                self.post(lambda: self._update_failed(msg, manual))
+                return
+            updater.save_state(dict(updater.load_state(), downloaded=str(path), downloaded_version=version))
+            self.post(lambda: self._update_ready(path, version))
+
+        self._update_thread = threading.Thread(target=work, daemon=True)
+        self._update_thread.start()
+
+    def _up_to_date(self, manual: bool):
+        self.log(f"Up to date (version {updater.VERSION}).")
+        if manual:
+            self.set_status(UP_TO_DATE_TEXT)
+
+    def _update_failed(self, msg: str, manual: bool):
+        self.log(msg)
+        if manual:
+            self.set_status(READY_TEXT)
+
+    def _update_ready(self, path, version: str):
+        """The installer is on disk: put it in now, or leave it for the next start when a flash is running."""
+        if self.busy():
+            self.log(f"Update {version} goes in the next time this program starts.")
+            return
+        self._install_update(path, version)
+
+    def install_downloaded_update(self) -> bool:
+        """An installer for a newer build fetched on an earlier run: put it in now, before anything else is
+        put on screen. True when this program is going away for it (Windows)."""
+        state = updater.load_state()
+        version, path = str(state.get("downloaded_version") or ""), Path(str(state.get("downloaded") or ""))
+        # installer_ok, not is_file: the state file sits in the user's profile, so the path in it is a hint.
+        if self.busy() or not updater.newer(version, updater.VERSION) or not updater.installer_ok(path):
+            return False
+        return self._install_update(path, version)
+
+    def _install_update(self, path, version: str) -> bool:
+        """Hand the installer to the platform and, where it replaces the running program (Windows), quit so
+        it can. The state is cleared either way: a failed install must not be retried at every start."""
+        self.set_status(f"Updating to {version}..." if host.UPDATE_QUITS else f"Update {version} is ready.")
+        updater.save_state(dict(updater.load_state(), downloaded="", downloaded_version=""))
+        try:
+            self.log(host.install_update(path))
+        except OSError as e:
+            self.log(f"Could not start the update: {e}")
+            self.set_status(READY_TEXT)
+            return False
+        if not host.UPDATE_QUITS:  # macOS: a .dmg is dragged by hand, so the flasher stays open
+            return False
+        self.post(self.on_close)
+        return True
 
     def sign_out(self):
         """Forget the token; the username stays prefilled in the sign-in box (switch user: sign out, sign in)."""

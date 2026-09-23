@@ -1,6 +1,7 @@
 """The platform layer, chosen once by sys.platform.
 
-flasher.py, imagefetch.py and sshkey.py import these four names and never branch on the platform themselves:
+flasher.py, imagefetch.py, sshkey.py and updater.py import these four names and never branch on the
+platform themselves:
 
     disk      raw card access and enumeration   windisk.py   / macdisk.py
     wifi      networks and saved passwords      wifi.py      / macwifi.py

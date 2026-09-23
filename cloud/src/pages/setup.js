@@ -25,7 +25,7 @@ function setupPage(ctx, token, error, status = 200) {
       </label>
       <button type="submit" class="primary">Create admin</button>
     </form>
-    <span class="auth-foot">p5k-console · create the first administrator account</span>
+    <span class="auth-foot">projection5000 · create the first administrator account</span>
   </div>`;
   return authPage(ctx, { title: "Setup", card, status });
 }
@@ -45,7 +45,7 @@ async function setupForm(ctx) {
     if (!(e instanceof HttpError) || e.status !== 403) throw e;
     const card = `<div class="auth-card">
     ${authBrand()}
-    <div class="alert error" role="alert">This console has not been set up yet. Open the setup link from your deployment notes.</div>
+    <div class="alert error" role="alert">Projection5000 has not been set up yet. Open the setup link from your deployment notes.</div>
   </div>`;
     return authPage(ctx, { title: "Setup", card, status: 403 });
   }

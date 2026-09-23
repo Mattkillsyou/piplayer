@@ -1,8 +1,9 @@
 """What the flasher needs from Windows itself (machost.py is the macOS twin; sysplat.py picks one).
 
 Folders (%LOCALAPPDATA% / %APPDATA%), elevation (UAC), the DPAPI-protected sign-in token, the private font
-registration (gdi32), the work area, the window icon, the owner-only ACL on the SSH key (icacls) and the
-frozen exe's console. Every function is safe to call from a non-elevated process; nothing here touches a disk.
+registration (gdi32), the work area, the window icon, the owner-only ACL on the SSH key (icacls), the
+frozen exe's console and running a downloaded update. Every function is safe to call from a non-elevated
+process; nothing here touches a disk.
 """
 import base64
 import ctypes
@@ -21,6 +22,10 @@ FALLBACK_FONTS = {"display": "Consolas", "mono": "Consolas", "sans": "Segoe UI"}
 # Shown under the network box when this PC is connected to Wi-Fi but the scan comes back empty:
 # Windows 11 hides scan results from desktop apps while Location access is off.
 NO_SCAN_HINT = "turn on Location in Windows Settings to list networks"
+UPDATE_ASSET = "windows"  # which asset of /api/flasher/latest this platform installs
+UPDATE_QUITS = True  # the installer replaces the running exe, so the app has to go away for it
+# Inno Setup: no questions, close and reopen the app it is replacing, and never reboot the PC by itself.
+UPDATE_ARGS = ["/SILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART"]
 FR_PRIVATE = 0x10  # gdi32: visible to this process only, never installed
 SEAL_NAME = "DPAPI"  # named in the warning when the token cannot be protected
 
@@ -68,6 +73,34 @@ def relaunch_elevated(argv=()) -> bool:
     # Values <= 32 are errors (5 = SE_ERR_ACCESSDENIED: the user declined the UAC prompt).
     rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
     return rc > 32
+
+
+def updates_dir() -> Path:
+    """%ProgramData%\\Projection5000\\updates, writable by administrators only (the flasher runs elevated, so
+    it can create it; a standard user cannot drop an exe in it). The installer waiting there is started with
+    administrator rights, which is why it may not sit in the user's own profile."""
+    d = Path(os.environ.get("ProgramData") or r"C:\ProgramData") / "Projection5000" / "updates"
+    new = not d.exists()
+    d.mkdir(parents=True, exist_ok=True)
+    if new:  # well-known SIDs, so the names of the groups do not matter: Administrators, SYSTEM, Users (read)
+        try:
+            subprocess.run(["icacls", str(d), "/inheritance:r",
+                            "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "/grant:r", "*S-1-5-18:(OI)(CI)F",
+                            "/grant:r", "*S-1-5-32-545:(OI)(CI)RX"],
+                           capture_output=True, text=True, timeout=30,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            pass  # an un-ACLed folder is still better than none; updater.installer_ok keeps the path confined
+    return d
+
+
+def install_update(path) -> str:
+    """Start the downloaded Inno Setup installer silently, detached from this process so it survives the
+    quit that has to follow (it replaces this exe). The flasher runs elevated, so the installer inherits
+    that and Windows asks nothing. Returns the line for the screen; OSError when it will not start."""
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+    subprocess.Popen([str(path), *UPDATE_ARGS], creationflags=flags, close_fds=True)
+    return "Installing the update. The program will reopen by itself."
 
 
 # ---------------------------------------------------------------- the sign-in token (DPAPI)

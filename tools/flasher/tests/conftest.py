@@ -17,6 +17,12 @@ def _operator_config_sandbox(monkeypatch, tmp_path, request):
     generation or icacls."""
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setenv("ProgramData", str(tmp_path / "programdata"))  # where a downloaded update waits
+    # The real updates folder is locked to administrators (winhost.updates_dir), which a test process cannot
+    # write to: a plain folder here instead, and test_updater checks the ACL call itself.
+    updates = tmp_path / "updates"
+    updates.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(flasher.updater, "updates_dir", lambda: updates)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     if request.module.__name__ not in ("test_sshkey", "test_machost"):
         monkeypatch.setattr(flasher.sshkey, "ensure_keypair", lambda log=None: PUBKEY)

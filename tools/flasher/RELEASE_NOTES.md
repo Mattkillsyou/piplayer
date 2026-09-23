@@ -1,5 +1,13 @@
 # Release notes for the SD Flasher
 
+## v0.7.3
+
+The flasher updates itself. Once a week it asks the console whether there is a newer version, fetches it in
+the background and puts it in the next time nothing is running; a flash is never interrupted. Under Advanced
+it now says which version this is, with a Check for updates button next to it that asks straight away and
+answers "You are up to date." when there is nothing to fetch. On a Mac the new disk image is opened for you
+to drag across, as macOS requires.
+
 ## v0.7.2
 
 Two links under the Sign in button: Forgot password and Create an account. Each opens the console in

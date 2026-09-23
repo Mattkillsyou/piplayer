@@ -37,7 +37,7 @@ function signupPage(ctx, error, username = "", email = "", status = 200, kind = 
       </label>
       <button type="submit" class="primary">Create account</button>
     </form>
-    <span class="auth-foot">p5k-console · new accounts can edit playlists, schedules and projectors · <a href="/login">back to sign in</a></span>
+    <span class="auth-foot">projection5000 · new accounts can edit playlists, schedules and projectors · <a href="/login">back to sign in</a></span>
   </div>`;
   return authPage(ctx, { title: "Create an account", card, status });
 }

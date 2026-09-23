@@ -32,6 +32,9 @@ ME = {"username": "matt", "role": "editor", "console_url": "https://c.example", 
       "groups": [{"id": 1, "name": "Lobby"}], "playlists": [{"id": 7, "name": "Loop"}], "wyze_configured": False}
 REGISTERED = {"device_id": "lobby", "token": "tok-lobby-0123456789", "cms_url": "https://c.example", "owner": "matt",
               "created": True}
+# What GET /api/flasher/latest answers; 0.7.9 stands for "newer than this build" whatever this build is.
+UPDATE = {"version": "0.7.9", "windows": "https://github.com/x/Setup.exe", "mac_arm64": "https://github.com/x/a.dmg",
+          "mac_intel": "https://github.com/x/i.dmg", "notes": "https://github.com/x/tag"}
 
 
 _roots = []
@@ -321,12 +324,14 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     # SSH key rows any more: the model picks the image, Windows picks the locale, the key is automatic.
     app.adv_btn.invoke()
     assert app.advanced.winfo_manager() == "pack"
-    assert _visible_texts(app.advanced, []) == ["Time zone", "Static IP", "Gateway", "Account", "Sign out"]
+    assert _visible_texts(app.advanced, []) == ["Time zone", "Static IP", "Gateway", "Account", "Sign out",
+                                                "Check for updates"]
     assert app.account_label.cget("text") == "Signed in as matt"
     checks = [w.cget("text") for w in _widgets(app.advanced, flasher.ttk.Checkbutton)]
     assert checks == ["Hidden Wi-Fi network", "Show details"]  # the dry-run box exists only under --dry-run
     assert any(isinstance(w, flasher.ttk.Label) and w.cget("text").startswith("Build: ")
                for w in app.advanced.winfo_children())
+    assert f"Version {flasher.updater.VERSION}" in _all_texts(app.advanced, [])  # next to the build stamp
     assert _widgets(app.advanced, flasher.ttk.Radiobutton) == []
     # Show details reveals the technical log box, still styled as the console's terminal.
     assert not app.details.winfo_manager()
@@ -1384,4 +1389,131 @@ def test_gui_uses_the_bundled_image_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(flasher.bundle, "find_bundle", lambda path=None: None)
     root = _root()
     assert flasher.App(root).v["image_mode"].get() == "latest"
+    root.destroy()
+
+
+# ----- updates (updater.py's own tests cover the fetching; these are what the app does with it)
+
+def _due_last_week():
+    """A state file that says the weekly check is overdue. A fresh profile never checks: it IS the newest build."""
+    flasher.updater.save_state({"last_check": time.time() - 8 * 86400})
+
+
+def _update_stubs(monkeypatch, tmp_path, answer):
+    """The console answers `answer`, the download hands back a file, the host records what it was asked to
+    install. Returns (asked, downloaded, installed, the installer path)."""
+    setup = flasher.updater.updates_dir() / "Projection5000-SD-Flasher-Setup.exe"  # the only folder it runs from
+    setup.write_bytes(b"MZ")
+    asked, downloaded, installed = [], [], []
+    monkeypatch.setattr(flasher.updater, "latest", lambda url: asked.append(url) or dict(answer))
+    monkeypatch.setattr(flasher.updater, "download_path", lambda url: setup)
+    monkeypatch.setattr(flasher.updater, "download",
+                        lambda url, dest, console_url, **kw: downloaded.append(url) or setup)
+    monkeypatch.setattr(flasher.host, "install_update", lambda p: installed.append(Path(p)) or "Installing.")
+    monkeypatch.setattr(flasher.host, "UPDATE_QUITS", True)
+    monkeypatch.setattr(flasher.host, "UPDATE_ASSET", "windows")
+    return asked, downloaded, installed, setup
+
+
+def test_the_update_check_is_weekly_and_the_clock_moves_whatever_the_answer(monkeypatch, tmp_path):
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _signed_in(monkeypatch)
+    asked, _, _, _ = _update_stubs(monkeypatch, tmp_path, dict(UPDATE, version=flasher.updater.VERSION))
+    root = _root()
+    app = flasher.App(root)  # a fresh profile: the clock starts, nothing is asked
+    assert _pump(root, app, lambda: flasher.updater.load_state().get("last_check")) and asked == []
+    root.destroy()
+    root = _root()
+    app = flasher.App(root)  # checked seconds ago: not due
+    _pump(root, app, lambda: False, timeout=0.2)
+    assert asked == []
+    root.destroy()
+
+    _due_last_week()
+    root = _root()
+    app = flasher.App(root)
+    assert _pump(root, app, lambda: f"Up to date (version {flasher.updater.VERSION})." in _log(app))
+    assert asked == [flasher.console_url()]  # the check runs on a thread: the window is up before it answers
+    assert not flasher.updater.due(flasher.updater.load_state(), time.time())
+    assert flasher.updater.load_state()["last_seen_version"] == flasher.updater.VERSION
+    assert _status(app) == "Ready."  # the weekly check says nothing on screen
+    root.destroy()
+
+    # The console is down: the clock still moves, so a dead console is not asked at every start.
+    _due_last_week()
+    monkeypatch.setattr(flasher.updater, "latest",
+                        lambda url: (_ for _ in ()).throw(flasher.console.ConsoleError("cannot reach")))
+    root = _root()
+    app = flasher.App(root)
+    assert _pump(root, app, lambda: "Update check failed: cannot reach" in _log(app))
+    assert _pump(root, app, lambda: not flasher.updater.due(flasher.updater.load_state(), time.time()))
+    assert _status(app) == "Ready."
+    root.destroy()
+
+
+def test_a_newer_version_is_fetched_and_installed_when_nothing_is_running(monkeypatch, tmp_path):
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _signed_in(monkeypatch)
+    _due_last_week()
+    asked, downloaded, installed, setup = _update_stubs(monkeypatch, tmp_path, UPDATE)
+    quit_calls = []
+    monkeypatch.setattr(flasher.App, "on_close", lambda self: quit_calls.append(True))
+    root = _root()
+    app = flasher.App(root)
+    assert _pump(root, app, lambda: quit_calls)
+    assert downloaded == [UPDATE["windows"]] and installed == [setup]
+    assert _status(app) == "Updating to 0.7.9..." and "Installing." in _log(app)
+    # Cleared once it is handed over: a failed install must not be retried at every start.
+    assert flasher.updater.load_state()["downloaded"] == ""
+    root.destroy()
+
+
+def test_an_update_that_lands_during_a_flash_waits_for_the_next_start(monkeypatch, tmp_path):
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _signed_in(monkeypatch)
+    _due_last_week()
+    _, downloaded, installed, setup = _update_stubs(monkeypatch, tmp_path, UPDATE)
+    monkeypatch.setattr(flasher.App, "on_close", lambda self: pytest.fail("quit while a flash was running"))
+    root = _root()
+    app = flasher.App(root)
+    stop = threading.Event()
+    app.worker = threading.Thread(target=lambda: stop.wait(5), daemon=True)
+    app.worker.start()
+    try:
+        assert _pump(root, app, lambda: "goes in the next time this program starts" in _log(app))
+        assert downloaded == [UPDATE["windows"]] and installed == []
+        assert flasher.updater.load_state()["downloaded"] == str(setup)
+    finally:
+        stop.set()
+    root.destroy()
+
+
+def test_a_downloaded_update_goes_in_at_the_next_start_before_the_sign_in_box(monkeypatch, tmp_path):
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _, _, installed, setup = _update_stubs(monkeypatch, tmp_path, UPDATE)
+    monkeypatch.setattr(flasher.updater, "latest", lambda url: pytest.fail("checked before installing"))
+    flasher.updater.save_state({"last_check": time.time(), "downloaded": str(setup), "downloaded_version": "0.7.9"})
+    quit_calls = []
+    monkeypatch.setattr(flasher.App, "on_close", lambda self: quit_calls.append(True))
+    root = _root()
+    app = flasher.App(root)
+    assert installed == [setup] and _status(app) == "Updating to 0.7.9..."
+    assert not app.signin.winfo_manager()  # nothing is put on screen first: the program is going away
+    assert flasher.updater.load_state()["downloaded"] == ""
+    assert _pump(root, app, lambda: quit_calls)
+    root.destroy()
+
+
+def test_check_for_updates_says_you_are_up_to_date(monkeypatch, tmp_path):
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _signed_in(monkeypatch)
+    asked, _, installed, _ = _update_stubs(monkeypatch, tmp_path, dict(UPDATE, version=flasher.updater.VERSION))
+    root = _root()
+    app = flasher.App(root)
+    _pump(root, app, lambda: False, timeout=0.2)
+    assert asked == []  # a fresh profile does not ask by itself; the button does
+    app.update_btn.invoke()
+    assert _status(app) == "Checking for updates..."
+    assert _pump(root, app, lambda: _status(app) == flasher.UP_TO_DATE_TEXT)
+    assert asked == [flasher.console_url()] and installed == []
     root.destroy()

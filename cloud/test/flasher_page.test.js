@@ -15,8 +15,8 @@ beforeAll(async () => {
 });
 
 describe("/flasher", () => {
-  it("every signed-in role gets the three v0.7.2 links and the steps", async () => {
-    expect(FLASHER_VERSION).toBe("0.7.2");
+  it("every signed-in role gets the three v0.7.3 links and the steps", async () => {
+    expect(FLASHER_VERSION).toBe("0.7.3");
     for (const role of ["viewer", "editor", "admin"]) {
       const res = await r[role].get("/flasher");
       expect(res.status, role).toBe(200);
@@ -27,8 +27,11 @@ describe("/flasher", () => {
       expect(html).toContain("Which Mac do I have?");
       expect(html).toContain("First time on this computer");
       expect(html).toContain("Then, every time");
-      expect(html).toContain("The first time, the flasher asks for your console username and password.");
-      expect(html).toContain("in the account that flashed it.");
+      expect(html).not.toMatch(/console/i);
+      expect(html).toContain("Open the flasher and sign in with your Projection5000 username and password.");
+      expect(html).toContain('If Windows says "Windows protected your PC", click <em>More info</em>, then <em>Run anyway</em>.');
+      expect(html).toContain("Click <em>Yes</em> on the Windows question.");
+      expect(html).toContain("It shows up under Devices within a few minutes.");
       expect(html).not.toContain("a browser page opens");
     }
   });

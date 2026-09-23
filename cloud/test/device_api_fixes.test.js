@@ -19,7 +19,7 @@ describe("assertMigrated (M14)", () => {
   it("a database behind SCHEMA_VERSION answers a plain 500 on /api/health and every route until migrated", async () => {
     expect(Number((await one("SELECT value FROM meta WHERE key = 'schema_version'")).value)).toBe(db.SCHEMA_VERSION);
     await query("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(db.SCHEMA_VERSION - 1));
-    const msg = `The database is behind this version of the console (it is at version ${db.SCHEMA_VERSION - 1}, this release needs ${db.SCHEMA_VERSION}): run npm run migrate:remote and try again`;
+    const msg = `The database is behind this release of Projection5000 (it is at version ${db.SCHEMA_VERSION - 1}, this release needs ${db.SCHEMA_VERSION}): run npm run migrate:remote and try again`;
     for (const path of ["/api/health", "/api/sync/nope", "/login"]) {
       const r = await SELF.fetch(BASE + path);
       expect(r.status, path).toBe(500);

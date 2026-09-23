@@ -40,7 +40,7 @@ function forgotPage(ctx, message, kind = "error", who = "", status = 200) {
       </label>
       <button type="submit" class="primary">Send reset link</button>
     </form>
-    <span class="auth-foot">p5k-console · <a href="/login">back to sign in</a></span>
+    <span class="auth-foot">projection5000 · <a href="/login">back to sign in</a></span>
   </div>`;
   return authPage(ctx, { title: "Forgot password", card, status });
 }
@@ -116,7 +116,7 @@ function resetPage(ctx, token, message = "", status = 200) {
     <h2>Choose a new password</h2>
     ${message ? `<div class="alert error" role="alert">${esc(message)}</div>` : ""}
     ${form}
-    <span class="auth-foot">p5k-console · <a href="/login">back to sign in</a></span>
+    <span class="auth-foot">projection5000 · <a href="/login">back to sign in</a></span>
   </div>`;
   return authPage(ctx, { title: "Choose a new password", card, status });
 }

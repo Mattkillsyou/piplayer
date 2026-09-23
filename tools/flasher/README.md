@@ -143,8 +143,28 @@ show it):
   Switch user above the panel does the same; the username stays prefilled.
 - **Show details**: reveals the technical log box. **Dry run** (see "Run from
   source"). The build stamp.
+- **Version** with a **Check for updates** button (see "Updates").
 
 A problem in an Advanced field opens the section and shows the words there.
+
+## Updates
+
+The flasher keeps itself up to date. Once a week, when it starts, it asks the
+console whether there is a newer version. If there is, it fetches the installer
+in the background and runs it the next time nothing else is going on: a flash is
+never interrupted, and an update that arrives during one goes in at the next
+start. On Windows the installer is silent and the program reopens itself; on a
+Mac the disk image is opened so you can drag the new app across, which macOS
+requires.
+
+**Check for updates** under Advanced asks straight away and says "You are up to
+date." when there is nothing to fetch.
+
+Only the console and GitHub (where the installers live) are ever fetched from,
+over `https://` only. What has been checked and downloaded is remembered in
+`%LOCALAPPDATA%\Projection5000\update.json`
+(`~/Library/Application Support/Projection5000/update.json` on a Mac); the
+installer itself waits in the `updates` folder beside it.
 
 ## Signing in
 
@@ -509,6 +529,8 @@ when there is no display.
   on every card. Delete both to start over (cards flashed before then keep the
   old public key).
 - `%LOCALAPPDATA%\Projection5000\images`: downloaded images.
+- `%LOCALAPPDATA%\Projection5000\update.json` and `\updates`: when the flasher
+  last checked for a new version, and the installer waiting to go in.
 
 ## Security note
 

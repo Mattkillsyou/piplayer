@@ -188,6 +188,24 @@ def test_private_key_is_owner_only(tmp_path, monkeypatch):
         assert oct(priv.stat().st_mode & 0o777) == "0o600"
 
 
+def test_an_update_is_opened_not_installed(monkeypatch, tmp_path):
+    """A .dmg has to be dragged to Applications by hand, so the Mac host only opens it and says so; the app
+    stays open (UPDATE_QUITS is False) and asks for the Mac asset of /api/flasher/latest."""
+    dmg = tmp_path / "Projection5000-SD-Flasher-mac-arm64.dmg"
+    dmg.write_bytes(b"x")
+    opened = []
+    done = subprocess.CompletedProcess([], 0, "", "")
+    monkeypatch.setattr(machost.subprocess, "run", lambda argv, **kw: opened.append(argv) or done)
+    assert machost.install_update(dmg) == "Drag the new app to Applications to finish."
+    assert opened == [[machost.OPEN, str(dmg)]]
+    # A disk image that will not open is said so, not reported as done.
+    monkeypatch.setattr(machost.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess([], 1, "", "image not recognized"))
+    with pytest.raises(OSError, match="image not recognized"):
+        machost.install_update(dmg)
+    assert machost.UPDATE_QUITS is False and machost.UPDATE_ASSET in ("mac_arm64", "mac_intel")
+
+
 def test_work_area_icon_dpi_and_selfcheck_paths(monkeypatch, tmp_path):
     class Root:
         def winfo_screenheight(self):

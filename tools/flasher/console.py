@@ -48,11 +48,12 @@ def _base(console_url: str) -> str:
     return base
 
 
-def _request(base: str, path: str, body: dict = None, headers: dict = None) -> dict:
+def _request(base: str, path: str, body: dict = None, headers: dict = None, timeout: int = None) -> dict:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(base + path, data=data, headers={**HEADERS, **(headers or {})})
     try:
-        with _opener().open(req, timeout=TIMEOUT) as resp:
+        # TIMEOUT is read here, not in the signature: the tests turn it down on the module.
+        with _opener().open(req, timeout=TIMEOUT if timeout is None else timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         hint = f" ({NOT_A_CONSOLE})" if e.code in (404, 301, 302, 303, 307, 308) else ""

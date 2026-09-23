@@ -21,7 +21,7 @@ describe("first-run setup", () => {
     expect(r.status).toBe(403);
     expect(r.headers.get("content-type")).toContain("text/html");
     const text = await r.text();
-    expect(text).toContain("This console has not been set up yet");
+    expect(text).toContain("Projection5000 has not been set up yet");
     expect(text).not.toContain('name="token"');
     const p = await c.post("/setup", { token: "nope", username: "admin", password: "test1234", password2: "test1234", csrf_token: await c.csrf("/setup?token=nope") });
     expect(p.status).toBe(403);

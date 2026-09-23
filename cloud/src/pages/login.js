@@ -61,7 +61,7 @@ function loginPage(ctx, error, status = 200, locked = false, next = "", expired 
       </label>
       <button type="submit" class="primary"${dis}>${locked ? "Locked" : "Connect"}</button>
     </form>
-    <span class="auth-foot">p5k-console · sign in to manage your projector fleet · <a href="/signup">create an account</a> · <a href="/forgot">forgot password</a></span>
+    <span class="auth-foot">projection5000 · sign in to manage your projector fleet · <a href="/signup">create an account</a> · <a href="/forgot">forgot password</a></span>
   </div>`;
   return authPage(ctx, { title: "Sign in", card, status });
 }

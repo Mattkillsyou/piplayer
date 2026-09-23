@@ -2,10 +2,11 @@
 ; smoke-tested, producing dist\Projection5000-SD-Flasher-Setup.exe. The installer copies the single exe
 ; (with the OS image appended by build.ps1) into Program Files, adds a Start Menu entry and an
 ; uninstaller. Everything the user sees is called "Matt Brown Projection 5000" (the exe file keeps its
-; name so the console download links stay valid). Version comes from build.ps1 (/DAppVersion=...); the default matches version.txt.
+; name so the console download links stay valid). Version comes from build.ps1 (/DAppVersion=...); the default
+; matches updater.py's VERSION, as version.txt does (tests/test_updater.py checks all three agree).
 
 #ifndef AppVersion
-  #define AppVersion "0.7.2"
+  #define AppVersion "0.7.3"
 #endif
 
 [Setup]
