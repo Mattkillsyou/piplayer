@@ -467,7 +467,11 @@ every media row that is in no playlist to it in upload order, after its last ite
 `migrations/0011_password_reset.sql` (schema_version 11) adds `users.email` (nullable; the partial
 UNIQUE index `users_email_lower` on `lower(email)`) and `password_resets(id, user_id → users ON
 DELETE CASCADE, token_hash UNIQUE, created_at, expires_at, used_at, ip)` + `idx_password_resets_user`.
-`db.js` exports `SCHEMA_VERSION` (11) and `assertMigrated` compares `meta.schema_version`
+`migrations/0012_device_decode_mode.sql` (schema_version 12) adds to `devices`: `decode_mode TEXT`
+(what mpv is decoding with, `software` when nothing) and `play_rate REAL` (1.0 = real speed), both
+reported on every sync and kept with COALESCE when a player omits them.
+
+`db.js` exports `SCHEMA_VERSION` (12) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.

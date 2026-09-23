@@ -30,6 +30,17 @@ export const OFFLINE_AFTER_SECONDS = 180;
 const LAMP_STATES = ["playing", "paused", "idle", "mpv-down"];
 // The pill text: the states are CSS classes, and "mpv-down" is a program name to the owner.
 const lampText = (s) => (s === "mpv-down" ? "player down" : s);
+// What mpv last reported about the video on screen (migration 0012; "" for a player too old to
+// send it). "software" is the one worth showing: a projector decoding 1080p H.264 on the CPU
+// falls behind and plays the file in slow motion.
+const decodeBadge = (d) => {
+  if (!d.decode_mode) return "";
+  // Under 0.9 of real speed is the thing the owner sees: say it in those words, next to why.
+  const slow = d.play_rate && d.play_rate < 0.9 ? ` · playing at ${d.play_rate.toFixed(2)}x speed` : "";
+  return d.decode_mode === "software"
+    ? `<span class="badge badge-stale" title="No hardware decoder in use: this projector decodes video on the CPU, which can play it slowly">software decoding${esc(slow)}</span>`
+    : `<span class="badge badge-muted" title="Hardware decoding (${esc(d.decode_mode)})">hardware decoding${esc(slow)}</span>`;
+};
 // A failed remote update (last_update_ok = 0, api.storeUpdateStatus) is a fault until the next report.
 export const isFault = (d) => d.lamp === "mpv-down" || d.lamp === "offline" || d.last_update_ok === 0;
 
@@ -443,7 +454,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
       <div class="facts">
         <div><span class="label">last seen</span><span class="value">${d.last_seen_at ? `${esc(d.seen_age)}<br>${esc(localTime(d.last_seen_at, tz))}` : "never"}</span></div>
         <div><span class="label">ip</span><span class="value">${d.last_ip ? esc(d.last_ip) : "—"}</span></div>
-        <div><span class="label">player version</span><span class="value">${d.player_version ? `v${esc(d.player_version)}` : "—"}</span></div>
+        <div><span class="label">player version</span><span class="value">${d.player_version ? `v${esc(d.player_version)}` : "—"}${decodeBadge(d)}</span></div>
       </div>
 
       ${d.last_error ? `<div class="alert error" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
@@ -568,6 +579,7 @@ async function devicesPage(ctx) {
             d.projector_power_state, d.projector_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
             d.tunnel_id, d.tunnel_hostname, d.pi_model, d.camera_supported, d.owner_id,
+            d.decode_mode, d.play_rate,
             p.id AS playlist_id, p.name AS playlist_name,
             g.id AS group_id, g.name AS group_name, u.username AS owner_name
        FROM devices d

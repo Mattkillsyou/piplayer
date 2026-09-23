@@ -145,6 +145,19 @@ describe("page content", () => {
     expect(again).toContain('<span class="now-label">active now · via device default</span>');
   });
 
+  it("badges the decode mode next to the player version (migration 0012)", async () => {
+    // nothing reported (an older player): no badge at all
+    expect(await (await r.admin.get("/devices")).text())
+      .toContain('<span class="label">player version</span><span class="value">v1.2.3</span>');
+    await query("UPDATE devices SET decode_mode = 'software', play_rate = 0.52 WHERE id = ?", w.dev.id);
+    const slow = await (await r.admin.get("/devices")).text();
+    expect(slow).toContain('<span class="value">v1.2.3<span class="badge badge-stale" title="No hardware decoder in use: this projector decodes video on the CPU, which can play it slowly">software decoding · playing at 0.52x speed</span></span>');
+    await query("UPDATE devices SET decode_mode = 'v4l2m2m-copy', play_rate = 1.0 WHERE id = ?", w.dev.id);
+    const fast = await (await r.admin.get("/devices")).text();
+    expect(fast).toContain('<span class="badge badge-muted" title="Hardware decoding (v4l2m2m-copy)">hardware decoding</span>');  // at real speed: no number
+    await query("UPDATE devices SET decode_mode = NULL, play_rate = NULL WHERE id = ?", w.dev.id);
+  });
+
   it("shows the reported Pi model in the id line, escaped", async () => {
     await query("UPDATE devices SET pi_model = ? WHERE id = ?", "Raspberry Pi 4 Model B Rev 1.5 <b>", w.dev.id);
     const page = await (await r.editor.get("/devices")).text();

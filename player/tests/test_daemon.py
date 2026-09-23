@@ -673,3 +673,119 @@ class _FrozenDatetime(daemon.datetime):
     @classmethod
     def now(cls, tz=None):
         return cls.frozen.astimezone(tz) if tz else cls.frozen
+
+
+# ----------------------------------------------- decode options (slow motion) ---
+
+def v4l2_decoder(monkeypatch, tmp_path, name="bcm2835-codec-decode"):
+    """Point the decoder probe at a fake /sys/class/video4linux entry."""
+    d = tmp_path / "v4l2" / "video10"
+    d.mkdir(parents=True)
+    (d / "name").write_text(f"{name}\n")
+    monkeypatch.setattr(daemon, "V4L2_DIR", tmp_path / "v4l2")
+
+
+def sets(mpv, name):
+    """Values the daemon wrote to property `name`, in order."""
+    return [c[2] for c in mpv.commands("set_property") if c[1] == name]
+
+
+def software_decoding(mpv):
+    """mpv as an already-installed Pi 4 runs it: hwdec=auto-safe, which picks no decoder."""
+    mpv.props.update({"hwdec": "auto-safe", "hwdec-current": "no"})
+
+
+def test_playback_options_are_set_once_per_mpv_instance(cfg, cms, mpv, client, monkeypatch, tmp_path, caplog):
+    v4l2_decoder(monkeypatch, tmp_path)
+    seed_local(cfg, cms, ["a.mp4"])
+    state = fresh_state(cfg)
+    with caplog.at_level(logging.INFO, logger="piplayer"):
+        run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC] == ["v4l2m2m-copy,auto-safe"]  # H.264 here, the rest as before
+    assert any("mpv hwdec=set" in r.getMessage() for r in caplog.records)
+
+    # same instance: the options are not pushed again, even though mpv "forgot" them
+    software_decoding(mpv)
+    run_cycle(cfg, client, state)
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC]
+
+    # a restarted mpv is a fresh instance and gets them again
+    mpv.restart()
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC] * 2
+
+
+def test_refused_playback_option_is_logged_and_does_not_break_the_cycle(cfg, cms, mpv, client, monkeypatch,
+                                                                        tmp_path, caplog):
+    v4l2_decoder(monkeypatch, tmp_path)
+    seed_local(cfg, cms, ["a.mp4"])
+    mpv.fail_commands.add("set_property")      # an mpv too old to know these options
+    state = fresh_state(cfg)
+    with caplog.at_level(logging.INFO, logger="piplayer"):
+        run_cycle(cfg, client, state)
+    assert any("mpv hwdec=refused" in r.getMessage() for r in caplog.records)
+    assert names(mpv) == ["a.mp4"] and state.applied_hash == cms.manifest["playlist"]["hash"]
+
+
+@pytest.mark.parametrize("name", [None, "rp1-cfe-csi2_ch0"])
+def test_hwdec_is_not_forced_on_a_board_without_a_decoder(cfg, cms, mpv, client, monkeypatch, tmp_path, name):
+    """No /sys entry at all, or a Pi 5's (no H.264 decoder): software is right."""
+    if name is None:
+        monkeypatch.setattr(daemon, "V4L2_DIR", tmp_path / "no-such-dir")
+    else:
+        v4l2_decoder(monkeypatch, tmp_path, name)
+    seed_local(cfg, cms, ["a.mp4"])
+    run_cycle(cfg, client, fresh_state(cfg))
+    assert sets(mpv, "hwdec") == []
+
+
+def test_current_file_is_reloaded_once_after_hwdec_changes(cfg, cms, mpv, client, monkeypatch, tmp_path):
+    v4l2_decoder(monkeypatch, tmp_path)
+    seed_local(cfg, cms, ["a.mp4", "b.mp4"])
+    run_cycle(cfg, client, fresh_state(cfg))
+    assert sets(mpv, "playlist-pos") == []      # a fresh mpv plays nothing: nothing to reload
+
+    # the daemon restarts under an mpv that has been decoding in software all along
+    software_decoding(mpv)
+    mpv.advance()
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "playlist-pos") == [1] and names(mpv) == ["a.mp4", "b.mp4"]
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "playlist-pos") == [1]     # exactly once, not every cycle
+
+
+def test_status_reports_the_decode_mode_and_how_fast_it_is_really_playing(cfg, cms, mpv, client, monkeypatch):
+    """decode_mode is what mpv uses; play_rate is how far time-pos moved against the clock, which is the
+    number that says "slow motion" (mpv's own frame rate counts decoded timestamps and reads fine)."""
+    seed_local(cfg, cms, ["a.mp4"])
+    state = fresh_state(cfg)
+    clock = [1000.0]
+    monkeypatch.setattr(daemon.time, "monotonic", lambda: clock[0])
+    mpv.props["time-pos"] = 10.0
+    run_cycle(cfg, client, state)               # the first cycle loads the playlist: nothing plays yet
+    run_cycle(cfg, client, state)
+    assert cms.sync_calls[-1]["decode_mode"] == "software"      # the projector is struggling
+    assert "play_rate" not in cms.sync_calls[-1]                # one reading is no rate
+
+    clock[0] += 10.0
+    mpv.props["time-pos"] = 15.0                # 5 s of film in 10 s of clock: half speed
+    run_cycle(cfg, client, state)
+    assert cms.sync_calls[-1]["play_rate"] == "0.5"
+
+    clock[0] += 10.0
+    mpv.props.update({"hwdec-current": "v4l2m2m-copy", "time-pos": 25.0})
+    run_cycle(cfg, client, state)
+    assert cms.sync_calls[-1]["decode_mode"] == "v4l2m2m-copy" and cms.sync_calls[-1]["play_rate"] == "1.0"
+
+    clock[0] += 10.0
+    mpv.props["time-pos"] = 2.0                 # the file looped: no answer rather than a wrong one
+    run_cycle(cfg, client, state)
+    assert "play_rate" not in cms.sync_calls[-1]
+
+    del mpv.props["estimated-vf-fps"]           # an image, or an mpv without the property
+    clock[0] += 10.0
+    mpv.props["time-pos"] = 12.0
+    run_cycle(cfg, client, state)
+    assert "decode_mode" not in cms.sync_calls[-1] and cms.sync_calls[-1]["play_rate"] == "1.0"

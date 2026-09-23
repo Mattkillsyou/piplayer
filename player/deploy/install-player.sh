@@ -225,14 +225,9 @@ else
         printf '\n# Sound goes to the projector over HDMI, not the headphone jack (alsa/default:CARD=Headphones)\nao=alsa\naudio-device=alsa/default:CARD=%s\n' \
             "${PI_HDMI_CARD}" >> "${MPV_CONF}"
     fi
-    if [[ "${PI_SOC}" == *bcm283[567]* ]]; then
-        # VideoCore IV boards (Pi 0/1/2/3, any arch): auto-safe finds no decoder
-        # there; the V4L2 M2M copy path (bcm2835-codec) is the H.264 hardware
-        # decoder. Later lines win in mpv.conf, so append rather than edit.
-        echo "    ${PI_MODEL}: hwdec=v4l2m2m-copy (VideoCore IV H.264 decoder)"
-        printf '\n# %s (VideoCore IV): the V4L2 M2M copy path is the H.264 hardware decoder\nhwdec=v4l2m2m-copy\n' \
-            "${PI_MODEL}" >> "${MPV_CONF}"
-    fi
+    # No per-board hwdec line any more: deploy/mpv.conf ships hwdec=v4l2m2m-copy,auto-safe,
+    # which is right on every board (the V4L2 M2M decoder on a Pi 0-4; on a Pi 5, which has no
+    # H.264 decoder, the list falls through to auto-safe).
 fi
 chown -R "${USER_NAME}:${USER_NAME}" "${DATA_DIR}/.config"
 

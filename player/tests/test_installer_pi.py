@@ -1,6 +1,6 @@
 """install-player.sh per-model behaviour, run under bash with fake commands and
 a fake /proc: pi_caps, the camera-bridge gate (Docker + wyze only on arm64
-with enough RAM) and the mpv.conf hwdec line for VideoCore IV boards."""
+with enough RAM) and the mpv.conf hwdec line for boards with a V4L2 M2M decoder."""
 import shutil
 import subprocess
 from pathlib import Path
@@ -153,7 +153,7 @@ def test_pi_caps_off_a_pi(tmp_path):
 
 
 @pytest.mark.parametrize("board", ["pi5", "pi4", "pi3", "pi2", "zero", "zero2"])
-def test_mpv_conf_gets_hwdec_on_videocore_iv_boards(tmp_path, board):
+def test_mpv_conf_gets_hwdec_on_boards_with_a_v4l2_decoder(tmp_path, board):
     _arch, _machine, _mem, model, compat = BOARDS[board]
     block = SRC[SRC.index('echo "==> Installing mpv kiosk config"'):SRC.index('echo "==> Creating virtualenv"')]
     data = tmp_path / "data"
@@ -171,13 +171,10 @@ def test_mpv_conf_gets_hwdec_on_videocore_iv_boards(tmp_path, board):
     audio = f"\nao=alsa\naudio-device=alsa/default:CARD={HDMI_CARD[board]}\n"
     assert conf.count(audio) == 1 and conf.count("\naudio-device=") == 1     # the dist only has it in a comment
     assert f"sound to HDMI (ALSA card {HDMI_CARD[board]})" in res.stdout
-    if board in ("pi3", "pi2", "zero", "zero2"):
-        assert conf.splitlines()[-1] == "hwdec=v4l2m2m-copy"
-        assert conf.count("\nhwdec=v4l2m2m-copy\n") == 1 and model in conf     # the dist only has it in a comment
-        assert f"{model}: hwdec=v4l2m2m-copy" in res.stdout
-        assert conf.index(audio) < conf.index("\nhwdec=v4l2m2m-copy\n")
-    else:
-        assert conf.endswith(audio) and "v4l2m2m" not in res.stdout
+    # Every board gets the same decoder line from the shipped file: the V4L2 M2M decoder where
+    # there is one (Pi 0-4), falling through to auto-safe where there is not (Pi 5).
+    assert conf.count("\nhwdec=v4l2m2m-copy,auto-safe\n") == 1
+    assert conf.endswith(audio) and "v4l2m2m" not in res.stdout
     # an upgrade leaves a per-Pi file alone (only the .dist copy is refreshed)
     (data / ".config" / "mpv" / "mpv.conf").write_text("vo=drm\n")
     run_bash(prelude + fn + "\npi_caps\n" + block)

@@ -64,6 +64,10 @@ class FakeMpv:
         self.fail_commands: set[str] = set()    # command names replied with an error
         self.recv_on_empty: str | None = None   # None: socket.timeout; "eof"; "events"
         self.screenshot_bytes: bytes | None = None  # written by screenshot-to-file when set
+        # playback properties the daemon reads and writes; delete one to model an
+        # mpv that does not know it ("property not found")
+        self.props: dict = {"framedrop": "vo", "hwdec": "auto-safe", "hwdec-current": "no",
+                            "estimated-vf-fps": 29.97}
         self.overlays: list = []             # overlay-add / overlay-remove commands, in order
         self.connections = 0
 
@@ -155,6 +159,8 @@ class FakeMpv:
         if name == "set_property":
             if args[0] == "pause":
                 self.paused = bool(args[1])
+            if args[0] in self.props:
+                self.props[args[0]] = args[1]
             return {"error": "success"}
         if name == "loadfile":
             if not isinstance(cmd, dict):
@@ -234,6 +240,8 @@ class FakeMpv:
             if self.current is None:
                 return {"error": "property unavailable"}
             return {"data": self.current["path"], "error": "success"}
+        if prop in self.props:
+            return {"data": self.props[prop], "error": "success"}
         return {"error": "property not found"}
 
 

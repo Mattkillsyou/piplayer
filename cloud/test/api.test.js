@@ -134,6 +134,24 @@ describe("sync", () => {
     expect(await row()).toEqual({ pi_model: "M".repeat(64), camera_supported: 1 });
   });
 
+  it("stores decode_mode / play_rate; omitted or junk keeps the old values (migration 0012)", async () => {
+    const row = () => one("SELECT decode_mode, play_rate FROM devices WHERE id = ?", ids.dev.id);
+    expect(await row()).toEqual({ decode_mode: null, play_rate: null });   // never reported = unknown
+    await sync(ids.dev, { decode_mode: " software ", play_rate: "0.52" });
+    expect(await row()).toEqual({ decode_mode: "software", play_rate: 0.52 });
+    // a status screen (no video decoding) or a player from before this release sends neither: keep the last
+    await sync(ids.dev, { player_status: "idle" });
+    expect(await row()).toEqual({ decode_mode: "software", play_rate: 0.52 });
+    await sync(ids.dev, { decode_mode: "", play_rate: "abc" });
+    expect(await row()).toEqual({ decode_mode: "software", play_rate: 0.52 });
+    await sync(ids.dev, { decode_mode: "d".repeat(80), play_rate: "0" });
+    expect(await row()).toEqual({ decode_mode: "d".repeat(64), play_rate: 0.52 });
+    await sync(ids.dev, { decode_mode: "software", play_rate: "9" });  // nothing plays at 9x: junk
+    expect(await row()).toEqual({ decode_mode: "software", play_rate: 0.52 });
+    await sync(ids.dev, { decode_mode: "v4l2m2m-copy", play_rate: "1.0" });
+    expect(await row()).toEqual({ decode_mode: "v4l2m2m-copy", play_rate: 1 });
+  });
+
   it("non-integer current_position is the fixed CMS's 400 {detail: 'query.<name>: <msg>'}", async () => {
     for (const bad of ["abc", "1.5", "", "1.", "1e3"]) {
       const r = await sync(ids.dev, { current_position: bad });

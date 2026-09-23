@@ -29,6 +29,11 @@ FULL_VERIFY_INTERVAL_SECONDS = 24 * 3600
 # While the player-fault screen is up, try the content again every this many
 # cycles (a display plugged in later, a transient vo failure) instead of never.
 FAULT_RETRY_CYCLES = 10
+# Pushed to every mpv instance we meet (see _apply_playback_options). A list, not one
+# decoder: the Pi's V4L2 M2M block does H.264 only, so anything else (HEVC on a Pi 4)
+# must still fall through to whatever auto-safe would have picked.
+MPV_HWDEC = "v4l2m2m-copy,auto-safe"
+V4L2_DIR = Path("/sys/class/video4linux")
 
 
 def _setup_logging() -> None:
@@ -53,9 +58,53 @@ def _stop_requested() -> bool:
     return _stop
 
 
-def _gather_mpv_status(mpv: MpvClient, manifest: dict | None) -> dict:
+def _has_v4l2_decoder(path: Path | None = None) -> bool:
+    """True when the kernel exposes the Pi's V4L2 M2M video decoder
+    (bcm2835-codec-decode, Pi 0-4). A Pi 5 has no H.264 decoder at all, so
+    software decoding is right there and must not be overridden."""
+    def name(d: Path) -> str:
+        try:  # one unreadable entry (a camera being unbound) must not hide the decoder
+            return (d / "name").read_text()
+        except OSError:
+            return ""
+
+    try:
+        return any("-codec-decode" in name(d) for d in (path or V4L2_DIR).iterdir())
+    except OSError:
+        return False
+
+
+def _apply_playback_options(mpv: MpvClient) -> bool:
+    """Give a fresh mpv instance the options that keep a decode-bound file at
+    real speed. They go over IPC rather than into deploy/mpv.conf alone because
+    the installer keeps an mpv.conf that is already on the Pi, so a config-only
+    change never reaches an installed board.
+
+    Returns True when hwdec was changed: mpv only picks a new decoder up on the
+    next decoder init, so the caller reloads whatever is playing. A refused
+    set_property (an old mpv, a missing decoder) is logged and otherwise
+    ignored - the cycle carries on either way.
+
+    Hardware decoding is the whole of the fix. mpv's decoder frame dropping is
+    no help here: it only ever runs while an audio track is playing (mpv's
+    check_framedrop), and the file that started this has no audio at all.
+    """
+    if (mpv.get_property("hwdec-current") not in (None, "", "no")
+            or mpv.get_property("hwdec") == MPV_HWDEC or not _has_v4l2_decoder()):
+        return False
+    # hwdec=auto-safe does not pick the V4L2 M2M decoder on a Pi 4 (bcm2711), which
+    # leaves 1080p H.264 to the CPU: with no audio track to pace it, a decoder that
+    # cannot keep up makes the file play slowly rather than drop frames.
+    ok = mpv.set_property("hwdec", MPV_HWDEC)
+    log.info("mpv hwdec=%s (mpv now reports hwdec=%s hwdec-current=%s)",
+             "set" if ok else "refused", mpv.get_property("hwdec"), mpv.get_property("hwdec-current"))
+    return ok
+
+
+def _gather_mpv_status(mpv: MpvClient, manifest: dict | None, state=None) -> dict:
     if not mpv.is_alive():
         return {"player_status": "mpv-down"}
+    state = state if state is not None else PlayerState()
     pos = mpv.get_property("playlist-pos")
     paused = mpv.get_property("pause")
     idle = mpv.get_property("idle-active")
@@ -77,7 +126,34 @@ def _gather_mpv_status(mpv: MpvClient, manifest: dict | None) -> dict:
         status["player_status"] = "paused"
     else:
         status["player_status"] = "playing"
+        fps = mpv.get_property("estimated-vf-fps")
+        if isinstance(fps, (int, float)) and fps > 0:
+            # only while a video really decodes (an image reports no fps): what
+            # mpv is doing with it, "software" being why a Pi 4 plays an
+            # ordinary 1080p H.264 clip in slow motion
+            hwdec = mpv.get_property("hwdec-current")
+            status["decode_mode"] = str(hwdec) if hwdec and hwdec != "no" else "software"
+        rate = _play_rate(mpv, state)
+        if rate is not None:
+            status["play_rate"] = rate
     return status
+
+
+def _play_rate(mpv: MpvClient, state) -> float | None:
+    """How fast the file is really playing, 1.0 being real speed: how far time-pos
+    moved between two cycles against the clock on the wall. mpv's own frame rate
+    counts decoded timestamps, so it reads a healthy 30 fps even while the picture
+    crawls; this is the number that says the picture crawls."""
+    pos, now = mpv.get_property("time-pos"), time.monotonic()
+    last, state.last_time_pos = state.last_time_pos, (pos, now) if isinstance(pos, (int, float)) else None
+    if last is None or not isinstance(pos, (int, float)):
+        return None
+    was, then = last
+    moved, elapsed = pos - was, now - then
+    # a file that ended, looped or was skipped moved backwards or jumped: no answer this time
+    if elapsed < 1 or moved <= 0 or moved > elapsed * 1.5:
+        return None
+    return round(moved / elapsed, 2)
 
 
 def _push_playlist(cfg: PlayerConfig, mpv: MpvClient, manifest: dict) -> bool:
@@ -115,6 +191,7 @@ class PlayerState:
     backoff: int = 30
     force_verify: bool = False
     last_full_verify: float = field(default_factory=time.monotonic)
+    last_time_pos: tuple[float, float] | None = None   # (mpv time-pos, monotonic) of the last cycle: _play_rate
     idle_cycles: int = 0                 # consecutive cycles mpv sat idle with entries queued
     idle_streak: int = 0                 # same, but not reset by the idle re-push (player fault detection)
     last_failure: str | None = None      # why the last sync failed: token | unreachable | http | sync (None: it worked)
@@ -194,6 +271,11 @@ def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
             log.info("mpv restarted: %s (pid %s); re-pushing playlist", version, pid)
         state.mpv_pid = pid
         state.applied_hash = None
+        # once per mpv instance (state.mpv_pid), so playback is not restarted every cycle
+        pos = mpv.get_property("playlist-pos") if _apply_playback_options(mpv) else None
+        if pos is not None and int(pos) >= 0:
+            log.info("reloading the current file so the new decoder is used")
+            mpv.set_property("playlist-pos", int(pos))
         if screens is not None:
             screens.clear()       # the new instance starts black; the right screen is re-shown below
 
@@ -273,7 +355,7 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
     """One iteration of the main loop: sync with the CMS (tolerating failure),
     then unconditionally reconcile mpv, then screenshots/commands if the sync
     succeeded. Returns the manifest fetched this cycle (None on failure)."""
-    status = _gather_mpv_status(mpv, state.last_manifest)
+    status = _gather_mpv_status(mpv, state.last_manifest, state)
     if screens is not None and screens.showing() and status.get("player_status") == "playing":
         status = {"player_status": "idle"}      # a status screen is not content
     if camera is not None:

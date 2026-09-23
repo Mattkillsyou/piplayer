@@ -164,9 +164,18 @@ the players' `/api/*` path reachable when you put Cloudflare Access in front.
   (mpv 0.40) that covers HEVC on the Pi 5 via `drm` (zero-copy) or
   `drm-copy` (the mpv journal's "Using hardware decoding (...)" line shows
   which one initialised), but it never
-  selects the Pi 4's H.264 V4L2 decoder, so H.264 still decodes in software
-  there. To use it, edit the Pi's mpv.conf and set `hwdec=v4l2m2m-copy` (as
-  the file's comment says) after testing on your hardware. **None of this
+  selects the Pi 4's H.264 V4L2 decoder, so H.264 would decode in software
+  there and an ordinary 1080p clip played in slow motion. The player daemon
+  therefore sets `hwdec=v4l2m2m-copy,auto-safe` over mpv's IPC socket whenever
+  the board exposes that decoder (Pi 0-4; the Pi 5 has none and stays on the
+  auto path), which also reaches Pis whose mpv.conf an upgrade kept; the same
+  line is in the shipped mpv.conf for new installs. The list falls through, so
+  anything the V4L2 block cannot do (HEVC on a Pi 4) still takes the decoder
+  auto-safe would have picked. Hardware decoding is the whole of the fix: mpv's
+  decoder frame dropping only runs while an audio track is playing, so it does
+  nothing for a silent clip. Every sync reports what mpv actually used
+  (`decode_mode`) and how fast the picture really moved (`play_rate`, 1.0 being
+  real speed), which the Devices page shows next to the player version. **None of this
   has yet been validated on real Pi hardware.** If a Pi shows a black screen with
   GPU/EGL errors in `journalctl -u projector-mpv.service`, switch that Pi
   back to the software path: edit

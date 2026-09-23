@@ -84,7 +84,7 @@ Everything else in the kit is the same.
 
 | Part | Purpose | Qty | Approx. USD | Link |
 | --- | --- | --- | --- | --- |
-| Raspberry Pi 4 Model B, 4 GB | 1080p output only (no 4K playback). H.264 decodes in software unless you enable `hwdec=v4l2m2m-copy` in mpv.conf (README, Operating notes). | 1 | $55 | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-4-model-b/) |
+| Raspberry Pi 4 Model B, 4 GB | 1080p output only (no 4K playback). H.264 uses the V4L2 M2M hardware decoder, set by the player and the installer; software decoding plays 1080p in slow motion. See mpv.conf (README, Operating notes). | 1 | $55 | [raspberrypi.com](https://www.raspberrypi.com/products/raspberry-pi-4-model-b/) |
 | Raspberry Pi 15 W USB-C power supply | Official Pi 4 PSU. | 1 | $8 | [raspberrypi.com](https://www.raspberrypi.com/products/type-c-power-supply/) |
 | Flirc Raspberry Pi 4 case | Passive aluminium case (the whole case is the heatsink). No fan to fail. | 1 | $17 | [flirc.tv](https://flirc.tv/products/flirc-raspberry-pi-4-case-silver) |
 | micro-HDMI (D) to HDMI (A) cable | Same cable as the Pi 5 (both use micro-HDMI). | 1 | $8 | see Compute |

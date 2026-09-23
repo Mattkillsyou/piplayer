@@ -72,6 +72,14 @@ async function sync(ctx) {
   const currentFilename = (q.get("current_filename") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
   const playerStatus = (q.get("player_status") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
   const playerVersion = (q.get("player_version") || "").trim().slice(0, MAX_SYNC_ERROR_LEN) || null;
+  // What mpv is doing with the file on screen ("software" = no hardware decoder, which is why a
+  // Pi 4 can play a 1080p H.264 clip in slow motion). Kept like player_version when the player
+  // omits them: an older player, or one showing a status screen rather than a video.
+  const decodeMode = (q.get("decode_mode") || "").trim().slice(0, MAX_PI_MODEL_LEN) || null;
+  // play_rate: 1.0 = real speed, measured on the Pi from time-pos against the clock (mpv's own
+  // frame rate counts decoded timestamps, so it reads fine while the picture crawls).
+  const reported = Number(q.get("play_rate"));
+  const playRate = Number.isFinite(reported) && reported > 0 && reported <= 4 ? reported : null;
   await db.run(ctx.env,
     `UPDATE devices SET
         last_seen_at = datetime('now'),
@@ -85,7 +93,9 @@ async function sync(ctx) {
         projector_power_state = COALESCE(?, projector_power_state),
         projector_error = ?,
         pi_model = COALESCE(?, pi_model),
-        camera_supported = COALESCE(?, camera_supported)
+        camera_supported = COALESCE(?, camera_supported),
+        decode_mode = COALESCE(?, decode_mode),
+        play_rate = COALESCE(?, play_rate)
       WHERE id = ?`,
     ctx.ip,
     intQuery(q, "current_position"),
@@ -98,6 +108,8 @@ async function sync(ctx) {
     projectorError,
     piModel,
     cameraSupported,
+    decodeMode,
+    playRate,
     device.id);
 
   await storeUpdateStatus(ctx, device, q.get("update_status"));
