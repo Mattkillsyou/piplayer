@@ -237,7 +237,16 @@ export async function cameraConfig(env, device, settings) {
 // Daily cron (index.js MODULES): a plaintext RTSP URL from before the encrypted column is
 // rewritten under the same per-device key cameraConfig() decrypts with, so the credentials
 // it carries stop sitting in D1 in the clear without waiting for the row to be re-saved.
+export const COMMAND_GIVE_UP_DAYS = 7;
+
 export async function housekeeping(env) {
+  // A command a projector never came back for: closed so the page stops saying "waiting" and the
+  // next click queues a new one (the duplicate guard only looks at commands that are still open).
+  await db.run(env,
+    `UPDATE device_commands SET completed_at = datetime('now'), undeliverable = 1,
+            result = 'never picked up: the projector was not checking in'
+      WHERE completed_at IS NULL AND delivered_at IS NULL AND issued_at <= datetime('now', ?)`,
+    `-${COMMAND_GIVE_UP_DAYS} days`);
   const rows = await db.all(env, "SELECT id, device_id, camera_rtsp_url FROM devices WHERE camera_rtsp_url IS NOT NULL AND camera_rtsp_url NOT LIKE 'v1:%'");
   for (const row of rows) {
     await db.run(env, "UPDATE devices SET camera_rtsp_url = ? WHERE id = ? AND camera_rtsp_url = ?",
@@ -281,7 +290,7 @@ export function installBaseUrl(env, url) {
 
 // A command queued for a projector that is not checking in: nothing will happen until it is back,
 // which is otherwise invisible (the command list is collapsed and just reads "queued").
-export function waitingLine(d, tz) {
+export function waitingLine(ctx, d, tz, canEdit) {
   const waiting = (d.recent_commands || []).filter((c) => !c.delivered_at && !c.completed_at);
   if (!waiting.length || !d.offline) return "";
   const names = [...new Set(waiting.map((c) => commandText(c.command)))].join(", ");
@@ -289,7 +298,11 @@ export function waitingLine(d, tz) {
     ? `it last checked in ${esc(d.seen_age)} (${esc(localTime(d.last_seen_at, tz))})`   // seen_age ends in "ago"
     : "it has never checked in";
   return `<div class="alert warn waiting-command">${esc(names)} is waiting for this projector: ${seen}.
-    Nothing happens until it is back on and connected.</div>`;
+    Nothing happens until it is back on and connected.
+    ${canEdit ? `<form method="post" action="/devices/${d.id}/command/cancel" class="inline">
+      ${csrfInput(ctx)}
+      <button type="submit" class="small">Cancel${waiting.length > 1 ? " these" : ""}</button>
+    </form>` : ""}</div>`;
 }
 
 // What the player reported after its last update-player / update-os run (api.storeUpdateStatus):
@@ -520,7 +533,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
         </div>
       </details>`}
 
-      ${waitingLine(d, tz)}
+      ${waitingLine(ctx, d, tz, canEdit)}
       ${projectorBlock(ctx, d, canEdit, dis)}
 
       ${d.recent_commands.length ? `<details>
@@ -776,6 +789,19 @@ async function devicesSendCommand(ctx) {
   return auth.flashRedirect(ctx, "/devices", `${commandText(command)} queued for ${row.name}${tail}`, late ? "warn" : "ok");
 }
 
+// Drop what a projector never picked up. Only the undelivered rows: one already in the Pi's
+// hands cannot be recalled, and its result is still worth waiting for.
+async function devicesCancelCommands(ctx) {
+  auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const row = await requireDevice(ctx, deviceId, "d.name");
+  const { changes } = await db.run(ctx.env,
+    "DELETE FROM device_commands WHERE device_id = ? AND delivered_at IS NULL AND completed_at IS NULL", deviceId);
+  if (!changes) return auth.flashRedirect(ctx, "/devices", `Nothing was waiting for ${row.name}.`, "warn");
+  await audit.log(ctx, "device_cancel_commands", "device", deviceId, { cancelled: changes });
+  return auth.flashRedirect(ctx, "/devices", `Cancelled ${changes} waiting command${changes === 1 ? "" : "s"} for ${row.name}.`);
+}
+
 // Fleet action: queue one update command for every device the user may see that is not already
 // waiting for the same one (a second click while the first is still queued must not double-update).
 async function devicesUpdateAll(ctx) {
@@ -941,6 +967,7 @@ export function register(router) {
   router.post("/devices/:device_id/regen-token", devicesRegenToken);
   router.post("/devices/:device_id/delete", devicesDelete);
   router.post("/devices/:device_id/command", devicesSendCommand);
+  router.post("/devices/:device_id/command/cancel", devicesCancelCommands);
   router.post("/devices/update-all", devicesUpdateAll);
   router.get("/devices/:device_id/screenshot", devicesScreenshot);
   router.get("/devices/:device_id/camera", devicesCamera);

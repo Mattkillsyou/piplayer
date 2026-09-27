@@ -49,7 +49,8 @@ describe("M15 / M18: per-device commands", () => {
       .toBe("Resync queued for Dup &lt;one&gt;, but it last checked in 4 d ago: nothing happens until it is back on and connected.");
     const card = await (await r.editor.get("/devices")).text();
     expect(card).toContain('<div class="alert warn waiting-command">Resync, Reboot is waiting for this projector: it last checked in 4 d ago (');
-    expect(card).toContain("Nothing happens until it is back on and connected.</div>");
+    expect(card).toContain("Nothing happens until it is back on and connected.");
+    expect(card).toContain(`action="/devices/${dev.id}/command/cancel"`);   // and a way out of the queue
     expect((await post(r.editor, `/devices/${dev.id}/command`, { command: "update-os" })).status).toBe(303);
     expect((await post(r.editor, `/devices/${dev.id}/command`, { command: "update-os" })).status).toBe(303);
     expect(await banner(r.editor, "warn"))
@@ -66,6 +67,15 @@ describe("M15 / M18: per-device commands", () => {
     // that sync is a check-in: the next command is on its way again
     expect((await post(r.editor, `/devices/${dev.id}/command`, { command: "ir-learn:power_on" })).status).toBe(303);
     expect(await banner(r.editor, "ok")).toBe("Learn Power On queued for Dup &lt;one&gt;; the Pi picks it up on its next check-in.");
+    // cancelling drops what the projector never took, so the same command can be queued again
+    expect((await post(r.editor, `/devices/${dev.id}/command/cancel`, {})).status).toBe(303);
+    expect(await banner(r.editor, "ok")).toBe("Cancelled 1 waiting command for Dup &lt;one&gt;.");
+    // only what the projector never took: a command already in its hands keeps waiting for a result
+    expect((await query("SELECT id FROM device_commands WHERE device_id = ? AND completed_at IS NULL AND delivered_at IS NULL", dev.id)).length).toBe(0);
+    expect((await query("SELECT id FROM device_commands WHERE device_id = ? AND completed_at IS NULL", dev.id)).length).toBe(3);
+    expect(await (await r.editor.get("/devices")).text()).not.toContain("waiting-command");
+    expect((await post(r.editor, `/devices/${dev.id}/command/cancel`, {})).status).toBe(303);
+    expect(await banner(r.editor, "warn")).toBe("Nothing was waiting for Dup &lt;one&gt;.");
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 

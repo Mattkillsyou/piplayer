@@ -85,6 +85,7 @@ function table() {
     ["POST", `/devices/${NOPE}/regen-token`, {}, "form", E(404)],
     ["POST", `/devices/${NOPE}/delete`, {}, "form", E(404)],
     ["POST", `/devices/${NOPE}/command`, { command: "reboot" }, "form", E(404)],
+    ["POST", `/devices/${NOPE}/command/cancel`, {}, "form", E(404)],
     ["POST", `/devices/${NOPE}/rename`, { name: "x" }, "form", E(404)],
     ["POST", `/devices/${NOPE}/projector`, { projector_control: "cec", projector_power_mode: "auto" }, "form", E(404)],
     ["POST", `/devices/${NOPE}/owner`, { owner_id: "" }, "form", AD(404)],
