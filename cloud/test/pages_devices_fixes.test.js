@@ -32,6 +32,7 @@ beforeAll(async () => {
 describe("M15 / M18: per-device commands", () => {
   it("a second click while the first is still waiting queues nothing; both answer with a banner", async () => {
     const dev = await device("dup-1", "Dup <one>");
+    await query("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?", dev.id);  // it is checking in
     let res = await post(r.editor, `/devices/${dev.id}/command`, { command: "reboot" });
     expect([res.status, res.headers.get("location")]).toEqual([303, "/devices"]);
     expect(await banner(r.editor, "ok")).toBe("Reboot queued for Dup &lt;one&gt;; the Pi picks it up on its next check-in.");
@@ -39,18 +40,30 @@ describe("M15 / M18: per-device commands", () => {
     res = await post(r.editor, `/devices/${dev.id}/command`, { command: "reboot" });
     expect([res.status, res.headers.get("location")]).toEqual([303, "/devices"]);
     expect(await banner(r.editor, "warn")).toBe("Reboot is already waiting for Dup &lt;one&gt;; the Pi picks it up on its next check-in.");
+
+    // a projector that is not checking in cannot pick anything up: say so rather than promise it,
+    // and say it again on the card itself (the command list is collapsed and just reads "queued")
+    await query("UPDATE devices SET last_seen_at = datetime('now', '-4 days') WHERE id = ?", dev.id);
+    expect((await post(r.editor, `/devices/${dev.id}/command`, { command: "force-sync" })).status).toBe(303);
+    expect(await banner(r.editor, "warn"))
+      .toBe("Resync queued for Dup &lt;one&gt;, but it last checked in 4 d ago: nothing happens until it is back on and connected.");
+    const card = await (await r.editor.get("/devices")).text();
+    expect(card).toContain('<div class="alert warn waiting-command">Resync, Reboot is waiting for this projector: it last checked in 4 d ago (');
+    expect(card).toContain("Nothing happens until it is back on and connected.</div>");
     expect((await post(r.editor, `/devices/${dev.id}/command`, { command: "update-os" })).status).toBe(303);
     expect((await post(r.editor, `/devices/${dev.id}/command`, { command: "update-os" })).status).toBe(303);
-    expect(await banner(r.editor, "warn")).toBe("OS update is already waiting for Dup &lt;one&gt;; the Pi picks it up on its next check-in.");
+    expect(await banner(r.editor, "warn"))
+      .toBe("OS update is already waiting for Dup &lt;one&gt;, but it last checked in 4 d ago: nothing happens until it is back on and connected.");
     const rows = await query("SELECT command FROM device_commands WHERE device_id = ? ORDER BY id", dev.id);
-    expect(rows.map((x) => x.command)).toEqual(["reboot", "update-os"]);
-    expect(await audits("device_send_command")).toHaveLength(2); // the refused clicks are not audited
+    expect(rows.map((x) => x.command)).toEqual(["reboot", "force-sync", "update-os"]);
+    expect(await audits("device_send_command")).toHaveLength(3); // the refused clicks are not audited
     // once the player reports, the same command can be queued again; the sync hands out one row per command
     await query("UPDATE device_commands SET completed_at = datetime('now'), result = 'ok' WHERE device_id = ? AND command = 'reboot'", dev.id);
     expect((await post(r.editor, `/devices/${dev.id}/command`, { command: "reboot" })).status).toBe(303);
-    expect(await banner(r.editor, "ok")).toContain("Reboot queued");
+    expect(await banner(r.editor, "warn")).toContain("Reboot queued");   // still not checking in
     const m = await (await SELF.fetch(`${BASE}/api/sync/${dev.device_id}`, { headers: bearer(dev) })).json();
-    expect(m.commands.map((c) => c.command).sort()).toEqual(["reboot", "update-os"]);
+    expect(m.commands.map((c) => c.command).sort()).toEqual(["force-sync", "reboot", "update-os"]);
+    // that sync is a check-in: the next command is on its way again
     expect((await post(r.editor, `/devices/${dev.id}/command`, { command: "ir-learn:power_on" })).status).toBe(303);
     expect(await banner(r.editor, "ok")).toBe("Learn Power On queued for Dup &lt;one&gt;; the Pi picks it up on its next check-in.");
     await query("DELETE FROM devices WHERE id = ?", dev.id);
@@ -58,6 +71,7 @@ describe("M15 / M18: per-device commands", () => {
 
   it("the dashboard Reboot tile posts to the same handler and lands on /devices with the banner", async () => {
     const dev = await device("dup-2", "Dup two");
+    await query("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?", dev.id);
     expect((await post(r.admin, `/devices/${dev.id}/command`, { command: "force-sync" })).headers.get("location")).toBe("/devices");
     expect(await banner(r.admin, "ok")).toBe("Resync queued for Dup two; the Pi picks it up on its next check-in.");
     await query("DELETE FROM devices WHERE id = ?", dev.id);

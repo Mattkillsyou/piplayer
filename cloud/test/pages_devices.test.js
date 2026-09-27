@@ -411,14 +411,14 @@ describe("remote updates", () => {
     res = await post(r.editor, "/devices/update-all", { command: "update-player" });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/devices");
-    expect(await (await r.editor.get("/devices")).text()).toContain('<div class="alert ok" role="alert">Update queued for 1 device.</div>');
+    expect(await (await r.editor.get("/devices")).text()).toContain("Update queued for 1 device.");
     rows = await query("SELECT id FROM device_commands WHERE device_id = ? AND completed_at IS NULL", w.dev.id);
     expect(rows.length).toBe(1);
     // the other fleet commands are allowed too; the banner counts what was queued
     res = await post(r.editor, "/devices/update-all", { command: "update-os" });
     expect(res.headers.get("location")).toBe("/devices");
     const page = await (await r.editor.get("/devices")).text();
-    expect(page).toContain(`<div class="alert ok" role="alert">Update queued for ${before} devices.</div>`);
+    expect(page).toContain(`Update queued for ${before} devices.`);
     expect((await post(r.editor, "/devices/update-all", { command: "update-all" })).status).toBe(303);
     await query("DELETE FROM device_commands");
   });

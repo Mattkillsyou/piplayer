@@ -279,6 +279,19 @@ export function installBaseUrl(env, url) {
   return { base: configured || url.origin, configured: Boolean(configured) };
 }
 
+// A command queued for a projector that is not checking in: nothing will happen until it is back,
+// which is otherwise invisible (the command list is collapsed and just reads "queued").
+export function waitingLine(d, tz) {
+  const waiting = (d.recent_commands || []).filter((c) => !c.delivered_at && !c.completed_at);
+  if (!waiting.length || !d.offline) return "";
+  const names = [...new Set(waiting.map((c) => commandText(c.command)))].join(", ");
+  const seen = d.last_seen_at
+    ? `it last checked in ${esc(d.seen_age)} (${esc(localTime(d.last_seen_at, tz))})`   // seen_age ends in "ago"
+    : "it has never checked in";
+  return `<div class="alert warn waiting-command">${esc(names)} is waiting for this projector: ${seen}.
+    Nothing happens until it is back on and connected.</div>`;
+}
+
 // What the player reported after its last update-player / update-os run (api.storeUpdateStatus):
 // a failure is an error box so it stands out, success a muted line; nothing until the first report.
 export function updateStatus(d, tz) {
@@ -507,6 +520,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
         </div>
       </details>`}
 
+      ${waitingLine(d, tz)}
       ${projectorBlock(ctx, d, canEdit, dis)}
 
       ${d.recent_commands.length ? `<details>
@@ -745,14 +759,21 @@ async function devicesSendCommand(ctx) {
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const command = str(await ctx.form(), "command");
   if (!isCommand(command)) fail(400, "unknown command");
-  const row = await requireDevice(ctx, deviceId, "d.name");
+  const row = await requireDevice(ctx, deviceId, "d.name, d.last_seen_at");
   const { changes, last_row_id: id } = await db.run(ctx.env,
     `INSERT INTO device_commands (device_id, command, issued_by)
      SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM device_commands WHERE device_id = ? AND command = ? AND completed_at IS NULL)`,
     deviceId, command, user.id, deviceId, command);
-  if (!changes) return auth.flashRedirect(ctx, "/devices", `${commandText(command)} is already waiting for ${row.name}; the Pi picks it up on its next check-in.`, "warn");
+  // An offline projector will not pick anything up: promising "on its next check-in" reads as
+  // "it is happening", and the owner waits for an update that cannot arrive.
+  const seen = ageSeconds(row.last_seen_at);
+  const late = seen === null || seen > OFFLINE_AFTER_SECONDS;
+  const tail = !late ? "; the Pi picks it up on its next check-in."
+    : seen === null ? ", but it has never checked in: nothing happens until it is on and connected."
+      : `, but it last checked in ${ageText(seen)}: nothing happens until it is back on and connected.`;
+  if (!changes) return auth.flashRedirect(ctx, "/devices", `${commandText(command)} is already waiting for ${row.name}${tail}`, "warn");
   await audit.log(ctx, "device_send_command", "device", deviceId, { command, command_id: id });
-  return auth.flashRedirect(ctx, "/devices", `${commandText(command)} queued for ${row.name}; the Pi picks it up on its next check-in.`);
+  return auth.flashRedirect(ctx, "/devices", `${commandText(command)} queued for ${row.name}${tail}`, late ? "warn" : "ok");
 }
 
 // Fleet action: queue one update command for every device the user may see that is not already
@@ -770,7 +791,15 @@ async function devicesUpdateAll(ctx) {
     command, user.id, ...own.params, command);
   await audit.log(ctx, "device_update_all", "device", null, { command, queued: changes });
   if (!changes) return auth.flashRedirect(ctx, "/devices", "Nothing new to queue: every device already has this update waiting. It runs when each Pi next checks in.", "warn");
-  return auth.flashRedirect(ctx, "/devices", `Update queued for ${changes} device${changes === 1 ? "" : "s"}.`);
+  const late = await db.first(ctx.env,
+    `SELECT COUNT(*) AS n FROM devices d
+      WHERE ${own.sql} AND (d.last_seen_at IS NULL OR d.last_seen_at <= datetime('now', ?))`,
+    ...own.params, `-${OFFLINE_AFTER_SECONDS} seconds`);
+  const stuck = late.n
+    ? ` ${late.n} of them ${late.n === 1 ? "is" : "are"} not checking in and will not update until back on.`
+    : "";
+  return auth.flashRedirect(ctx, "/devices", `Update queued for ${changes} device${changes === 1 ? "" : "s"}.${stuck}`,
+    late.n ? "warn" : "ok");
 }
 
 // Latest screenshot, session users only (never cached: the URL carries ?t= but the
