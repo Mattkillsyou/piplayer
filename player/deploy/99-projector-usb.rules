@@ -1,4 +1,5 @@
 # PiPlayer: every USB stick is mounted read-only under /media/projector-usb/<device> (installed by
 # install-player.sh). The player plays it while the website cannot be reached (player/usb.py).
 # systemd-mount: udev's own sandbox cannot mount; the mount goes away when the stick is pulled out.
-ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", RUN+="/usr/bin/systemd-mount --no-block --collect --options=ro,nosuid,nodev,noexec $devnode /media/projector-usb/%k"
+# --fsck=no: fsck.fat -a would write to the stick (a dirty bit, truncated files) before the ro mount.
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", RUN+="/usr/bin/systemd-mount --no-block --collect --fsck=no --options=ro,nosuid,nodev,noexec $devnode /media/projector-usb/%k"

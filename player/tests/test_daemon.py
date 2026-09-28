@@ -934,9 +934,10 @@ def test_no_internet_for_a_minute_plays_the_usb_stick_then_the_playlist_again(cf
     cms.unreachable = True
     run_cycle(cfg, client, state, screens=screens)
     assert names(mpv) == ["a.mp4"] and state.unreachable_since is not None   # not a minute yet
-    assert daemon._usb_changed(state, daemon.usb.mounts()) is False
+    was_offline = daemon._offline(state)
+    assert daemon._usb_changed(state, daemon.usb.mounts(), was_offline) is False
     state.unreachable_since -= daemon.OFFLINE_AFTER_SECONDS     # a minute later
-    assert daemon._usb_changed(state, daemon.usb.mounts()) is True   # the sleep breaks for it
+    assert daemon._usb_changed(state, daemon.usb.mounts(), was_offline) is True   # the sleep breaks, once
     run_cycle(cfg, client, state, screens=screens)
     assert names(mpv) == ["loop1.mp4", "loop2.mp4"] and state.applied_hash.startswith("usb:")
     # the one-line notice over the stick's video (an mpv overlay, like "Updating the player...")
@@ -959,3 +960,66 @@ def test_offline_without_a_stick_keeps_the_cached_playlist(cfg, cms, mpv, client
     state.unreachable_since -= daemon.OFFLINE_AFTER_SECONDS
     run_cycle(cfg, client, state)
     assert names(mpv) == ["a.mp4"] and not state.applied_hash.startswith("usb:")
+
+
+
+def test_a_stick_with_nothing_to_play_never_spins_the_loop(cfg, cms, mpv, client, monkeypatch, tmp_path):
+    """Offline with a stick whose videos sit in a folder: the cached playlist plays and the main loop still
+    sleeps (the minute running out breaks the sleep once, not every second after it)."""
+    seed_local(cfg, cms, ["a.mp4"])
+    root = usb_stick(monkeypatch, tmp_path, ["notes.txt"])
+    (root / "sda1" / "Videos").mkdir()
+    (root / "sda1" / "Videos" / "clip.mp4").write_bytes(b"x")
+    cms.unreachable = True
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    state.unreachable_since -= daemon.OFFLINE_AFTER_SECONDS
+    run_cycle(cfg, client, state)
+    assert names(mpv) == ["a.mp4"]
+    sticks = daemon.usb.mounts()
+    assert daemon._usb_changed(state, sticks, daemon._offline(state)) is False
+
+
+def test_pulling_the_stick_out_wakes_the_loop_and_the_playlist_comes_back(cfg, cms, mpv, client, monkeypatch,
+                                                                         tmp_path):
+    seed_local(cfg, cms, ["a.mp4"])
+    usb_stick(monkeypatch, tmp_path, ["loop.mp4"])
+    cms.unreachable = True
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    state.unreachable_since -= daemon.OFFLINE_AFTER_SECONDS
+    run_cycle(cfg, client, state)
+    assert names(mpv) == ["loop.mp4"]
+    sticks = daemon.usb.mounts()
+    monkeypatch.setattr(daemon.usb.os.path, "ismount", lambda p: False)     # pulled out
+    assert daemon._usb_changed(state, sticks, True) is True
+    run_cycle(cfg, client, state)
+    assert names(mpv) == ["a.mp4"]
+
+
+def test_a_restarted_mpv_under_a_playing_stick_gets_the_render_profile_again(cfg, cms, mpv, client, monkeypatch,
+                                                                            tmp_path):
+    seed_local(cfg, cms, ["a.mp4"])
+    usb_stick(monkeypatch, tmp_path, ["loop.mp4"])
+    cms.unreachable = True
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    state.unreachable_since -= daemon.OFFLINE_AFTER_SECONDS
+    run_cycle(cfg, client, state)
+    before = len([c for c in mpv.commands("apply-profile")])
+    mpv.restart()
+    run_cycle(cfg, client, state)
+    assert len([c for c in mpv.commands("apply-profile")]) == before + 1 and names(mpv) == ["loop.mp4"]
+
+
+def test_an_overlay_mpv_left_on_the_copy_decoder_by_the_old_daemon_is_put_back(cfg, cms, mpv, client, monkeypatch,
+                                                                              tmp_path):
+    """Upgrade race: install-player restarts mpv (overlay, zero-copy) while the old daemon still runs and sets
+    -copy on it; the new daemon puts the zero-copy decoder back when it meets that mpv."""
+    v4l2_decoder(monkeypatch, tmp_path)
+    seed_local(cfg, cms, ["a.mp4"])
+    mpv.props.update({"gpu-hwdec-interop": "drmprime-overlay", "hwdec": "v4l2m2m-copy,auto-safe",
+                      "hwdec-current": "v4l2m2m-copy"})
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec")[:1] == [daemon.MPV_HWDEC_OVERLAY]

@@ -40,5 +40,5 @@ def test_no_sticks_and_no_folder(tmp_path):
 def test_the_udev_rule_mounts_usb_sticks_read_only():
     rule = (os.path.join(os.path.dirname(__file__), "..", "deploy", "99-projector-usb.rules"))
     text = open(rule, encoding="utf-8").read()
-    assert 'ENV{ID_BUS}=="usb"' in text and "systemd-mount --no-block --collect --options=ro," in text
+    assert 'ENV{ID_BUS}=="usb"' in text and "systemd-mount --no-block --collect --fsck=no --options=ro," in text
     assert "/media/projector-usb/%k" in text and usb.USB_ROOT.as_posix() == "/media/projector-usb"

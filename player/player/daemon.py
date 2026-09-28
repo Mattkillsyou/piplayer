@@ -113,6 +113,14 @@ def _apply_playback_options(mpv: MpvClient) -> bool:
     if mpv.get_property("video-sync") not in (None, MPV_VIDEO_SYNC):
         log.info("mpv video-sync=%s", "set" if mpv.set_property("video-sync", MPV_VIDEO_SYNC) else "refused")
     default = _default_hwdec(mpv)
+    held = mpv.get_property("hwdec")
+    if default == MPV_HWDEC_OVERLAY and held not in (None, default):
+        # board.conf pins the zero-copy decoder on these boards, so anything else came over IPC: during an
+        # upgrade the old daemon (which only knew -copy) talks to the new mpv before it is replaced. A
+        # website override is applied again right after this (_apply_hwdec_override).
+        ok = mpv.set_property("hwdec", default)
+        log.info("mpv hwdec=%s back to %s for the overlay display", "set" if ok else "refused", default)
+        return ok
     if (mpv.get_property("hwdec-current") not in (None, "", "no")
             or mpv.get_property("hwdec") == default or not _has_v4l2_decoder()):
         return False
@@ -375,11 +383,12 @@ def _offline(state: PlayerState) -> bool:
             and time.monotonic() - state.unreachable_since >= OFFLINE_AFTER_SECONDS)
 
 
-def _usb_changed(state: PlayerState, sticks: list) -> bool:
+def _usb_changed(state: PlayerState, sticks: list, was_offline: bool) -> bool:
     """Worth a cycle now rather than after the sleep: a stick went in or out, or the minute without the
-    website ran out while a stick is in and the stick is not playing yet."""
+    website ran out (once: was_offline is how it stood when the sleep began) while a stick is in. A steady
+    state never breaks the sleep: a stick with nothing to play must not turn the loop into a spin."""
     now = usb.mounts()
-    return now != sticks or bool(now and _offline(state) and not (state.applied_hash or "").startswith("usb:"))
+    return now != sticks or bool(now and not was_offline and _offline(state))
 
 
 def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
@@ -417,7 +426,17 @@ def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
     # itself below once the website answers again, or once the stick is pulled out).
     stick = usb.playlist() if _offline(state) else []
     if stick:
+        _apply_hwdec_override(mpv, state, state.last_manifest)     # a new mpv gets these whatever it plays
+        _apply_profile_override(mpv, state, state.last_manifest)
         wanted = "usb:" + "|".join(str(p) for p, _ in stick)
+        if wanted == state.applied_hash and mpv.get_property("idle-active") and mpv.get_property("playlist-count"):
+            # every entry failed to start (mpv gives up and idles with them queued): push again next cycle
+            state.idle_cycles += 1
+            if state.idle_cycles >= 2:
+                log.warning("mpv is idle with the USB stick's %d files queued; pushing them again", len(stick))
+                state.applied_hash, state.idle_cycles = None, 0
+        elif wanted == state.applied_hash:
+            state.idle_cycles = 0
         if wanted != state.applied_hash and mpv.apply_playlist(stick):
             log.info("no internet: playing %d files from USB (%s)", len(stick), ", ".join(p.name for p, _ in stick))
             state.applied_hash = wanted
@@ -672,9 +691,9 @@ def main() -> int:
         run_cycle(cfg, mpv, state, screenshot, screens, camera)
 
         # Sleep, but break early if a force-sync command was queued or a USB stick matters now
-        sticks = usb.mounts()
+        sticks, was_offline = usb.mounts(), _offline(state)
         for _ in range(state.backoff):
-            if _stop or _force_sync_now or _usb_changed(state, sticks):
+            if _stop or _force_sync_now or _usb_changed(state, sticks, was_offline):
                 break
             time.sleep(1)
             screens.tick()
