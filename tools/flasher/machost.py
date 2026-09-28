@@ -3,18 +3,21 @@
 Folders (~/Library/Application Support/Projection5000), no elevation (authopen asks for the password per
 flash, see macdisk.py), the sign-in token in the login keychain (`security`), the bundled fonts registered
 for this process through CoreText (ctypes, no pyobjc), the work area under the menu bar, the 0600 SSH key,
-where the .app leaves selfcheck.txt and opening a downloaded update. Stdlib only; every subprocess is
-`security` or `open`.
+where the .app leaves selfcheck.txt and installing a downloaded update. Stdlib only; every subprocess is
+`security`, `open`, `hdiutil` or `ditto`.
 """
 import ctypes
 import ctypes.util
 import functools
 import os
 import platform
+import plistlib
 import re
+import shutil
 import ssl
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 NAME = "macOS"
@@ -25,11 +28,13 @@ FALLBACK_FONTS = {"display": "Menlo", "mono": "Menlo", "sans": "Helvetica Neue"}
 # system_profiler needs no Location permission, so an empty scan just means: nothing in range.
 NO_SCAN_HINT = "type the network name"
 SEAL_NAME = "the keychain"
-# Which asset of /api/flasher/latest this Mac installs, and that a .dmg cannot install itself.
+# Which asset of /api/flasher/latest this Mac installs.
 UPDATE_ASSET = "mac_arm64" if platform.machine() == "arm64" else "mac_intel"
-UPDATE_QUITS = False
 SECURITY = "/usr/bin/security"
 OPEN = "/usr/bin/open"
+HDIUTIL = "/usr/bin/hdiutil"
+DITTO = "/usr/bin/ditto"
+COPY_TIMEOUT = 600  # s; checking and copying an app that carries a 500 MB OS image
 KEYCHAIN_SERVICE = "Matt Brown's Projection5000"
 KEYCHAIN_ACCOUNT = "operator"
 MENU_BAR = 25  # px; Tk cannot ask AppKit for the visible frame without pyobjc
@@ -92,24 +97,121 @@ def ssl_context() -> ssl.SSLContext:
 
 
 def updates_dir() -> Path:
-    """Where a downloaded disk image waits. Nothing is executed on macOS (the image is opened and dragged by
-    hand), so the app's own data folder is enough."""
+    """Where a downloaded disk image waits. Nothing runs with more rights than the user's own (the new app
+    replaces one this user could replace by hand anyway), so the app's own data folder is enough."""
     d = data_dir() / "updates"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def install_update(path) -> str:
-    """Open the downloaded disk image in Finder. A .dmg cannot install itself: the new app has to be dragged
-    to Applications, so nothing is replaced here and the flasher stays open. OSError when it will not open."""
+def _run(argv, timeout: int = TIMEOUT) -> None:
+    """One of the tools above, OSError when it fails or does not finish in time."""
     try:
-        r = subprocess.run([OPEN, str(path)], capture_output=True, text=True, timeout=TIMEOUT,
-                           stdin=subprocess.DEVNULL)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
     except subprocess.SubprocessError as e:
         raise OSError(str(e))
     if r.returncode:
-        raise OSError((r.stderr or r.stdout).strip() or f"open exited {r.returncode}")
-    return "Drag the new app to Applications to finish."
+        raise OSError((r.stderr or r.stdout).strip() or f"{Path(argv[0]).name} exited {r.returncode}")
+
+
+BUNDLE_ID = "com.mattbrown.projection5000.flasher"  # build_mac.sh --osx-bundle-identifier
+
+
+def running_bundle():
+    """The .app this program runs from (sys.executable is X.app/Contents/MacOS/X), or None from source.
+    Only the frozen app counts: from source sys.executable can be Python's own Python.app, which is not ours
+    to replace."""
+    if not getattr(sys, "frozen", False):
+        return None
+    exe = Path(sys.executable)
+    app = exe.parents[2] if len(exe.parents) > 2 else exe
+    if exe.parent.name == "MacOS" and exe.parent.parent.name == "Contents" and app.suffix == ".app":
+        return app
+    return None
+
+
+def _bundle_id(app: Path) -> str:
+    try:
+        with open(app / "Contents" / "Info.plist", "rb") as f:
+            return str(plistlib.load(f).get("CFBundleIdentifier") or "")
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return ""
+
+
+def _replace_self(dmg: Path) -> None:
+    """Put the app on the disk image in place of the running one. Anything that goes wrong before the swap
+    leaves the old app untouched; a failed swap puts it back. OSError says why it did not happen.
+
+    No Gatekeeper prompt for the new copy: files urllib writes carry no com.apple.quarantine (only a
+    quarantine-aware app or a browser adds it), so neither the image nor what ditto copies off it has one."""
+    app = running_bundle()
+    if app is None:
+        raise OSError("this program is not running from an app")
+    if app.is_relative_to("/Volumes"):
+        raise OSError("this program is running from a disk image")
+    if not os.access(app.parent, os.W_OK):
+        raise OSError(f"this user cannot change {app.parent}")
+    if _bundle_id(app) != BUNDLE_ID:
+        raise OSError(f"{app.name} is not this program")
+    # same folder, so the swap is a rename; names of their own, so a leftover of an earlier attempt that
+    # could not be removed never blocks this one
+    new = app.with_name(f".{app.name}.new-{os.getpid()}")
+    old = app.with_name(f".{app.name}.old-{os.getpid()}")
+    mount = Path(tempfile.mkdtemp(prefix="projection5000-update-"))  # private (0700), not in Finder
+    try:
+        _run([HDIUTIL, "attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", str(mount), str(dmg)],
+             timeout=COPY_TIMEOUT)
+        try:
+            found = [p for p in mount.glob("*.app") if p.is_dir() and not p.is_symlink()]
+            if len(found) != 1:
+                raise OSError(f"the disk image holds {len(found)} apps, not one")
+            if _bundle_id(found[0]) != BUNDLE_ID:
+                raise OSError(f"the app on the disk image is not this program")
+            for leftover in app.parent.glob(f".{app.name}.new*"):   # earlier attempts that died half way
+                shutil.rmtree(leftover, ignore_errors=True)
+            for leftover in app.parent.glob(f".{app.name}.old*"):
+                shutil.rmtree(leftover, ignore_errors=True)
+            try:
+                _run([DITTO, str(found[0]), str(new)], timeout=COPY_TIMEOUT)
+                os.rename(app, old)
+            except OSError:
+                shutil.rmtree(new, ignore_errors=True)   # a failed copy, or the app could not be moved aside
+                raise
+            try:
+                os.rename(new, app)
+            except OSError:
+                os.rename(old, app)
+                shutil.rmtree(new, ignore_errors=True)
+                raise
+            shutil.rmtree(old, ignore_errors=True)  # what this process still has open stays readable until it quits
+        finally:
+            try:
+                _run([HDIUTIL, "detach", str(mount), "-force"])
+            except OSError:
+                pass
+    finally:
+        try:
+            mount.rmdir()
+        except OSError:
+            pass
+
+
+def install_update(path) -> tuple:
+    """Install the downloaded disk image: the new app replaces this one and is started, (line, True) and the
+    caller quits. Where that cannot be done (running from source or from a disk image, a folder this user
+    cannot change, a copy that failed), the image is opened in Finder to drag across by hand instead:
+    (line, False), the flasher stays open. OSError when not even that works."""
+    try:
+        _replace_self(Path(path))
+    except OSError as e:
+        _run([OPEN, str(path)])
+        return f"Could not update in place ({e}). Drag the new app to Applications to finish.", False
+    app = running_bundle()
+    try:
+        _run([OPEN, "-n", "-a", str(app)])
+    except OSError as e:
+        return f"The update is in but did not start ({e}). Quit and open the program again.", False
+    return "Updated. Starting the new version.", True
 
 
 # ---------------------------------------------------------------- the sign-in token (login keychain)

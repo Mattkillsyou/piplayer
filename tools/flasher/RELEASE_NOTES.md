@@ -1,5 +1,17 @@
 # Release notes for the SD Flasher
 
+## v0.7.5
+
+Updates download again. GitHub now hands its release files out from a new address, which 0.7.3 and 0.7.4
+refused, so neither could ever fetch an update: a computer on either needs this version installed once by
+hand, and updates itself from then on. On Windows the installer now reopens the program after an update
+(the silent install used to skip that step). On a Mac the flasher now updates itself too: it puts the new app in place of
+the old one and starts it, no dragging. Where it cannot (the app is not in a folder your account can change,
+or it is running straight from the disk image), it opens the disk image for you to drag across, as before.
+From the next update on, the first start of the new version says "Updated to <version>." on the status line
+(0.7.5 itself is installed by hand, so it has nothing to say). A download refused for
+coming from an unexpected address now says so in plain words in the details.
+
 ## v0.7.4
 
 Should stop "You need to format the disk in drive E:" appearing while a card is being written (not yet

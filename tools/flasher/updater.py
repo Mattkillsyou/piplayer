@@ -18,17 +18,21 @@ import console
 import imagefetch
 from sysplat import host
 
-VERSION = "0.7.4"
+VERSION = "0.7.5"
 CHECK_EVERY = 7 * 24 * 3600  # seconds; the owner's "check for updates weekly"
 PATH = "/api/flasher/latest"
 KEYS = ("version", "windows", "mac_arm64", "mac_intel", "notes")
-STATE_KEYS = ("last_check", "last_seen_version", "downloaded", "downloaded_version")
+# update_from / update_to: written just before an update is handed over, so the new version can say so.
+STATE_KEYS = ("last_check", "last_seen_version", "downloaded", "downloaded_version", "update_from", "update_to")
 DOTTED = re.compile(r"\d+(\.\d+)*$")
 TIMEOUT, DOWNLOAD_TIMEOUT = 10, 60
 CHUNK = 1024 * 1024
 # The Windows installer is about 531 MB: anything far outside that is not an installer, so it is not written.
 MIN_BYTES, MAX_BYTES = 50 * 1024 ** 2, 2 * 1024 ** 3
-GITHUB_HOSTS = ("github.com", "objects.githubusercontent.com")  # where the release assets are served from
+# Where the release assets are served from: github.com answers 302 to its asset store, which has been
+# objects.githubusercontent.com and is now release-assets.githubusercontent.com. Exact names only: other
+# *.githubusercontent.com hosts (raw. and friends) serve anyone's files.
+GITHUB_HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 
 
 # ---------------------------------------------------------------- versions
@@ -105,7 +109,8 @@ def _check(url: str, console_url: str) -> None:
         raise console.ConsoleError(f"refusing {url or '(nothing)'}: updates are only fetched over https")
     allowed = (urllib.parse.urlsplit(console_url).hostname or "", *GITHUB_HOSTS)
     if (u.hostname or "").lower() not in [a.lower() for a in allowed if a]:
-        raise console.ConsoleError(f"refusing {url}: {u.hostname} is not the console or GitHub")
+        raise console.ConsoleError(f"the download was refused because it came from an unexpected address "
+                                   f"({u.hostname})")
 
 
 class _Redirect(urllib.request.HTTPRedirectHandler):

@@ -2,9 +2,12 @@
 login keychain (`security` faked) as the flasher's operator config uses it, the CoreText font registration
 (the frameworks faked), the 0600 key file, the work area and where the .app leaves selfcheck.txt."""
 import os
+import plistlib
+import shutil
 import ssl
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -188,22 +191,138 @@ def test_private_key_is_owner_only(tmp_path, monkeypatch):
         assert oct(priv.stat().st_mode & 0o777) == "0o600"
 
 
-def test_an_update_is_opened_not_installed(monkeypatch, tmp_path):
-    """A .dmg has to be dragged to Applications by hand, so the Mac host only opens it and says so; the app
-    stays open (UPDATE_QUITS is False) and asks for the Mac asset of /api/flasher/latest."""
-    dmg = tmp_path / "Projection5000-SD-Flasher-mac-arm64.dmg"
+APP = "Projection5000 SD Flasher.app"
+
+
+def _app(where, text, bundle_id=machost.BUNDLE_ID, name=APP):
+    exe = where / name / "Contents" / "MacOS" / "Projection5000 SD Flasher"
+    exe.parent.mkdir(parents=True)
+    exe.write_text(text)
+    with open(where / name / "Contents" / "Info.plist", "wb") as f:
+        plistlib.dump({"CFBundleIdentifier": bundle_id}, f)
+    return exe
+
+
+class FakeMacTools:
+    """hdiutil, ditto and open on a temp folder standing in for /Applications: attach puts the new app at the
+    mount point it is given, ditto copies (or fails half way), open records what it was asked to open."""
+
+    def __init__(self, monkeypatch):
+        self.calls = []
+        self.ditto_fails = False
+        self.image = lambda mount: _app(mount, "new")  # what attach puts on the image
+        self.running = None  # the running app's executable text when open -n -a is called
+        monkeypatch.setattr(machost.subprocess, "run", self)
+
+    def __call__(self, argv, **kw):
+        assert argv[0].startswith("/usr/bin/")
+        assert kw["timeout"] and kw["stdin"] is subprocess.DEVNULL and kw["capture_output"]
+        self.calls.append(argv)
+        ok = subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:2] == [machost.HDIUTIL, "attach"]:
+            self.image(Path(argv[argv.index("-mountpoint") + 1]))
+        elif argv[:2] == [machost.HDIUTIL, "detach"]:
+            for p in Path(argv[2]).iterdir():
+                shutil.rmtree(p)
+        elif argv[0] == machost.DITTO:
+            if self.ditto_fails:
+                Path(argv[2]).mkdir()  # half a copy
+                return subprocess.CompletedProcess(argv, 1, "", "ditto: No space left on device")
+            shutil.copytree(argv[1], argv[2])
+        elif argv[:3] == [machost.OPEN, "-n", "-a"]:
+            self.running = (Path(argv[3]) / "Contents" / "MacOS" / "Projection5000 SD Flasher").read_text()
+        else:
+            assert argv[0] == machost.OPEN and len(argv) == 2, argv
+        return ok
+
+    def tools(self):
+        return [Path(c[0]).name for c in self.calls]
+
+
+@pytest.fixture
+def mac_update(monkeypatch, tmp_path):
+    """/Applications with the running (old) app in it, and the downloaded disk image."""
+    apps = tmp_path / "Applications"
+    exe = _app(apps, "old")
+    monkeypatch.setattr(machost.sys, "executable", str(exe))
+    monkeypatch.setattr(machost.sys, "frozen", True, raising=False)   # the built app, not python3 flasher.py
+    dmg = tmp_path / "downloaded" / "Projection5000-SD-Flasher-mac-arm64.dmg"
+    dmg.parent.mkdir()
     dmg.write_bytes(b"x")
-    opened = []
-    done = subprocess.CompletedProcess([], 0, "", "")
-    monkeypatch.setattr(machost.subprocess, "run", lambda argv, **kw: opened.append(argv) or done)
-    assert machost.install_update(dmg) == "Drag the new app to Applications to finish."
-    assert opened == [[machost.OPEN, str(dmg)]]
-    # A disk image that will not open is said so, not reported as done.
+    return FakeMacTools(monkeypatch), apps, exe, dmg
+
+
+def _fell_back(tools, dmg, line, quits, why):
+    assert quits is False and why in line and line.endswith("Drag the new app to Applications to finish.")
+    assert tools.calls[-1] == [machost.OPEN, str(dmg)]  # the image, opened in Finder as before
+
+
+def test_an_update_replaces_the_app_and_starts_the_new_one(mac_update):
+    tools, apps, exe, dmg = mac_update
+    line, quits = machost.install_update(dmg)
+    assert (line, quits) == ("Updated. Starting the new version.", True)
+    assert tools.tools() == ["hdiutil", "ditto", "hdiutil", "open"]
+    attach = tools.calls[0]
+    assert attach[-1] == str(dmg) and "-readonly" in attach and "-nobrowse" in attach and "-noautoopen" in attach
+    mount = Path(attach[attach.index("-mountpoint") + 1])
+    assert tools.calls[1][1:] == [str(mount / APP), str(apps / f".{APP}.new-{os.getpid()}")]  # beside the old: a rename
+    assert tools.calls[2][:3] == [machost.HDIUTIL, "detach", str(mount)] and not mount.exists()
+    assert exe.read_text() == "new" and sorted(p.name for p in apps.iterdir()) == [APP]  # nothing left over
+    assert tools.calls[3] == [machost.OPEN, "-n", "-a", str(apps / APP)] and tools.running == "new"
+    assert machost.UPDATE_ASSET in ("mac_arm64", "mac_intel")
+
+
+def test_a_folder_this_user_cannot_change_opens_the_image(mac_update, monkeypatch):
+    """A standard account and /Applications: nothing is attached or copied, the image is opened instead."""
+    tools, apps, exe, dmg = mac_update
+    access = os.access
+    monkeypatch.setattr(machost.os, "access", lambda p, m: False if Path(p) == apps else access(p, m))
+    _fell_back(tools, dmg, *machost.install_update(dmg), "cannot change")
+    assert len(tools.calls) == 1 and exe.read_text() == "old"
+
+
+def test_running_from_the_disk_image_opens_the_image(mac_update, monkeypatch):
+    tools, _, _, dmg = mac_update
+    monkeypatch.setattr(machost.sys, "executable",
+                        f"/Volumes/Projection5000 SD Flasher/{APP}/Contents/MacOS/Projection5000 SD Flasher")
+    _fell_back(tools, dmg, *machost.install_update(dmg), "running from a disk image")
+    assert len(tools.calls) == 1
+    # From source (python3 flasher.py) there is no app to replace either.
+    tools.calls.clear()
+    monkeypatch.setattr(machost.sys, "executable", "/usr/local/bin/python3")
+    _fell_back(tools, dmg, *machost.install_update(dmg), "not running from an app")
+
+
+def test_a_failed_copy_leaves_the_old_app_untouched(mac_update):
+    tools, apps, exe, dmg = mac_update
+    tools.ditto_fails = True
+    _fell_back(tools, dmg, *machost.install_update(dmg), "No space left on device")
+    assert exe.read_text() == "old" and sorted(p.name for p in apps.iterdir()) == [APP]  # the half copy is gone
+    assert tools.calls[-2][:2] == [machost.HDIUTIL, "detach"]  # the image let go before Finder opens it
+
+
+def test_a_failed_swap_puts_the_old_app_back(mac_update, monkeypatch):
+    """The old app is moved aside, then the new one cannot be renamed in: the old one goes back."""
+    tools, apps, exe, dmg = mac_update
+    rename = os.rename
+
+    def failing(src, dst):
+        if Path(src).name.startswith(f".{APP}.new"):
+            raise OSError("Operation not permitted")
+        rename(src, dst)
+
+    monkeypatch.setattr(machost.os, "rename", failing)
+    _fell_back(tools, dmg, *machost.install_update(dmg), "Operation not permitted")
+    assert exe.read_text() == "old" and sorted(p.name for p in apps.iterdir()) == [APP]
+    assert not any(c[:3] == [machost.OPEN, "-n", "-a"] for c in tools.calls)
+
+
+def test_an_image_that_will_not_open_is_said_so(mac_update, monkeypatch):
+    _, _, _, dmg = mac_update
     monkeypatch.setattr(machost.subprocess, "run",
                         lambda argv, **kw: subprocess.CompletedProcess([], 1, "", "image not recognized"))
     with pytest.raises(OSError, match="image not recognized"):
         machost.install_update(dmg)
-    assert machost.UPDATE_QUITS is False and machost.UPDATE_ASSET in ("mac_arm64", "mac_intel")
 
 
 def test_work_area_icon_dpi_and_selfcheck_paths(monkeypatch, tmp_path):
@@ -329,3 +448,59 @@ def test_the_real_keychains_give_the_roots(monkeypatch):
         assert machost.ssl_context().cert_store_stats()["x509_ca"] > 100
     finally:
         machost.ssl_context.cache_clear()
+
+
+def test_only_our_own_app_is_replaced_and_only_by_our_own_app(mac_update, monkeypatch):
+    """Two apps on the image, a symlinked one, an app that is not the flasher on either side, or the program
+    running from source: nothing is copied or swapped, the image is opened instead."""
+    tools, apps, exe, dmg = mac_update
+    tools.image = lambda mount: (_app(mount, "new"), _app(mount, "other", name="Other.app"))
+    _fell_back(tools, dmg, *machost.install_update(dmg), "holds 2 apps")
+    tools.calls.clear()
+    tools.image = lambda mount: (mount.mkdir(parents=True, exist_ok=True), (mount / APP).symlink_to(apps / APP))
+    try:
+        _fell_back(tools, dmg, *machost.install_update(dmg), "holds 0 apps")
+    except OSError:
+        pytest.skip("symlinks need privileges on this Windows")
+    tools.calls.clear()
+    tools.image = lambda mount: _app(mount, "new", bundle_id="com.example.other")
+    _fell_back(tools, dmg, *machost.install_update(dmg), "not this program")
+    tools.calls.clear()
+    tools.image = lambda mount: _app(mount, "new")
+    with open(apps / APP / "Contents" / "Info.plist", "wb") as f:     # the running app is not ours
+        plistlib.dump({"CFBundleIdentifier": "org.python.python"}, f)
+    _fell_back(tools, dmg, *machost.install_update(dmg), "is not this program")
+    assert exe.read_text() == "old" and sorted(p.name for p in apps.iterdir()) == [APP]
+
+
+def test_leftovers_of_an_earlier_attempt_never_block_an_update(mac_update):
+    tools, apps, exe, dmg = mac_update
+    for name in (f".{APP}.new", f".{APP}.old", f".{APP}.old-1234"):
+        _app(apps, "leftover", name=name)
+    line, quits = machost.install_update(dmg)
+    assert quits and exe.read_text() == "new" and sorted(p.name for p in apps.iterdir()) == [APP]
+
+
+def test_an_app_that_cannot_be_moved_aside_leaves_no_copy_behind(mac_update, monkeypatch):
+    """macOS App Management (or a busy bundle) refuses to move the running app: the fresh copy goes too."""
+    tools, apps, exe, dmg = mac_update
+    rename = os.rename
+
+    def refuse_first(src, dst):
+        if Path(src) == apps / APP:
+            raise OSError("Operation not permitted")
+        rename(src, dst)
+
+    monkeypatch.setattr(machost.os, "rename", refuse_first)
+    _fell_back(tools, dmg, *machost.install_update(dmg), "Operation not permitted")
+    assert exe.read_text() == "old" and sorted(p.name for p in apps.iterdir()) == [APP]
+
+
+def test_python_itself_is_never_taken_for_our_app(monkeypatch, tmp_path):
+    """From source, sys.executable can be Python.app's own binary: that is not a bundle to replace."""
+    exe = tmp_path / "Python.app" / "Contents" / "MacOS" / "Python"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("python")
+    monkeypatch.setattr(machost.sys, "executable", str(exe))
+    monkeypatch.delattr(machost.sys, "frozen", raising=False)
+    assert machost.running_bundle() is None

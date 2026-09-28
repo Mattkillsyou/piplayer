@@ -518,6 +518,7 @@ class App:
         if not self.install_downloaded_update():
             if not self.connected():
                 self.sign_in()
+            self.say_updated()
             self.check_updates()
         # Last, once every widget holds its first text: Tk on macOS (Aqua) never returns from update() when a
         # hidden window that is not the process's first gets its geometry set and then its labels change.
@@ -920,6 +921,7 @@ class App:
         self.log(f"Signed in as {tok['username'] or 'operator'}.")
         self._signin_done()
         self.set_status(READY_TEXT)
+        self.say_updated()  # the first start after an update, held back while the sign-in box was up
         if then:
             then()
 
@@ -1050,20 +1052,53 @@ class App:
         return self._install_update(path, version)
 
     def _install_update(self, path, version: str) -> bool:
-        """Hand the installer to the platform and, where it replaces the running program (Windows), quit so
-        it can. The state is cleared either way: a failed install must not be retried at every start."""
-        self.set_status(f"Updating to {version}..." if host.UPDATE_QUITS else f"Update {version} is ready.")
-        updater.save_state(dict(updater.load_state(), downloaded="", downloaded_version=""))
-        try:
-            self.log(host.install_update(path))
-        except OSError as e:
-            self.log(f"Could not start the update: {e}")
-            self.set_status(READY_TEXT)
-            return False
-        if not host.UPDATE_QUITS:  # macOS: a .dmg is dragged by hand, so the flasher stays open
-            return False
-        self.post(self.on_close)
-        return True
+        """Hand the update to the platform and quit when it says so (Windows: the installer replaces this exe;
+        macOS: the new app is in place and started). The state is cleared either way: a failed install must
+        not be retried at every start. It keeps which version this was, so the new one can say it updated."""
+        self.set_status(f"Updating to {version}...")
+        updater.save_state(dict(updater.load_state(), downloaded="", downloaded_version="",
+                                update_from=updater.VERSION, update_to=version))
+
+        def work():  # off the Tk thread: on a Mac, checking and copying the new app takes a minute
+            try:
+                line, quits = host.install_update(path)
+            except OSError as e:
+                why = str(e)  # `e` is gone once the except block ends
+                self.post(lambda: self._install_done(f"Could not start the update: {why}", False, failed=True))
+                return
+            self.post(lambda: self._install_done(line, quits))
+
+        threading.Thread(target=work, daemon=True).start()
+        return True  # under way: nothing else goes on screen until it answers
+
+    def _install_done(self, line: str, quits: bool, failed: bool = False):
+        """The platform's answer: quit for the new version, or carry on here with its words on the status line
+        (a Mac that could not replace itself has the disk image open to drag across by hand)."""
+        self.log(line)
+        if quits:
+            self.on_close()
+            return
+        self.set_status(READY_TEXT if failed else line)
+        if not self.connected():
+            self.sign_in()
+
+    def say_updated(self):
+        """The first ready screen after an update: "Updated to <version>." on the status line, once. While the
+        sign-in box is up it waits (sign-in calls it again). An update that did not go in (this is still the
+        old version) is said in the log, and the next start looks for it again."""
+        state = updater.load_state()
+        to = state.get("update_to")
+        if not to:
+            return
+        if to == updater.VERSION and state.get("update_from") != updater.VERSION:
+            if self.signin.winfo_manager():
+                return
+            self.log(f"Updated from {state.get('update_from')} to {updater.VERSION}.")
+            self.set_status(f"Updated to {updater.VERSION}.")
+        elif updater.newer(to, updater.VERSION):
+            self.log(f"The update to {to} did not go in; this is still {updater.VERSION}.")
+            state = dict(state, last_check=0)
+        updater.save_state(dict(state, update_from="", update_to=""))
 
     def sign_out(self):
         """Forget the token; the username stays prefilled in the sign-in box (switch user: sign out, sign in)."""

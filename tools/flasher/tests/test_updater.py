@@ -1,11 +1,14 @@
 """updater.py without a network: the version comparison, the weekly clock, the state file, what /api/flasher/latest
 has to answer, and the download (a local http.server for the streaming, the allow-list on its own so no test
 needs a real https host)."""
+import http.client
 import http.server
+import io
 import subprocess
 import sys
 import threading
 import urllib.request
+import urllib.response
 from pathlib import Path
 
 import pytest
@@ -16,6 +19,11 @@ from test_console import _serve
 
 CONSOLE = "https://projectors.example"
 ASSET = "https://github.com/Mattkillsyou/piplayer/releases/download/v0.7.3/Projection5000-SD-Flasher-Setup.exe"
+# Where github.com sends ASSET (the shape of a real answer; the signature parts are made up).
+GITHUB_CDN = ("https://release-assets.githubusercontent.com/github-production-release-asset/1041234567/"
+              "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-09-27T18%3A00%3A00Z"
+              "&rscd=attachment%3B+filename%3DProjection5000-SD-Flasher-Setup.exe&rsct=application%2Foctet-stream"
+              "&sig=abc%3D&jwt=eyJ0eXAi.eyJpc3Mi.c2ln")
 LATEST = {"version": "0.7.3", "windows": ASSET, "mac_arm64": "https://github.com/x/a.dmg",
           "mac_intel": "https://github.com/x/i.dmg", "notes": "https://github.com/x/releases/tag/v0.7.3"}
 BODY = b"MZ" + b"x" * 4094  # 4 KiB standing in for a 531 MB installer
@@ -121,11 +129,18 @@ def test_latest_rejects_anything_else(monkeypatch, answer):
                                  "https://evil.example/x.exe", "https://github.com.evil.example/x.exe",
                                  "https://raw.githubusercontent.com/x.exe"])
 def test_refuses_anything_but_https_on_the_console_or_github(url):
-    with pytest.raises(console.ConsoleError, match="refusing"):
+    with pytest.raises(console.ConsoleError, match="refusing|unexpected address"):
         updater._check(url, CONSOLE)
 
 
-@pytest.mark.parametrize("url", [ASSET, "https://objects.githubusercontent.com/x.exe",
+def test_a_refused_host_is_said_plainly():
+    """The owner reads this in the log as "Update download failed: ..."."""
+    with pytest.raises(console.ConsoleError) as e:
+        updater._check("https://evil.example/x.exe", CONSOLE)
+    assert str(e.value) == "the download was refused because it came from an unexpected address (evil.example)"
+
+
+@pytest.mark.parametrize("url", [ASSET, "https://objects.githubusercontent.com/x.exe", GITHUB_CDN,
                                  "https://projectors.example/download/x.exe"])
 def test_allows_the_console_and_github(url):
     updater._check(url, CONSOLE)
@@ -137,8 +152,37 @@ def test_redirects_stay_on_the_allow_list():
     req = urllib.request.Request(ASSET)
     hop = h.redirect_request(req, None, 302, "Found", {}, "https://objects.githubusercontent.com/a.exe")
     assert hop.full_url == "https://objects.githubusercontent.com/a.exe"
-    with pytest.raises(console.ConsoleError, match="refusing"):
+    with pytest.raises(console.ConsoleError, match="unexpected address"):
         h.redirect_request(req, None, 302, "Found", {}, "https://evil.example/a.exe")
+
+
+class FakeGitHub(urllib.request.HTTPSHandler):
+    """https:// answered in memory, exactly as GitHub answered for the v0.7.4 installer (checked with curl on
+    27 Sep 2026): the release URL 302s to release-assets.githubusercontent.com, which serves the file."""
+
+    def https_open(self, req):
+        if req.full_url == ASSET:
+            return self._answer(req, 302, "Found", {"Location": GITHUB_CDN, "Content-Length": "0"}, b"")
+        if req.full_url == GITHUB_CDN:
+            return self._answer(req, 200, "OK", {"Content-Length": str(len(BODY))}, BODY)
+        raise AssertionError(f"fetched {req.full_url}")
+
+    @staticmethod
+    def _answer(req, code, msg, headers, body):
+        m = http.client.HTTPMessage()
+        for k, v in headers.items():
+            m[k] = v
+        r = urllib.response.addinfourl(io.BytesIO(body), m, req.full_url, code)
+        r.msg = msg
+        return r
+
+
+def test_an_update_follows_githubs_real_redirect(monkeypatch, tmp_path):
+    """The real allow-list and redirect handler, GitHub's real hop, no network. If GitHub moves its asset store
+    again, this is the test to update (with GITHUB_HOSTS): 0.7.3 and 0.7.4 failed every download silently."""
+    monkeypatch.setattr(updater.urllib.request, "HTTPSHandler", FakeGitHub)
+    monkeypatch.setattr(updater, "MIN_BYTES", 1024)
+    assert updater.download(ASSET, tmp_path / "setup.exe", CONSOLE).read_bytes() == BODY
 
 
 # ----- the download
@@ -183,7 +227,7 @@ def test_a_size_that_is_not_an_installer_is_refused(monkeypatch, path, tmp_path)
 
 def test_download_refuses_a_url_outside_the_allow_list(tmp_path):
     for url in ("http://projectors.example/x.exe", "https://evil.example/x.exe"):
-        with pytest.raises(console.ConsoleError, match="refusing"):
+        with pytest.raises(console.ConsoleError, match="refusing|unexpected address"):
             updater.download(url, tmp_path / "setup.exe", CONSOLE)
     assert list(tmp_path.iterdir()) == [updater.updates_dir()]  # nothing written but the (empty) sandbox folder
     assert not list(updater.updates_dir().iterdir())
@@ -238,3 +282,23 @@ def test_the_three_version_pins_agree():
     assert f"StringStruct('FileVersion', '{updater.VERSION}.0')" in resource
     assert f"StringStruct('ProductVersion', '{updater.VERSION}.0')" in resource
     assert f'#define AppVersion "{updater.VERSION}"' in (src / "installer.iss").read_text("utf-8")
+
+
+def test_the_silent_installer_reopens_the_program():
+    """An update runs the installer with /SILENT and the flasher quits for it. Inno Setup skips a skipifsilent
+    [Run] entry then, and /RESTARTAPPLICATIONS only restarts what registered for it (the flasher does not),
+    so without this entry the program would simply be gone after an update."""
+    iss = (Path(updater.__file__).resolve().parent / "installer.iss").read_text("utf-8")
+    run = [ln for ln in iss.split("[Run]", 1)[1].splitlines() if ln.startswith("Filename:")]
+    assert len(run) == 1 and "Projection5000-SD-Flasher.exe" in run[0] and "postinstall" in run[0]
+    assert "skipifsilent" not in run[0]
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="winhost")
+def test_windows_starts_the_installer_silently_and_quits(monkeypatch):
+    import winhost
+    started = []
+    monkeypatch.setattr(winhost.subprocess, "Popen", lambda argv, **kw: started.append(argv))
+    assert winhost.install_update("C:/x/setup.exe") == ("Installing the update. The program will reopen by itself.",
+                                                        True)
+    assert started == [["C:/x/setup.exe", *winhost.UPDATE_ARGS]] and "/SILENT" in winhost.UPDATE_ARGS

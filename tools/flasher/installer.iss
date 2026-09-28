@@ -6,7 +6,7 @@
 ; matches updater.py's VERSION, as version.txt does (tests/test_updater.py checks all three agree).
 
 #ifndef AppVersion
-  #define AppVersion "0.7.4"
+  #define AppVersion "0.7.5"
 #endif
 
 [Setup]
@@ -46,4 +46,5 @@ Name: "{autodesktop}\Matt Brown Projection 5000"; Filename: "{app}\Projection500
 Name: "desktopicon"; Description: "Put a shortcut on the desktop"; GroupDescription: "Shortcuts:"
 
 [Run]
-Filename: "{app}\Projection5000-SD-Flasher.exe"; Description: "Open Matt Brown Projection 5000 now"; Flags: nowait postinstall skipifsilent shellexec
+; not skipifsilent: after the silent install of an update (winhost.install_update) this reopens the program
+Filename: "{app}\Projection5000-SD-Flasher.exe"; Description: "Open Matt Brown Projection 5000 now"; Flags: nowait postinstall shellexec

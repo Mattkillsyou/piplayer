@@ -153,18 +153,29 @@ The flasher keeps itself up to date. Once a week, when it starts, it asks the
 console whether there is a newer version. If there is, it fetches the installer
 in the background and runs it the next time nothing else is going on: a flash is
 never interrupted, and an update that arrives during one goes in at the next
-start. On Windows the installer is silent and the program reopens itself; on a
-Mac the disk image is opened so you can drag the new app across, which macOS
-requires.
+start. On Windows the installer is silent and the program reopens itself. On a
+Mac the new app replaces the old one where it is (usually Applications) and is
+started; when your account cannot change that folder, or the flasher is running
+straight from the disk image, the disk image is opened instead so you can drag
+the new app across. The first start after an update says "Updated to <version>."
+on the status line.
 
 **Check for updates** under Advanced asks straight away and says "You are up to
 date." when there is nothing to fetch.
 
-Only the console and GitHub (where the installers live) are ever fetched from,
-over `https://` only. What has been checked and downloaded is remembered in
+Versions 0.7.3 and 0.7.4 cannot fetch updates (GitHub moved its downloads to an
+address they refuse): install 0.7.5 or later by hand once, and it keeps itself
+up to date from then on.
+
+Only the console and GitHub (where the installers live: `github.com` and its
+download hosts `objects.githubusercontent.com` and
+`release-assets.githubusercontent.com`) are ever fetched from, over `https://`
+only; anything else is refused and the details say the download "came from an
+unexpected address". What has been checked and downloaded is remembered in
 `%LOCALAPPDATA%\Projection5000\update.json`
 (`~/Library/Application Support/Projection5000/update.json` on a Mac); the
-installer itself waits in the `updates` folder beside it.
+installer itself waits in `%ProgramData%\Projection5000\updates` (administrators only) on Windows and in the
+`updates` folder beside it on a Mac.
 
 ## Signing in
 

@@ -1435,8 +1435,7 @@ def _update_stubs(monkeypatch, tmp_path, answer):
     monkeypatch.setattr(flasher.updater, "download_path", lambda url: setup)
     monkeypatch.setattr(flasher.updater, "download",
                         lambda url, dest, console_url, **kw: downloaded.append(url) or setup)
-    monkeypatch.setattr(flasher.host, "install_update", lambda p: installed.append(Path(p)) or "Installing.")
-    monkeypatch.setattr(flasher.host, "UPDATE_QUITS", True)
+    monkeypatch.setattr(flasher.host, "install_update", lambda p: installed.append(Path(p)) or ("Installing.", True))
     monkeypatch.setattr(flasher.host, "UPDATE_ASSET", "windows")
     return asked, downloaded, installed, setup
 
@@ -1491,6 +1490,51 @@ def test_a_newer_version_is_fetched_and_installed_when_nothing_is_running(monkey
     assert _status(app) == "Updating to 0.7.9..." and "Installing." in _log(app)
     # Cleared once it is handed over: a failed install must not be retried at every start.
     assert flasher.updater.load_state()["downloaded"] == ""
+    # What it came from and went to, for the new version to say so.
+    state = flasher.updater.load_state()
+    assert (state["update_from"], state["update_to"]) == (flasher.updater.VERSION, "0.7.9")
+    root.destroy()
+
+
+def test_the_first_start_after_an_update_says_so_once(monkeypatch, tmp_path):
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _signed_in(monkeypatch)
+    flasher.updater.save_state({"last_check": time.time(), "update_from": "0.7.4",
+                                "update_to": flasher.updater.VERSION})
+    root = _root()
+    app = flasher.App(root)
+    assert _status(app) == f"Updated to {flasher.updater.VERSION}."
+    assert f"Updated from 0.7.4 to {flasher.updater.VERSION}." in _log(app)
+    assert flasher.updater.load_state()["update_to"] == ""  # once
+    root.destroy()
+    root = _root()
+    app = flasher.App(root)
+    assert _status(app) == "Ready."
+    root.destroy()
+    # An install that never happened (still the old version) says nothing, and forgets it.
+    flasher.updater.save_state({"last_check": time.time(), "update_from": flasher.updater.VERSION,
+                                "update_to": "9.9.9"})
+    root = _root()
+    app = flasher.App(root)
+    assert _status(app) == "Ready." and "Updated" not in _log(app)
+    assert flasher.updater.load_state()["update_to"] == ""
+    root.destroy()
+
+
+def test_a_mac_that_could_not_replace_itself_stays_open(monkeypatch, tmp_path):
+    """machost falls back to opening the disk image: the flasher stays, with the update ready to drag."""
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _signed_in(monkeypatch)
+    _, _, installed, setup = _update_stubs(monkeypatch, tmp_path, UPDATE)
+    monkeypatch.setattr(flasher.host, "install_update",
+                        lambda p: installed.append(Path(p)) or ("Drag the new app to Applications to finish.", False))
+    monkeypatch.setattr(flasher.App, "on_close", lambda self: pytest.fail("quit without an update in place"))
+    flasher.updater.save_state({"last_check": time.time(), "downloaded": str(setup), "downloaded_version": "0.7.9"})
+    root = _root()
+    app = flasher.App(root)
+    assert _status(app) == "Updating to 0.7.9..."            # said before the copy starts (off the Tk thread)
+    assert _pump(root, app, lambda: installed == [setup] and _status(app) == "Drag the new app to Applications to finish.")
+    assert "Drag the new app to Applications to finish." in _log(app)
     root.destroy()
 
 
@@ -1542,4 +1586,28 @@ def test_check_for_updates_says_you_are_up_to_date(monkeypatch, tmp_path):
     assert _status(app) == "Checking for updates..."
     assert _pump(root, app, lambda: _status(app) == flasher.UP_TO_DATE_TEXT)
     assert asked == [flasher.console_url()] and installed == []
+    root.destroy()
+
+
+def test_updated_to_waits_for_the_sign_in_box_and_a_failed_install_is_said(monkeypatch, tmp_path):
+    """The first start after an update with no stored sign-in: the box is up, so "Updated to" waits and is
+    said once the operator has signed in. An update that did not go in says so in the log and is looked for
+    again at the next start."""
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    flasher.updater.save_state({"last_check": time.time(), "update_from": "0.7.1", "update_to": flasher.updater.VERSION})
+    root = _root()
+    app = flasher.App(root)
+    assert app.signin.winfo_manager() == "pack" and _status(app) == flasher.SIGNIN_FIRST_TEXT
+    assert flasher.updater.load_state()["update_to"] == flasher.updater.VERSION   # kept for after sign-in
+    app._signed_in(app.console_url, {"token": "p5k_x", "username": "matt"}, None)
+    assert _status(app) == f"Updated to {flasher.updater.VERSION}."
+    assert not flasher.updater.load_state().get("update_to")
+    root.destroy()
+
+    flasher.updater.save_state({"last_check": time.time(), "update_from": flasher.updater.VERSION, "update_to": "9.9.9"})
+    _signed_in(monkeypatch)
+    root = _root()
+    app = flasher.App(root)
+    assert f"The update to 9.9.9 did not go in; this is still {flasher.updater.VERSION}." in _log(app)
+    assert _status(app) == "Ready." and flasher.updater.load_state().get("last_check") == 0
     root.destroy()

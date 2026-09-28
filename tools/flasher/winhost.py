@@ -23,8 +23,8 @@ FALLBACK_FONTS = {"display": "Consolas", "mono": "Consolas", "sans": "Segoe UI"}
 # Windows 11 hides scan results from desktop apps while Location access is off.
 NO_SCAN_HINT = "turn on Location in Windows Settings to list networks"
 UPDATE_ASSET = "windows"  # which asset of /api/flasher/latest this platform installs
-UPDATE_QUITS = True  # the installer replaces the running exe, so the app has to go away for it
-# Inno Setup: no questions, close and reopen the app it is replacing, and never reboot the PC by itself.
+# Inno Setup: no questions, close the app it is replacing, and never reboot the PC by itself. What reopens
+# the program afterwards is installer.iss's [Run] entry (not skipifsilent).
 UPDATE_ARGS = ["/SILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART"]
 FR_PRIVATE = 0x10  # gdi32: visible to this process only, never installed
 SEAL_NAME = "DPAPI"  # named in the warning when the token cannot be protected
@@ -94,13 +94,14 @@ def updates_dir() -> Path:
     return d
 
 
-def install_update(path) -> str:
+def install_update(path) -> tuple:
     """Start the downloaded Inno Setup installer silently, detached from this process so it survives the
     quit that has to follow (it replaces this exe). The flasher runs elevated, so the installer inherits
-    that and Windows asks nothing. Returns the line for the screen; OSError when it will not start."""
+    that and Windows asks nothing. Returns (the line for the log, True: quit now); OSError when it will not
+    start."""
     flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
     subprocess.Popen([str(path), *UPDATE_ARGS], creationflags=flags, close_fds=True)
-    return "Installing the update. The program will reopen by itself."
+    return "Installing the update. The program will reopen by itself.", True
 
 
 # ---------------------------------------------------------------- the sign-in token (DPAPI)
