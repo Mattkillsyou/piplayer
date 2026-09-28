@@ -10,7 +10,7 @@ import * as manifest from "./manifest.js";
 import * as media from "./media.js";
 import * as secrets from "./secrets.js";
 import { installBaseUrl, MAX_DEVICE_NAME } from "./pages/devices.js";
-import { FLASHER_VERSION, RELEASE } from "./pages/flasher.js";
+import { FLASHER_NAME, FLASHER_VERSION, RELEASE } from "./pages/flasher.js";
 import { envInt, fail, HttpError, json, jsonObject, nowUtc, randomToken, utf8Len } from "./util.js";
 import { cameraConfig } from "./pages/devices.js";
 
@@ -495,6 +495,7 @@ async function getCameraConfig(ctx) {
 function flasherLatest() {
   return json({
     version: FLASHER_VERSION,
+    name: FLASHER_NAME,
     windows: `${RELEASE}/Projection5000-SD-Flasher-Setup.exe`,
     mac_arm64: `${RELEASE}/Projection5000-SD-Flasher-mac-arm64.dmg`,
     mac_intel: `${RELEASE}/Projection5000-SD-Flasher-mac-intel.dmg`,
