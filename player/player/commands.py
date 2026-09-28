@@ -20,6 +20,11 @@ REPORT_RETRIES = 2
 _RETRY_DELAY_SECONDS = 1.0
 
 
+# How long "Updating the player..." stays up. An update takes a minute or two and restarts this
+# process; whatever is left on screen is cleared by the next daemon (daemon.py, update_notice).
+UPDATE_NOTICE_SECONDS = 180.0
+
+
 def _run_reboot() -> str:
     res = subprocess.run(["sudo", "-n", "/sbin/reboot"], capture_output=True, text=True, timeout=10)
     if res.returncode == 0:
@@ -125,6 +130,7 @@ def execute_commands(
     force_resync: Callable[[], None],
     update: dict | None = None,
     projector: Projector | None = None,
+    screens=None,
 ) -> None:
     """`update` is the manifest's optional update block ({release, auto, window}):
     the update-* commands take their git ref from it. `projector` carries the
@@ -154,6 +160,10 @@ def execute_commands(
             _remember_executed(cfg, executed, cid, issued_at)
             _report_result(cfg, cid, {"reboot": "executing reboot", "restart-mpv": "executing mpv restart"}
                            .get(action, f"executing {action}"))
+            if screens is not None:   # the projector says what it is doing; the film keeps running
+                notice = {"reboot": "Restarting", "restart-mpv": "Restarting the player",
+                          "update-os": "Updating the system"}.get(action, "Updating the player")
+                screens.notice(f"{notice}...", seconds=UPDATE_NOTICE_SECONDS)
             try:
                 if action == "reboot":
                     result = _run_reboot()

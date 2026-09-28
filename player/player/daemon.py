@@ -1,3 +1,4 @@
+import json
 import logging
 import signal
 import sys
@@ -106,6 +107,14 @@ def _apply_playback_options(mpv: MpvClient) -> bool:
     log.info("mpv hwdec=%s (mpv now reports hwdec=%s hwdec-current=%s)",
              "set" if ok else "refused", mpv.get_property("hwdec"), mpv.get_property("hwdec-current"))
     return ok
+
+
+def _update_ok(pending) -> bool:
+    """True unless the update-*.sh run that just finished reported a failure."""
+    try:
+        return bool(json.loads(pending.param).get("ok", True))
+    except (ValueError, AttributeError):
+        return True
 
 
 def _gather_mpv_status(mpv: MpvClient, manifest: dict | None, state=None) -> dict:
@@ -422,6 +431,10 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
         state.last_contact = time.monotonic()
         state.storage_full = "no space left" in state.last_sync_error
         if pending_update is not None:
+            # This daemon is the one the update left behind: replace the "Updating..." line it put
+            # on screen with how it went, once, over whatever is playing.
+            if screens is not None:
+                screens.notice("Updated" if _update_ok(pending_update) else "Update failed", seconds=10.0)
             updater.mark_reported(cfg, pending_update)
             if pending_update.reboot:
                 log.info("update-os left reboot-required; status reported, rebooting: %s", _run_reboot())
@@ -483,7 +496,7 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
         commands = manifest.get("commands") or []
         if commands and not _stop_requested():
             execute_commands(cfg, mpv, commands, _force_sync, update=manifest.get("update"),
-                             projector=state.projector)
+                             projector=state.projector, screens=screens)
             if any(isinstance(c, dict) and c.get("command") == "restart-mpv" for c in commands):
                 # the new mpv instance starts idle: re-push now rather than
                 # leaving the screen black until the next poll

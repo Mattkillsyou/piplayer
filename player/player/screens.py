@@ -78,12 +78,13 @@ DOT = " · "
 
 @dataclass
 class ScreenState:
-    kind: str                       # boot | pairing | waiting | syncing | offline | error | nowplaying
+    kind: str                       # boot | pairing | waiting | syncing | offline | error | nowplaying | notice
     device_id: str = ""
     device_name: str = ""
     console_url: str = ""
     version: str = ""
     playlist_name: str | None = None
+    notice: str = ""                # the one line a "notice" overlay shows, e.g. "Updating the player"
     item_count: int = 0
     source: str | None = None       # manifest playlist.source, e.g. "device-default", "schedule:Night"
     next_rule: dict | None = None   # {"name", "playlist", "starts_at" iso}
@@ -273,7 +274,21 @@ def _compose_overlay(state: ScreenState) -> tuple[list[dict], dict]:
     return [label, name, sub], {"bar": (x0, y0, x0 + width, BOTTOM)}
 
 
+def _compose_notice(state: ScreenState) -> tuple[list[dict], dict]:
+    """One line in the corner while something is happening to the projector (an update): the same
+    bar as NOW PLAYING, so the screen never goes black and the film keeps running behind it."""
+    pad_x, pad_y = 32, 24
+    line = _item(state.notice or "", 0, 0, "display", 44, "phosphor", max_width=SAFE_W - 2 * pad_x)
+    width = max(640, line["w"] + 2 * pad_x)
+    height = pad_y + line["h"] + pad_y
+    x0, y0 = SAFE_X, BOTTOM - height
+    line["x"], line["y"] = x0 + pad_x, y0 + pad_y
+    return [line], {"bar": (x0, y0, x0 + width, BOTTOM)}
+
+
 def _compose(state: ScreenState) -> tuple[list[dict], dict]:
+    if state.kind == "notice":
+        return _compose_notice(state)
     if state.kind == "nowplaying":
         return _compose_overlay(state)
     if state.kind == "pairing":
@@ -360,7 +375,7 @@ def _decorate(d: ImageDraw.ImageDraw) -> None:
 def render(state: ScreenState) -> Image.Image:
     """RGB image for full screens, RGBA for the nowplaying overlay."""
     items, extras = _compose(state)
-    if state.kind == "nowplaying":
+    if state.kind in ("nowplaying", "notice"):
         img = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         x0, y0, x1, y1 = extras["bar"]

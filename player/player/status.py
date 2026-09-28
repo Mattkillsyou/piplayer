@@ -58,6 +58,18 @@ class StatusScreens:
         """The PNG mpv holds for the current screen (what mpv's `path` reports)."""
         return self.dir / f"{self.current.kind}.png" if self.current is not None else None
 
+    def notice(self, text: str, seconds: float = 12.0) -> None:
+        """One line over whatever is playing ("Updating the player"): the owner presses a button on
+        the website and something happens on the projector. Replaces any notice already up."""
+        state = self.state("notice", notice=text)
+        try:
+            path, w, h = render_overlay_bgra(state, self.dir / "notice.bgra")
+        except (OSError, ValueError) as e:
+            log.warning("could not render the notice overlay: %s", e)
+            return
+        self.mpv.command("overlay-add", self.OVERLAY_ID, 0, 0, str(path), 0, "bgra", w, h, w * 4)
+        self._overlay_deadline = time.monotonic() + seconds
+
     def now_playing(self, playlist_name: str, item_count: int, source: str | None) -> None:
         state = self.state("nowplaying", playlist_name=playlist_name, item_count=item_count, source=source)
         try:

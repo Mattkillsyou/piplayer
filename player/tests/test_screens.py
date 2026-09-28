@@ -41,7 +41,7 @@ def assert_safe(st):
 def test_every_kind_renders_full_frame_inside_safe_area(st):
     img = render(st)
     assert img.size == (WIDTH, HEIGHT)
-    assert img.mode == ("RGBA" if st.kind == "nowplaying" else "RGB")
+    assert img.mode == ("RGBA" if st.kind in ("nowplaying", "notice") else "RGB")
     assert_safe(st)
 
 
@@ -54,6 +54,16 @@ def test_full_screens_carry_name_version_and_clock_but_no_id_or_console(st):
     assert "LOBBY" in joined and "v0.2.0" in joined and "12:00:00" in joined
     assert "dev-1" not in joined and "http://cms.test" not in joined
     assert headline(st) in texts(st)
+
+
+def test_a_notice_is_one_line_in_the_corner():
+    state = ScreenState(kind="notice", notice="Updating the player...")
+    assert [it["text"] for it in layout(state)] == ["Updating the player..."]
+    assert_safe(state)
+    img = render(state)
+    assert img.size == (WIDTH, HEIGHT) and img.mode == "RGBA"   # transparent: it sits over the film
+    assert img.getpixel((5, 5))[3] == 0                          # nothing outside the bar
+    assert img.getpixel((SAFE_X + 8, HEIGHT - SAFE_Y - 8))[3] > 0  # the bar is at the bottom left
 
 
 @pytest.mark.parametrize("st", FULL + [ALL[1]], ids=[s.kind for s in FULL] + ["pairing"])

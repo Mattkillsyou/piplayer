@@ -39,6 +39,23 @@ def test_show_reports_failure_and_keeps_previous_state(mpv, screens):
     assert not screens.showing()
 
 
+def test_a_notice_is_shown_over_whatever_is_playing_and_goes_by_itself(cfg, mpv, screens, monkeypatch):
+    """Pressing Update on the website has to show on the projector, without taking the film off."""
+    now = [1000.0]
+    monkeypatch.setattr(status_mod.time, "monotonic", lambda: now[0])
+    screens.notice("Updating the player...", seconds=30.0)
+    (add,) = mpv.overlays
+    assert add[:4] == ["overlay-add", 63, 0, 0] and add[4].endswith("notice.bgra")
+    assert add[5:] == [0, "bgra", 1920, 1080, 1920 * 4]
+    assert not screens.showing()        # an overlay, not a screen: the film keeps running behind it
+    now[0] += 29
+    screens.tick()
+    assert len(mpv.overlays) == 1
+    now[0] += 2
+    screens.tick()
+    assert mpv.overlays[1:] == [["overlay-remove", 63]]
+
+
 def test_now_playing_overlay_is_added_then_removed_after_deadline(cfg, mpv, screens, monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(status_mod.time, "monotonic", lambda: now[0])
