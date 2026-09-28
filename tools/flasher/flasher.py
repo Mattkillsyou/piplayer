@@ -746,7 +746,7 @@ class App:
                   ).grid(row=8, column=1, columnspan=2, sticky="w", padx=4)
         version = ttk.Frame(adv)
         version.grid(row=9, column=1, columnspan=2, sticky="w", padx=4, pady=(6, 0))
-        ttk.Label(version, text=f"Version {updater.VERSION}", style="Mono.TLabel").pack(side="left")
+        ttk.Label(version, text=f"Version {updater.label(updater.VERSION, updater.NAME)}", style="Mono.TLabel").pack(side="left")
         self.update_btn = ttk.Button(version, text="Check for updates",
                                      command=lambda: self.check_updates(manual=True))
         self.update_btn.pack(side="left", padx=8)
@@ -1025,7 +1025,8 @@ class App:
             if not updater.newer(version, updater.VERSION):
                 self.post(lambda: self._up_to_date(manual))
                 return
-            self.post(lambda: self.log(f"Version {version} is available; downloading it."))
+            named = updater.label(version, info.get("name", ""))
+            self.post(lambda: self.log(f"Version {named} is available; downloading it."))
             asset = info[host.UPDATE_ASSET]
             try:
                 path = updater.download(asset, updater.download_path(asset), url)
@@ -1110,8 +1111,8 @@ class App:
         if to == updater.VERSION and state.get("update_from") != updater.VERSION:
             if self.signin.winfo_manager():
                 return
-            self.log(f"Updated from {state.get('update_from')} to {updater.VERSION}.")
-            self.set_status(f"Updated to {updater.VERSION}.")
+            self.log(f"Updated from {state.get('update_from')} to {updater.label(updater.VERSION, updater.NAME)}.")
+            self.set_status(f"Updated to {updater.label(updater.VERSION, updater.NAME)}.")
         elif updater.newer(to, updater.VERSION):
             self.log(f"The update to {to} did not go in; this is still {updater.VERSION}.")
             for line in _install_log_tail():  # the installer says why (Windows keeps its log beside it)

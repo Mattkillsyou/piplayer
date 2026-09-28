@@ -24,7 +24,7 @@ GITHUB_CDN = ("https://release-assets.githubusercontent.com/github-production-re
               "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-09-27T18%3A00%3A00Z"
               "&rscd=attachment%3B+filename%3DProjection5000-SD-Flasher-Setup.exe&rsct=application%2Foctet-stream"
               "&sig=abc%3D&jwt=eyJ0eXAi.eyJpc3Mi.c2ln")
-LATEST = {"version": "0.7.3", "windows": ASSET, "mac_arm64": "https://github.com/x/a.dmg",
+LATEST = {"version": "0.7.3", "name": "Axolotl", "windows": ASSET, "mac_arm64": "https://github.com/x/a.dmg",
           "mac_intel": "https://github.com/x/i.dmg", "notes": "https://github.com/x/releases/tag/v0.7.3"}
 BODY = b"MZ" + b"x" * 4094  # 4 KiB standing in for a 531 MB installer
 
@@ -315,3 +315,13 @@ def test_the_installer_itself_force_closes_the_flasher():
     iss = (Path(updater.__file__).resolve().parent / "installer.iss").read_text("utf-8")
     lines = [ln.strip() for ln in iss.splitlines()]
     assert "CloseApplications=force" in lines and "RestartApplications=no" in lines
+
+
+def test_every_release_has_a_name_and_the_notes_head_with_it():
+    """The name shows next to the version (window, "Updated to 0.7.8 (Axolotl)."); RELEASE_NOTES.md opens
+    with this very release under the same name, so the two cannot drift apart at release time."""
+    assert updater.NAME and len(updater.NAME) <= 30
+    notes = (Path(updater.__file__).parent / "RELEASE_NOTES.md").read_text("utf-8")
+    first = next(line for line in notes.splitlines() if line.startswith("## v"))
+    assert first == f"## v{updater.VERSION} · {updater.NAME}"
+    assert updater.label("0.7.8", "Axolotl") == "0.7.8 (Axolotl)" and updater.label("0.7.8") == "0.7.8"

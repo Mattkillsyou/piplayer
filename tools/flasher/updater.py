@@ -19,9 +19,13 @@ import imagefetch
 from sysplat import host
 
 VERSION = "0.7.8"
+# Every release has a cute name, shown next to the version (cute animals, A to Z: 0.7.8 Axolotl, then B, C...):
+# here, in the RELEASE_NOTES.md heading
+# ("## v0.7.8 · Axolotl"), in the GitHub release title and on the website (FLASHER_NAME).
+NAME = "Axolotl"
 CHECK_EVERY = 7 * 24 * 3600  # seconds; the owner's "check for updates weekly"
 PATH = "/api/flasher/latest"
-KEYS = ("version", "windows", "mac_arm64", "mac_intel", "notes")
+KEYS = ("version", "name", "windows", "mac_arm64", "mac_intel", "notes")  # name: "" from a console before names
 # update_from / update_to: written just before an update is handed over, so the new version can say so.
 STATE_KEYS = ("last_check", "last_seen_version", "downloaded", "downloaded_version", "update_from", "update_to")
 DOTTED = re.compile(r"\d+(\.\d+)*$")
@@ -98,6 +102,11 @@ def latest(console_url: str) -> dict:
     if not DOTTED.match(out["version"]):
         raise console.ConsoleError(f"{PATH}: no version in the answer ({console.NOT_A_CONSOLE})")
     return out
+
+
+def label(version: str, name: str = "") -> str:
+    """'0.7.8 (Axolotl)', or the bare version when the release has no name."""
+    return f"{version} ({name})" if name else version
 
 
 # ---------------------------------------------------------------- fetching the installer

@@ -32,8 +32,10 @@ ME = {"username": "matt", "role": "editor", "console_url": "https://c.example", 
       "groups": [{"id": 1, "name": "Lobby"}], "playlists": [{"id": 7, "name": "Loop"}], "wyze_configured": False}
 REGISTERED = {"device_id": "lobby", "token": "tok-lobby-0123456789", "cms_url": "https://c.example", "owner": "matt",
               "created": True}
-# What GET /api/flasher/latest answers; 0.7.9 stands for "newer than this build" whatever this build is.
-UPDATE = {"version": "0.7.9", "windows": "https://github.com/x/Setup.exe", "mac_arm64": "https://github.com/x/a.dmg",
+# What GET /api/flasher/latest answers; NEWER is newer than this build whatever this build is (a fixed
+# "0.7.9" stopped being newer the day the flasher became 0.7.9).
+NEWER = "99.0.0"
+UPDATE = {"version": NEWER, "windows": "https://github.com/x/Setup.exe", "mac_arm64": "https://github.com/x/a.dmg",
           "mac_intel": "https://github.com/x/i.dmg", "notes": "https://github.com/x/tag"}
 
 
@@ -335,7 +337,7 @@ def test_gui_shows_exactly_the_per_pi_fields(monkeypatch):
     assert checks == ["Hidden Wi-Fi network", "Show details"]  # the dry-run box exists only under --dry-run
     assert any(isinstance(w, flasher.ttk.Label) and w.cget("text").startswith("Build: ")
                for w in app.advanced.winfo_children())
-    assert f"Version {flasher.updater.VERSION}" in _all_texts(app.advanced, [])  # next to the build stamp
+    assert f"Version {flasher.updater.VERSION} ({flasher.updater.NAME})" in _all_texts(app.advanced, [])  # next to the build stamp
     assert _widgets(app.advanced, flasher.ttk.Radiobutton) == []
     # Show details reveals the technical log box, still styled as the console's terminal.
     assert not app.details.winfo_manager()
@@ -1582,12 +1584,12 @@ def test_a_newer_version_is_fetched_and_installed_when_nothing_is_running(monkey
     app = flasher.App(root)
     assert _pump(root, app, lambda: quit_calls)
     assert downloaded == [UPDATE["windows"]] and installed == [setup]
-    assert _status(app) == "Updating to 0.7.9..." and "Installing." in _log(app)
+    assert _status(app) == f"Updating to {NEWER}..." and "Installing." in _log(app)
     # Cleared once it is handed over: a failed install must not be retried at every start.
     assert flasher.updater.load_state()["downloaded"] == ""
     # What it came from and went to, for the new version to say so.
     state = flasher.updater.load_state()
-    assert (state["update_from"], state["update_to"]) == (flasher.updater.VERSION, "0.7.9")
+    assert (state["update_from"], state["update_to"]) == (flasher.updater.VERSION, NEWER)
     root.destroy()
 
 
@@ -1598,8 +1600,8 @@ def test_the_first_start_after_an_update_says_so_once(monkeypatch, tmp_path):
                                 "update_to": flasher.updater.VERSION})
     root = _root()
     app = flasher.App(root)
-    assert _status(app) == f"Updated to {flasher.updater.VERSION}."
-    assert f"Updated from 0.7.4 to {flasher.updater.VERSION}." in _log(app)
+    assert _status(app) == f"Updated to {flasher.updater.VERSION} ({flasher.updater.NAME})."
+    assert f"Updated from 0.7.4 to {flasher.updater.VERSION} ({flasher.updater.NAME})." in _log(app)
     assert flasher.updater.load_state()["update_to"] == ""  # once
     root.destroy()
     root = _root()
@@ -1628,10 +1630,10 @@ def test_a_mac_that_could_not_replace_itself_stays_open(monkeypatch, tmp_path):
     monkeypatch.setattr(flasher.host, "install_update",
                         lambda p: installed.append(Path(p)) or ("Drag the new app to Applications to finish.", False))
     monkeypatch.setattr(flasher.App, "on_close", lambda self: pytest.fail("quit without an update in place"))
-    flasher.updater.save_state({"last_check": time.time(), "downloaded": str(setup), "downloaded_version": "0.7.9"})
+    flasher.updater.save_state({"last_check": time.time(), "downloaded": str(setup), "downloaded_version": NEWER})
     root = _root()
     app = flasher.App(root)
-    assert _status(app) == "Updating to 0.7.9..."            # said before the copy starts (off the Tk thread)
+    assert _status(app) == f"Updating to {NEWER}..."            # said before the copy starts (off the Tk thread)
     assert _pump(root, app, lambda: installed == [setup] and _status(app) == "Drag the new app to Applications to finish.")
     assert "Drag the new app to Applications to finish." in _log(app)
     root.destroy()
@@ -1663,12 +1665,12 @@ def test_a_downloaded_update_goes_in_at_the_next_start_before_the_sign_in_box(mo
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     _, _, installed, setup = _update_stubs(monkeypatch, tmp_path, UPDATE)
     monkeypatch.setattr(flasher.updater, "latest", lambda url: pytest.fail("checked before installing"))
-    flasher.updater.save_state({"last_check": time.time(), "downloaded": str(setup), "downloaded_version": "0.7.9"})
+    flasher.updater.save_state({"last_check": time.time(), "downloaded": str(setup), "downloaded_version": NEWER})
     quit_calls = []
     monkeypatch.setattr(flasher.App, "on_close", lambda self: quit_calls.append(True))
     root = _root()
     app = flasher.App(root)
-    assert installed == [setup] and _status(app) == "Updating to 0.7.9..."
+    assert installed == [setup] and _status(app) == f"Updating to {NEWER}..."
     assert not app.signin.winfo_manager()  # nothing is put on screen first: the program is going away
     assert flasher.updater.load_state()["downloaded"] == ""
     assert _pump(root, app, lambda: quit_calls)
@@ -1701,7 +1703,7 @@ def test_updated_to_waits_for_the_sign_in_box_and_a_failed_install_is_said(monke
     assert app.signin.winfo_manager() == "pack" and _status(app) == flasher.SIGNIN_FIRST_TEXT
     assert flasher.updater.load_state()["update_to"] == flasher.updater.VERSION   # kept for after sign-in
     app._signed_in(app.console_url, {"token": "p5k_x", "username": "matt"}, None)
-    assert _status(app) == f"Updated to {flasher.updater.VERSION}."
+    assert _status(app) == f"Updated to {flasher.updater.VERSION} ({flasher.updater.NAME})."
     assert not flasher.updater.load_state().get("update_to")
     root.destroy()
 

@@ -1,12 +1,12 @@
 // /flasher: the SD flasher downloads and the first-time / every-time steps (any signed-in role).
 // The downloads moved here from the public home page once the flasher started signing in with a
 // console account: bump FLASHER_VERSION when a release is tagged and all three links follow. Every release
-// has a short name too (FLASHER_NAME, the same as updater.NAME in the flasher and the release title).
+// has a cute name too (FLASHER_NAME, the same as updater.NAME in the flasher and the release title).
 import * as auth from "../auth.js";
 import { layout } from "./layout.js";
 
 export const FLASHER_VERSION = "0.7.8";
-export const FLASHER_NAME = "Wi-Fi Fix";
+export const FLASHER_NAME = "Axolotl";
 export const RELEASE = `https://github.com/Mattkillsyou/piplayer/releases/download/v${FLASHER_VERSION}`;
 
 function flasherPage(ctx) {

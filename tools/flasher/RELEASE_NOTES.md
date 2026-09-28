@@ -1,6 +1,6 @@
 # Release notes for the SD Flasher
 
-## v0.7.8
+## v0.7.8 · Axolotl
 
 Cards always carry the Wi-Fi password. The flasher remembers the network name between runs but not its
 password, so after a restart (an update, for one) the password box was empty and FLASH made a card for an open
