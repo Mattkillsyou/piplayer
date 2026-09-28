@@ -34,11 +34,11 @@ FAULT_RETRY_CYCLES = 10
 # decoder: the Pi's V4L2 M2M block does H.264 only, so anything else (HEVC on a Pi 4)
 # must still fall through to whatever auto-safe would have picked.
 MPV_HWDEC = "v4l2m2m-copy,auto-safe"
-# Frame pacing. mpv's default times video by the system clock, so on a screen whose refresh is not
-# a multiple of the film's frame rate (30 fps on 50 Hz) some frames are held one refresh longer
-# than others: the picture stutters at the right average speed. display-resample times the video
-# to the screen instead and nudges its speed by a fraction of a percent, which is what removes it.
-MPV_VIDEO_SYNC = "display-resample"
+# Frame pacing stays on mpv's default, timed by the clock. display-resample (timing the video to the
+# screen) was tried and measured on a Pi 4 at 60 Hz with a 29.97 fps film: play_rate fell from 0.99
+# to 0.41 with frames dropping, i.e. real slow motion. The daemon puts the default back on any mpv
+# that still has it from that release.
+MPV_VIDEO_SYNC = "audio"
 V4L2_DIR = Path("/sys/class/video4linux")
 
 

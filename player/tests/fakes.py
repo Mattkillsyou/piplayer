@@ -67,7 +67,7 @@ class FakeMpv:
         # playback properties the daemon reads and writes; delete one to model an
         # mpv that does not know it ("property not found")
         self.props: dict = {"framedrop": "vo", "hwdec": "auto-safe", "hwdec-current": "no",
-                            "video-sync": "audio", "estimated-vf-fps": 29.97}
+                            "video-sync": "display-resample", "estimated-vf-fps": 29.97}
         self.overlays: list = []             # overlay-add / overlay-remove commands, in order
         self.connections = 0
 

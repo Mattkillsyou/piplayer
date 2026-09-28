@@ -702,7 +702,8 @@ def test_playback_options_are_set_once_per_mpv_instance(cfg, cms, mpv, client, m
     with caplog.at_level(logging.INFO, logger="piplayer"):
         run_cycle(cfg, client, state)
     assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC] == ["v4l2m2m-copy,auto-safe"]  # H.264 here, the rest as before
-    assert sets(mpv, "video-sync") == [daemon.MPV_VIDEO_SYNC] == ["display-resample"]  # even frame pacing
+    # a Pi still on display-resample from 0.2.0+ce76b84 is put back on the default: measured 0.41x there
+    assert sets(mpv, "video-sync") == [daemon.MPV_VIDEO_SYNC] == ["audio"]
     assert any("mpv hwdec=set" in r.getMessage() for r in caplog.records)
     assert any("mpv video-sync=set" in r.getMessage() for r in caplog.records)
 
@@ -718,7 +719,7 @@ def test_playback_options_are_set_once_per_mpv_instance(cfg, cms, mpv, client, m
     assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC] * 2
     # video-sync survived the restart in this fake, and a value mpv already holds is left alone
     assert sets(mpv, "video-sync") == [daemon.MPV_VIDEO_SYNC]
-    mpv.props["video-sync"] = "audio"      # a real restart comes back on the default
+    mpv.props["video-sync"] = "display-resample"   # an mpv.conf from that release would bring it back
     mpv.restart()
     run_cycle(cfg, client, state)
     assert sets(mpv, "video-sync") == [daemon.MPV_VIDEO_SYNC] * 2
