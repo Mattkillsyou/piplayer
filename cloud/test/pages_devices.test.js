@@ -151,15 +151,15 @@ describe("page content", () => {
       .toContain('<span class="label">player version</span><span class="value">v1.2.3</span>');
     await query("UPDATE devices SET decode_mode = 'software', play_rate = 0.52 WHERE id = ?", w.dev.id);
     const slow = await (await r.admin.get("/devices")).text();
-    expect(slow).toContain('<span class="value">v1.2.3<span class="badge badge-stale" title="No hardware decoder in use: this projector decodes video on the CPU, which can play it slowly">software decoding · playing at 0.52x speed</span></span>');
+    expect(slow).toContain('<span class="value">v1.2.3<span class="badge badge-stale decode-badge" title="No hardware decoder in use: this projector decodes video on the CPU, which can play it slowly">software decoding · playing at 0.52x speed</span></span>');
     // right speed, uneven picture: the badge says what the screen and the film are doing
     await query("UPDATE devices SET display_fps = 50, video_fps = 29.97, dropped_frames = 12 WHERE id = ?", w.dev.id);
     expect(await (await r.admin.get("/devices")).text())
-      .toContain("software decoding · playing at 0.52x speed · 30 fps on a 50 Hz screen, 12 frames dropped</span>");
+      .toContain("software decoding · playing at 0.52x speed · 30 fps · 50 Hz · 12 dropped</span>");
     await query("UPDATE devices SET display_fps = NULL, video_fps = NULL, dropped_frames = NULL WHERE id = ?", w.dev.id);
     await query("UPDATE devices SET decode_mode = 'v4l2m2m-copy', play_rate = 1.0 WHERE id = ?", w.dev.id);
     const fast = await (await r.admin.get("/devices")).text();
-    expect(fast).toContain('<span class="badge badge-muted" title="Hardware decoding (v4l2m2m-copy)">hardware decoding</span>');  // at real speed: no number
+    expect(fast).toContain('<span class="badge badge-muted decode-badge" title="Hardware decoding (v4l2m2m-copy)">hardware decoding</span>');  // at real speed: no number
     await query("UPDATE devices SET decode_mode = NULL, play_rate = NULL WHERE id = ?", w.dev.id);
   });
 

@@ -583,6 +583,8 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
   border: 1px solid transparent;
   color: var(--p5k-phosphor);
 }
+/* the decoder line under a device's player version: its own line, wrapping inside the column */
+.decode-badge { display: flex; width: fit-content; max-width: 100%; margin-top: 6px; white-space: normal; letter-spacing: 0.08em; overflow-wrap: anywhere; }
 .badge-video, .badge-admin { background: var(--p5k-fill-solid); color: var(--p5k-on-solid); border-color: var(--p5k-fill-solid); }
 .badge-image, .badge-editor { border-color: var(--p5k-rule-strong); color: var(--p5k-phosphor); }
 .badge-viewer { border: 1px dotted var(--p5k-rule-strong); color: var(--p5k-muted); }

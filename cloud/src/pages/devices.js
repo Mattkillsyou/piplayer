@@ -41,11 +41,13 @@ const decodeBadge = (d) => {
   // shows some frames longer than others, which looks like slow motion without being it.
   const round1 = (n) => String(Math.round(n * 10) / 10);
   const pacing = d.display_fps && d.video_fps
-    ? ` · ${round1(d.video_fps)} fps on a ${round1(d.display_fps)} Hz screen${d.dropped_frames ? `, ${d.dropped_frames} frames dropped` : ""}`
+    ? ` · ${round1(d.video_fps)} fps · ${round1(d.display_fps)} Hz${d.dropped_frames ? ` · ${d.dropped_frames} dropped` : ""}`
     : "";
+  // Its own line under the version (decode-badge), wrapping inside the column: on one nowrap line it ran
+  // under the Update buttons.
   return d.decode_mode === "software"
-    ? `<span class="badge badge-stale" title="No hardware decoder in use: this projector decodes video on the CPU, which can play it slowly">software decoding${esc(slow)}${esc(pacing)}</span>`
-    : `<span class="badge badge-muted" title="Hardware decoding (${esc(d.decode_mode)})">hardware decoding${esc(slow)}${esc(pacing)}</span>`;
+    ? `<span class="badge badge-stale decode-badge" title="No hardware decoder in use: this projector decodes video on the CPU, which can play it slowly">software decoding${esc(slow)}${esc(pacing)}</span>`
+    : `<span class="badge badge-muted decode-badge" title="Hardware decoding (${esc(d.decode_mode)})">hardware decoding${esc(slow)}${esc(pacing)}</span>`;
 };
 // A failed remote update (last_update_ok = 0, api.storeUpdateStatus) is a fault until the next report.
 export const isFault = (d) => d.lamp === "mpv-down" || d.lamp === "offline" || d.last_update_ok === 0;
