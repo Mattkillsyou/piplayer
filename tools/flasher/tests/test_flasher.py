@@ -1639,6 +1639,37 @@ def test_a_mac_that_could_not_replace_itself_stays_open(monkeypatch, tmp_path):
     root.destroy()
 
 
+def test_no_flash_starts_while_an_update_is_being_installed(monkeypatch, tmp_path):
+    """The Windows installer closes the program mid-flash and a Mac quits after its minute-long copy: FLASH is
+    off until the install answers, and a sign-in that ends meanwhile (FLASH is its `then`) starts nothing."""
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _signed_in(monkeypatch)
+    _, _, installed, setup = _update_stubs(monkeypatch, tmp_path, UPDATE)
+    go = threading.Event()
+    monkeypatch.setattr(flasher.host, "install_update",
+                        lambda p: go.wait(10) and ("Drag the new app to Applications to finish.", False))
+    monkeypatch.setattr(flasher.App, "on_close", lambda self: pytest.fail("quit without an update in place"))
+    flashed = []
+    monkeypatch.setattr(flasher, "run_flash", lambda v, *a, **k: flashed.append(v))
+    flasher.updater.save_state({"last_check": time.time(), "downloaded": str(setup), "downloaded_version": NEWER})
+    root = _root()
+    app = flasher.App(root)
+    try:
+        _fill(app, image_mode="latest")
+        app.v["dry_run"].set(True)
+        assert app._installing and str(app.flash_btn["state"]) == "disabled"
+        app.on_flash()
+        assert app.worker is None and _status(app).startswith("An update is being installed.")
+    finally:
+        go.set()
+    # The install did not quit (a Mac that could not replace itself): FLASH is back and works.
+    assert _pump(root, app, lambda: not app._installing)
+    assert str(app.flash_btn["state"]) == "normal"
+    app.on_flash()
+    assert _pump(root, app, lambda: bool(flashed))
+    root.destroy()
+
+
 def test_an_update_that_lands_during_a_flash_waits_for_the_next_start(monkeypatch, tmp_path):
     monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
     _signed_in(monkeypatch)

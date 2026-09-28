@@ -920,7 +920,7 @@ class App:
         self.op_password.set("")
         self.signin_btn.configure(state="normal")
         self._show_error("signin", "")
-        if not self.busy():
+        if not self.busy() and not self._installing:
             self.flash_btn.configure(state="normal")
         self._show_account()
         self._grow()
@@ -1072,6 +1072,9 @@ class App:
         macOS: the new app is in place and started). The state is cleared either way: a failed install must
         not be retried at every start. It keeps which version this was, so the new one can say it updated."""
         self._installing = True
+        # No flash from here on: the Windows installer closes this program whatever it is doing, and a Mac
+        # quits once the copy is done, either way leaving a half-written card.
+        self.flash_btn.configure(state="disabled")
         self.set_status(f"Updating to {version}...")
         updater.save_state(dict(updater.load_state(), downloaded="", downloaded_version="",
                                 update_from=updater.VERSION, update_to=version))
@@ -1097,6 +1100,8 @@ class App:
             return
         self._installing = False
         self.set_status(READY_TEXT if failed else line)
+        if not self.signin.winfo_manager():  # the sign-in box keeps FLASH off until it is done
+            self.flash_btn.configure(state="normal")
         if not self.connected():
             self.sign_in()
 
@@ -1392,6 +1397,9 @@ class App:
 
     def on_flash(self):
         if self.busy():
+            return
+        if self._installing:  # FLASH is off, but a sign-in that ends now still calls this (its `then`)
+            self.set_status("An update is being installed. FLASH comes back if it does not go in.")
             return
         v = self.validate()
         if not v:
