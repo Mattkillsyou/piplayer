@@ -216,10 +216,14 @@ def test_settings_never_store_secrets(tmp_path):
     path = flasher.settings_path()
     assert path.is_relative_to(tmp_path) and path.name == "flasher.json"  # the conftest sandbox, never the real one
     text = path.read_text()
-    assert "Lobby" in text and "Venue" in text and "10.0.0.5/24" in text
+    assert "Venue" in text and "10.0.0.5/24" in text
     for secret in ("pi-secret", "wifi-secret", "k-secret", "tok", "p5k_secret", "ssh-ed25519"):
         assert secret not in text
-    assert flasher.load_settings()["name"] == "Lobby"
+    # Nor the Device name: a remembered one re-registers (so replaces) the projector flashed last. An old file's
+    # name is dropped on load.
+    assert "Lobby" not in text
+    path.write_text('{"name": "living room", "ssid": "Venue"}')
+    assert flasher.load_settings() == {"ssid": "Venue"}
     # A corrupt or non-object settings file must not stop the program from starting.
     for junk in ("[]", "123", '"x"', "null", "true", "{not json"):
         path.write_text(junk)
@@ -527,10 +531,11 @@ def test_gui_constructs_with_windows_defaults(monkeypatch):
     assert app.account_btn.cget("text") == "Sign out"
     app.v["timezone"].set("Europe/Paris")
     app.on_close()  # saves the form
-    # The remembered form survives a restart; keymap and country are never remembered (always this PC's).
+    # The remembered form survives a restart, bar the name (each card gets its own); keymap and country are never
+    # remembered (always this PC's).
     monkeypatch.setattr(flasher.defaults, "keymap", lambda langid=None: "de")
     app2 = flasher.App(_root())
-    assert app2.values()["name"] == "---" and app2.values()["timezone"] == "Europe/Paris"
+    assert app2.values()["name"] == "" and app2.values()["timezone"] == "Europe/Paris"
     assert app2.values()["keymap"] == "de" and app2.values()["wifi_country"] == "GB"
     assert set(flasher.load_settings()) <= set(flasher.SETTINGS_KEYS)
     assert not {"keymap", "wifi_country", "image_mode", "image_path", "token"} & set(flasher.SETTINGS_KEYS)
@@ -1014,6 +1019,96 @@ def test_confirmation_defaults_to_no_and_rechecks_the_disk(monkeypatch, tmp_path
     monkeypatch.setattr(flasher, "is_admin", lambda: False)
     app.on_flash()
     assert dialogs == [] and "Restart as administrator" in _shown_errors(app)["flash"]
+    root.destroy()
+
+
+def test_the_erase_question_says_when_the_flash_replaces_a_projector(monkeypatch, tmp_path):
+    """FLASH asks the console whether the id is already a projector in this account (re-registering it cuts off
+    the card in it): one question, with one more sentence when it is. Free id, no answer, or a baked key: the
+    question as before. Another account's id: said under the name, no question."""
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [DISK])
+    monkeypatch.setattr(flasher, "is_admin", lambda: True)
+    asked, checked = [], []
+    monkeypatch.setattr(flasher.messagebox, "askyesno", lambda *a, **k: asked.append(a[1]) or False)
+    answer = {"r": {"device_id": "living-room", "name": "Living Room", "last_seen_at": "2026-09-26 21:14:00"}}
+
+    def exists(*a):
+        checked.append(a)
+        if isinstance(answer["r"], Exception):
+            raise answer["r"]
+        return answer["r"]
+
+    monkeypatch.setattr(flasher.console, "device_exists", exists)
+    _signed_in(monkeypatch)
+    img = tmp_path / "x.img"
+    img.write_bytes(b"\x01" * 1024)
+    root = _root()
+    app = flasher.App(root)
+    assert _pump(root, app, lambda: bool(app.disks))
+    _fill(app, name="living room", image_path=str(img))
+    app.on_flash()
+    when = flasher.seen_text("2026-09-26 21:14:00")
+    assert checked == [(app.console_url, "p5k_stored_token", "living-room")] and len(asked) == 1
+    assert (f"A projector called Living Room already exists (last seen {when}). Flashing replaces it: its current "
+            "card stops working.\n\nEverything on that card will be erased.") in asked[0]
+    assert "2026" in when and flasher.seen_text("soon") == "soon"
+    answer["r"] = dict(answer["r"], last_seen_at="")
+    app.on_flash()
+    assert "A projector called Living Room already exists (never online)." in asked[-1]
+    # A free id, or no answer in time (the website cannot be reached): the question as before.
+    plain = asked[-1].split("\n\nA projector")[0] + "\n\nEverything on that card will be erased. Continue?"
+    for r in (None, flasher.console.ConsoleError("cannot reach https://c.example/api/operator/devices/living-room")):
+        answer["r"] = r
+        app.on_flash()
+        assert asked[-1] == plain
+    assert "Could not check living-room on the console: cannot reach" in _log(app)
+    # Another account's id: the console's words under the name, no question, nothing written.
+    taken = flasher.console.ConsoleError("/api/operator/devices/living-room: " + TAKEN)
+    taken.code, taken.body = 409, {"detail": TAKEN}
+    answer["r"] = taken
+    n = len(asked)
+    app.on_flash()
+    assert len(asked) == n and _shown_errors(app)["name"] == TAKEN and app.worker is None
+    assert _status(app) == "That name is taken. Pick another name and press FLASH again."
+    # A baked enrollment key: the Pi enrolls itself, nothing to ask.
+    app.baked_key = KEY
+    checked.clear()
+    app.on_flash()
+    assert checked == [] and asked[-1] == plain
+    root.destroy()
+
+
+def test_the_name_box_empties_after_a_real_flash_only(monkeypatch, tmp_path):
+    """Each card gets its own name: a finished flash empties the box; a dry run or a failed flash keeps it."""
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [DISK])
+    monkeypatch.setattr(flasher, "is_admin", lambda: True)
+    monkeypatch.setattr(flasher.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(flasher.messagebox, "showinfo", lambda *a, **k: None)
+    monkeypatch.setattr(flasher.messagebox, "showerror", lambda *a, **k: None)
+    outcome = {}
+
+    def run(v, *a, **k):
+        if outcome.get("fail"):
+            raise RuntimeError("write boom")
+        return "matt"
+
+    monkeypatch.setattr(flasher, "run_flash", run)
+    _signed_in(monkeypatch)
+    img = tmp_path / "x.img"
+    img.write_bytes(b"\x01" * 1024)
+    root = _root()
+    app = flasher.App(root)
+    assert _pump(root, app, lambda: bool(app.disks))
+    for dry, fail, left in ((True, False, "Lobby"), (False, True, "Lobby"), (False, False, "")):
+        _fill(app, image_path=str(img))
+        app.v["dry_run"].set(dry)
+        outcome["fail"] = fail
+        app.on_flash()
+        assert _pump(root, app, lambda: app.worker and not app.worker.is_alive()
+                     and str(app.flash_btn["state"]) == "normal", timeout=10)
+        root.update()
+        assert app.v["name"].get() == left, (dry, fail)
+    assert "name" not in flasher.load_settings()
     root.destroy()
 
 
@@ -1612,4 +1707,24 @@ def test_updated_to_waits_for_the_sign_in_box_and_a_failed_install_is_said(monke
     app = flasher.App(root)
     assert f"The update to 9.9.9 did not go in; this is still {flasher.updater.VERSION}." in _log(app)
     assert _status(app) == "Ready." and flasher.updater.load_state().get("last_check") == 0
+    root.destroy()
+
+
+def test_the_name_check_never_holds_the_window_past_its_limit(monkeypatch):
+    """A website that accepts the connection and then says nothing: FLASH waits at most EXISTS_TIMEOUT for
+    the name check, then asks the usual question without the extra sentence."""
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _signed_in(monkeypatch)
+    release = threading.Event()
+    monkeypatch.setattr(flasher.console, "EXISTS_TIMEOUT", 0.3)
+    monkeypatch.setattr(flasher.console, "device_exists", lambda *a: release.wait(10) and None)
+    root = _root()
+    app = flasher.App(root)
+    v = dict(app.values(), enrollment_key="", operator_token="p5k_x", console_url="https://c.example",
+             device_id="dining-room", name="Dining Room")
+    start = time.monotonic()
+    assert app._replaces(v) == ""
+    assert time.monotonic() - start < 2.0
+    assert "no answer within 0.3 s" in _log(app) and _status(app) == "Ready."
+    release.set()
     root.destroy()

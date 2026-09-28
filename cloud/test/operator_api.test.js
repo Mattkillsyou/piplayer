@@ -224,3 +224,40 @@ describe("POST /api/operator/devices", () => {
     }
   });
 });
+
+describe("GET /api/operator/devices/:device_id", () => {
+  const get = (token, deviceId) => SELF.fetch(`${BASE}/api/operator/devices/${deviceId}`, { headers: token ? bearer(token) : {} });
+
+  it("own id: 200 {device_id, name, last_seen_at}; free id: 404; nothing changes", async () => {
+    const token = await signIn("ed", "editor-pass");
+    const first = await (await register(token, { device_id: "look-1", name: "Living Room" })).json();
+    await query("UPDATE devices SET last_seen_at = '2026-09-26 21:14:00' WHERE device_id = 'look-1'");
+    const res = await get(token, "LOOK-1");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ device_id: "look-1", name: "Living Room", last_seen_at: "2026-09-26 21:14:00" });
+    expect((await dev("look-1")).token).toBe(first.token);
+    expect(await detail(await get(token, "look-nope"), 404)).toBe("No projector with that ID");
+    expect(await dev("look-nope")).toBeNull();
+  });
+
+  it("another account's id: 409 with POST's words; an admin sees it", async () => {
+    const ed = await signIn("ed", "editor-pass");
+    const admin = await signIn("admin", "test1234");
+    await register(admin, { device_id: "look-admin", name: "Admin's" });
+    expect(await detail(await get(ed, "look-admin"), 409)).toBe("A projector with that ID belongs to another account; pick another name");
+    await register(ed, { device_id: "look-ed", name: "Ed's" });
+    const res = await get(admin, "look-ed");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ name: "Ed's", last_seen_at: null });
+  });
+
+  it("401 without or with a bad token; 403 for a viewer's token", async () => {
+    expect(await detail(await get(null, "look-1"), 401)).toBe("Missing bearer token");
+    expect(await detail(await get(auth.newApiToken(), "look-1"), 401)).toBe("Invalid API token");
+    const token = await signIn("ed", "editor-pass");
+    const hash = await auth.apiTokenHash(token);
+    await query("UPDATE api_tokens SET user_id = ? WHERE token_hash = ?", await userId("vw"), hash);
+    expect(await detail(await get(token, "look-1"), 403)).toBe("This account can only view; ask an admin to make it an editor");
+    await query("DELETE FROM api_tokens WHERE token_hash = ?", hash);
+  });
+});

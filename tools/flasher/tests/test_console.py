@@ -84,6 +84,20 @@ class StubConsole(http.server.BaseHTTPRequestHandler):
                                     "groups": [{"id": 1, "name": "Lobby"}, {"id": 2, "name": "Halls"}],
                                     "playlists": [{"id": 7, "name": "Loop"}], "timezone": "UTC",
                                     "wyze_configured": self.wyze_configured})
+        if self.path.startswith("/api/operator/devices/"):
+            self.calls.append((self.path, self.headers.get("Authorization")))
+            who = self._operator()
+            if not who:
+                return
+            if who[1] == "viewer":
+                return self._json(403, {"detail": VIEW_ONLY})
+            dev = self.path.rsplit("/", 1)[1]
+            if dev in self.others:
+                return self._json(409, {"detail": TAKEN})
+            if dev not in self.devices:
+                return self._json(404, {"detail": "No projector with that ID"})
+            return self._json(200, {"device_id": dev, "name": self.devices[dev]["name"],
+                                    "last_seen_at": self.devices[dev].get("last_seen_at")})
         self._json(404, {"detail": "Not Found"})
 
     def do_POST(self):
@@ -238,6 +252,24 @@ def test_register_device(stub):
     with pytest.raises(console.ConsoleError, match="device_id"):
         console.register_device(stub, OPERATOR_TOKEN, "Bad Id", "X")
     assert not any(path == "/api/enroll" for path, _ in StubConsole.calls)  # the flasher never enrolls
+
+
+def test_device_exists(stub):
+    assert console.device_exists(stub, OPERATOR_TOKEN, "living-room") is None
+    assert StubConsole.calls[-1] == ("/api/operator/devices/living-room", f"Bearer {OPERATOR_TOKEN}")
+    console.register_device(stub, OPERATOR_TOKEN, "living-room", "living room")
+    StubConsole.devices["living-room"]["last_seen_at"] = "2026-09-26 21:14:00"
+    assert console.device_exists(stub + "/", OPERATOR_TOKEN, " Living-Room ") == {
+        "device_id": "living-room", "name": "living room", "last_seen_at": "2026-09-26 21:14:00"}
+    assert len(StubConsole.devices) == 1 and StubConsole.calls[-1][0] == "/api/operator/devices/living-room"
+    with pytest.raises(console.ConsoleError) as e:
+        console.device_exists(stub, OPERATOR_TOKEN, "taken")
+    assert e.value.code == 409 and e.value.plain() == TAKEN
+    with pytest.raises(console.ConsoleError) as e:
+        console.device_exists(stub, "p5k_wrong", "living-room")
+    assert e.value.code == 401
+    with pytest.raises(console.ConsoleError, match="cannot reach"):
+        console.device_exists(f"http://127.0.0.1:{_free_port()}", OPERATOR_TOKEN, "living-room")
 
 
 def test_operator_api_tolerates_a_sparse_answer(monkeypatch):

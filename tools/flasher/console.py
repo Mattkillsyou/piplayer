@@ -4,17 +4,20 @@ The flasher itself never enrolls: the Pi does that on first boot. enroll() mirro
 projection5000-provision.sh does and is used by the tests; check_health() backs the GUI's "Test connection";
 login() is the in-app sign-in (POST /api/operator/login: username and password for an operator token), me() checks
 a stored token (GET /api/operator/me) and register_device() creates or re-registers a projector under the
-signed-in account (POST /api/operator/devices) and answers with the device token that goes on the card.
+signed-in account (POST /api/operator/devices) and answers with the device token that goes on the card;
+device_exists() asks first whether the id is already a projector there (GET /api/operator/devices/<id>).
 """
 import functools
 import http.client
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from sysplat import host
 
 TIMEOUT = 30
+EXISTS_TIMEOUT = 5  # device_exists runs on the window's thread, right before the erase question
 NOT_A_CONSOLE = "is this a Projection5000 console?"
 HEADERS = {"User-Agent": "Projection5000-SD-Flasher", "Content-Type": "application/json"}
 
@@ -152,3 +155,19 @@ def register_device(console_url: str, token: str, device_id: str, name: str, pi_
     return {"device_id": str(r.get("device_id") or device_id.strip().lower()), "token": tok.strip(),
             "cms_url": str(r.get("cms_url") or base), "owner": str(r.get("owner") or ""),
             "created": bool(r.get("created"))}
+
+
+def device_exists(console_url: str, token: str, device_id: str) -> dict:
+    """GET /api/operator/devices/<id>: {device_id, name, last_seen_at} when the signed-in account already has
+    that projector, None when the id is free. ConsoleError on 409 (another account's id), 401/403 or no answer
+    within EXISTS_TIMEOUT seconds."""
+    base = _base(console_url)
+    path = "/api/operator/devices/" + urllib.parse.quote(device_id.strip().lower(), safe="")
+    try:
+        r = _request(base, path, headers=_bearer(token), timeout=EXISTS_TIMEOUT)
+    except ConsoleError as e:
+        if e.code == 404:
+            return None
+        raise
+    return {"device_id": str(r.get("device_id") or device_id.strip().lower()), "name": str(r.get("name") or ""),
+            "last_seen_at": str(r.get("last_seen_at") or "")}

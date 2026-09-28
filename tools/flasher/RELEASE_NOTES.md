@@ -1,5 +1,12 @@
 # Release notes for the SD Flasher
 
+## v0.7.6
+
+The name box starts empty for each card. Before a flash replaces a projector already in your account with
+the same name, the erase warning says so. A card stuck on "Step 2 of 4: joining the network" leaves
+setup-waiting.log on its boot partition, showing what the Pi sees of the network. A card that set up fine no
+longer reports "1 step(s) failed" in firstrun.log.
+
 ## v0.7.5
 
 Updates download again. GitHub now hands its release files out from a new address, which 0.7.3 and 0.7.4

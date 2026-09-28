@@ -26,6 +26,10 @@ def _operator_config_sandbox(monkeypatch, tmp_path, request):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     if request.module.__name__ not in ("test_sshkey", "test_machost"):
         monkeypatch.setattr(flasher.sshkey, "ensure_keypair", lambda log=None: PUBKEY)
+    # FLASH asks the console whether the id is already a projector: never the real console from a GUI test
+    # (test_console drives the real call against a stub; a test that wants an answer stubs it again).
+    if request.module.__name__ != "test_console":
+        monkeypatch.setattr(flasher.console, "device_exists", lambda *a, **k: None)
     # No netsh from the GUI tests: a PC with no Wi-Fi (test_wifi drives the real module with a fake netsh).
     monkeypatch.setattr(flasher, "wifi", fake_wifi())
     # On a Mac the host keeps the sign-in in the login keychain through `security`, which can put up a dialog

@@ -394,10 +394,12 @@ def _msys(p) -> str:
     return f"/{s[0].lower()}{s[2:]}" if len(s) > 2 and s[1] == ":" else s
 
 
-def _provision_harness(tmp_path, script: str, responses: list, install_fails: bool = False) -> dict:
-    """Run a rendered provision.sh under bash with the world stubbed: curl answers /api/health and returns
-    the queued responses for /api/enroll (an int is a curl exit code, a dict a JSON body), the player
-    archive holds a stub installer that records its environment, timedatectl says the clock is synced.
+def _provision_harness(tmp_path, script: str, responses: list, install_fails: bool = False,
+                       health_fails: int = 0) -> dict:
+    """Run a rendered provision.sh under bash with the world stubbed: curl answers /api/health (failing the
+    first `health_fails` times; each call first copies the card's setup-waiting.log, if any, to rec/waiting.<n>)
+    and returns the queued responses for /api/enroll (an int is a curl exit code, a dict a JSON body), the
+    player archive holds a stub installer that records its environment, timedatectl says the clock is synced.
     Returns the log and what the stubs recorded."""
     tmp = _msys(tmp_path)
     bin_dir = tmp_path / "bin"
@@ -417,11 +419,15 @@ def _provision_harness(tmp_path, script: str, responses: list, install_fails: bo
     stub("systemctl", f'echo "$@" >>{shlex.quote(_msys(rec))}/systemctl\n')
     for i, r in enumerate(responses, 1):
         (rec / f"resp.{i}").write_text(str(r) if isinstance(r, int) else "0\n" + json.dumps(r))
+    boot = tmp_path / "bootfs"
+    boot.mkdir()
     stub("curl", "\n".join([
         f"REC={shlex.quote(_msys(rec))}",
         'out=; url=',
         'while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; http*) url=$1;; esac; shift; done',
-        'case "$url" in */api/health) echo "$url" >>"$REC/health"; exit 0;; esac',
+        'case "$url" in */api/health) echo "$url" >>"$REC/health"; h=$(wc -l <"$REC/health")',
+        f'  cp {shlex.quote(_msys(boot))}/setup-waiting.log "$REC/waiting.$h" 2>/dev/null',
+        f'  [ "$h" -gt {health_fails} ]; exit;; esac',
         'n=$(cat "$REC/count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$REC/count"',
         'cat >"$REC/body.$n"',
         'echo "$url" >>"$REC/enroll"',
@@ -441,8 +447,6 @@ def _provision_harness(tmp_path, script: str, responses: list, install_fails: bo
     archive = tmp_path / "player.tar.gz"
     archive.write_bytes(buf.getvalue())
     log = tmp_path / "provision.log"
-    boot = tmp_path / "bootfs"
-    boot.mkdir()
     sbin = tmp_path / "sbin-provision.sh"
     sbin.write_text("copy on the pi")
     s = (script.replace("/var/log/projection5000-provision.log", shlex.quote(_msys(log)))
@@ -462,7 +466,9 @@ def _provision_harness(tmp_path, script: str, responses: list, install_fails: bo
             "install": read("install").split("\n")[:3], "systemctl": read("systemctl"),
             "enroll_calls": read("enroll").count("/api/enroll"), "health_calls": read("health").count("/api/health"),
             "sbin": sbin.exists(), "archive": archive.exists(), "rec": rec, "tty": read("tty"),
-            "boot_log": (boot / "setup-failed.log").read_text() if (boot / "setup-failed.log").exists() else None}
+            "boot_log": (boot / "setup-failed.log").read_text() if (boot / "setup-failed.log").exists() else None,
+            "waiting": {int(f.name.split(".")[1]): f.read_text() for f in rec.glob("waiting.*")},
+            "waiting_left": (boot / "setup-waiting.log").exists()}
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
@@ -525,9 +531,56 @@ def test_provision_with_token_never_enrolls(tmp_path):
     assert not r["sbin"] and not r["archive"]
 
 
+def test_provision_waiting_log_contents_and_secrets():
+    """Step 2 stuck: the card gets setup-waiting.log (network state for a PC to read), from the 8th try (the
+    "taking longer" screen) every 4th, removed on success. No command in it may print a secret."""
+    secrets = dict(token="tok-SECRET-DEVICE-0123456789", enrollment_key="SECRET-ENROLL-KEY-0123456789",
+                   wifi_password="SECRET-WIFI-PASSWORD")
+    for c in (cfg(**secrets), cfg(**dict(secrets, token=""))):
+        s = firstboot.render_provision(c)
+        block = s[s.index("waiting_log() {"):s.index("\n}\n", s.index("waiting_log() {"))]
+        for cmd in ("tail -n 40 /var/log/projection5000-provision.log", "timedatectl show -p NTP -p NTPSynchronized",
+                    '"nmcli general status"', '"nmcli device status"', '"nmcli -f active,ssid,signal,freq dev wifi"',
+                    '"ip -4 addr"', '"ip route"', '"grep nameserver /etc/resolv.conf"',
+                    '"getent hosts projectors.photogen5000.com"',
+                    '"journalctl -u NetworkManager -u wpa_supplicant --no-pager -n 40"', '$(date)', '$c || true',
+                    '>"$BOOT/setup-waiting.log" 2>&1', "sync"):
+            assert cmd in block, cmd
+        for secret in (*secrets.values(), "DEVICE_TOKEN", "ENROLL_KEY", "wifi_password", "psk", "printenv",
+                       "declare", "set ", "env", "/etc/NetworkManager"):
+            assert secret not in block, secret
+        # Nothing the script logs (the tail above) names a secret either, and the Wi-Fi password is not in it.
+        for line in s.splitlines():
+            if "echo" in line or "printf" in line:
+                assert "$DEVICE_TOKEN" not in line and "$ENROLL_KEY" not in line, line
+        assert "SECRET-WIFI-PASSWORD" not in s and "set -x" not in s
+        # Written after the threshold, refreshed every 4th try, removed once the console answers.
+        assert '[ "$WAITS" -lt 8 ] || [ $(((WAITS - 8) % 4)) -ne 0 ] || waiting_log' in s
+        assert s.index('BOOT=/boot/firmware; [ -d "$BOOT" ] || BOOT=/boot') < s.index("WAITS=0")
+        assert s.index("done\nrm -f \"$BOOT/setup-waiting.log\"; sync\n") < s.index("TRIES=0")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_provision_waiting_log_under_bash(tmp_path):
+    """None of nmcli, ip, getent, journalctl on PATH here: every section is still written."""
+    s = firstboot.render_provision(cfg(token="tok-SECRET-DEVICE-0123456789"))
+    r = _provision_harness(tmp_path, s, [], health_fails=13)
+    assert r["rc"] == 0, r["log"]
+    assert r["health_calls"] == 14
+    # Not before the 8th failed try; written then, rewritten on the 12th; gone once the console answered.
+    assert sorted(r["waiting"]) == list(range(9, 15))
+    assert "setup-waiting: try 8 for" in r["waiting"][9] and r["waiting"][11] == r["waiting"][9]
+    assert "setup-waiting: try 12 for" in r["waiting"][13]
+    for part in ("== provision log", "waiting for console at", "== timedatectl show", "== nmcli general status",
+                 "== ip route", "== getent hosts projectors.photogen5000.com", "== journalctl -u NetworkManager"):
+        assert part in r["waiting"][13], part
+    assert not any("tok-SECRET" in t for t in r["waiting"].values())
+    assert not r["waiting_left"] and "install succeeded" in r["log"]
+
+
 def _run_firstrun(tmp_path, c, stubs=()):
     """Run render_firstrun(c) under bash with the machine stubbed: BOOT, a fake imager (set_keymap fails),
-    a stub userconf, /etc and /usr/local paths moved into tmp_path, plus extra stub commands on PATH.
+    a stub userconf (and id: the users it made), /etc and /usr/local paths moved into tmp_path, plus extra stub commands on PATH.
     Real coreutils (openssl, install, dd, stat, sed, ...) do the work. Forward slashes: Git Bash on Windows."""
     boot = tmp_path / "boot"
     boot.mkdir()
@@ -536,7 +589,11 @@ def _run_firstrun(tmp_path, c, stubs=()):
     bin_dir.mkdir()
     imager = bin_dir / "imager_custom"
     imager.write_text('#!/bin/bash\necho "imager $1"\n[ "$1" = set_keymap ] && exit 3\nexit 0\n')
-    (bin_dir / "userconf").write_text("#!/bin/bash\nexit 0\n")
+    # userconf as on Pi OS trixie: the user is made, then cancel-rename fails on the masked getty@tty1.
+    (bin_dir / "userconf").write_text('#!/bin/bash\necho "$1" >>"$(dirname "$0")/users"\n'
+                                      'echo "Failed to start getty@tty1.service: Unit getty@tty1.service is masked." >&2\n'
+                                      "exit 1\n")
+    (bin_dir / "id").write_text('#!/bin/bash\ngrep -qx "$2" "$(dirname "$0")/users" && echo 1000\n')
     for name, body in stubs:
         (bin_dir / name).write_text("#!/bin/bash\n" + body)
     for f in bin_dir.iterdir():
@@ -570,7 +627,7 @@ def test_firstrun_wipes_itself_and_logs_rc(tmp_path):
     """Run the rendered firstrun.sh with stubbed tools: it must finish, log each step's rc, zero-fill and
     remove the secret-bearing files, and write firstrun.ok."""
     boot, log = _run_firstrun(tmp_path, cfg())
-    assert "set_hostname -> rc=0" in log and "set_keymap -> rc=3" in log and "userconf pi -> rc=0" in log, log
+    assert "set_hostname -> rc=0" in log and "set_keymap -> rc=3" in log and "id -u -> rc=0" in log, log
     assert "firstrun done" in log and "1 step(s) failed" in log
     assert not (boot / "firstrun.ok").exists()  # one step failed: no success marker
     assert not (boot / "firstrun.sh").exists() and not (boot / "projection5000-provision.sh").exists()
@@ -585,6 +642,20 @@ def test_firstrun_wipes_itself_and_logs_rc(tmp_path):
     assert tty.startswith("\033[2J\033[H") and "MATT BROWN'S" in tty and "PROJECTION5000" in tty
     assert "Setting up this projector" in tty and "Step 1 of 4: first start" in tty
     assert "command not found" not in log
+
+
+@gnu_tools
+def test_userconf_rc_1_from_the_masked_getty_is_not_a_failed_step(tmp_path):
+    """A real trixie card logged "userconf projector-admin -> rc=1" after "getty@tty1.service is masked": userconf's
+    last command (cancel-rename) re-enables the getty firstrun masks, after the user is made. The step is judged
+    by the user existing, so a clean first boot leaves firstrun.ok; a userconf that made no user still fails."""
+    ok = [("imager_custom", "exit 0\n")]
+    boot, log = _run_firstrun(tmp_path, cfg(username="projector-admin"), ok)
+    assert "id -u -> rc=0" in log and "is masked" in log and "rc=1" not in log, log
+    assert "0 step(s) failed" in log and (boot / "firstrun.ok").exists()
+    (tmp_path / "broken").mkdir()
+    boot, log = _run_firstrun(tmp_path / "broken", cfg(username="projector-admin"), ok + [("userconf", "exit 1\n")])
+    assert "id -u -> rc=" in log and "id -u -> rc=0" not in log and "1 step(s) failed" in log and not (boot / "firstrun.ok").exists()
 
 
 @gnu_tools

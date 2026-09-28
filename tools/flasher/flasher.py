@@ -31,6 +31,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import traceback
 import webbrowser
+from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -49,7 +50,9 @@ EYEBROW = "MATT BROWN'S"
 # Persisted between runs (host.data_dir). Never a secret: the device token is issued by the console at flash time
 # with the operator token, which lives DPAPI-protected in the operator config (Windows) or in the login keychain
 # (macOS).
-SETTINGS_KEYS = ("name", "pi_model", "ssid", "wifi_hidden", "timezone", "static_ip", "gateway")
+# Not the Device name: every card starts with an empty one (a remembered name re-registers, so replaces, the
+# projector flashed last).
+SETTINGS_KEYS = ("pi_model", "ssid", "wifi_hidden", "timezone", "static_ip", "gateway")
 LOG_NAME, LOG_MAX = "flasher.log", 2_000_000  # the technical log; rotated to flasher.log.1 at 2 MB
 # The status line: plain sentences, one at a time (everything technical goes to the details box and the file).
 READY_TEXT = "Ready."
@@ -1378,9 +1381,12 @@ class App:
             if not v:
                 return
             d = v["disk_info"]
+            replaces = self._replaces(v)
+            if replaces is None:
+                return
             if not messagebox.askyesno(APP_TITLE, f"Flash {v['name']} ({v['device_id']}) to\n\n{d['label']}\n"
-                                       f"({disk.human_size(d['size'])})\n\nEverything on that card will be erased. "
-                                       "Continue?", icon="warning", default=messagebox.NO):
+                                       f"({disk.human_size(d['size'])})\n\n{replaces}Everything on that card will be "
+                                       "erased. Continue?", icon="warning", default=messagebox.NO):
                 return
         save_settings(v)
         self.cancel.clear()
@@ -1391,6 +1397,52 @@ class App:
         self.set_phase("Preparing")
         self.worker = threading.Thread(target=self._run_flash, args=(v,), daemon=True)
         self.worker.start()
+
+    def _replaces(self, v: dict):
+        """The erase question's extra sentence when the signed-in account already has a projector with this id
+        (FLASH re-registers it: the card in it stops working). '' when the id is free, the card enrolls itself or
+        the console does not answer within console.EXISTS_TIMEOUT (registration reports any real problem).
+        None when the id belongs to another account: said under the name, as registration would."""
+        if v["enrollment_key"] or not v["operator_token"]:
+            return ""
+        # A hard limit on the whole call, not per socket step: several unanswered addresses or a reply sent
+        # slowly would otherwise hold the window far past EXISTS_TIMEOUT. The call runs on its own thread; the
+        # window waits for it at most that long, saying what it is doing, and then carries on without it.
+        self.set_status("Checking the name...")
+        self.root.update_idletasks()
+        answer = queue.Queue()
+
+        def ask():
+            try:
+                answer.put(("ok", console.device_exists(v["console_url"], v["operator_token"], v["device_id"])))
+            except console.ConsoleError as e:
+                answer.put(("error", e))
+
+        threading.Thread(target=ask, daemon=True).start()
+        try:
+            kind, r = answer.get(timeout=console.EXISTS_TIMEOUT)
+        except queue.Empty:
+            self.log(f"Could not check {v['device_id']} on the console: no answer within {console.EXISTS_TIMEOUT} s")
+            self.set_status(READY_TEXT)
+            return ""
+        self.set_status(READY_TEXT)
+        if kind == "error":
+            e = r
+            self.log(f"Could not check {v['device_id']} on the console: {e}")
+            if e.code == 409:
+                self._name_taken(e.plain())
+                return None
+            return ""
+        if not r:
+            return ""
+        seen = f"last seen {seen_text(r['last_seen_at'])}" if r["last_seen_at"] else "never online"
+        return (f"A projector called {r['name'] or v['name']} already exists ({seen}). "
+                "Flashing replaces it: its current card stops working.\n\n")
+
+    def _name_taken(self, plain: str):
+        self._show_error("name", plain)
+        self.name_entry.focus_set()
+        self.set_status("That name is taken. Pick another name and press FLASH again.")
 
     # ----- worker
     def _run_flash(self, v: dict):
@@ -1404,7 +1456,7 @@ class App:
             else:
                 text = done_text(owner)
                 done = text + f"\n\nDevice id: {v['device_id']}"
-                self.post(lambda: self.set_status(text))
+                self.post(lambda: (self.set_status(text), self.v["name"].set("")))  # the next card gets its own name
                 self.post(lambda: messagebox.showinfo(APP_TITLE, done))
         except (disk.Cancelled, imagefetch.Cancelled) as e:
             msg = f"Cancelled. {e}".rstrip()
@@ -1425,8 +1477,7 @@ class App:
             elif e.code == 403:  # the account can only view now: the console's words, and the token is forgotten
                 self.post(lambda: (self._token_rejected(token, plain), self.set_status(plain)))
             elif e.code == 409:  # the id belongs to another account: said under the name, which gets the focus
-                self.post(lambda: (self._show_error("name", plain), self.name_entry.focus_set(),
-                                   self.set_status("That name is taken. Pick another name and press FLASH again.")))
+                self.post(lambda: self._name_taken(plain))
             else:
                 self.post(lambda: self.set_status(f"Failed: {msg.splitlines()[0]}"))
                 self.post(lambda: messagebox.showerror(APP_TITLE, msg))
@@ -1454,6 +1505,15 @@ class App:
 # ---------------------------------------------------------------- flash sequence (no widgets here)
 
 PLACEHOLDER_TOKEN = "registered-at-flash-time"  # stands in for the device token until the console issues it
+
+
+def seen_text(stamp: str) -> str:
+    """The console's last_seen_at ('YYYY-MM-DD HH:MM:SS', UTC) in this computer's time; as given if unreadable."""
+    try:
+        t = datetime.strptime(stamp[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return stamp
+    return t.astimezone().strftime("%d %b %Y %H:%M")
 
 
 def done_text(owner: str = "") -> str:

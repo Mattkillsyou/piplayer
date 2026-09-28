@@ -6,7 +6,7 @@
 ; matches updater.py's VERSION, as version.txt does (tests/test_updater.py checks all three agree).
 
 #ifndef AppVersion
-  #define AppVersion "0.7.5"
+  #define AppVersion "0.7.6"
 #endif
 
 [Setup]

@@ -29,7 +29,8 @@ the box's place, under one line above the panel: "Signed in as <you>" with
 
 1. **Device name**, e.g. "Lobby Projector". The device id / hostname
    (`lobby-projector`) is derived from it and shown in grey under the entry.
-   Then **pick your Pi model** in the row below it (see "Pi models"); the
+   The box starts empty and empties again after each finished flash: every
+   card gets its own name. Then **pick your Pi model** in the row below it (see "Pi models"); the
    grey line under the box says what to expect from that board. The last
    choice is remembered.
 2. **Wi-Fi network and password**. The network box lists the networks this
@@ -39,7 +40,10 @@ the box's place, under one line above the panel: "Signed in as <you>" with
    away as soon as you edit it). A network that is not listed can be typed in as
    before. Leave both blank for a wired Pi.
 3. **SD card**: pick the reader (Refresh rescans), press **FLASH**, confirm
-   the erase warning. When it finishes: "Done. Put the card in the Pi and
+   the erase warning. If a projector with that name is already in your
+   account, the same warning says so first ("A projector called Living Room
+   already exists (last seen ...). Flashing replaces it: its current card
+   stops working."). When it finishes: "Done. Put the card in the Pi and
    turn it on. It shows up under Devices in <you>'s account in a few
    minutes."
 
@@ -88,7 +92,10 @@ warning in the details log when its name carries the other architecture.
   "Registered <id> in <you>'s account (new projector). Device token: ok". The
   card carries no enrollment key and the Pi never enrolls. A re-flashed card
   with the same device id re-registers the same projector with a fresh token
-  (playlist, group and history survive; the old card stops syncing). A device
+  (playlist, group and history survive; the old card stops syncing). The
+  erase warning says so beforehand: FLASH asks the console
+  (`GET /api/operator/devices/<id>`, 5 s at most; no answer means no extra
+  sentence). A device
   id that belongs to another account is refused ("A projector with that ID
   belongs to another account; pick another name", under Device name). A
   `--dry-run` only checks the sign-in; nothing is registered.
@@ -407,12 +414,17 @@ static address, timezone, keyboard), logs the exit status of every step to
 `firstrun.log`, moves the provisioning script and the player archive off the
 FAT partition (root-only), installs a systemd service, zero-fills and deletes
 its own copies of the secrets and writes `firstrun.ok` when every step
-succeeded. The Wi-Fi passphrase is stored pre-hashed (PBKDF2, as Raspberry Pi
+succeeded. (On Pi OS trixie `userconf` itself exits 1 after making the user,
+on the getty it cannot re-enable: the log shows "getty@tty1.service is
+masked" and the step counts as done when `id -u projector-admin` works.) The Wi-Fi passphrase is stored pre-hashed (PBKDF2, as Raspberry Pi
 Imager does), so the plaintext never reaches the card. The service waits for
 the clock to sync (or seeds it from the console), waits for the console's
 `/api/health`, unpacks the player archive to `/opt/projection5000-src` and
 runs `player/deploy/install-player.sh` with the device token and console URL
-from the card, retrying every 60 s (up to 20 times). (A card from an offline
+from the card, retrying every 60 s (up to 20 times). While the console stays
+out of reach (the "taking longer than usual" screen, about 5 minutes after power-on) it
+writes `setup-waiting.log` to the boot partition, refreshed every minute or
+so, and deletes it once the console answers. (A card from an offline
 `-Key` build carries the enrollment key instead and first enrolls with
 `POST /api/enroll`; the console answers with the device token and its URL.)
 On success it disables itself and deletes the script that carried the token.
@@ -539,9 +551,9 @@ when there is no display.
 
 ## Files on this PC (for a Mac see "On a Mac")
 
-- `%LOCALAPPDATA%\Projection5000\flasher.json`: last-used form values (name,
-  Pi model, Wi-Fi network, hidden flag, time zone, static IP, gateway). Never
-  a password, key or token.
+- `%LOCALAPPDATA%\Projection5000\flasher.json`: last-used form values (Pi
+  model, Wi-Fi network, hidden flag, time zone, static IP, gateway). Never
+  the device name, a password, a key or a token.
 - `%LOCALAPPDATA%\Projection5000\flasher.log` (and `.log.1`): the technical
   log, the same lines as the details box.
 - `%APPDATA%\Projection5000\flasher.json`: the sign-in (console URL, username,
@@ -606,6 +618,14 @@ accepted for LAN addresses, `.local` names and localhost; anything else must be
 - **The Pi shows a rainbow square and nothing else**: the card was made for
   the wrong model (a 64-bit image on a Pi 1, Pi 2 V1.1, Zero or Zero W). Pick
   the right model and flash again; `docs/adding-a-pi.md` has the longer list.
+- **The Pi stays on "Step 2 of 4: joining the network"**: turn it off, put
+  the card in the PC and open `setup-waiting.log` on the boot partition. It
+  shows the Wi-Fi the Pi sees and its signal, its address, its DNS and
+  whether it could look up the console. No `setup-waiting.log`: the Pi never
+  got that far; read `firstrun.log`.
+- **An old projector stopped syncing after a flash**: a card flashed with the
+  same name replaces it (the erase warning said so). Flash the old one again
+  under a new name.
 - **Pi does not appear on the console**: put the card back in the PC and read
   `firstrun.log` on the boot partition: every step is listed with its exit
   status (`rc=0` is good) and `firstrun.ok` exists when all of them passed. If

@@ -279,7 +279,10 @@ def render_firstrun(cfg: dict) -> str:
         f"HASH=$(printf %s {q(c['password'])} | openssl passwd -6 -stdin)",
         '[ -n "$HASH" ] || { echo "  openssl passwd -> failed"; FAILS=$((FAILS + 1)); }',
         "if [ -f /usr/lib/userconf-pi/userconf ]; then",
-        f'  run /usr/lib/userconf-pi/userconf {user} "$HASH"',
+        "  # userconf ends with cancel-rename, whose systemctl enable/start getty@tty1 fails (rc=1) on the unit",
+        "  # masked above, after the rename and the password are done: judge the step by the user existing.",
+        f'  /usr/lib/userconf-pi/userconf {user} "$HASH"',
+        f"  run id -u {user}",
         "else",
         f"  id -u {user} >/dev/null 2>&1 || run useradd -m -G sudo,video,render,audio,input,tty -s /bin/bash {user}",
         f'  run chpasswd -e <<<"{c["username"]}:$HASH"',  # a here-string: a pipeline would lose run()\'s FAILS
@@ -422,6 +425,7 @@ def render_provision(cfg: dict) -> str:
     q = shlex.quote
     console = c["console_url"].rstrip("/")
     install_flags = " --with-wyze" if c.get("with_wyze") else ""
+    host = re.sub(r"[^a-z0-9.:-]", "", urllib.parse.urlsplit(console).hostname or "")  # getent's argument
     if c.get("token"):  # cfg["cms_url"]: the player's address as the console answered it (else the console)
         cms = q(c["cms_url"].rstrip("/")) if c.get("cms_url") else '"$CONSOLE"'
         secret = [f"DEVICE_TOKEN={q(c['token'])}", f"CMS_URL={cms}"]
@@ -478,14 +482,34 @@ def render_provision(cfg: dict) -> str:
         "fi",
         'echo "clock: $(date), NTP synced: $(timedatectl show -p NTPSynchronized --value 2>/dev/null)"',
         "",
+        "# Step 2 is slow: what the Pi sees of the network, on the FAT partition any PC can read (the owner has",
+        "# no SSH). Written from the 8th try (when the screen says it is taking longer), refreshed every 4th,",
+        "# removed once the console answers. Nothing here may print $DEVICE_TOKEN, $ENROLL_KEY or the Wi-Fi",
+        "# password.",
+        'BOOT=/boot/firmware; [ -d "$BOOT" ] || BOOT=/boot',
+        "waiting_log() {",
+        "  {",
+        '    echo "setup-waiting: try $WAITS for $CONSOLE/api/health, $(date)"',
+        '    echo "== provision log"; tail -n 40 /var/log/projection5000-provision.log || true',
+        '    for c in "timedatectl show -p NTP -p NTPSynchronized" "nmcli general status" "nmcli device status" \\',
+        '        "nmcli -f active,ssid,signal,freq dev wifi" "ip -4 addr" "ip route" "grep nameserver /etc/resolv.conf" \\',
+        f'        "getent hosts {host}" "journalctl -u NetworkManager -u wpa_supplicant --no-pager -n 40"; do',
+        '      echo "== $c"; $c || true',
+        "    done",
+        '  } >"$BOOT/setup-waiting.log" 2>&1',
+        "  sync",
+        "}",
+        "",
         "WAITS=0",
         'until curl -fsS --max-time 10 "$CONSOLE/api/health" >/dev/null; do',
         '  echo "waiting for console at $CONSOLE"',
         "  WAITS=$((WAITS + 1))",
         '  [ "$WAITS" -lt 8 ] || screen "Setting up this projector" "Step 2 of 4: joining the network" \\',
         f'    {q("This is taking longer than usual: " + _network_hint(c))}',
+        '  [ "$WAITS" -lt 8 ] || [ $(((WAITS - 8) % 4)) -ne 0 ] || waiting_log',
         "  sleep 15",
         "done",
+        'rm -f "$BOOT/setup-waiting.log"; sync',
         "",
         "TRIES=0",
         "while :; do",
@@ -506,7 +530,6 @@ def render_provision(cfg: dict) -> str:
         '  if [ "$TRIES" -ge 20 ]; then',
         '    echo "GAVE UP after $TRIES attempts. Fix the problem above, then run: sudo systemctl start projection5000-provision.service"',
         "    # The user has no SSH: park a copy of the log on the FAT partition so it can be read from any PC.",
-        '    BOOT=/boot/firmware; [ -d "$BOOT" ] || BOOT=/boot',
         '    cp /var/log/projection5000-provision.log "$BOOT/setup-failed.log" 2>/dev/null; sync',
         '    screen "Setup did not finish." "$REASON" "Log: /boot/firmware/setup-failed.log"',
         "    exit 1",

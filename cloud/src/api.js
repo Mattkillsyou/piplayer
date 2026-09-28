@@ -285,6 +285,8 @@ async function enrollDefaults(env, settings) {
   return { group_id: await live("device_groups", settings.enroll_group_id), playlist_id: await live("playlists", settings.enroll_playlist_id) };
 }
 
+const OTHER_ACCOUNT = "A projector with that ID belongs to another account; pick another name";
+
 // The device_id / name rules shared by POST /api/enroll and POST /api/operator/devices.
 function deviceFields(body) {
   const deviceId = typeof body.device_id === "string" ? body.device_id.trim().toLowerCase() : "";
@@ -330,7 +332,7 @@ async function registerDevice(ctx, { deviceId, name, piModel = null, owner = nul
     }
   }
   if (owner && owner.role !== "admin" && row.owner_id !== owner.id) {
-    fail(409, "A projector with that ID belongs to another account; pick another name");
+    fail(409, OTHER_ACCOUNT);
   }
   const token = randomToken(32);
   await db.run(ctx.env, "UPDATE devices SET token = ?, name = ?, pi_model = COALESCE(?, pi_model), owner_id = COALESCE(owner_id, ?) WHERE id = ?",
@@ -435,6 +437,18 @@ async function operatorDevices(ctx) {
   return json({ device_id: fields.deviceId, token, cms_url: ctx.url.origin, owner: op.username, created }, created ? 201 : 200);
 }
 
+// Before FLASH replaces a card, the flasher asks whether the id is already a projector here:
+// 200 {device_id, name, last_seen_at} for the user's own id (any id for an admin), 404 for a
+// free one, 409 (POST's words) for another account's. Read-only.
+async function operatorDevice(ctx) {
+  const op = await flasherOperator(ctx);
+  const row = await db.first(ctx.env, "SELECT device_id, name, last_seen_at, owner_id FROM devices WHERE device_id = ?",
+    ctx.params.device_id.trim().toLowerCase());
+  if (!row) fail(404, "No projector with that ID");
+  if (op.role !== "admin" && row.owner_id !== op.id) fail(409, OTHER_ACCOUNT);
+  return json({ device_id: row.device_id, name: row.name, last_seen_at: row.last_seen_at });
+}
+
 // Legacy operator endpoint (flashers before v0.7.0): `Authorization: Bearer p5k_...` (Settings
 // page "My API tokens", admin user: the key it returns can enroll any device id) -> the live
 // enrollment key plus what the operator needs to sanity-check the console. Audited as
@@ -495,6 +509,7 @@ export function register(router) {
   router.post("/api/operator/login", operatorLogin);
   router.get("/api/operator/me", operatorMe);
   router.post("/api/operator/devices", operatorDevices);
+  router.get("/api/operator/devices/:device_id", operatorDevice);
   router.get("/api/operator/enrollment", operatorEnrollment);
   router.get("/api/sync/:device_id", sync);
   router.get("/api/camera-config/:device_id", getCameraConfig);
