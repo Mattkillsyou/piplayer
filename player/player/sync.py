@@ -121,7 +121,8 @@ def fetch_manifest(cfg: PlayerConfig, status: dict | None = None, sync_error: st
     params: dict[str, str] = {"player_version": updater.player_version(), **pi_info.sync_params()}
     if status:
         for k in ("current_position", "current_filename", "player_status", "camera_error", "update_status",
-                  "projector_state", "projector_error", "decode_mode", "play_rate"):
+                  "projector_state", "projector_error", "decode_mode", "play_rate",
+                  "display_fps", "video_fps", "dropped_frames"):
             v = status.get(k)
             if v is not None:
                 params[k] = str(v)

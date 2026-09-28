@@ -33,6 +33,11 @@ FAULT_RETRY_CYCLES = 10
 # decoder: the Pi's V4L2 M2M block does H.264 only, so anything else (HEVC on a Pi 4)
 # must still fall through to whatever auto-safe would have picked.
 MPV_HWDEC = "v4l2m2m-copy,auto-safe"
+# Frame pacing. mpv's default times video by the system clock, so on a screen whose refresh is not
+# a multiple of the film's frame rate (30 fps on 50 Hz) some frames are held one refresh longer
+# than others: the picture stutters at the right average speed. display-resample times the video
+# to the screen instead and nudges its speed by a fraction of a percent, which is what removes it.
+MPV_VIDEO_SYNC = "display-resample"
 V4L2_DIR = Path("/sys/class/video4linux")
 
 
@@ -89,6 +94,8 @@ def _apply_playback_options(mpv: MpvClient) -> bool:
     no help here: it only ever runs while an audio track is playing (mpv's
     check_framedrop), and the file that started this has no audio at all.
     """
+    if mpv.get_property("video-sync") not in (None, MPV_VIDEO_SYNC):
+        log.info("mpv video-sync=%s", "set" if mpv.set_property("video-sync", MPV_VIDEO_SYNC) else "refused")
     if (mpv.get_property("hwdec-current") not in (None, "", "no")
             or mpv.get_property("hwdec") == MPV_HWDEC or not _has_v4l2_decoder()):
         return False
@@ -133,6 +140,18 @@ def _gather_mpv_status(mpv: MpvClient, manifest: dict | None, state=None) -> dic
             # ordinary 1080p H.264 clip in slow motion
             hwdec = mpv.get_property("hwdec-current")
             status["decode_mode"] = str(hwdec) if hwdec and hwdec != "no" else "software"
+            # Real speed with an uneven picture still looks wrong: a 30 fps film on a 50 Hz screen
+            # shows some frames twice and some three times. These three say whether that is what is
+            # happening: what the screen runs at, what the file runs at, and how many frames mpv
+            # could not place.
+            for key, prop in (("display_fps", "display-fps"), ("video_fps", "container-fps")):
+                v = mpv.get_property(prop)
+                if isinstance(v, (int, float)) and v > 0:
+                    status[key] = round(float(v), 2)
+            dropped = sum(v for v in (mpv.get_property("frame-drop-count"),
+                                      mpv.get_property("vo-delayed-frame-count"))
+                          if isinstance(v, (int, float)))
+            status["dropped_frames"] = int(dropped)
         rate = _play_rate(mpv, state)
         if rate is not None:
             status["play_rate"] = rate

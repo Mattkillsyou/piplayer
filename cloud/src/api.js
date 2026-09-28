@@ -80,6 +80,16 @@ async function sync(ctx) {
   // frame rate counts decoded timestamps, so it reads fine while the picture crawls).
   const reported = Number(q.get("play_rate"));
   const playRate = Number.isFinite(reported) && reported > 0 && reported <= 4 ? reported : null;
+  // Frame pacing: the screen's refresh, the file's frame rate and the frames mpv could not place.
+  const rate = (name, max) => {
+    const v = Number(q.get(name));
+    return Number.isFinite(v) && v > 0 && v <= max ? v : null;
+  };
+  const displayFps = rate("display_fps", 1000);
+  const videoFps = rate("video_fps", 1000);
+  const droppedRaw = q.get("dropped_frames");   // absent is not zero: Number(null) would be
+  const droppedNum = droppedRaw === null || droppedRaw.trim() === "" ? NaN : Number(droppedRaw);
+  const dropped = Number.isFinite(droppedNum) && droppedNum >= 0 ? Math.floor(droppedNum) : null;
   await db.run(ctx.env,
     `UPDATE devices SET
         last_seen_at = datetime('now'),
@@ -95,7 +105,10 @@ async function sync(ctx) {
         pi_model = COALESCE(?, pi_model),
         camera_supported = COALESCE(?, camera_supported),
         decode_mode = COALESCE(?, decode_mode),
-        play_rate = COALESCE(?, play_rate)
+        play_rate = COALESCE(?, play_rate),
+        display_fps = COALESCE(?, display_fps),
+        video_fps = COALESCE(?, video_fps),
+        dropped_frames = COALESCE(?, dropped_frames)
       WHERE id = ?`,
     ctx.ip,
     intQuery(q, "current_position"),
@@ -110,6 +123,9 @@ async function sync(ctx) {
     cameraSupported,
     decodeMode,
     playRate,
+    displayFps,
+    videoFps,
+    dropped,
     device.id);
 
   await storeUpdateStatus(ctx, device, q.get("update_status"));

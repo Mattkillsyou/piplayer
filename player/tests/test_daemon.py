@@ -702,18 +702,26 @@ def test_playback_options_are_set_once_per_mpv_instance(cfg, cms, mpv, client, m
     with caplog.at_level(logging.INFO, logger="piplayer"):
         run_cycle(cfg, client, state)
     assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC] == ["v4l2m2m-copy,auto-safe"]  # H.264 here, the rest as before
+    assert sets(mpv, "video-sync") == [daemon.MPV_VIDEO_SYNC] == ["display-resample"]  # even frame pacing
     assert any("mpv hwdec=set" in r.getMessage() for r in caplog.records)
+    assert any("mpv video-sync=set" in r.getMessage() for r in caplog.records)
 
     # same instance: the options are not pushed again, even though mpv "forgot" them
     software_decoding(mpv)
     run_cycle(cfg, client, state)
     run_cycle(cfg, client, state)
-    assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC]
+    assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC] and sets(mpv, "video-sync") == [daemon.MPV_VIDEO_SYNC]
 
     # a restarted mpv is a fresh instance and gets them again
     mpv.restart()
     run_cycle(cfg, client, state)
     assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC] * 2
+    # video-sync survived the restart in this fake, and a value mpv already holds is left alone
+    assert sets(mpv, "video-sync") == [daemon.MPV_VIDEO_SYNC]
+    mpv.props["video-sync"] = "audio"      # a real restart comes back on the default
+    mpv.restart()
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "video-sync") == [daemon.MPV_VIDEO_SYNC] * 2
 
 
 def test_refused_playback_option_is_logged_and_does_not_break_the_cycle(cfg, cms, mpv, client, monkeypatch,
@@ -784,8 +792,16 @@ def test_status_reports_the_decode_mode_and_how_fast_it_is_really_playing(cfg, c
     run_cycle(cfg, client, state)
     assert "play_rate" not in cms.sync_calls[-1]
 
+    # the pacing numbers ride along: what the screen runs at, what the file runs at, what was lost
+    clock[0] += 10.0
+    mpv.props.update({"time-pos": 35.0, "display-fps": 50.0, "container-fps": 29.97,
+                      "frame-drop-count": 4, "vo-delayed-frame-count": 11})
+    run_cycle(cfg, client, state)
+    assert cms.sync_calls[-1]["display_fps"] == "50.0" and cms.sync_calls[-1]["video_fps"] == "29.97"
+    assert cms.sync_calls[-1]["dropped_frames"] == "15"
+
     del mpv.props["estimated-vf-fps"]           # an image, or an mpv without the property
     clock[0] += 10.0
-    mpv.props["time-pos"] = 12.0
+    mpv.props["time-pos"] = 45.0
     run_cycle(cfg, client, state)
     assert "decode_mode" not in cms.sync_calls[-1] and cms.sync_calls[-1]["play_rate"] == "1.0"

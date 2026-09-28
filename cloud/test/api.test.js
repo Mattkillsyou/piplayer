@@ -150,6 +150,15 @@ describe("sync", () => {
     expect(await row()).toEqual({ decode_mode: "software", play_rate: 0.52 });
     await sync(ids.dev, { decode_mode: "v4l2m2m-copy", play_rate: "1.0" });
     expect(await row()).toEqual({ decode_mode: "v4l2m2m-copy", play_rate: 1 });
+    // frame pacing (migration 0013): kept the same way, junk and out-of-range ignored
+    const pace = () => one("SELECT display_fps, video_fps, dropped_frames FROM devices WHERE id = ?", ids.dev.id);
+    expect(await pace()).toEqual({ display_fps: null, video_fps: null, dropped_frames: null });
+    await sync(ids.dev, { display_fps: "50", video_fps: "29.97", dropped_frames: "15" });
+    expect(await pace()).toEqual({ display_fps: 50, video_fps: 29.97, dropped_frames: 15 });
+    await sync(ids.dev, { display_fps: "abc", video_fps: "99999", dropped_frames: "-3" });
+    expect(await pace()).toEqual({ display_fps: 50, video_fps: 29.97, dropped_frames: 15 });
+    await sync(ids.dev, { display_fps: "60", video_fps: "24", dropped_frames: "0" });
+    expect(await pace()).toEqual({ display_fps: 60, video_fps: 24, dropped_frames: 0 });
   });
 
   it("non-integer current_position is the fixed CMS's 400 {detail: 'query.<name>: <msg>'}", async () => {
