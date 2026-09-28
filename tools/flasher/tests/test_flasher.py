@@ -1606,13 +1606,17 @@ def test_the_first_start_after_an_update_says_so_once(monkeypatch, tmp_path):
     app = flasher.App(root)
     assert _status(app) == "Ready."
     root.destroy()
-    # An install that never happened (still the old version) says nothing, and forgets it.
+    # An install that never happened (still the old version) says nothing, and forgets it. It is looked for
+    # again at once: wait for that check, or its thread writes update.json into the next test's profile.
+    asked, _, _, _ = _update_stubs(monkeypatch, tmp_path, dict(UPDATE, version=flasher.updater.VERSION))
     flasher.updater.save_state({"last_check": time.time(), "update_from": flasher.updater.VERSION,
                                 "update_to": "9.9.9"})
     root = _root()
     app = flasher.App(root)
     assert _status(app) == "Ready." and "Updated" not in _log(app)
     assert flasher.updater.load_state()["update_to"] == ""
+    assert _pump(root, app, lambda: f"Up to date (version {flasher.updater.VERSION})." in _log(app))
+    assert asked == [flasher.console_url()]
     root.destroy()
 
 
@@ -1703,10 +1707,15 @@ def test_updated_to_waits_for_the_sign_in_box_and_a_failed_install_is_said(monke
 
     flasher.updater.save_state({"last_check": time.time(), "update_from": flasher.updater.VERSION, "update_to": "9.9.9"})
     _signed_in(monkeypatch)
+    asked, _, _, _ = _update_stubs(monkeypatch, tmp_path, dict(UPDATE, version=flasher.updater.VERSION))
     root = _root()
     app = flasher.App(root)
     assert f"The update to 9.9.9 did not go in; this is still {flasher.updater.VERSION}." in _log(app)
-    assert _status(app) == "Ready." and flasher.updater.load_state().get("last_check") == 0
+    assert _status(app) == "Ready."
+    # Checked a moment ago, yet asked again at once (the clock went back to 0). Waited for: a check still
+    # running when the test ends writes update.json into the next test's profile.
+    assert _pump(root, app, lambda: f"Up to date (version {flasher.updater.VERSION})." in _log(app))
+    assert asked == [flasher.console_url()]
     root.destroy()
 
 
@@ -1727,4 +1736,91 @@ def test_the_name_check_never_holds_the_window_past_its_limit(monkeypatch):
     assert time.monotonic() - start < 2.0
     assert "no answer within 0.3 s" in _log(app) and _status(app) == "Ready."
     release.set()
+    root.destroy()
+
+
+def test_a_network_without_a_password_is_refused_if_secured_and_asked_about_otherwise(monkeypatch):
+    """28 Sep 2026: the network name came back from the settings after a restart, the password did not, and
+    the card was made for an open network: the Pi saw "ghost in the wifi" and never joined it."""
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    nets = [{"ssid": "Cafe", "signal": 60, "auth": "Open"}, {"ssid": "Venue", "signal": 30, "auth": "WPA2-Personal"}]
+    monkeypatch.setattr(flasher, "wifi", fake_wifi(nets))
+    _signed_in(monkeypatch)
+    root = _root()
+    app = flasher.App(root)
+    app.baked_key = KEY
+    assert _pump(root, app, lambda: app.open_networks == {"Cafe"} and app.secured_networks == {"Venue"})
+    _fill(app, ssid="Venue", wifi_password="", image_mode="latest")
+    assert app.errors().get("wifi_password") == "Enter the Wi-Fi password."
+    for ssid in ("Cafe", "Typed Net", ""):  # open, not in the scan (FLASH asks), a wired Pi
+        _fill(app, ssid=ssid, wifi_password="", image_mode="latest")
+        assert "wifi_password" not in app.errors(), ssid
+    # FLASH on a network the scan did not see, no password: asked; No stops with the error under the box.
+    flashed, asked = [], []
+    app._run_flash = lambda v: flashed.append(v["ssid"])
+    app.v["dry_run"].set(True)
+    monkeypatch.setattr(flasher.messagebox, "askyesno", lambda *a, **k: asked.append(a[1]) or False)
+    _fill(app, ssid="Typed Net", wifi_password="", image_mode="latest")
+    app.on_flash()
+    assert asked == ["There is no Wi-Fi password.\n\nIs Typed Net an open network?"] and flashed == []
+    assert _shown_errors(app) == {"wifi_password": "Enter the Wi-Fi password."}
+    monkeypatch.setattr(flasher.messagebox, "askyesno", lambda *a, **k: asked.append(a[1]) or True)
+    app.on_flash()
+    assert _pump(root, app, lambda: flashed == ["Typed Net"])
+    # The scan saw it open: no question.
+    asked.clear()
+    app.worker.join(5)
+    _fill(app, ssid="Cafe", wifi_password="", image_mode="latest")
+    app.on_flash()
+    assert _pump(root, app, lambda: flashed == ["Typed Net", "Cafe"]) and asked == []
+    root.destroy()
+
+
+def test_the_remembered_network_gets_its_saved_password_at_start_up(monkeypatch):
+    monkeypatch.setattr(flasher, "STARTUP_PASSWORD_LOOKUP", True)
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    monkeypatch.setattr(flasher, "wifi", fake_wifi([], passwords={"ghost in the wifi": "s3cret pw"}))
+    flasher.save_settings(dict(FORM, ssid="ghost in the wifi"))
+    root = _root()
+    app = flasher.App(root)
+    assert app.v["ssid"].get() == "ghost in the wifi"
+    assert _pump(root, app, lambda: app.v["wifi_password"].get() == "s3cret pw")
+    assert app.pw_hint.cget("text") == "password from this computer" and "s3cret" not in _log(app)
+    # Naming another network drops the filled-in password (it belongs to the first one).
+    app.v["ssid"].set("Other Net")
+    assert app.v["wifi_password"].get() == "" and app.pw_hint.cget("text") == ""
+    root.destroy()
+
+
+def test_a_password_typed_before_the_start_up_lookup_answers_is_kept(monkeypatch):
+    monkeypatch.setattr(flasher, "STARTUP_PASSWORD_LOOKUP", True)
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    gate, answered = threading.Event(), threading.Event()
+    w = fake_wifi([], passwords={"ghost in the wifi": "s3cret pw"})
+    saved = w.saved_password
+    w.saved_password = lambda ssid: (gate.wait(5), answered.set(), saved(ssid))[2]
+    monkeypatch.setattr(flasher, "wifi", w)
+    flasher.save_settings(dict(FORM, ssid="ghost in the wifi"))
+    root = _root()
+    app = flasher.App(root)
+    app.v["wifi_password"].set("typed first")
+    gate.set()
+    assert answered.wait(5)
+    _pump(root, app, lambda: False, timeout=0.3)  # let the answer reach the Tk thread
+    assert app.v["wifi_password"].get() == "typed first" and app.pw_hint.cget("text") == ""
+    root.destroy()
+
+
+def test_no_start_up_password_lookup_on_a_mac(monkeypatch):
+    """The Mac keychain asks for an administrator password: not at every launch, only on a pick from the list."""
+    monkeypatch.setattr(flasher, "STARTUP_PASSWORD_LOOKUP", False)
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    looked = []
+    monkeypatch.setattr(flasher, "wifi", fake_wifi([]))
+    flasher.wifi.saved_password = lambda ssid: looked.append(ssid)
+    flasher.save_settings(dict(FORM, ssid="ghost in the wifi"))
+    root = _root()
+    app = flasher.App(root)
+    _pump(root, app, lambda: False, timeout=0.3)
+    assert looked == [] and app.v["wifi_password"].get() == ""
     root.destroy()

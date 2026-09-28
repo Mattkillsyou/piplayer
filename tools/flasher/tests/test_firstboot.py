@@ -99,7 +99,7 @@ def test_setup_screen_in_firstrun_and_provision():
     assert "run systemctl mask" not in s  # cosmetic: never counted as a failed step
     p = firstboot.render_provision(cfg())
     marks = ["screen() {", "\nscreen_init\n", '"Step 2 of 4: joining the network"',
-             "check the Wi-Fi name and password", "install-player.sh",
+             '"$(network_hint)"', "install-player.sh",
              'screen "Ready. Waiting for the first video."',
              'cp /var/log/projection5000-provision.log "$BOOT/setup-failed.log"',
              'screen "Setup did not finish." "$REASON" "Log: /boot/firmware/setup-failed.log"']
@@ -395,12 +395,15 @@ def _msys(p) -> str:
 
 
 def _provision_harness(tmp_path, script: str, responses: list, install_fails: bool = False,
-                       health_fails: int = 0) -> dict:
+                       health_fails: int = 0, wlan: bool = True, nmcli: str = "", restarts: int = 0,
+                       wlan_after: int = 0) -> dict:
     """Run a rendered provision.sh under bash with the world stubbed: curl answers /api/health (failing the
     first `health_fails` times; each call first copies the card's setup-waiting.log, if any, to rec/waiting.<n>)
     and returns the queued responses for /api/enroll (an int is a curl exit code, a dict a JSON body), the
     player archive holds a stub installer that records its environment, timedatectl says the clock is synced.
-    Returns the log and what the stubs recorded."""
+    wlan: the Wi-Fi chip woke up (NET_DIR lists wlan0); nmcli: a stub nmcli's body; restarts: earlier
+    wake-up restarts; wlan_after: wlan0 shows up on that pass of the wait for it. Returns the log and what the
+    stubs recorded."""
     tmp = _msys(tmp_path)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -417,6 +420,19 @@ def _provision_harness(tmp_path, script: str, responses: list, install_fails: bo
     stub("python3", f'exec {shlex.quote(_msys(sys.executable))} "$@"\n')
     stub("timedatectl", "echo yes\n")
     stub("systemctl", f'echo "$@" >>{shlex.quote(_msys(rec))}/systemctl\n')
+    if nmcli:
+        stub("nmcli", nmcli)
+    net = tmp_path / "net"
+    net.mkdir()
+    if wlan:
+        (net / "wlan0").write_text("")
+    counter = tmp_path / "wifi-restarts"
+    if restarts:
+        counter.write_text(f"{restarts}\n")
+    # The wait for wlan0 sleeps between looks; here each pause counts, and wlan0 appears on pass wlan_after.
+    stub("wlan_later", f'n=$(cat {shlex.quote(_msys(rec))}/wl 2>/dev/null || echo 0); n=$((n + 1)); '
+                       f'echo "$n" >{shlex.quote(_msys(rec))}/wl; '
+                       f'[ "$n" -ge {wlan_after or 10**6} ] && : >{shlex.quote(_msys(net))}/wlan0; exit 0\n')
     for i, r in enumerate(responses, 1):
         (rec / f"resp.{i}").write_text(str(r) if isinstance(r, int) else "0\n" + json.dumps(r))
     boot = tmp_path / "bootfs"
@@ -454,11 +470,14 @@ def _provision_harness(tmp_path, script: str, responses: list, install_fails: bo
                .replace("SRC=/opt/projection5000-player.tar.gz", f"SRC={shlex.quote(_msys(archive))}")
                .replace("/opt/projection5000-src", tmp + "/src")
                .replace("/usr/local/sbin/projection5000-provision.sh", _msys(sbin))
-               .replace("sleep 60", "sleep 0").replace("sleep 15", "sleep 0").replace("-ge 20", "-ge 3"))
+               .replace("/var/lib/projection5000-wifi-restarts", shlex.quote(_msys(counter)))
+               .replace("sleep 60", "sleep 0").replace("sleep 15", "sleep 0").replace("sleep 2;", "wlan_later;")
+               .replace("-ge 20", "-ge 3"))
     p = tmp_path / "provision.sh"
     p.write_bytes(s.encode())
     (rec / "tty").write_text("")  # stands in for /dev/tty1: the setup screen lands here
-    env = dict(os.environ, PATH=_msys(bin_dir) + ":" + os.environ.get("PATH", ""), SCREEN_TTY=_msys(rec / "tty"))
+    env = dict(os.environ, PATH=_msys(bin_dir) + ":" + os.environ.get("PATH", ""), SCREEN_TTY=_msys(rec / "tty"),
+               NET_DIR=_msys(net))
     r = subprocess.run(["bash", str(p)], capture_output=True, text=True, timeout=120, env=env)
     read = lambda n: (rec / n).read_text().replace("\r", "") if (rec / n).exists() else ""
     bodies = [json.loads((rec / f"body.{i}").read_text()) for i in range(1, int(read("count") or 0) + 1)]
@@ -468,7 +487,8 @@ def _provision_harness(tmp_path, script: str, responses: list, install_fails: bo
             "sbin": sbin.exists(), "archive": archive.exists(), "rec": rec, "tty": read("tty"),
             "boot_log": (boot / "setup-failed.log").read_text() if (boot / "setup-failed.log").exists() else None,
             "waiting": {int(f.name.split(".")[1]): f.read_text() for f in rec.glob("waiting.*")},
-            "waiting_left": (boot / "setup-waiting.log").exists()}
+            "waiting_left": (boot / "setup-waiting.log").exists(),
+            "restarts": counter.read_text().strip() if counter.exists() else ""}
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
@@ -544,6 +564,9 @@ def test_provision_waiting_log_contents_and_secrets():
                     '"ip -4 addr"', '"ip route"', '"grep nameserver /etc/resolv.conf"',
                     '"getent hosts projectors.photogen5000.com"',
                     '"journalctl -u NetworkManager -u wpa_supplicant --no-pager -n 40"', '$(date)', '$c || true',
+                    '"nmcli -f NAME,TYPE,AUTOCONNECT,DEVICE connection show"', '"rfkill list"', '"ls /sys/class/net"',
+                    '"nmcli -g 802-11-wireless-security.key-mgmt connection show preconfigured"',
+                    "dmesg | grep -iE 'brcmf|mmc1' | tail -n 20",
                     '>"$BOOT/setup-waiting.log" 2>&1', "sync"):
             assert cmd in block, cmd
         for secret in (*secrets.values(), "DEVICE_TOKEN", "ENROLL_KEY", "wifi_password", "psk", "printenv",
@@ -703,3 +726,51 @@ def test_wipe_zero_fills_before_unlink(tmp_path):
     after = (tmp_path / "secret.sh.after").read_bytes()
     assert len(after) == 20 * 50 and after == b"\0" * len(after)
     assert not f.exists()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_provision_restarts_to_wake_the_wifi_chip(tmp_path):
+    """No Wi-Fi device (the chip did not wake at power-on; a restart wakes it) and no console: restart, twice
+    at most. After that setup carries on and the stuck screen says the Wi-Fi is not working."""
+    s = firstboot.render_provision(cfg(token="tok-on-card-0123456789"))
+    r = _provision_harness(tmp_path, s, [], wlan=False, health_fails=99)
+    assert r["rc"] == 0 and "reboot" in r["systemctl"], r["log"]
+    assert "restarting (1 of 2)" in r["log"] and r["restarts"] == "1"
+    assert "Restarting to wake up the Wi-Fi." in r["tty"] and r["health_calls"] == 1  # only the -k check ran
+    (tmp_path / "third").mkdir()
+    r = _provision_harness(tmp_path / "third", s, [], wlan=False, restarts=2, health_fails=9)
+    assert "reboot" not in r["systemctl"] and "no Wi-Fi device after 2 restarts" in r["log"], r["log"]
+    assert "The Wi-Fi on this Pi is not working. Plug in a network cable." in r["tty"]
+    assert r["rc"] == 0 and "install succeeded" in r["log"]
+    # A cable in (the console answers): no restart for a Wi-Fi chip nobody needs right now.
+    (tmp_path / "cable").mkdir()
+    r = _provision_harness(tmp_path / "cable", s, [], wlan=False)
+    assert "reboot" not in r["systemctl"] and not r["restarts"] and "install succeeded" in r["log"], r["log"]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@pytest.mark.parametrize("nmcli, words", [
+    # found in the scan, not joined: a wrong or missing password (the 28 Sep 2026 card had none)
+    ('[ "$3" = SSID ] && printf "%s\\n" "Other" "Ven\\:ue WiFi"; exit 0\n', "Cannot join Ven:ue WiFi. Check the Wi-Fi password."),
+    ('[ "$3" = SSID ] && echo Other; exit 0\n', "Cannot find Ven:ue WiFi. Check the Wi-Fi name, or move the Pi closer"),
+    # joined: the network is in the scan too, so the joined check must come first
+    ('case "$3" in TYPE,STATE) printf "%s\\n" wifi-p2p:disconnected wifi:connected;; '
+     'SSID) printf "%s\\n" "Ven\\:ue WiFi";; esac; exit 0\n',
+     "Joined Ven:ue WiFi, but the internet cannot be reached. Check the router."),
+])
+def test_provision_stuck_screen_says_what_the_pi_sees(tmp_path, nmcli, words):
+    s = firstboot.render_provision(cfg(token="tok-on-card-0123456789", ssid="Ven:ue WiFi"))
+    r = _provision_harness(tmp_path, s, [], health_fails=9, nmcli=nmcli)
+    assert r["rc"] == 0, r["log"]
+    assert words in r["tty"] and "reboot" not in r["systemctl"]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_provision_waits_for_a_slow_wifi_chip_and_forgets_old_restarts(tmp_path):
+    """wlan0 shows up a few seconds into the boot: no restart, and a woken chip clears the restart count, so
+    two restarts in a row stay possible on a later power-on."""
+    s = firstboot.render_provision(cfg(token="tok-on-card-0123456789"))
+    r = _provision_harness(tmp_path, s, [], wlan=False, wlan_after=3, restarts=1)
+    assert r["rc"] == 0 and "reboot" not in r["systemctl"], r["log"]
+    assert (r["rec"] / "wl").read_text().strip() == "3" and r["health_calls"] == 1  # only the real health check
+    assert r["restarts"] == "" and "install succeeded" in r["log"]

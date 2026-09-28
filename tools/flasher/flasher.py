@@ -79,6 +79,9 @@ PLAIN_WORDS = [("Device name", "name", "Give the Pi a name."),
                ("Wi-Fi password", "wifi_password", "Wi-Fi password must be 8-63 characters."),
                ("Timezone", "adv", None), ("Static IP", "adv", None), ("Gateway", "adv", None)]
 WIRED_HINT = "leave blank for a wired Pi"
+# The remembered network's saved password is looked up when the program opens: netsh answers silently; the Mac
+# keychain asks for an administrator password, so there it waits until the operator picks the network.
+STARTUP_PASSWORD_LOOKUP = sys.platform == "win32"
 SCANNING_HINT = "Looking for networks..."
 LOCATION_HINT = host.NO_SCAN_HINT  # connected, yet the scan is empty (Windows 11 with Location off)
 TIMEZONES = ["America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York", "America/Phoenix",
@@ -500,8 +503,15 @@ class App:
         self._phase = ""  # what the progress bar measures ("Writing the card"), shown with the percentage
         self._update_thread = None  # the weekly update check and its download
         self._installing = False  # an update is being handed to the installer: no second check or download
+        # What the last scan saw: a secured network needs its password, an open one none (anything else: FLASH asks).
+        self.open_networks, self.secured_networks = set(), set()
+        self._pw_for = None  # the network whose saved password filled the box (None: empty or typed)
         self._build()
         self._apply_settings(load_settings())
+        # The network name is remembered, its password is not (this computer keeps it): look it up again, or
+        # the next card is made for an open network and the Pi never joins (seen on 28 Sep 2026).
+        if self.v["ssid"].get() and STARTUP_PASSWORD_LOOKUP:
+            self._ssid_picked(keep_typed=True)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._pump()
         self.refresh_disks()
@@ -604,6 +614,7 @@ class App:
         self.ssid_box = ttk.Combobox(form, textvariable=self._var("ssid"), width=38)  # editable: any name works
         self.ssid_box.grid(row=6, column=1, sticky="we", padx=4, pady=4)
         self.ssid_box.bind("<<ComboboxSelected>>", self._ssid_picked)
+        self.v["ssid"].trace_add("write", self._ssid_edited)
         side = ttk.Frame(form)
         side.grid(row=6, column=2, sticky="w")
         refresh = ttk.Label(side, text="Refresh", style="Link.TLabel", cursor="hand2", underline=0)
@@ -1189,6 +1200,9 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _show_networks(self, nets, current):
+        auth = {n["ssid"]: (n.get("auth") or "").strip().lower() for n in nets}
+        self.open_networks = {s for s, a in auth.items() if a == "open"}
+        self.secured_networks = {s for s, a in auth.items() if a not in ("", "open")}
         names = [n["ssid"] for n in nets]
         if current in names:
             names.remove(current)
@@ -1202,29 +1216,39 @@ class App:
             hint = "type the network name"
         self.ssid_hint.configure(text=hint)
 
-    def _ssid_picked(self, _event=None):
+    def _ssid_picked(self, _event=None, keep_typed: bool = False):
         ssid = self.v["ssid"].get()
 
         def work():
             pw = wifi.saved_password(ssid)  # None without a saved password on this computer; never logged
             if pw:
-                self.post(lambda: self._fill_password(ssid, pw))
+                self.post(lambda: self._fill_password(ssid, pw, keep_typed))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _fill_password(self, ssid: str, pw: str):
+    def _fill_password(self, ssid: str, pw: str, keep_typed: bool = False):
         if self.v["ssid"].get() != ssid:  # the operator moved on while the lookup ran
+            return
+        if keep_typed and self.v["wifi_password"].get():  # typed while the lookup ran (at start-up): theirs wins
             return
         self._setting_pw = True
         try:
             self.v["wifi_password"].set(pw)
         finally:
             self._setting_pw = False
+        self._pw_for = ssid
         self.pw_hint.configure(text="password from this computer")
 
     def _password_edited(self, *_):
         if not getattr(self, "_setting_pw", False):
             self.pw_hint.configure(text="")
+            self._pw_for = None  # typed (or cleared): the operator's, kept whatever network they name
+
+    def _ssid_edited(self, *_):
+        """A password this computer filled in belongs to its network: naming another network drops it (a pick
+        from the list looks that one up again)."""
+        if self._pw_for is not None and self.v["ssid"].get() != self._pw_for:
+            self.v["wifi_password"].set("")  # _password_edited clears the hint and _pw_for
 
     def selected_disk(self):
         label = self.v["disk"].get()
@@ -1313,6 +1337,11 @@ class App:
             problems["name"] = "Give the Pi a name."
         if not v["ssid"] and v["wifi_password"]:
             problems["ssid"] = "Enter the Wi-Fi network name (or clear the password for a wired Pi)."
+        # A named network without a password makes an open-network profile: a secured network then never
+        # joins and the Pi waits at step 2 for good (28 Sep 2026). The scan saw it secured: the password is
+        # required. Not seen either way (out of range, no scan): FLASH asks whether it is open (on_flash).
+        if v["ssid"] and not v["wifi_password"] and v["ssid"] in self.secured_networks:
+            problems["wifi_password"] = "Enter the Wi-Fi password."
         cfg = card_cfg(v)
         if not cfg["enrollment_key"]:  # the device token comes at flash time with the sign-in (FLASH asks first)
             cfg["token"] = PLACEHOLDER_TOKEN  # the other rules still apply
@@ -1370,6 +1399,11 @@ class App:
             # First use on this computer: sign in below, then the flash continues by itself.
             self.sign_in(then=self.on_flash)
             return
+        if v["ssid"] and not v["wifi_password"] and v["ssid"] not in self.open_networks:
+            if not messagebox.askyesno(APP_TITLE, f"There is no Wi-Fi password.\n\nIs {v['ssid']} an open network?",
+                                       icon="warning", default=messagebox.NO):
+                self._show_error("wifi_password", "Enter the Wi-Fi password.")
+                return
         if not v["dry_run"]:
             # Rescan so the confirmation names the disk as it is now (cards get swapped, numbers move).
             chosen = v["disk_info"]

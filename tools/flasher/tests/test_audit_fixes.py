@@ -127,10 +127,14 @@ def test_firstrun_fallback_password_step_counts_its_failure():
 def test_console_wait_hint_names_the_network_kind():
     wired = firstboot.render_provision(dict(firstboot.sample_config(), ethernet_only=True, ssid="", wifi_password=""))
     assert "check the network cable." in wired and "Wi-Fi name" not in wired
+    assert "network_hint" not in wired and "has_wlan" not in wired  # no Wi-Fi on this card: nothing to wake
+    # A Wi-Fi card: the stuck screen line comes from what the Pi sees (test_firstboot runs it under bash).
     static = firstboot.render_provision(dict(firstboot.sample_config(), static_ip="192.168.1.50/24", gateway="192.168.1.1"))
-    assert "check the static IP and gateway, the Wi-Fi name and the password." in static
+    assert "Joined Venue WiFi, but the internet cannot be reached. Check the static IP and gateway." in static
     wifi_ = firstboot.render_provision(firstboot.sample_config())
-    assert "check the Wi-Fi name and password." in wifi_
+    assert "Cannot join Venue WiFi. Check the Wi-Fi password." in wifi_ and '"$(network_hint)"' in wifi_
+    hidden = firstboot.render_provision(dict(firstboot.sample_config(), wifi_hidden=True))
+    assert "Cannot join Venue WiFi. Check the Wi-Fi name and password." in hidden and "Cannot find" not in hidden
 
 
 # ---------------------------------------------------------------- windisk.py
@@ -159,6 +163,9 @@ def test_api_calls_never_follow_a_redirect(monkeypatch):
             pass
 
         def do_GET(self):
+            # A POST's body is read before the answer: Windows resets a socket closed with unread data, and
+            # about 1 POST in 30 then got WinError 10053 instead of the 302.
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
             self.send_response(302)
             self.send_header("Location", "http://127.0.0.1:1/api/operator/me")
             self.send_header("Content-Length", "0")

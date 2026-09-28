@@ -434,6 +434,12 @@ def render_provision(cfg: dict) -> str:
                   "DEVICE_TOKEN=", "CMS_URL="]
     body = ('import json, os; print(json.dumps({"key": os.environ["ENROLL_KEY"], '
             '"device_id": os.environ["DEVICE_ID"], "name": os.environ["DEVICE_NAME"]}))')
+    if c["ethernet_only"]:
+        wifi_wake = []
+        stuck = q("This is taking longer than usual: " + _network_hint(c))
+    else:
+        wifi_wake = _wifi_wake_lines(c)
+        stuck = '"$(network_hint)"'
     lines = [
         "#!/bin/bash",
         "# Projection5000 provisioning. Runs on every boot until the player is installed, then disables itself.",
@@ -471,6 +477,7 @@ def render_provision(cfg: dict) -> str:
         '  echo "enrolled as $DEVICE_ID at $CMS_URL"',
         "}",
         "",
+        *wifi_wake,
         "# The image's clock is stale until NTP syncs; TLS and apt both need the real time.",
         "for _ in $(seq 1 24); do",
         '  [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ] && break',
@@ -493,9 +500,13 @@ def render_provision(cfg: dict) -> str:
         '    echo "== provision log"; tail -n 40 /var/log/projection5000-provision.log || true',
         '    for c in "timedatectl show -p NTP -p NTPSynchronized" "nmcli general status" "nmcli device status" \\',
         '        "nmcli -f active,ssid,signal,freq dev wifi" "ip -4 addr" "ip route" "grep nameserver /etc/resolv.conf" \\',
-        f'        "getent hosts {host}" "journalctl -u NetworkManager -u wpa_supplicant --no-pager -n 40"; do',
+        f'        "getent hosts {host}" "journalctl -u NetworkManager -u wpa_supplicant --no-pager -n 40" \\',
+        '        "nmcli -f NAME,TYPE,AUTOCONNECT,DEVICE connection show" \\',
+        '        "nmcli -g 802-11-wireless-security.key-mgmt connection show preconfigured" "rfkill list" \\',
+        '        "ls /sys/class/net"; do',
         '      echo "== $c"; $c || true',
         "    done",
+        "    echo \"== wifi driver\"; dmesg | grep -iE 'brcmf|mmc1' | tail -n 20 || true",
         '  } >"$BOOT/setup-waiting.log" 2>&1',
         "  sync",
         "}",
@@ -504,8 +515,7 @@ def render_provision(cfg: dict) -> str:
         'until curl -fsS --max-time 10 "$CONSOLE/api/health" >/dev/null; do',
         '  echo "waiting for console at $CONSOLE"',
         "  WAITS=$((WAITS + 1))",
-        '  [ "$WAITS" -lt 8 ] || screen "Setting up this projector" "Step 2 of 4: joining the network" \\',
-        f'    {q("This is taking longer than usual: " + _network_hint(c))}',
+        f'  [ "$WAITS" -lt 8 ] || screen "Setting up this projector" "Step 2 of 4: joining the network" {stuck}',
         '  [ "$WAITS" -lt 8 ] || [ $(((WAITS - 8) % 4)) -ne 0 ] || waiting_log',
         "  sleep 15",
         "done",
@@ -551,6 +561,54 @@ def _network_hint(c: dict) -> str:
     if c["ethernet_only"]:
         return "check the network cable."
     return "check the Wi-Fi name and password."
+
+
+def _wifi_wake_lines(c: dict) -> list:
+    """provision.sh, a card made for Wi-Fi: restart when the Wi-Fi chip did not wake up, and network_hint (the
+    step 2 screen line) from what the Pi sees: no chip, the network not found, found but not joined (the
+    password), or joined without reaching the internet."""
+    q = shlex.quote
+    ssid = c["ssid"]
+    no_internet = "Check the static IP and gateway." if c["static_ip"] else "Check the router."
+    in_range = [] if c["wifi_hidden"] else [  # a hidden network is not in the scan: say both
+        "  if nmcli -t -f SSID device wifi list 2>/dev/null | grep -qxF -- \"$(printf '%s' \"$SSID\" | sed 's/:/\\\\:/g')\"; then",
+        f"    echo {q(f'Cannot join {ssid}. Check the Wi-Fi password.')}; return",
+        "  fi",
+    ]
+    lost = (f"Cannot join {ssid}. Check the Wi-Fi name and password." if c["wifi_hidden"] else
+            f"Cannot find {ssid}. Check the Wi-Fi name, or move the Pi closer to the router.")
+    return [
+        "# The Pi 4's Wi-Fi chip does not always wake at power-on: no wlan0, the driver reads 0xffffffff from it",
+        "# (two boards on 28 Sep 2026), and a restart wakes it. Twice at most; after that the screen says so.",
+        f"SSID={q(ssid)}",
+        'NET_DIR="${NET_DIR:-/sys/class/net}"',
+        "has_wlan() { ls \"$NET_DIR\" 2>/dev/null | grep -q '^wlan'; }",
+        "for _ in $(seq 1 30); do has_wlan && break; sleep 2; done",
+        "has_wlan && rm -f /var/lib/projection5000-wifi-restarts  # two in a row at most, not two for good",
+        '# -k: only "is it reachable" (the clock may still be stale); a cable in the Pi needs no restart.',
+        'if ! has_wlan && ! curl -fsSk --max-time 10 -o /dev/null "$CONSOLE/api/health"; then',
+        "  RESTARTS=$(cat /var/lib/projection5000-wifi-restarts 2>/dev/null || echo 0)",
+        '  if [ "$RESTARTS" -lt 2 ]; then',
+        '    echo "$((RESTARTS + 1))" >/var/lib/projection5000-wifi-restarts; sync',
+        '    echo "no Wi-Fi device: the chip did not wake up; restarting ($((RESTARTS + 1)) of 2)"',
+        '    screen "Setting up this projector" "Step 2 of 4: joining the network" "Restarting to wake up the Wi-Fi."',
+        "    systemctl reboot",
+        "    exit 0",
+        "  fi",
+        '  echo "no Wi-Fi device after 2 restarts"',
+        "fi",
+        "network_hint() {",
+        "  if ! has_wlan; then",
+        f"    echo {q('The Wi-Fi on this Pi is not working. Plug in a network cable.')}; return",
+        "  fi",
+        "  if nmcli -t -f TYPE,STATE device 2>/dev/null | grep -q '^wifi:connected'; then",
+        f"    echo {q(f'Joined {ssid}, but the internet cannot be reached. {no_internet}')}; return",
+        "  fi",
+        *in_range,
+        f"  echo {q(lost)}",
+        "}",
+        "",
+    ]
 
 
 def patch_cmdline(text: str) -> str:

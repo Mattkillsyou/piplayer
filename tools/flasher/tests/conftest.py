@@ -30,6 +30,12 @@ def _operator_config_sandbox(monkeypatch, tmp_path, request):
     # (test_console drives the real call against a stub; a test that wants an answer stubs it again).
     if request.module.__name__ != "test_console":
         monkeypatch.setattr(flasher.console, "device_exists", lambda *a, **k: None)
+    # Nor for the update check. It runs on a thread, and the real one took ~0.3 s: long enough for its test to
+    # end and the thread to write update.json into the next test's profile (LOCALAPPDATA had moved on), whose
+    # own check then found itself not due (test_updater drives the real call against a stub; a test that wants
+    # an answer stubs it again, see test_flasher._update_stubs).
+    if request.module.__name__ != "test_updater":
+        monkeypatch.setattr(flasher.updater, "latest", _no_update_check)
     # No netsh from the GUI tests: a PC with no Wi-Fi (test_wifi drives the real module with a fake netsh).
     monkeypatch.setattr(flasher, "wifi", fake_wifi())
     # On a Mac the host keeps the sign-in in the login keychain through `security`, which can put up a dialog
@@ -41,6 +47,10 @@ def _operator_config_sandbox(monkeypatch, tmp_path, request):
         monkeypatch.setattr(machost, "open_token", lambda d: vault.get("token", "") if d.get("token_keychain")
                             else (d.get("token") or "").strip() if isinstance(d.get("token"), str) else "")
         monkeypatch.setattr(machost, "forget_token", lambda d: vault.clear())
+
+
+def _no_update_check(url):
+    raise flasher.console.ConsoleError("the tests never ask a real console for updates")
 
 
 def fake_wifi(networks=(), current=None, passwords=None):

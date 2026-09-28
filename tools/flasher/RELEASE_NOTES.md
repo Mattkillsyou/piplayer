@@ -1,5 +1,20 @@
 # Release notes for the SD Flasher
 
+## v0.7.8
+
+Cards always carry the Wi-Fi password. The flasher remembers the network name between runs but not its
+password, so after a restart (an update, for one) the password box was empty and FLASH made a card for an open
+network: the Pi saw the network, never joined it, and waited at step 2 for good. The flasher now fills the
+password this computer has saved for that network when it opens (Windows), drops a filled-in password when
+another network is named, will not flash a network the scan saw secured without its password, and asks
+whether a network is open before flashing it without one.
+
+On the Pi: when the Wi-Fi chip does not wake up at power-on (it happens on some Pi 4 boards) setup restarts the
+Pi to wake it, twice at most. While step 2 is slow the screen now says what is wrong: the Wi-Fi is not working
+(plug in a cable), the network is not found, it is found but the Pi cannot join (the password), or the Pi joined
+but cannot reach the internet. setup-waiting.log also lists the Wi-Fi profile, rfkill and the Wi-Fi driver's
+kernel messages.
+
 ## v0.7.7
 
 Updates on Windows install for real. Up to 0.7.6 the installer asked Windows to close the running flasher,
