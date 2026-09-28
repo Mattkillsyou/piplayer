@@ -1547,10 +1547,12 @@ def test_an_update_that_lands_during_a_flash_waits_for_the_next_start(monkeypatc
     root = _root()
     app = flasher.App(root)
     stop = threading.Event()
-    app.worker = threading.Thread(target=lambda: stop.wait(5), daemon=True)
+    # the "flash" outlasts the pump by far: on a slow runner a 5 s flash could end before the download
+    # lands, and the update would then (rightly) go in instead of waiting
+    app.worker = threading.Thread(target=lambda: stop.wait(60), daemon=True)
     app.worker.start()
     try:
-        assert _pump(root, app, lambda: "goes in the next time this program starts" in _log(app))
+        assert _pump(root, app, lambda: "goes in the next time this program starts" in _log(app), timeout=20)
         assert downloaded == [UPDATE["windows"]] and installed == []
         assert flasher.updater.load_state()["downloaded"] == str(setup)
     finally:
