@@ -1,5 +1,14 @@
 # Release notes for the SD Flasher
 
+## v0.7.4
+
+Should stop "You need to format the disk in drive E:" appearing while a card is being written (not yet
+confirmed on a real card reader). The likely causes: Windows saw the card blank while the image was going on,
+before its partition table was written, and at the end it saw the Pi's Linux partition, which it cannot read. The card now carries an empty
+but valid partition table while it is written, and the Linux partition stays hidden from Windows until the
+first-boot files are on and the card is ejected; it is put back and read back before the eject, and a card
+that does not keep it fails the flash instead of coming out unable to boot.
+
 ## v0.7.3
 
 The flasher updates itself. Once a week it asks the console whether there is a newer version, fetches it in

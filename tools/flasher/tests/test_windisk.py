@@ -145,11 +145,24 @@ def test_clear_disk_skips_raw(monkeypatch):
     monkeypatch.setattr(windisk, "_ps", fake_ps)
     windisk.clear_disk(2)
     assert not any("Clear-Disk" in s for s in scripts)
+    # a RAW card still gets the empty table, so Windows sees a disk with nothing on it, not an unformatted drive
+    assert any(s.startswith("try { Initialize-Disk -Number 2 -PartitionStyle MBR") and s.endswith("exit 0") for s in scripts)
+
+    def hung(script, timeout=120):
+        if "Get-Disk" in script:
+            return "RAW\n"
+        raise windisk.DiskError("try did not finish within 60 s")
+
+    monkeypatch.setattr(windisk, "_ps", hung)
+    windisk.clear_disk(2)   # best effort: a stuck storage provider does not fail the flash
 
     scripts.clear()
     monkeypatch.setattr(windisk, "_ps", lambda script, timeout=120: (scripts.append(script), "MBR\n")[1])
     windisk.clear_disk(2)
     assert any(s.startswith("Clear-Disk -Number 2 -RemoveData -RemoveOEM") for s in scripts)
+    # in the same PowerShell call, so the disk is RAW for milliseconds, and never fatal
+    assert any("-ErrorAction Stop; try { Initialize-Disk -Number 2 -PartitionStyle MBR" in s and s.endswith("exit 0")
+               for s in scripts)
     scripts.clear()
     windisk.clear_disk(2, "USBSTOR\\DISK&VEN_X\\0'1&0:")
     assert any(s.startswith("Clear-Disk -UniqueId 'USBSTOR\\DISK&VEN_X\\0''1&0:' -RemoveData") for s in scripts)
@@ -370,6 +383,10 @@ class _RecordingDrive(windisk.PhysicalDrive):
         self.buf = bytearray(size)
         self.pos = 0
         self.writes = []
+        self.refreshes = 0
+
+    def refresh_partitions(self):
+        self.refreshes += 1
 
     def write(self, data):
         self.writes.append((self.pos, len(data)))
@@ -398,9 +415,12 @@ def test_write_image_to_physical_drive_defers_the_first_mib(image, tmp_path):
     drive = _RecordingDrive(IMG_SIZE + 4096)
     written = windisk.write_image(str(xz), drive, chunk=256 * 1024)
     assert written == len(data) + (512 - IMG_SIZE % 512)
-    assert all(w[0] >= windisk.DEFER_FIRST_BYTES for w in drive.writes), drive.writes[:3]
+    # sector 0 gets an empty but valid table first: a blank one is a RAW volume Explorer offers to format
+    assert drive.writes[0] == (0, 512) and drive.refreshes == 1   # and Windows is told to re-read it
+    assert all(w[0] >= windisk.DEFER_FIRST_BYTES for w in drive.writes[1:]), drive.writes[:3]
     assert drive.deferred_head == data[:windisk.DEFER_FIRST_BYTES]
-    assert bytes(drive.buf[:windisk.DEFER_FIRST_BYTES]) == b"\0" * windisk.DEFER_FIRST_BYTES
+    assert bytes(drive.buf[:512]) == b"\0" * 510 + b"\x55\xaa"
+    assert bytes(drive.buf[512:windisk.DEFER_FIRST_BYTES]) == b"\0" * (windisk.DEFER_FIRST_BYTES - 512)
     # body verifies with the blank head skipped, and fails without the skip
     assert windisk.verify_image(str(xz), drive, skip=windisk.DEFER_FIRST_BYTES)
     assert not windisk.verify_image(str(xz), drive)
@@ -409,6 +429,78 @@ def test_write_image_to_physical_drive_defers_the_first_mib(image, tmp_path):
     assert bytes(drive.buf[:len(data)]) == data
     assert drive.deferred_head == b""
     assert windisk.verify_image(str(xz), drive)
+
+
+def _pi_head(p2_type=0x83, p1_type=0x0C):
+    """The first MiB of a Raspberry Pi OS image, as far as the partition table goes."""
+    head = bytearray(windisk.DEFER_FIRST_BYTES)
+    head[440:444] = b"\x9c\x1e\x2a\x56"           # disk signature (PARTUUID 562a1e9c-0N)
+    head[446 + 4] = p1_type                          # bootfs, FAT32 LBA
+    head[446 + 8:446 + 12] = (8192).to_bytes(4, "little")
+    head[446 + 16 + 4] = p2_type                     # rootfs, Linux
+    head[446 + 16 + 8:446 + 16 + 12] = (1056768).to_bytes(4, "little")
+    head[510:512] = b"\x55\xaa"
+    return bytes(head)
+
+
+def test_the_linux_partition_is_hidden_until_the_card_is_ejected():
+    """Windows letters every partition of removable media, including the ext4 root it cannot read, and
+    Explorer then asks to format it while the first-boot files are being written. commit_head lands the
+    table with that partition marked unused; reveal_partitions puts the type back before the eject."""
+    head = _pi_head()
+    hidden_head, hidden = windisk.hide_foreign_partitions(head)
+    assert hidden == [(446 + 16 + 4, 0x83)]
+    assert hidden_head[446 + 16 + 4] == 0 and hidden_head[446 + 4] == 0x0C       # the boot partition stays
+    assert hidden_head[:446 + 16 + 4] == head[:446 + 16 + 4]                      # nothing else moves:
+    assert hidden_head[446 + 16 + 5:] == head[446 + 16 + 5:]                      # sizes, signature, PARTUUID
+    # a FAT-only card, a GPT card and a head with no MBR at all are left exactly as they are
+    assert windisk.hide_foreign_partitions(_pi_head(p2_type=0x0C)) == (_pi_head(p2_type=0x0C), [])
+    assert windisk.hide_foreign_partitions(_pi_head(p1_type=0xEE)) == (_pi_head(p1_type=0xEE), [])
+    assert windisk.hide_foreign_partitions(b"\0" * 4096) == (b"\0" * 4096, [])
+    # partition 1 is the one the flasher mounts: never hidden, whatever its type
+    assert windisk.hide_foreign_partitions(_pi_head(p1_type=0x83, p2_type=0x0C)) == (_pi_head(p1_type=0x83, p2_type=0x0C), [])
+
+    drive = _RecordingDrive(windisk.DEFER_FIRST_BYTES + 4096)
+    drive.deferred_head = head
+    assert drive.commit_head() == windisk.DEFER_FIRST_BYTES
+    assert bytes(drive.buf[:len(head)]) == hidden_head and drive.hidden == hidden
+
+    class Reopened:  # open_physical_drive again, on the same card, for the last step
+        def __init__(self, n, expect_size=0):
+            self.n = n
+
+        def __enter__(self):
+            return drive
+
+        def __exit__(self, *a):
+            pass
+
+    import unittest.mock as um
+    assert drive.signature == head[440:444]
+    with um.patch.object(windisk, "open_physical_drive", Reopened):
+        # another disk under the same number: a different signature, and nothing is written
+        with pytest.raises(windisk.DiskError, match="no longer holds the partition table"):
+            windisk.reveal_partitions(2, drive.hidden, 512, 0, b"\x01\x02\x03\x04")
+        assert bytes(drive.buf[:len(head)]) == hidden_head
+        windisk.reveal_partitions(2, drive.hidden, 512, 0, drive.signature)
+    assert bytes(drive.buf[:len(head)]) == head          # byte for byte the image's own table
+    # a card that does not keep the write fails the flash: a hidden root partition does not boot
+    drive.deferred_head = head
+    drive.commit_head()
+    real_write = drive.write
+
+    def forgetful(chunk):
+        n = real_write(chunk)
+        drive.buf[446 + 16 + 4] = 0
+        return n
+
+    drive.write = forgetful
+    with um.patch.object(windisk, "open_physical_drive", Reopened):
+        with pytest.raises(windisk.DiskError, match="partition table"):
+            windisk.reveal_partitions(2, drive.hidden, 512, 0, drive.signature)
+    # nothing hidden (macOS, a FAT-only card): nothing is even opened
+    with um.patch.object(windisk, "open_physical_drive", lambda *a, **k: pytest.fail("opened the card")):
+        windisk.reveal_partitions(2, (), 512, 0)
 
 
 def test_commit_head_detects_a_card_that_drops_the_table(image):
@@ -433,3 +525,12 @@ def test_write_image_to_file_is_sequential(image, tmp_path):
     target = tmp_path / "seq.bin"
     windisk.write_image(str(xz), str(target))
     assert target.read_bytes()[:len(data)] == data
+
+
+def test_eject_asks_for_no_rescan_first(monkeypatch):
+    """A storage rescan right before the eject could re-read the finished table and give the Linux
+    partition a drive letter (and Explorer's format prompt) a second before the card goes."""
+    scripts = []
+    monkeypatch.setattr(windisk, "_ps", lambda script, timeout=120: scripts.append(script) or "")
+    windisk.eject("E:/")
+    assert len(scripts) == 1 and "Update-HostStorageCache" not in scripts[0] and 'ParseName("E:")' in scripts[0]

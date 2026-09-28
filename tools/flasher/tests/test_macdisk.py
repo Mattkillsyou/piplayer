@@ -325,9 +325,12 @@ def test_rawdisk_over_a_file_defers_the_head_like_windows(tmp_path, monkeypatch)
         assert card.read_bytes()[:64] == b"\0" * 64
         written = windisk.write_image(str(xz), drive, chunk=256 * 1024, limit=CARD_SIZE)
         assert written == IMG_SIZE + (512 - IMG_SIZE % 512)
-        assert all(off >= windisk.DEFER_FIRST_BYTES for off, _ in writes[1:])
+        # then one empty-but-valid table in sector 0 (nothing to mount, nothing "unreadable"), then the body
+        assert writes[1] == (0, 512)
+        assert all(off >= windisk.DEFER_FIRST_BYTES for off, _ in writes[2:])
         assert drive.deferred_head == data[:windisk.DEFER_FIRST_BYTES]
-        assert card.read_bytes()[:windisk.DEFER_FIRST_BYTES] == b"\0" * windisk.DEFER_FIRST_BYTES
+        head = card.read_bytes()[:windisk.DEFER_FIRST_BYTES]
+        assert head[:512] == b"\0" * 510 + b"\x55\xaa" and head[512:] == b"\0" * (windisk.DEFER_FIRST_BYTES - 512)
         assert windisk.verify_image(str(xz), drive, skip=windisk.DEFER_FIRST_BYTES)
         assert not windisk.verify_image(str(xz), drive)
         assert drive.commit_head() == windisk.DEFER_FIRST_BYTES
@@ -441,7 +444,8 @@ def test_run_flash_on_macos_writes_the_card_byte_for_byte(tmp_path, monkeypatch)
     assert "mountDisk" in verbs and verbs[-1] == "eject" and du.calls[-1] == ["eject", str(boot)]
     assert verbs.index("unmountDisk") < verbs.index("mountDisk") < verbs.index("eject")
     # The old table was blanked first and the real one landed last, after the body was verified.
-    assert heads[0] == b"\0" * 8 and heads[-1] == data[:8] and len(heads) == 2
+    # blanked first, an empty valid table while the body was written, the real one last
+    assert heads[0] == b"\0" * 8 and heads[1] == b"\0" * 8 and heads[-1] == data[:8] and len(heads) == 3
     out = card.read_bytes()
     assert out[:IMG_SIZE] == data and out[IMG_SIZE:] == b"\0" * (CARD_SIZE - IMG_SIZE)
     # The boot files as on Windows: LF, one cmdline line; macOS's junk gone.
@@ -486,3 +490,9 @@ def test_gui_lists_mac_cards_through_the_same_screen(monkeypatch):
         assert app.selected_disk()["device"] == "/dev/disk4"
     finally:
         root.destroy()
+
+
+def test_macos_hides_nothing():
+    """macOS leaves a filesystem it cannot read alone, and the hide/reveal pair writes sector 0 through a
+    Windows handle: RawDisk must never hide, so reveal_partitions never opens anything there."""
+    assert macdisk.RawDisk.HIDE_FOREIGN is False

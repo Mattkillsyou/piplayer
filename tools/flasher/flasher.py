@@ -1535,7 +1535,7 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
             written = disk.write_image(image, drive, on_write, cancel, limit=d["size"],
                                        sector=d.get("sector") or disk.SECTOR, expected_sha256=sha256)
             drive.flush()
-            # The partition table is still blank, so the OS cannot mount (and scribble on) anything
+            # The partition table is still empty, so the OS cannot mount (and scribble on) anything
             # while the card is read back. It is written and checked last by commit_head().
             log(f"Wrote {written / 1e6:.0f} MB. Reading the whole card back to verify ...")
             status("Checking the card")
@@ -1547,6 +1547,8 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
                 raise disk.DiskError("read-back verification failed: the card did not store what was written "
                                      "(worn or counterfeit card?)")
             drive.commit_head()
+            hidden = getattr(drive, "hidden", ())  # the root partition, kept from Explorer until the eject
+            signature = getattr(drive, "signature", b"")
             drive.refresh_partitions()
     except disk.Cancelled:
         raise disk.Cancelled("The card is NOT usable; flash it again.")
@@ -1554,6 +1556,17 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
 
     # 6-7. boot volume and first-boot files
     status("Finishing the card")
+
+    def reveal():
+        disk.reveal_partitions(d["number"], hidden, d.get("sector") or disk.SECTOR, d["size"], signature)
+
+    def reveal_quietly():
+        # A failed finish still leaves the image's own partition table behind, not one with a hidden entry.
+        try:
+            reveal()
+        except Exception as e:
+            log(f"Could not restore the partition table after the failure ({e}).")
+
     try:
         log("Waiting for the boot partition to mount ...")
         mount = disk.find_boot_volume(d["number"], cancel_event=cancel, log=log)  # 'E:/' or '/Volumes/bootfs'
@@ -1563,16 +1576,26 @@ def run_flash(v: dict, log, progress, cancel: threading.Event, dry_run: bool = F
             raise disk.Cancelled()
         write_firstboot_files(boot, firstrun, provision, archive)
     except disk.Cancelled:
+        reveal_quietly()
         raise disk.Cancelled("The image is on the card but the first-boot files are NOT; "
                              "the card will not enroll. Flash it again.")
     except PermissionError as e:
+        reveal_quietly()
         if host.FILES_DENIED_HINT:
             raise disk.DiskError(f"{e}\n\n{host.FILES_DENIED_HINT}") from e
         raise disk.DiskError(f"{e}\n\nThe image was written but the first-boot files were NOT: this card "
                              "will not enroll. Re-insert it and Flash again.") from e
     except Exception as e:
+        reveal_quietly()
         raise disk.DiskError(f"{e}\n\nThe image was written but the first-boot files were NOT: this card "
                              "will not enroll. Re-insert it and Flash again.") from e
+    # The root partition was hidden from Windows while the boot partition was mounted; put it back (and
+    # read it back) before the card leaves. A failure here fails the flash with the plain words.
+    try:
+        reveal()
+    except Exception as e:
+        raise disk.DiskError(f"{e}\n\nThe card was written but its partition table was not finished: this "
+                             "card is NOT usable. Re-insert it and Flash again.") from e
     log("First-boot files written. Ejecting ...")
     try:
         disk.eject(mount)

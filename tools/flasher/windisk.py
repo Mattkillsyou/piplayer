@@ -144,14 +144,25 @@ def check_disk(d: dict) -> None:
 
 
 def clear_disk(number: int, unique_id: str = "") -> None:
-    """Remove every partition so no volume is mounted; Windows only blocks raw writes inside mounted volumes."""
+    """Remove every partition so no volume is mounted; Windows only blocks raw writes inside mounted volumes.
+
+    The disk is then given an empty MBR in the same PowerShell call. A RAW removable disk is what Windows
+    shows as one unformatted volume under the reader's drive letter, and Explorer then asks "You need to
+    format the disk in drive E:" while the card is being written; an empty partition table is a disk with
+    nothing on it, which gets no drive letter at all. Best effort: write_image puts the same empty table
+    in sector 0 itself, so a Windows that refuses Initialize-Disk here only leaves a shorter window."""
     n = int(number)
+    target = f"-UniqueId {_ps_str(unique_id)}" if unique_id else f"-Number {n}"
+    init = f"try {{ Initialize-Disk {target} -PartitionStyle MBR -ErrorAction Stop }} catch {{}}; exit 0"
     # Clear-Disk leaves the disk RAW and fails with "The disk has not been initialized" (41000) when it
     # already is (factory-blank card, diskpart clean, or a previous run that failed after this step).
     if partition_style(n) == "RAW":
+        try:
+            _ps(init, timeout=60)
+        except DiskError:
+            pass  # a stuck storage provider: write_image puts the empty table in sector 0 itself
         return
-    target = f"-UniqueId {_ps_str(unique_id)}" if unique_id else f"-Number {n}"
-    _ps(f"Clear-Disk {target} -RemoveData -RemoveOEM -Confirm:$false -ErrorAction Stop", timeout=180)
+    _ps(f"Clear-Disk {target} -RemoveData -RemoveOEM -Confirm:$false -ErrorAction Stop; {init}", timeout=180)
 
 
 def partition_style(number: int) -> str:
@@ -200,8 +211,9 @@ def _partitions(number: int) -> list:
 
 def eject(letter: str) -> None:
     letter = letter.rstrip(":\\/")
-    _ps("Update-HostStorageCache; "
-        f'(New-Object -ComObject Shell.Application).NameSpace(17).ParseName("{letter}:").InvokeVerb("Eject")')
+    # No Update-HostStorageCache first: a rescan here could re-read the table reveal_partitions just
+    # finished and give the Linux partition a drive letter a second before the eject.
+    _ps(f'(New-Object -ComObject Shell.Application).NameSpace(17).ParseName("{letter}:").InvokeVerb("Eject")')
 
 
 # ---------------------------------------------------------------- Win32 raw disk
@@ -318,14 +330,25 @@ class PhysicalDrive:
 
     deferred_head: bytes = b""
 
+    # macdisk.RawDisk turns this off: its finish unmounts the boot volume and ejects, and macOS leaves a
+    # filesystem it cannot read alone rather than offering to format it.
+    HIDE_FOREIGN = True
+    hidden = ()  # [(offset, type)] commit_head hid; reveal_partitions puts them back
+    signature = b""  # the image's MBR disk signature, set by commit_head
+
     def commit_head(self) -> int:
         """Write the deferred first bytes (partition table) and read them straight back.
 
         Once this lands Windows will mount the new partitions and start writing its own
-        files into the boot partition, so the body must already be verified by now."""
+        files into the boot partition, so the body must already be verified by now. The partitions
+        Windows cannot read (the ext4 root) land marked unused until reveal_partitions, so Explorer
+        never sees them and never offers to format them."""
         head = self.deferred_head
         if not head:
             return 0
+        if self.HIDE_FOREIGN:
+            head, self.hidden = hide_foreign_partitions(head)
+            self.signature = bytes(head[440:444])  # reveal_partitions checks it is still the same card
         self.seek(0)
         self.write(head)
         self.flush()
@@ -514,10 +537,71 @@ def _open_target(target, mode: str):
     return target, False
 
 
+# MBR partition types Windows can read: FAT12/16/32 in their CHS and LBA forms. Anything else on a
+# Raspberry Pi OS card (its ext4 root, type 0x83) gets a drive letter on removable media too, and
+# Explorer then offers to format it while the flasher is still writing the first-boot files.
+FAT_TYPES = frozenset({0x01, 0x04, 0x06, 0x0B, 0x0C, 0x0E})
+MBR_TABLE = 446  # offset of the four 16-byte partition entries in sector 0
+
+
+def placeholder_mbr(sector: int = SECTOR) -> bytes:
+    """A valid MBR with no partitions: what sector 0 holds while the rest of the card is written.
+    A blank sector 0 would make the card a RAW volume under the reader's drive letter (see clear_disk)."""
+    s = bytearray(sector)
+    s[510:512] = b"\x55\xaa"
+    return bytes(s)
+
+
+def hide_foreign_partitions(head: bytes) -> tuple:
+    """head with every partition after the first that Windows cannot read marked unused (type 0), and the
+    [(offset, type)] reveal_partitions needs to put them back. Partition 1 (the FAT boot partition the
+    flasher writes into) is never touched; a GPT card (protective 0xEE) or no MBR at all is left as is."""
+    if len(head) < 512 or head[510:512] != b"\x55\xaa" or head[MBR_TABLE + 4] == 0xEE:
+        return head, []
+    out, hidden = bytearray(head), []
+    for i in range(1, 4):
+        off = MBR_TABLE + 16 * i + 4
+        if head[off] and head[off] not in FAT_TYPES:
+            hidden.append((off, head[off]))
+            out[off] = 0
+    return bytes(out), hidden
+
+
+def reveal_partitions(number: int, hidden, sector: int = SECTOR, expect_size: int = 0, signature: bytes = b"") -> None:
+    """Put back the partition types commit_head hid, once the first-boot files are on the card and just
+    before it is ejected, and read sector 0 back: a card left with its root partition marked unused is not
+    the image that was written (Pi OS's first-boot resize would skip it), so a mismatch fails the flash
+    rather than handing over a card that only looks finished. Sector 0 lies outside the mounted boot
+    partition, so Windows allows the raw write while the boot partition is still mounted; the flasher asks
+    Windows for no rescan between here and the eject.
+
+    Before writing, sector 0 must still be the table commit_head wrote (the image's disk signature, the
+    boot signature, the hidden entries still unused): the disk is opened again by number, and a card
+    re-plugged in the meantime could have handed that number to another disk."""
+    if not hidden:
+        return
+    with open_physical_drive(number, expect_size=expect_size) as drive:
+        drive.seek(0)
+        s = bytearray(drive.read(sector))
+        if (s[510:512] != b"\x55\xaa" or (signature and bytes(s[440:444]) != signature)
+                or any(s[off] for off, _ in hidden)):
+            raise DiskError(f"disk {number} no longer holds the partition table that was just written; "
+                            "the card or reader changed")
+        for off, typ in hidden:
+            s[off] = typ
+        drive.seek(0)
+        drive.write(bytes(s))
+        drive.flush()
+        drive.seek(0)
+        if drive.read(sector) != bytes(s):
+            raise DiskError("read-back verification failed on the partition table: the card did not store "
+                            "what was written (worn or counterfeit card?)")
+
+
 # The first MiB (MBR/GPT and the start of the boot partition) is written LAST when the target is a
 # physical drive. As soon as a valid partition table lands, Windows mounts the new volumes and refuses
 # raw writes inside them (ERROR_ACCESS_DENIED 5); Rufus and rpi-imager defer the first sectors for the
-# same reason. With the table still blank the disk stays raw until the very end.
+# same reason. Until then sector 0 holds an empty but valid table (placeholder_mbr): nothing to mount.
 DEFER_FIRST_BYTES = 1024 * 1024
 
 
@@ -538,6 +622,17 @@ def write_image(src, target, progress_cb=None, cancel_event=None, chunk: int = C
 
     defer = isinstance(target, PhysicalDrive)
     held: list = []  # the deferred first DEFER_FIRST_BYTES, written after everything else
+    if defer:
+        # An empty but valid partition table while the body goes on: no volume, no drive letter, no
+        # "format this disk?" from Explorer halfway through the write.
+        out.seek(0)
+        out.write(placeholder_mbr(sector))
+        out.flush()
+        try:  # Windows caches the partition layout: ask it to re-read, or it keeps the RAW volume it had
+            out.refresh_partitions()
+        except DiskError:
+            pass  # best effort; clear_disk's Initialize-Disk is the first line
+        out.seek(0)
 
     def emit(data: bytes):
         nonlocal written

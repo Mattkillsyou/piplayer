@@ -1074,6 +1074,8 @@ def _flash_stubs(monkeypatch, tmp_path, calls):
         def flush(self):
             self.f.flush()
 
+        hidden = [(466, 0x83)]  # what the real commit_head hides: the Pi's ext4 root partition
+
         def commit_head(self):
             # A plain file target has nothing deferred; the real PhysicalDrive lands the partition
             # table here, after the body was verified.
@@ -1088,7 +1090,31 @@ def _flash_stubs(monkeypatch, tmp_path, calls):
                         lambda n, timeout=30.0, cancel_event=None, log=None: calls.append("find") or "Z:/")
     monkeypatch.setattr(flasher, "Path", lambda s: boot if str(s).startswith("Z:") else Path(s))
     monkeypatch.setattr(flasher.disk, "eject", lambda letter: calls.append("eject"))
+    monkeypatch.setattr(flasher.disk, "reveal_partitions",
+                        lambda n, hidden, sector, size, signature=b"": calls.append(f"reveal {hidden}"))
     return card, boot
+
+
+def test_a_failed_finish_still_puts_the_partition_table_back(monkeypatch, tmp_path):
+    """The root partition is hidden from Windows while the boot files go on. If that step fails, the table
+    is restored before the error, and a failure of the restore itself says the card is not usable."""
+    calls, lines = [], []
+    card, boot = _flash_stubs(monkeypatch, tmp_path, calls)
+    img = tmp_path / "x.img"
+    img.write_bytes(bytes(range(256)) * 8)
+    v = dict(FULL, image_path=str(img), disk_info=dict(DISK, size=1 << 20))
+    monkeypatch.setattr(flasher, "write_firstboot_files", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(flasher.disk.DiskError, match="first-boot files were NOT"):
+        flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
+    assert calls[-1] == "reveal [(466, 131)]" and "eject" not in calls
+
+    calls.clear()
+    monkeypatch.setattr(flasher, "write_firstboot_files", lambda *a: None)
+    monkeypatch.setattr(flasher.disk, "reveal_partitions",
+                        lambda *a, **k: (_ for _ in ()).throw(flasher.disk.DiskError("open failed")))
+    with pytest.raises(flasher.disk.DiskError, match="this card is NOT usable. Re-insert it and Flash again"):
+        flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
+    assert "eject" not in calls
 
 
 def test_run_flash_end_to_end_with_stubs(monkeypatch, tmp_path):
@@ -1099,7 +1125,7 @@ def test_run_flash_end_to_end_with_stubs(monkeypatch, tmp_path):
     v = dict(FULL, image_path=str(img), disk_info=dict(DISK, size=1 << 20))
     steps = []
     flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event(), status=steps.append)
-    assert calls == ["check", "clear", "lock", "commit", "refresh", "find", "eject"]
+    assert calls == ["check", "clear", "lock", "commit", "refresh", "find", "reveal [(466, 131)]", "eject"]
     assert steps == ["Writing the card", "Checking the card", "Finishing the card"]  # what the user reads
     assert card.read_bytes() == bytes(range(256)) * 8
     firstrun = (boot / "firstrun.sh").read_bytes()
@@ -1348,7 +1374,7 @@ def test_run_flash_bundled_end_to_end(monkeypatch, tmp_path):
                         lambda *a, **k: pytest.fail("network touched in bundled mode"))
     v = dict(FULL, image_mode="bundled", image_path="", disk_info=dict(DISK, size=1 << 20))
     flasher.run_flash(v, lines.append, lambda pct, text: None, threading.Event())
-    assert calls == ["check", "clear", "lock", "commit", "refresh", "find", "eject"]
+    assert calls == ["check", "clear", "lock", "commit", "refresh", "find", "reveal [(466, 131)]", "eject"]
     assert card.read_bytes() == bytes(range(256)) * 8
     text = "\n".join(lines)
     assert "Writing raspios-lite-arm64-test.img.xz to disk 2" in text

@@ -369,17 +369,27 @@ modules on any system with `diskutil`, `authopen`, `system_profiler`,
 1. Re-reads the target disk and refuses if it is not the disk that was
    confirmed (same reader slot, size and partition signature: a swapped card or
    a renumbered drive is caught), removes every partition (`Clear-Disk`,
-   skipped when the disk is already RAW), locks the disk, streams the image
-   (all but its first MiB) to `\\.\PhysicalDriveN` with Win32 `WriteFile`,
-   flushes, reads the written image back to verify (the blank first MiB
+   skipped when the disk is already RAW) and gives the disk an empty MBR in the
+   same call, locks the disk, writes that empty table to sector 0 again itself,
+   streams the image (all but its first MiB) to `\\.\PhysicalDriveN` with Win32
+   `WriteFile`, flushes, reads the written image back to verify (the first MiB
    skipped; the unused rest of the card is not read), then writes and re-reads
    the first MiB (the partition table) and asks Windows to re-read it. The
    table lands last because Windows mounts the new boot partition and starts
-   writing its own files there the moment it sees one. On a Mac the same
-   order, with `diskutil` and `/dev/rdiskN` (see "On a Mac").
+   writing its own files there the moment it sees one. The empty table in the
+   meantime matters: a card with a blank sector 0 is what Windows shows as one
+   unformatted drive under the reader's letter, and Explorer then asks to
+   format it in the middle of the write. On a Mac the same order, with
+   `diskutil` and `/dev/rdiskN` (see "On a Mac").
 2. Writes `firstrun.sh`, `projection5000-provision.sh`,
    `projection5000-player.tar.gz` (the `player/` tree) and a patched
-   `cmdline.txt` to the FAT boot partition, then ejects the card.
+   `cmdline.txt` to the FAT boot partition, then ejects the card. On Windows
+   the table from step 1 lands with the Linux root partition marked unused, so
+   Windows only sees the boot partition (it gives every partition of a
+   removable disk a drive letter, including one it cannot read, and Explorer
+   offers to format that one); just before the eject its type is written back
+   and sector 0 is read back, and a card that does not keep it fails the
+   flash.
 
 On the Pi, `firstrun.sh` runs once as root (hostname, user, SSH key, Wi-Fi or
 static address, timezone, keyboard), logs the exit status of every step to

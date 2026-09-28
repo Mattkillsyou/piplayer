@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 from windisk import (CHUNK, DEFER_FIRST_BYTES, MAX_CARD_BYTES, SECTOR, Cancelled, DiskError,  # noqa: F401
+                     reveal_partitions,
                      PhysicalDrive, check_image_magic, human_size, image_size, iter_image, source_name,
                      source_size, verify_head, verify_image, write_image)
 
@@ -298,6 +299,8 @@ class RawDisk(PhysicalDrive):
     """windisk.PhysicalDrive over the authopen descriptor of /dev/rdiskN: same write/read/seek/flush/close,
     the same deferred head (commit_head is inherited). Reads and writes are whole sectors, split into 1 MiB
     transfers; a card pulled mid-write surfaces as a DiskError in plain words."""
+    HIDE_FOREIGN = False  # macOS leaves the ext4 root alone; nothing to hide, nothing to reveal
+
 
     def __init__(self, number: int, expect_size: int = 0):
         self.number = int(number)
