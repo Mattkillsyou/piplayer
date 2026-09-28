@@ -27,7 +27,10 @@ CHECK_EVERY = 7 * 24 * 3600  # seconds; the owner's "check for updates weekly"
 PATH = "/api/flasher/latest"
 KEYS = ("version", "name", "windows", "mac_arm64", "mac_intel", "notes")  # name: "" from a console before names
 # update_from / update_to: written just before an update is handed over, so the new version can say so.
-STATE_KEYS = ("last_check", "last_seen_version", "downloaded", "downloaded_version", "update_from", "update_to")
+# failed_version: an update that did not go in, tried once more; skip_version: it failed again, so the weekly
+# check leaves it alone (Check for updates still fetches it).
+STATE_KEYS = ("last_check", "last_seen_version", "downloaded", "downloaded_version", "update_from", "update_to",
+              "failed_version", "skip_version")
 DOTTED = re.compile(r"\d+(\.\d+)*$")
 TIMEOUT, DOWNLOAD_TIMEOUT = 10, 60
 CHUNK = 1024 * 1024

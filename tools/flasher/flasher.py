@@ -1026,6 +1026,9 @@ class App:
                 self.post(lambda: self._up_to_date(manual))
                 return
             named = updater.label(version, info.get("name", ""))
+            if not manual and version == state.get("skip_version"):
+                self.post(lambda: self.log(f"Version {named} did not go in twice; only Check for updates fetches it."))
+                return
             self.post(lambda: self.log(f"Version {named} is available; downloading it."))
             asset = info[host.UPDATE_ASSET]
             try:
@@ -1108,7 +1111,8 @@ class App:
     def say_updated(self):
         """The first ready screen after an update: "Updated to <version>." on the status line, once. While the
         sign-in box is up it waits (sign-in calls it again). An update that did not go in (this is still the
-        old version) is said in the log, and the next start looks for it again."""
+        old version) is said in the log and looked for again at once, one time: a second failure of the same
+        version leaves it to the button, or every start would fetch 531 MB and quit."""
         state = updater.load_state()
         to = state.get("update_to")
         if not to:
@@ -1122,7 +1126,11 @@ class App:
             self.log(f"The update to {to} did not go in; this is still {updater.VERSION}.")
             for line in _install_log_tail():  # the installer says why (Windows keeps its log beside it)
                 self.log(f"  installer: {line}")
-            state = dict(state, last_check=0)
+            if state.get("failed_version") == to:
+                self.log(f"It is not fetched again by itself; Check for updates tries {to} once more.")
+                state = dict(state, skip_version=to)
+            else:
+                state = dict(state, last_check=0, failed_version=to)
         updater.save_state(dict(state, update_from="", update_to=""))
 
     def sign_out(self):

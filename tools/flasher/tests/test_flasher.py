@@ -1752,6 +1752,38 @@ def test_updated_to_waits_for_the_sign_in_box_and_a_failed_install_is_said(monke
     root.destroy()
 
 
+def test_an_update_that_fails_twice_is_not_fetched_again_by_itself(monkeypatch, tmp_path):
+    """An installer that keeps failing must not cost 531 MB and a quit at every start: the same version is
+    tried once more, then only the button fetches it."""
+    monkeypatch.setattr(flasher.disk, "list_disks", lambda: [])
+    _signed_in(monkeypatch)
+    asked, downloaded, installed, setup = _update_stubs(monkeypatch, tmp_path, UPDATE)
+    quit_calls = []
+    monkeypatch.setattr(flasher.App, "on_close", lambda self: quit_calls.append(True))
+    flasher.updater.save_state({"last_check": time.time(), "update_from": flasher.updater.VERSION,
+                                "update_to": NEWER})
+    root = _root()
+    app = flasher.App(root)  # the first failure: tried once more, at once
+    assert _pump(root, app, lambda: quit_calls)
+    assert downloaded == [UPDATE["windows"]] and installed == [setup]
+    root.destroy()
+
+    root = _root()
+    app = flasher.App(root)  # still the old version: the retry failed too
+    assert f"It is not fetched again by itself; Check for updates tries {NEWER} once more." in _log(app)
+    root.destroy()
+    flasher.updater.save_state(dict(flasher.updater.load_state(), last_check=time.time() - 8 * 86400))
+    root = _root()
+    app = flasher.App(root)  # a week later the console still offers it: asked, not fetched
+    assert _pump(root, app, lambda: "did not go in twice" in _log(app) and not app._update_thread.is_alive())
+    assert len(asked) == 2 and downloaded == [UPDATE["windows"]] and len(quit_calls) == 1
+
+    app.update_btn.invoke()  # the button still fetches it
+    assert _pump(root, app, lambda: len(quit_calls) == 2)
+    assert len(downloaded) == 2 and installed == [setup, setup]
+    root.destroy()
+
+
 def test_the_name_check_never_holds_the_window_past_its_limit(monkeypatch):
     """A website that accepts the connection and then says nothing: FLASH waits at most EXISTS_TIMEOUT for
     the name check, then asks the usual question without the extra sentence."""
