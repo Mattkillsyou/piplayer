@@ -87,9 +87,10 @@ async function sync(ctx) {
   };
   const displayFps = rate("display_fps", 1000);
   const videoFps = rate("video_fps", 1000);
-  const dropRate = rate("drop_rate", 100000);   // frames dropped per minute, 0 is a real answer
+  // Frames dropped per minute: 0 (the player sends "0.0") is the answer worth having, not a missing one.
   const dropRateRaw = q.get("drop_rate");
-  const dropsPerMin = dropRateRaw !== null && dropRateRaw.trim() === "0" ? 0 : dropRate;
+  const dropRateNum = dropRateRaw === null || dropRateRaw.trim() === "" ? NaN : Number(dropRateRaw);
+  const dropsPerMin = Number.isFinite(dropRateNum) && dropRateNum >= 0 && dropRateNum <= 100000 ? dropRateNum : null;
   const droppedRaw = q.get("dropped_frames");   // absent is not zero: Number(null) would be
   const droppedNum = droppedRaw === null || droppedRaw.trim() === "" ? NaN : Number(droppedRaw);
   const dropped = Number.isFinite(droppedNum) && droppedNum >= 0 ? Math.floor(droppedNum) : null;

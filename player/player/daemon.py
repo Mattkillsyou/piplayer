@@ -213,26 +213,30 @@ def _apply_hwdec_override(mpv: MpvClient, state, manifest: dict | None) -> None:
             mpv.set_property("playlist-pos", pos)
 
 
-PROFILE_CHOICES = frozenset({"fast"})   # mpv's built-in profiles the website may switch on
+# mpv's built-in "fast" render profile (bilinear scaling, no dithering) on every projector. Measured on
+# the Living Room Pi 4, 1080p 29.97 fps on a 60 Hz screen: about 930 frames dropped per minute at mpv's
+# default quality with either hardware decoder (the drawing, not the decoding, fell behind), and 0 to 17
+# with "fast". The website can turn it off for one device ("mpv": {"profile": "none"}).
+MPV_PROFILE = "fast"
+PROFILE_CHOICES = frozenset({"fast", "none"})
 
 
 def _apply_profile_override(mpv: MpvClient, state, manifest: dict | None) -> None:
-    """The website's per-device render profile (manifest "mpv": {"profile": "fast"}). mpv's built-in
-    "fast" profile trades image filtering for speed (bilinear scaling, no dithering): what a GPU that
-    drops frames drawing 1080p needs. Render options take effect on the next frame, so nothing is
-    reloaded; taking the choice away restores what the profile changed (apply-profile ... restore)."""
+    """The render profile: MPV_PROFILE unless the website says otherwise for this device. Applied once per
+    mpv instance and again when the choice changes; render options take effect on the next frame, so
+    nothing is reloaded. "none" undoes "fast" (apply-profile fast restore)."""
     wanted = ((manifest or {}).get("mpv") or {}).get("profile")
     if wanted is not None and wanted not in PROFILE_CHOICES:
         log.warning("ignoring manifest profile %r: not a profile this player applies", wanted)
         wanted = None
+    wanted = wanted or MPV_PROFILE
     if wanted == state.profile_override:
         return
-    if wanted is not None:
-        ok = mpv.command("apply-profile", wanted) is not None
+    if wanted == "none":
+        ok = state.profile_override != "fast" or mpv.command("apply-profile", "fast", "restore") is not None
     else:
-        ok = mpv.command("apply-profile", state.profile_override, "restore") is not None
-    log.info("mpv profile %s from the website (%s)", wanted or f"{state.profile_override} restored",
-             "applied" if ok else "refused")
+        ok = mpv.command("apply-profile", wanted) is not None
+    log.info("mpv render profile %s (%s)", wanted, "applied" if ok else "refused")
     if ok:
         state.profile_override = wanted
         state.last_drops = None            # a new setting starts a new measurement

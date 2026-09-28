@@ -163,6 +163,9 @@ describe("sync", () => {
     const rate = () => one("SELECT drop_rate FROM devices WHERE id = ?", ids.dev.id);
     await sync(ids.dev, { drop_rate: "412.5" });
     expect(await rate()).toEqual({ drop_rate: 412.5 });
+    await sync(ids.dev, { drop_rate: "0.0" });                   // how the player sends it
+    expect(await rate()).toEqual({ drop_rate: 0 });
+    await sync(ids.dev, { drop_rate: "16.7" });
     await sync(ids.dev, { drop_rate: "0" });
     expect(await rate()).toEqual({ drop_rate: 0 });
     await sync(ids.dev, { drop_rate: "abc" });
