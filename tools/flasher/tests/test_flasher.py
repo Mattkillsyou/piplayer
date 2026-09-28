@@ -1614,9 +1614,9 @@ def test_the_first_start_after_an_update_says_so_once(monkeypatch, tmp_path):
     root = _root()
     app = flasher.App(root)
     assert _status(app) == "Ready." and "Updated" not in _log(app)
-    assert flasher.updater.load_state()["update_to"] == ""
     assert _pump(root, app, lambda: f"Up to date (version {flasher.updater.VERSION})." in _log(app))
     assert asked == [flasher.console_url()]
+    assert flasher.updater.load_state()["update_to"] == ""  # read once the check has written it
     root.destroy()
 
 
