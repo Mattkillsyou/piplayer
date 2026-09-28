@@ -216,6 +216,8 @@ class FakeMpv:
         if name in ("overlay-add", "overlay-remove"):
             self.overlays.append(cmd)
             return {"error": "success"}
+        if name == "apply-profile":          # mpv's built-in profiles, e.g. "fast" (and "fast", "restore")
+            return {"error": "success"} if args and args[0] == "fast" else {"error": "invalid parameter"}
         if name == "screenshot-to-file":
             if self.screenshot_bytes is not None:
                 from pathlib import Path

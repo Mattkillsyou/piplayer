@@ -270,7 +270,12 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
     projector: projector_block(device, projector_want(device, rows, groupPlaylistId, wall, settings)),
     // Playback options set per device (migration 0014): only present when one is set, so an older
     // player and a device on the defaults see the manifest they always did.
-    ...(device.mpv_hwdec ? { mpv: { hwdec: device.mpv_hwdec } } : {}),
+    ...(device.mpv_hwdec || device.mpv_profile ? {
+      mpv: {
+        ...(device.mpv_hwdec ? { hwdec: device.mpv_hwdec } : {}),
+        ...(device.mpv_profile ? { profile: device.mpv_profile } : {}),
+      },
+    } : {}),
   };
 }
 

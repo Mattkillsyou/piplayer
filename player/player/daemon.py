@@ -213,6 +213,31 @@ def _apply_hwdec_override(mpv: MpvClient, state, manifest: dict | None) -> None:
             mpv.set_property("playlist-pos", pos)
 
 
+PROFILE_CHOICES = frozenset({"fast"})   # mpv's built-in profiles the website may switch on
+
+
+def _apply_profile_override(mpv: MpvClient, state, manifest: dict | None) -> None:
+    """The website's per-device render profile (manifest "mpv": {"profile": "fast"}). mpv's built-in
+    "fast" profile trades image filtering for speed (bilinear scaling, no dithering): what a GPU that
+    drops frames drawing 1080p needs. Render options take effect on the next frame, so nothing is
+    reloaded; taking the choice away restores what the profile changed (apply-profile ... restore)."""
+    wanted = ((manifest or {}).get("mpv") or {}).get("profile")
+    if wanted is not None and wanted not in PROFILE_CHOICES:
+        log.warning("ignoring manifest profile %r: not a profile this player applies", wanted)
+        wanted = None
+    if wanted == state.profile_override:
+        return
+    if wanted is not None:
+        ok = mpv.command("apply-profile", wanted) is not None
+    else:
+        ok = mpv.command("apply-profile", state.profile_override, "restore") is not None
+    log.info("mpv profile %s from the website (%s)", wanted or f"{state.profile_override} restored",
+             "applied" if ok else "refused")
+    if ok:
+        state.profile_override = wanted
+        state.last_drops = None            # a new setting starts a new measurement
+
+
 def _play_rate(mpv: MpvClient, state) -> float | None:
     """How fast the file is really playing, 1.0 being real speed: how far time-pos
     moved between two cycles against the clock on the wall. mpv's own frame rate
@@ -268,6 +293,7 @@ class PlayerState:
     last_time_pos: tuple[float, float] | None = None   # (mpv time-pos, monotonic) of the last cycle: _play_rate
     last_drops: tuple[int, float] | None = None        # (mpv drop counters, monotonic) of the last cycle: _drop_rate
     hwdec_override: str | None = None                  # the manifest hwdec last applied to this mpv (None: default)
+    profile_override: str | None = None                # the manifest render profile last applied (None: mpv's defaults)
     idle_cycles: int = 0                 # consecutive cycles mpv sat idle with entries queued
     idle_streak: int = 0                 # same, but not reset by the idle re-push (player fault detection)
     last_failure: str | None = None      # why the last sync failed: token | unreachable | http | sync (None: it worked)
@@ -348,6 +374,7 @@ def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
         state.mpv_pid = pid
         state.applied_hash = None
         state.hwdec_override = None   # a new mpv starts on its own default; the website's choice is re-applied
+        state.profile_override = None
         # once per mpv instance (state.mpv_pid), so playback is not restarted every cycle
         pos = mpv.get_property("playlist-pos") if _apply_playback_options(mpv) else None
         if pos is not None and int(pos) >= 0:
@@ -362,6 +389,7 @@ def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
             _failure_screen(state, screens, None)   # before the first sync the boot screen stays up
         return
     _apply_hwdec_override(mpv, state, manifest)
+    _apply_profile_override(mpv, state, manifest)
 
     wanted = wanted_hash(cfg, manifest)
     need_push = wanted != state.applied_hash

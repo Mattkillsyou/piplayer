@@ -258,5 +258,9 @@ describe("per-device playback options (migration 0014)", () => {
     expect(await m.manifest_for_device(env, base, "https://h", settings)).not.toHaveProperty("mpv");
     const withChoice = await m.manifest_for_device(env, { ...base, mpv_hwdec: "drm" }, "https://h", settings);
     expect(withChoice.mpv).toEqual({ hwdec: "drm" });
+    const fast = await m.manifest_for_device(env, { ...base, mpv_profile: "fast" }, "https://h", settings);
+    expect(fast.mpv).toEqual({ profile: "fast" });
+    const both = await m.manifest_for_device(env, { ...base, mpv_hwdec: "v4l2m2m", mpv_profile: "fast" }, "https://h", settings);
+    expect(both.mpv).toEqual({ hwdec: "v4l2m2m", profile: "fast" });
   });
 });

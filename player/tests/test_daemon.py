@@ -866,3 +866,25 @@ def test_drops_are_reported_per_minute_across_loops(cfg, cms, mpv, client, monke
     clock[0] += 60.0                                            # none dropped: 0 is an answer, not nothing
     run_cycle(cfg, client, state)
     assert cms.sync_calls[-1]["drop_rate"] == "0.0"
+
+
+def test_the_website_can_switch_the_fast_render_profile_on_and_off(cfg, cms, mpv, client):
+    """manifest "mpv": {"profile": "fast"} runs apply-profile once; removing it restores; anything but a
+    known profile is ignored; an mpv restart gets it again."""
+    seed_local(cfg, cms, ["a.mp4"])
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    applies = lambda: [c for c in mpv.commands("apply-profile")]
+    assert applies() == []
+    cms.manifest["mpv"] = {"profile": "fast"}
+    run_cycle(cfg, client, state)
+    run_cycle(cfg, client, state)
+    assert applies() == [["apply-profile", "fast"]]
+    cms.manifest["mpv"] = {"profile": "gpu-hq; quit"}
+    run_cycle(cfg, client, state)
+    assert applies()[-1] == ["apply-profile", "fast", "restore"]
+    cms.manifest["mpv"] = {"profile": "fast"}
+    run_cycle(cfg, client, state)
+    mpv.restart()
+    run_cycle(cfg, client, state)
+    assert applies()[-1] == ["apply-profile", "fast"] and len(applies()) == 4
