@@ -87,6 +87,9 @@ async function sync(ctx) {
   };
   const displayFps = rate("display_fps", 1000);
   const videoFps = rate("video_fps", 1000);
+  const dropRate = rate("drop_rate", 100000);   // frames dropped per minute, 0 is a real answer
+  const dropRateRaw = q.get("drop_rate");
+  const dropsPerMin = dropRateRaw !== null && dropRateRaw.trim() === "0" ? 0 : dropRate;
   const droppedRaw = q.get("dropped_frames");   // absent is not zero: Number(null) would be
   const droppedNum = droppedRaw === null || droppedRaw.trim() === "" ? NaN : Number(droppedRaw);
   const dropped = Number.isFinite(droppedNum) && droppedNum >= 0 ? Math.floor(droppedNum) : null;
@@ -108,7 +111,8 @@ async function sync(ctx) {
         play_rate = COALESCE(?, play_rate),
         display_fps = COALESCE(?, display_fps),
         video_fps = COALESCE(?, video_fps),
-        dropped_frames = COALESCE(?, dropped_frames)
+        dropped_frames = COALESCE(?, dropped_frames),
+        drop_rate = COALESCE(?, drop_rate)
       WHERE id = ?`,
     ctx.ip,
     intQuery(q, "current_position"),
@@ -126,6 +130,7 @@ async function sync(ctx) {
     displayFps,
     videoFps,
     dropped,
+    dropsPerMin,
     device.id);
 
   await storeUpdateStatus(ctx, device, q.get("update_status"));

@@ -41,7 +41,8 @@ const decodeBadge = (d) => {
   // shows some frames longer than others, which looks like slow motion without being it.
   const round1 = (n) => String(Math.round(n * 10) / 10);
   const pacing = d.display_fps && d.video_fps
-    ? ` · ${round1(d.video_fps)} fps · ${round1(d.display_fps)} Hz${d.dropped_frames ? ` · ${d.dropped_frames} dropped` : ""}`
+    ? ` · ${round1(d.video_fps)} fps · ${round1(d.display_fps)} Hz${d.drop_rate !== null && d.drop_rate !== undefined
+      ? ` · ${Math.round(d.drop_rate)} dropped/min` : (d.dropped_frames ? ` · ${d.dropped_frames} dropped` : "")}`
     : "";
   // Its own line under the version (decode-badge), wrapping inside the column: on one nowrap line it ran
   // under the Update buttons.
@@ -614,7 +615,7 @@ async function devicesPage(ctx) {
             d.projector_power_state, d.projector_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
             d.tunnel_id, d.tunnel_hostname, d.pi_model, d.camera_supported, d.owner_id,
-            d.decode_mode, d.play_rate, d.display_fps, d.video_fps, d.dropped_frames,
+            d.decode_mode, d.play_rate, d.display_fps, d.video_fps, d.dropped_frames, d.drop_rate,
             p.id AS playlist_id, p.name AS playlist_name,
             g.id AS group_id, g.name AS group_name, u.username AS owner_name
        FROM devices d

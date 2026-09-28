@@ -34,6 +34,12 @@ FAULT_RETRY_CYCLES = 10
 # decoder: the Pi's V4L2 M2M block does H.264 only, so anything else (HEVC on a Pi 4)
 # must still fall through to whatever auto-safe would have picked.
 MPV_HWDEC = "v4l2m2m-copy,auto-safe"
+# What the manifest's per-device "mpv": {"hwdec": ...} may ask for (set on the website, migration
+# 0014): known mpv decoder values only, since it is written straight into mpv.
+HWDEC_CHOICES = frozenset({
+    "v4l2m2m-copy,auto-safe", "v4l2m2m-copy", "v4l2m2m", "drm", "drm-copy",
+    "auto-safe", "auto-copy-safe", "auto", "auto-copy", "no",
+})
 # Frame pacing stays on mpv's default, timed by the clock. display-resample (timing the video to the
 # screen) was tried and measured on a Pi 4 at 60 Hz with a 29.97 fps film: play_rate fell from 0.99
 # to 0.41 with frames dropping, i.e. real slow motion. The daemon puts the default back on any mpv
@@ -161,10 +167,50 @@ def _gather_mpv_status(mpv: MpvClient, manifest: dict | None, state=None) -> dic
                                       mpv.get_property("vo-delayed-frame-count"))
                           if isinstance(v, (int, float)))
             status["dropped_frames"] = int(dropped)
+            per_min = _drop_rate(int(dropped), state)
+            if per_min is not None:
+                status["drop_rate"] = per_min
         rate = _play_rate(mpv, state)
         if rate is not None:
             status["play_rate"] = rate
     return status
+
+
+def _drop_rate(dropped: int, state) -> float | None:
+    """Frames dropped per minute since the last cycle. mpv's counters start again with every file (and
+    with every loop of a one-file playlist), so a counter that went down counts from zero."""
+    now = time.monotonic()
+    last, state.last_drops = state.last_drops, (dropped, now)
+    if last is None:
+        return None
+    was, then = last
+    elapsed = now - then
+    if elapsed < 1:
+        return None
+    moved = dropped - was if dropped >= was else dropped
+    return round(moved * 60 / elapsed, 1)
+
+
+def _apply_hwdec_override(mpv: MpvClient, state, manifest: dict | None) -> None:
+    """The website's per-device decoder choice (manifest "mpv": {"hwdec": ...}), applied when it changes
+    and put back to the player's default when it is taken away. mpv only uses a new decoder from the
+    next decoder init, so whatever is playing is reloaded once."""
+    wanted = ((manifest or {}).get("mpv") or {}).get("hwdec")
+    if wanted is not None and wanted not in HWDEC_CHOICES:
+        log.warning("ignoring manifest hwdec %r: not a decoder this player sets", wanted)
+        wanted = None
+    if wanted == state.hwdec_override:
+        return
+    value = wanted if wanted is not None else MPV_HWDEC
+    ok = mpv.set_property("hwdec", value)
+    log.info("mpv hwdec=%s from the website (%s); mpv now reports hwdec-current=%s",
+             value, "set" if ok else "refused", mpv.get_property("hwdec-current"))
+    if ok:
+        state.hwdec_override = wanted
+        state.last_drops = None            # a new setting starts a new measurement
+        pos = mpv.get_property("playlist-pos")
+        if isinstance(pos, int) and pos >= 0:
+            mpv.set_property("playlist-pos", pos)
 
 
 def _play_rate(mpv: MpvClient, state) -> float | None:
@@ -220,6 +266,8 @@ class PlayerState:
     force_verify: bool = False
     last_full_verify: float = field(default_factory=time.monotonic)
     last_time_pos: tuple[float, float] | None = None   # (mpv time-pos, monotonic) of the last cycle: _play_rate
+    last_drops: tuple[int, float] | None = None        # (mpv drop counters, monotonic) of the last cycle: _drop_rate
+    hwdec_override: str | None = None                  # the manifest hwdec last applied to this mpv (None: default)
     idle_cycles: int = 0                 # consecutive cycles mpv sat idle with entries queued
     idle_streak: int = 0                 # same, but not reset by the idle re-push (player fault detection)
     last_failure: str | None = None      # why the last sync failed: token | unreachable | http | sync (None: it worked)
@@ -299,6 +347,7 @@ def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
             log.info("mpv restarted: %s (pid %s); re-pushing playlist", version, pid)
         state.mpv_pid = pid
         state.applied_hash = None
+        state.hwdec_override = None   # a new mpv starts on its own default; the website's choice is re-applied
         # once per mpv instance (state.mpv_pid), so playback is not restarted every cycle
         pos = mpv.get_property("playlist-pos") if _apply_playback_options(mpv) else None
         if pos is not None and int(pos) >= 0:
@@ -312,6 +361,7 @@ def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
         if screens is not None:
             _failure_screen(state, screens, None)   # before the first sync the boot screen stays up
         return
+    _apply_hwdec_override(mpv, state, manifest)
 
     wanted = wanted_hash(cfg, manifest)
     need_push = wanted != state.applied_hash

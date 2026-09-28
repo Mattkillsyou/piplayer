@@ -806,3 +806,63 @@ def test_status_reports_the_decode_mode_and_how_fast_it_is_really_playing(cfg, c
     mpv.props["time-pos"] = 45.0
     run_cycle(cfg, client, state)
     assert "decode_mode" not in cms.sync_calls[-1] and cms.sync_calls[-1]["play_rate"] == "1.0"
+
+
+def test_the_website_can_choose_the_decoder_and_take_the_choice_back(cfg, cms, mpv, client, monkeypatch, tmp_path):
+    """manifest "mpv": {"hwdec": ...} (per device, on the website) is applied once when it changes, the
+    playing file is reloaded so the decoder is really used, and removing it puts the default back."""
+    v4l2_decoder(monkeypatch, tmp_path)
+    seed_local(cfg, cms, ["a.mp4"])
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC]          # the default, from the new-mpv path
+    reloads = len(sets(mpv, "playlist-pos"))
+
+    cms.manifest["mpv"] = {"hwdec": "drm"}
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec")[-1] == "drm" and len(sets(mpv, "playlist-pos")) == reloads + 1
+    run_cycle(cfg, client, state)
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec").count("drm") == 1                # once, not every cycle
+
+    cms.manifest["mpv"] = {"hwdec": "rm -rf /"}                 # not a decoder: ignored, default back
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec")[-1] == daemon.MPV_HWDEC
+
+    cms.manifest["mpv"] = {"hwdec": "v4l2m2m"}
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec")[-1] == "v4l2m2m"
+    del cms.manifest["mpv"]                                     # taken back on the website
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec")[-1] == daemon.MPV_HWDEC
+
+    cms.manifest["mpv"] = {"hwdec": "drm"}                      # an mpv restart gets the choice again
+    run_cycle(cfg, client, state)
+    mpv.restart()
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec")[-1] == "drm"
+
+
+def test_drops_are_reported_per_minute_across_loops(cfg, cms, mpv, client, monkeypatch):
+    """mpv's drop counters start again with every loop of the file, so the player reports a rate: frames
+    dropped per minute since the last sync, counting from zero when the counter went down."""
+    seed_local(cfg, cms, ["a.mp4"])
+    state = fresh_state(cfg)
+    clock = [1000.0]
+    monkeypatch.setattr(daemon.time, "monotonic", lambda: clock[0])
+    mpv.props.update({"frame-drop-count": 10, "vo-delayed-frame-count": 0})
+    run_cycle(cfg, client, state)
+    run_cycle(cfg, client, state)
+    assert "drop_rate" not in cms.sync_calls[-1]                # one reading is no rate
+    clock[0] += 30.0
+    mpv.props["frame-drop-count"] = 40                          # 30 more in half a minute
+    run_cycle(cfg, client, state)
+    assert cms.sync_calls[-1]["drop_rate"] == "60.0"
+    clock[0] += 30.0
+    mpv.props["frame-drop-count"] = 5                           # the file looped: counted from zero
+    run_cycle(cfg, client, state)
+    assert cms.sync_calls[-1]["drop_rate"] == "10.0"
+    clock[0] += 60.0                                            # none dropped: 0 is an answer, not nothing
+    run_cycle(cfg, client, state)
+    assert cms.sync_calls[-1]["drop_rate"] == "0.0"

@@ -268,6 +268,9 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
     // Projector power: null when the device has no projector control; otherwise {control, mode,
     // want, codes, broadlink_host} (auto mode follows `want`, see projector_want).
     projector: projector_block(device, projector_want(device, rows, groupPlaylistId, wall, settings)),
+    // Playback options set per device (migration 0014): only present when one is set, so an older
+    // player and a device on the defaults see the manifest they always did.
+    ...(device.mpv_hwdec ? { mpv: { hwdec: device.mpv_hwdec } } : {}),
   };
 }
 

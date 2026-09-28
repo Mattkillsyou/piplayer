@@ -159,6 +159,14 @@ describe("sync", () => {
     expect(await pace()).toEqual({ display_fps: 50, video_fps: 29.97, dropped_frames: 15 });
     await sync(ids.dev, { display_fps: "60", video_fps: "24", dropped_frames: "0" });
     expect(await pace()).toEqual({ display_fps: 60, video_fps: 24, dropped_frames: 0 });
+    // drops per minute (migration 0014): 0 is kept as 0, junk keeps the last value
+    const rate = () => one("SELECT drop_rate FROM devices WHERE id = ?", ids.dev.id);
+    await sync(ids.dev, { drop_rate: "412.5" });
+    expect(await rate()).toEqual({ drop_rate: 412.5 });
+    await sync(ids.dev, { drop_rate: "0" });
+    expect(await rate()).toEqual({ drop_rate: 0 });
+    await sync(ids.dev, { drop_rate: "abc" });
+    expect(await rate()).toEqual({ drop_rate: 0 });
   });
 
   it("non-integer current_position is the fixed CMS's 400 {detail: 'query.<name>: <msg>'}", async () => {

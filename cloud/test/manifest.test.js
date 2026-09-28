@@ -247,3 +247,16 @@ describe("projector_want / projector_block", () => {
     await query("UPDATE devices SET projector_control = 'none', projector_power_mode = 'manual', projector_ir_codes = NULL WHERE device_id IN ('d1', 'd3')");
   });
 });
+
+
+describe("per-device playback options (migration 0014)", () => {
+  it("sends mpv.hwdec only when the device has one", async () => {
+    const { env } = await import("cloudflare:workers");
+    const m = await import("../src/manifest.js");
+    const settings = await (await import("../src/db.js")).loadSettings(env);
+    const base = { id: 0, device_id: "x", name: "X", playlist_id: null, group_id: null };
+    expect(await m.manifest_for_device(env, base, "https://h", settings)).not.toHaveProperty("mpv");
+    const withChoice = await m.manifest_for_device(env, { ...base, mpv_hwdec: "drm" }, "https://h", settings);
+    expect(withChoice.mpv).toEqual({ hwdec: "drm" });
+  });
+});
