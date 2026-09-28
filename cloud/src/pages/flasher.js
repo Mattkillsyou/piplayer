@@ -4,7 +4,7 @@
 import * as auth from "../auth.js";
 import { layout } from "./layout.js";
 
-export const FLASHER_VERSION = "0.7.4";
+export const FLASHER_VERSION = "0.7.5";
 export const RELEASE = `https://github.com/Mattkillsyou/piplayer/releases/download/v${FLASHER_VERSION}`;
 
 function flasherPage(ctx) {
