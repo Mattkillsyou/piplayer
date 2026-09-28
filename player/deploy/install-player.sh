@@ -208,6 +208,29 @@ rsync -a --delete \
 
 echo "==> Installing mpv kiosk config"
 MPV_CONF="${DATA_DIR}/.config/mpv/mpv.conf"
+# board.conf: what this board needs, rewritten at every install and upgrade (mpv.conf is the per-Pi
+# file and is kept); projector-mpv.service loads it after mpv.conf with --include.
+MPV_BOARD_CONF="${DATA_DIR}/.config/mpv/board.conf"
+MPV_BOARD_OLD="$(cat "${MPV_BOARD_CONF}" 2>/dev/null || true)"
+{
+    echo "# Written by install-player.sh for this board (${PI_MODEL}); replaced at every install."
+    if [[ "${PI_SOC}" =~ brcm,bcm283[567] ]]; then
+        # VideoCore IV (Pi 0-3, Zero 2): decoded frames go straight onto a KMS plane that the
+        # display hardware scales and shows, with no GL at all - what omxplayer did with dispmanx.
+        # Through GL (v4l2m2m-copy) a Pi 2 drew 9 frames a second of a 1080p film (it needs 30);
+        # this way 32, and the Zenki TV went from choppy to smooth (28 Sep 2026). The planes must be
+        # this way round: video on the primary plane, mpv's OSD on the overlay (the other way the
+        # kernel refused every frame and the screen stayed black).
+        echo "hwdec=v4l2m2m,auto-safe"
+        echo "gpu-hwdec-interop=drmprime-overlay"
+        echo "drm-drmprime-video-plane=primary"
+        echo "drm-draw-plane=overlay"
+    else
+        echo "# Nothing here: mpv.conf's settings are right for this board."
+    fi
+} > "${MPV_BOARD_CONF}"
+MPV_RESTART=0
+[[ "$(cat "${MPV_BOARD_CONF}")" == "${MPV_BOARD_OLD}" ]] || MPV_RESTART=1
 if [[ -f "${MPV_CONF}" ]]; then
     # Per-Pi edits (vo=drm fallback, hwdec=, ao=) must survive an upgrade:
     # leave the file alone and ship the new default next to it.
@@ -383,6 +406,7 @@ EOF
 fi
 
 echo "==> Installing systemd units"
+cmp -s "${SRC_DIR}/deploy/projector-mpv.service" /etc/systemd/system/projector-mpv.service || MPV_RESTART=1
 cp "${SRC_DIR}/deploy/projector-mpv.service" /etc/systemd/system/projector-mpv.service
 cp "${SRC_DIR}/deploy/projector-player.service" /etc/systemd/system/projector-player.service
 cp "${SRC_DIR}/deploy/projector-cloudflared.service" /etc/systemd/system/projector-cloudflared.service
@@ -420,8 +444,14 @@ systemctl disable getty@tty1.service || true
 systemctl stop getty@tty1.service || true
 
 if [[ "${UPGRADE}" == 1 ]]; then
+    if [[ "${MPV_RESTART}" == 1 ]]; then
+        # mpv reads board.conf and its command line only when it starts: a changed one needs a new mpv
+        # (the player daemon pushes the playlist to it again by itself).
+        echo "==> mpv settings for this board changed: restarting projector-mpv"
+        systemctl restart projector-mpv.service || true
+    fi
     echo ""
-    echo "==> Upgraded to ${RELEASE_SHA}. Nothing was restarted; run:"
+    echo "==> Upgraded to ${RELEASE_SHA}. Nothing else was restarted; run:"
     echo "      sudo systemctl restart projector-player.service"
     exit 0
 fi

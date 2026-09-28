@@ -180,3 +180,41 @@ def test_mpv_conf_gets_hwdec_on_boards_with_a_v4l2_decoder(tmp_path, board):
     run_bash(prelude + fn + "\npi_caps\n" + block)
     assert (data / ".config" / "mpv" / "mpv.conf").read_text() == "vo=drm\n"
     assert (data / ".config" / "mpv" / "mpv.conf.dist").read_text() == dist
+
+
+@pytest.mark.parametrize("board", ["pi5", "pi4", "pi3", "pi2", "zero", "zero2"])
+def test_board_conf_puts_video_on_a_display_plane_on_videocore_iv(tmp_path, board):
+    """Pi 0-3: the decoded frame straight onto a KMS plane (no GL), as omxplayer did; a Pi 2 drew 9 fps of
+    1080p through GL and 32 this way. Pi 4/5: nothing. Rewritten at every run, the per-Pi mpv.conf kept."""
+    block = SRC[SRC.index('echo "==> Installing mpv kiosk config"'):SRC.index('echo "==> Creating virtualenv"')]
+    data = tmp_path / "data"
+    (data / ".config" / "mpv").mkdir(parents=True)
+    prelude = "set -euo pipefail\n" + fake_proc(tmp_path, board)
+    prelude += f'DATA_DIR="{_posix(data)}"\nSRC_DIR="{_posix(PLAYER_ROOT)}"\nUSER_NAME=projector\nchown() {{ :; }}\n'
+    prelude += "CAMERA_MIN_MEM_KB=900000\n"
+    fn = caps_and_wyze_blocks()
+    fn = fn[:fn.index("\n}\n") + 3]
+    script = prelude + fn + "\npi_caps\n" + block + '\necho "MPV_RESTART=${MPV_RESTART}"\n'
+    res = run_bash(script)
+    board_conf = (data / ".config" / "mpv" / "board.conf").read_text()
+    overlay = ["hwdec=v4l2m2m,auto-safe", "gpu-hwdec-interop=drmprime-overlay",
+               "drm-drmprime-video-plane=primary", "drm-draw-plane=overlay"]
+    lines = board_conf.splitlines()
+    if board in ("pi4", "pi5"):
+        assert not any("=" in ln and not ln.startswith("#") for ln in lines), board_conf
+    else:
+        assert [ln for ln in lines if not ln.startswith("#")] == overlay
+    assert BOARDS[board][3] in lines[0] and "MPV_RESTART=1" in res.stdout      # new file: mpv must restart
+    # an upgrade: same board, same file, no restart; the per-Pi mpv.conf is still left alone
+    (data / ".config" / "mpv" / "mpv.conf").write_text("vo=drm\n")
+    res = run_bash(script)
+    assert "MPV_RESTART=0" in res.stdout and (data / ".config" / "mpv" / "board.conf").read_text() == board_conf
+    assert (data / ".config" / "mpv" / "mpv.conf").read_text() == "vo=drm\n"
+
+
+def test_mpv_unit_loads_board_conf_after_mpv_conf():
+    unit = (DEPLOY / "projector-mpv.service").read_text()
+    assert "--include=/var/lib/projector-player/.config/mpv/board.conf" in unit
+    # an upgrade restarts mpv only when board.conf or this unit changed
+    assert 'systemctl restart projector-mpv.service || true' in SRC
+    assert SRC.index("MPV_RESTART=0") < SRC.index('cmp -s "${SRC_DIR}/deploy/projector-mpv.service"')

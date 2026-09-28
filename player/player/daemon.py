@@ -34,10 +34,14 @@ FAULT_RETRY_CYCLES = 10
 # decoder: the Pi's V4L2 M2M block does H.264 only, so anything else (HEVC on a Pi 4)
 # must still fall through to whatever auto-safe would have picked.
 MPV_HWDEC = "v4l2m2m-copy,auto-safe"
+# On a Pi 0-3 mpv starts with gpu-hwdec-interop=drmprime-overlay (board.conf, install-player.sh): the
+# decoded frame itself goes onto a display plane, so the decoder must hand it over as is (no -copy).
+# Only with that interop: zero-copy through GL on a Pi 2 showed a black screen (28 Sep 2026).
+MPV_HWDEC_OVERLAY = "v4l2m2m,auto-safe"
 # What the manifest's per-device "mpv": {"hwdec": ...} may ask for (set on the website, migration
 # 0014): known mpv decoder values only, since it is written straight into mpv.
 HWDEC_CHOICES = frozenset({
-    "v4l2m2m-copy,auto-safe", "v4l2m2m-copy", "v4l2m2m", "drm", "drm-copy",
+    "v4l2m2m-copy,auto-safe", "v4l2m2m-copy", "v4l2m2m", "v4l2m2m,auto-safe", "drm", "drm-copy",
     "auto-safe", "auto-copy-safe", "auto", "auto-copy", "no",
 })
 # Frame pacing stays on mpv's default, timed by the clock. display-resample (timing the video to the
@@ -86,6 +90,11 @@ def _has_v4l2_decoder(path: Path | None = None) -> bool:
         return False
 
 
+def _default_hwdec(mpv: MpvClient) -> str:
+    """The decoder for this mpv: zero-copy when it was started with the overlay display path."""
+    return MPV_HWDEC_OVERLAY if mpv.get_property("gpu-hwdec-interop") == "drmprime-overlay" else MPV_HWDEC
+
+
 def _apply_playback_options(mpv: MpvClient) -> bool:
     """Give a fresh mpv instance the options that keep a decode-bound file at
     real speed. They go over IPC rather than into deploy/mpv.conf alone because
@@ -103,13 +112,14 @@ def _apply_playback_options(mpv: MpvClient) -> bool:
     """
     if mpv.get_property("video-sync") not in (None, MPV_VIDEO_SYNC):
         log.info("mpv video-sync=%s", "set" if mpv.set_property("video-sync", MPV_VIDEO_SYNC) else "refused")
+    default = _default_hwdec(mpv)
     if (mpv.get_property("hwdec-current") not in (None, "", "no")
-            or mpv.get_property("hwdec") == MPV_HWDEC or not _has_v4l2_decoder()):
+            or mpv.get_property("hwdec") == default or not _has_v4l2_decoder()):
         return False
     # hwdec=auto-safe does not pick the V4L2 M2M decoder on a Pi 4 (bcm2711), which
     # leaves 1080p H.264 to the CPU: with no audio track to pace it, a decoder that
     # cannot keep up makes the file play slowly rather than drop frames.
-    ok = mpv.set_property("hwdec", MPV_HWDEC)
+    ok = mpv.set_property("hwdec", default)
     log.info("mpv hwdec=%s (mpv now reports hwdec=%s hwdec-current=%s)",
              "set" if ok else "refused", mpv.get_property("hwdec"), mpv.get_property("hwdec-current"))
     return ok
@@ -201,7 +211,7 @@ def _apply_hwdec_override(mpv: MpvClient, state, manifest: dict | None) -> None:
         wanted = None
     if wanted == state.hwdec_override:
         return
-    value = wanted if wanted is not None else MPV_HWDEC
+    value = wanted if wanted is not None else _default_hwdec(mpv)
     ok = mpv.set_property("hwdec", value)
     log.info("mpv hwdec=%s from the website (%s); mpv now reports hwdec-current=%s",
              value, "set" if ok else "refused", mpv.get_property("hwdec-current"))

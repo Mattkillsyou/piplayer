@@ -13,7 +13,8 @@ Environment=HOME=/var/lib/projector-player
 # Private runtime dir owned by the projector user (pipewire/pulse probes look here)
 RuntimeDirectory=projector-mpv
 Environment=XDG_RUNTIME_DIR=/run/projector-mpv
-ExecStart=/usr/bin/mpv --input-ipc-server=/tmp/projector-mpv.sock --idle=yes
+# board.conf (written by install-player.sh for this board) is loaded after mpv.conf, so it wins.
+ExecStart=/usr/bin/mpv --input-ipc-server=/tmp/projector-mpv.sock --idle=yes --include=/var/lib/projector-player/.config/mpv/board.conf
 Restart=always
 RestartSec=5
 

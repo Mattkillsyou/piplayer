@@ -887,3 +887,22 @@ def test_the_fast_render_profile_is_the_default_and_the_website_can_turn_it_off(
     mpv.restart()
     run_cycle(cfg, client, state)
     assert applies()[-1] == ["apply-profile", "fast"] and len(applies()) == 4
+
+
+
+def test_the_overlay_display_path_gets_the_zero_copy_decoder(cfg, cms, mpv, client, monkeypatch, tmp_path):
+    """A Pi 0-3 starts mpv with gpu-hwdec-interop=drmprime-overlay (board.conf): the decoder hands frames over
+    as they are (v4l2m2m), not copied back for GL. Without that interop the default stays -copy (zero-copy
+    through GL was a black screen on a Pi 2)."""
+    v4l2_decoder(monkeypatch, tmp_path)
+    seed_local(cfg, cms, ["a.mp4"])
+    mpv.props["gpu-hwdec-interop"] = "drmprime-overlay"
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec") == [daemon.MPV_HWDEC_OVERLAY] == ["v4l2m2m,auto-safe"]
+    # the website's override comes and goes: back to this board's default, not the -copy one
+    cms.manifest["mpv"] = {"hwdec": "v4l2m2m-copy"}
+    run_cycle(cfg, client, state)
+    cms.manifest.pop("mpv")
+    run_cycle(cfg, client, state)
+    assert sets(mpv, "hwdec")[-2:] == ["v4l2m2m-copy", daemon.MPV_HWDEC_OVERLAY]
