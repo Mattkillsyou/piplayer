@@ -9,7 +9,7 @@ from pathlib import Path
 
 import requests
 
-from . import __version__, camera_config, tunnel, updater
+from . import __version__, camera_config, tunnel, updater, usb
 from .camera import CameraCapture
 from .commands import _run_reboot, execute_commands
 from .config import load as load_config, PlayerConfig
@@ -313,6 +313,7 @@ class PlayerState:
     last_failure: str | None = None      # why the last sync failed: token | unreachable | http | sync (None: it worked)
     failure_text: str = ""
     last_contact: float | None = None    # monotonic time of the last successful sync
+    unreachable_since: float | None = None   # monotonic time the website stopped answering (None: it answers)
     storage_full: bool = False           # a download hit ENOSPC during the last sync
     last_auto_update: datetime | None = None   # when this daemon last started a nightly update-player
     camera_config_version: int | None = None   # manifest camera_config_version applied last (None: fetch on start)
@@ -366,6 +367,21 @@ def _idle_screen(state: PlayerState, screens: StatusScreens, manifest: dict) -> 
                                    message=state.last_sync_error or state.failure_text or "no media could be downloaded"))
 
 
+OFFLINE_AFTER_SECONDS = 60   # without the website this long: a USB stick plays instead (player/usb.py)
+
+
+def _offline(state: PlayerState) -> bool:
+    return (state.unreachable_since is not None
+            and time.monotonic() - state.unreachable_since >= OFFLINE_AFTER_SECONDS)
+
+
+def _usb_changed(state: PlayerState, sticks: list) -> bool:
+    """Worth a cycle now rather than after the sleep: a stick went in or out, or the minute without the
+    website ran out while a stick is in and the stick is not playing yet."""
+    now = usb.mounts()
+    return now != sticks or bool(now and _offline(state) and not (state.applied_hash or "").startswith("usb:"))
+
+
 def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
                    screens: StatusScreens | None = None) -> None:
     """Make mpv's playlist match the last known manifest. Runs every cycle,
@@ -396,6 +412,19 @@ def _reconcile_mpv(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
             mpv.set_property("playlist-pos", int(pos))
         if screens is not None:
             screens.clear()       # the new instance starts black; the right screen is re-shown below
+
+    # No internet for a minute and a USB stick in: play the stick (the website's playlist comes back by
+    # itself below once the website answers again, or once the stick is pulled out).
+    stick = usb.playlist() if _offline(state) else []
+    if stick:
+        wanted = "usb:" + "|".join(str(p) for p, _ in stick)
+        if wanted != state.applied_hash and mpv.apply_playlist(stick):
+            log.info("no internet: playing %d files from USB (%s)", len(stick), ", ".join(p.name for p, _ in stick))
+            state.applied_hash = wanted
+            if screens is not None:
+                screens.clear()
+                screens.notice("No internet: playing from USB", seconds=10.0)
+        return
 
     manifest = state.last_manifest
     if manifest is None:
@@ -521,6 +550,7 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
         state.last_manifest = manifest
         state.last_failure, state.failure_text = None, ""
         state.last_contact = time.monotonic()
+        state.unreachable_since = None
         state.storage_full = "no space left" in state.last_sync_error
         if pending_update is not None:
             # This daemon is the one the update left behind: replace the "Updating..." line it put
@@ -547,6 +577,8 @@ def run_cycle(cfg: PlayerConfig, mpv: MpvClient, state: PlayerState,
         state.backoff = min(state.backoff * 2, 300)
     except requests.RequestException as e:
         state.last_failure, state.failure_text = "unreachable", str(e)
+        if state.unreachable_since is None:
+            state.unreachable_since = time.monotonic()
         log.warning("CMS unreachable: %s (will retry)", e)
         state.backoff = min(state.backoff * 2, 300)
     except SyncError as e:
@@ -639,9 +671,10 @@ def main() -> int:
     while not _stop:
         run_cycle(cfg, mpv, state, screenshot, screens, camera)
 
-        # Sleep, but break early if a force-sync command was queued
+        # Sleep, but break early if a force-sync command was queued or a USB stick matters now
+        sticks = usb.mounts()
         for _ in range(state.backoff):
-            if _stop or _force_sync_now:
+            if _stop or _force_sync_now or _usb_changed(state, sticks):
                 break
             time.sleep(1)
             screens.tick()

@@ -906,3 +906,56 @@ def test_the_overlay_display_path_gets_the_zero_copy_decoder(cfg, cms, mpv, clie
     cms.manifest.pop("mpv")
     run_cycle(cfg, client, state)
     assert sets(mpv, "hwdec")[-2:] == ["v4l2m2m-copy", daemon.MPV_HWDEC_OVERLAY]
+
+
+
+# ------------------------------------------------------ USB stick while offline ---
+
+def usb_stick(monkeypatch, tmp_path, files):
+    root = tmp_path / "usb"
+    (root / "sda1").mkdir(parents=True)
+    for f in files:
+        (root / "sda1" / f).write_bytes(b"x")
+    monkeypatch.setattr(daemon.usb, "USB_ROOT", root)
+    monkeypatch.setattr(daemon.usb.os.path, "ismount", lambda p: str(p) == str(root / "sda1"))
+    return root
+
+
+def test_no_internet_for_a_minute_plays_the_usb_stick_then_the_playlist_again(cfg, cms, mpv, client, monkeypatch,
+                                                                             tmp_path, screens):
+    """A Pi without Wi-Fi (the owner's Pi 2s) set up once online: when the website stops answering, the
+    videos on a USB stick play; once it answers again, the website's playlist is back."""
+    seed_local(cfg, cms, ["a.mp4"])
+    usb_stick(monkeypatch, tmp_path, ["loop2.mp4", "loop1.mp4", "readme.txt"])
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4"]                              # online: the website's playlist
+
+    cms.unreachable = True
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4"] and state.unreachable_since is not None   # not a minute yet
+    assert daemon._usb_changed(state, daemon.usb.mounts()) is False
+    state.unreachable_since -= daemon.OFFLINE_AFTER_SECONDS     # a minute later
+    assert daemon._usb_changed(state, daemon.usb.mounts()) is True   # the sleep breaks for it
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["loop1.mp4", "loop2.mp4"] and state.applied_hash.startswith("usb:")
+    # the one-line notice over the stick's video (an mpv overlay, like "Updating the player...")
+    assert [c[4].replace("\\", "/").rsplit("/", 1)[-1] for c in mpv.commands("overlay-add")][-1:] == ["notice.bgra"]
+    n = len(mpv.commands("loadfile"))
+    run_cycle(cfg, client, state, screens=screens)
+    assert len(mpv.commands("loadfile")) == n                   # not pushed again every cycle
+
+    cms.unreachable = False
+    run_cycle(cfg, client, state, screens=screens)
+    assert names(mpv) == ["a.mp4"] and state.unreachable_since is None
+
+
+def test_offline_without_a_stick_keeps_the_cached_playlist(cfg, cms, mpv, client, monkeypatch, tmp_path):
+    seed_local(cfg, cms, ["a.mp4"])
+    usb_stick(monkeypatch, tmp_path, ["notes.txt"])            # a stick with no videos on it
+    cms.unreachable = True
+    state = fresh_state(cfg)
+    run_cycle(cfg, client, state)
+    state.unreachable_since -= daemon.OFFLINE_AFTER_SECONDS
+    run_cycle(cfg, client, state)
+    assert names(mpv) == ["a.mp4"] and not state.applied_hash.startswith("usb:")

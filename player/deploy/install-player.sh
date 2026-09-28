@@ -114,6 +114,8 @@ if [[ "${UNINSTALL}" == 1 ]]; then
     systemctl disable --now projector-player-postcheck.timer 2>/dev/null || true
     systemctl disable --now projector-cloudflared.service 2>/dev/null || true
     rm -f /etc/systemd/system/projector-cloudflared.service
+    rm -f /etc/udev/rules.d/99-projector-usb.rules
+    udevadm control --reload 2>/dev/null || true
     rm -f /etc/systemd/system/projector-player.service /etc/systemd/system/projector-mpv.service         /etc/systemd/system/projector-wyze-bridge.service \
         /etc/systemd/system/projector-player-postcheck.service /etc/systemd/system/projector-player-postcheck.timer
     systemctl daemon-reload
@@ -438,6 +440,13 @@ systemctl enable projector-mpv.service projector-player.service projector-cloudf
 if [[ "${WITH_WYZE}" == 1 ]]; then
     systemctl enable projector-wyze-bridge.service
 fi
+
+echo "==> USB sticks: mounted read-only for playback while the website cannot be reached"
+mkdir -p /media/projector-usb
+cp "${SRC_DIR}/deploy/99-projector-usb.rules" /etc/udev/rules.d/99-projector-usb.rules
+udevadm control --reload || true
+# a stick already in: mount it now rather than at the next boot
+udevadm trigger --action=add --subsystem-match=block --property-match=ID_BUS=usb || true
 
 echo "==> Disabling getty on tty1 (mpv will own the display)"
 systemctl disable getty@tty1.service || true
