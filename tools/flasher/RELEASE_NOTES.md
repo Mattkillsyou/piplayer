@@ -1,5 +1,13 @@
 # Release notes for the SD Flasher
 
+## v0.7.7
+
+Updates on Windows install for real. Up to 0.7.6 the installer asked Windows to close the running flasher,
+Windows could not, and a silent install answers that question with "Abort", so every update cancelled itself
+after downloading. The installer now closes the flasher itself (so an older flasher's update gets this too),
+a second press of Check for updates no longer starts another download while one is being installed, and the
+installer's own log is kept: a start after an update that did not go in says why in the log.
+
 ## v0.7.6
 
 The name box starts empty for each card. Before a flash replaces a projector already in your account with

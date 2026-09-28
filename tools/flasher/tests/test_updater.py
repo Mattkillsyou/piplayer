@@ -301,4 +301,17 @@ def test_windows_starts_the_installer_silently_and_quits(monkeypatch):
     monkeypatch.setattr(winhost.subprocess, "Popen", lambda argv, **kw: started.append(argv))
     assert winhost.install_update("C:/x/setup.exe") == ("Installing the update. The program will reopen by itself.",
                                                         True)
-    assert started == [["C:/x/setup.exe", *winhost.UPDATE_ARGS]] and "/SILENT" in winhost.UPDATE_ARGS
+    log = str(Path("C:/x/setup.exe").with_name("install.log"))
+    assert started == [["C:/x/setup.exe", *winhost.UPDATE_ARGS, f"/LOG={log}"]] and "/SILENT" in winhost.UPDATE_ARGS
+    # Restart Manager cannot close the flasher politely, and a silent install answers its question with
+    # Abort (seen on a real 0.7.5 update): the running flasher is force-closed instead, and the new
+    # version is reopened by the installer's [Run] entry, not by Restart Manager.
+    assert "/FORCECLOSEAPPLICATIONS" in winhost.UPDATE_ARGS and "/RESTARTAPPLICATIONS" not in winhost.UPDATE_ARGS
+
+
+def test_the_installer_itself_force_closes_the_flasher():
+    """An older flasher starts the new installer with its own switches; the installer's settings must make
+    that work too."""
+    iss = (Path(updater.__file__).resolve().parent / "installer.iss").read_text("utf-8")
+    lines = [ln.strip() for ln in iss.splitlines()]
+    assert "CloseApplications=force" in lines and "RestartApplications=no" in lines

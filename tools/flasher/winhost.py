@@ -25,7 +25,11 @@ NO_SCAN_HINT = "turn on Location in Windows Settings to list networks"
 UPDATE_ASSET = "windows"  # which asset of /api/flasher/latest this platform installs
 # Inno Setup: no questions, close the app it is replacing, and never reboot the PC by itself. What reopens
 # the program afterwards is installer.iss's [Run] entry (not skipifsilent).
-UPDATE_ARGS = ["/SILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART"]
+# /FORCECLOSEAPPLICATIONS: Restart Manager cannot close the flasher politely, and a silent install would
+# answer its "close the applications?" question with Abort (installer.iss CloseApplications=force says the
+# same from the installer's side). The [Run] entry reopens the new version, so no /RESTARTAPPLICATIONS.
+UPDATE_ARGS = ["/SILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS", "/NORESTART"]
+INSTALL_LOG = "install.log"  # the installer's own log, beside it in updates_dir(): why an update did not go in
 FR_PRIVATE = 0x10  # gdi32: visible to this process only, never installed
 SEAL_NAME = "DPAPI"  # named in the warning when the token cannot be protected
 
@@ -100,7 +104,8 @@ def install_update(path) -> tuple:
     that and Windows asks nothing. Returns (the line for the log, True: quit now); OSError when it will not
     start."""
     flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-    subprocess.Popen([str(path), *UPDATE_ARGS], creationflags=flags, close_fds=True)
+    log = Path(path).with_name(INSTALL_LOG)
+    subprocess.Popen([str(path), *UPDATE_ARGS, f"/LOG={log}"], creationflags=flags, close_fds=True)
     return "Installing the update. The program will reopen by itself.", True
 
 

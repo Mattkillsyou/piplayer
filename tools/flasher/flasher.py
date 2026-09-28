@@ -499,6 +499,7 @@ class App:
         self._then = None  # what runs once the sign-in box yields a token (FLASH passes itself)
         self._phase = ""  # what the progress bar measures ("Writing the card"), shown with the percentage
         self._update_thread = None  # the weekly update check and its download
+        self._installing = False  # an update is being handed to the installer: no second check or download
         self._build()
         self._apply_settings(load_settings())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -981,8 +982,8 @@ class App:
     def check_updates(self, manual: bool = False):
         """Ask the console what the newest build is and fetch it in the background. Weekly on its own (the
         state file remembers when), or now when the button was pressed."""
-        if self._update_thread and self._update_thread.is_alive():
-            return
+        if (self._update_thread and self._update_thread.is_alive()) or self._installing:
+            return  # a check, a download or an install is already under way (a second press must not refetch)
         manual = manual and not self.busy()  # the check still runs; the status line belongs to the flash
         state = updater.load_state()
         if not manual:
@@ -1058,6 +1059,7 @@ class App:
         """Hand the update to the platform and quit when it says so (Windows: the installer replaces this exe;
         macOS: the new app is in place and started). The state is cleared either way: a failed install must
         not be retried at every start. It keeps which version this was, so the new one can say it updated."""
+        self._installing = True
         self.set_status(f"Updating to {version}...")
         updater.save_state(dict(updater.load_state(), downloaded="", downloaded_version="",
                                 update_from=updater.VERSION, update_to=version))
@@ -1081,6 +1083,7 @@ class App:
         if quits:
             self.on_close()
             return
+        self._installing = False
         self.set_status(READY_TEXT if failed else line)
         if not self.connected():
             self.sign_in()
@@ -1100,6 +1103,8 @@ class App:
             self.set_status(f"Updated to {updater.VERSION}.")
         elif updater.newer(to, updater.VERSION):
             self.log(f"The update to {to} did not go in; this is still {updater.VERSION}.")
+            for line in _install_log_tail():  # the installer says why (Windows keeps its log beside it)
+                self.log(f"  installer: {line}")
             state = dict(state, last_check=0)
         updater.save_state(dict(state, update_from="", update_to=""))
 
@@ -1500,6 +1505,18 @@ class App:
         if gated:
             self.account_btn.configure(state="disabled")
         self._password = secrets.token_urlsafe(24)  # never reuse a Pi password across cards
+
+
+def _install_log_tail(lines: int = 6) -> list:
+    """The last lines of the installer's log from a failed update (Windows only; [] when there is none)."""
+    name = getattr(host, "INSTALL_LOG", "")
+    if not name:
+        return []
+    try:
+        text = (updater.updates_dir() / name).read_text("utf-8-sig", errors="replace")
+    except OSError:
+        return []
+    return [ln.strip() for ln in text.splitlines() if ln.strip()][-lines:]
 
 
 # ---------------------------------------------------------------- flash sequence (no widgets here)

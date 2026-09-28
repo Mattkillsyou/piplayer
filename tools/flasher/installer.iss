@@ -6,7 +6,7 @@
 ; matches updater.py's VERSION, as version.txt does (tests/test_updater.py checks all three agree).
 
 #ifndef AppVersion
-  #define AppVersion "0.7.6"
+  #define AppVersion "0.7.7"
 #endif
 
 [Setup]
@@ -28,6 +28,15 @@ Compression=none
 SolidCompression=no
 ; writing a card needs administrator rights, so the installer asks once and installs for every user
 PrivilegesRequired=admin
+; An update is started by the running flasher, which Windows' Restart Manager cannot close politely (a Tk
+; app under a PyInstaller bootloader does not answer its shutdown request). In a silent install the
+; "close the applications?" question is then answered Abort and the update cancels itself: seen on a
+; real update from 0.7.5, installer log "Some applications could not be shut down ... User canceled".
+; force makes Restart Manager end it; the [Run] entry below reopens the new version, so nothing is
+; restarted through Restart Manager. This lives here, in the new installer, so an older flasher's
+; update command (/CLOSEAPPLICATIONS /RESTARTAPPLICATIONS) gets it too.
+CloseApplications=force
+RestartApplications=no
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 ShowLanguageDialog=no

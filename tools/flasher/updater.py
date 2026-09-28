@@ -18,7 +18,7 @@ import console
 import imagefetch
 from sysplat import host
 
-VERSION = "0.7.6"
+VERSION = "0.7.7"
 CHECK_EVERY = 7 * 24 * 3600  # seconds; the owner's "check for updates weekly"
 PATH = "/api/flasher/latest"
 KEYS = ("version", "windows", "mac_arm64", "mac_intel", "notes")
