@@ -34,10 +34,15 @@ describe("settings", () => {
     await query("DELETE FROM settings");
   });
 
-  it("page shows the current values (env defaults) and the tz datalist", async () => {
+  it("page shows the current values (env defaults) and a real timezone dropdown", async () => {
     await r.admin.get("/settings"); // consumes the one-shot notice left by the save above
     const page = await (await r.admin.get("/settings")).text();
-    expect(page).toContain('name="timezone" value="UTC"');
+    // a <select> grouped by region, not a text box whose suggestions only match what is typed
+    expect(page).toContain('<select name="timezone" required>');
+    expect(page).toContain('<option value="UTC" selected>UTC</option>');
+    expect(page).toContain('<optgroup label="America">');
+    expect(page).toContain('<option value="America/New_York">America/New York</option>');
+    expect(page).not.toContain("datalist");
     expect(page).toContain('name="screenshot_interval" value="60"');
     expect(page).toContain('name="camera_interval" value="10"');
     expect(page).toContain('name="default_image_duration" value="10"');
@@ -109,7 +114,7 @@ describe("settings", () => {
     expect(page).toContain('<div class="alert ok" role="alert">Settings saved.</div>');
     // one-shot: the next load, and a forged query string, show nothing
     expect(await (await r.admin.get("/settings?saved=1&rotated=1&revoked=1&tested=email&test_error=x")).text()).not.toMatch(/Settings saved|rotated|revoked|alert sent|alert failed/);
-    expect(page).toContain('name="timezone" value="Europe/Berlin"');
+    expect(page).toContain('<option value="Europe/Berlin" selected>Europe/Berlin</option>');
     expect(page).toContain('name="screenshot_interval" value="120"');
     expect(page).toContain('name="camera_interval" value="20"');
     expect(page).toContain('name="default_image_duration" value="7.5"');

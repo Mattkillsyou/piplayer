@@ -77,7 +77,7 @@ describe("owner wording (L27, L29)", () => {
   it("Settings: alert kinds in plain words, timezone / release / phone labels, New key", async () => {
     const html = await page(r.admin, "/settings");
     expect(html).not.toContain("checks each device for:");
-    expect(html).toContain("<label>Site timezone (e.g. America/New_York)");
+    expect(html).toContain('<label>Site timezone\n        <select name="timezone" required>');
     expect(html).toContain("<label>Player software version (release name)");
     expect(html).toContain("<label>Text messages from (phone number with country code, e.g. +15551234567)");
     expect(html).toContain("<label>Text messages to (phone number with country code, e.g. +15551234567)");

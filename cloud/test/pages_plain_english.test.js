@@ -95,7 +95,7 @@ describe("Settings warns when the stored timezone is no longer accepted", () => 
     expect((await post(r.admin, "/settings", { ...SETTINGS, timezone: "Europe/London" })).status).toBe(303);
     page = await (await r.admin.get("/settings")).text();
     expect(page).not.toContain("is no longer accepted");
-    expect(page).toContain('name="timezone" value="Europe/London"');
+    expect(page).toContain('<option value="Europe/London" selected>Europe/London</option>');
   });
 });
 

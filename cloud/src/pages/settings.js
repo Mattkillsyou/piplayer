@@ -31,6 +31,26 @@ function timeZoneOptions() {
   }
 }
 
+// The timezone picker: a real <select> (UTC first, then one group per region: America, Europe, ...).
+// It was a text box with a <datalist>, which only suggests entries matching what is already typed, so
+// with "UTC" in it the list looked empty and could not be browsed. A saved zone missing from this
+// runtime's list is kept as the first choice so saving the page never changes it by accident.
+function timeZoneSelect(current) {
+  const zones = timeZoneOptions();
+  const groups = new Map();
+  for (const tz of zones) {
+    const region = tz.includes("/") ? tz.slice(0, tz.indexOf("/")) : "Other";
+    if (!groups.has(region)) groups.set(region, []);
+    groups.get(region).push(tz);
+  }
+  const opt = (tz) => `<option value="${esc(tz)}"${tz === current ? " selected" : ""}>${esc(tz.replaceAll("_", " "))}</option>`;
+  const extra = current && current !== "UTC" && !zones.includes(current) ? opt(current) : "";
+  return `<select name="timezone" required>
+          ${opt("UTC")}${extra}
+          ${[...groups].map(([region, list]) => `<optgroup label="${esc(region)}">${list.map(opt).join("")}</optgroup>`).join("\n          ")}
+        </select>`;
+}
+
 // <option>s for a nullable-id select; a stored id whose row was deleted matches nothing = none.
 function optionList(rows, selected) {
   return rows.map((r) => `<option value="${r.id}"${r.id === selected ? " selected" : ""}>${esc(r.name)}</option>`).join("\n          ");
@@ -212,11 +232,8 @@ async function settingsPage(ctx, newToken = "") {
   <form method="post" action="/settings">
     ${csrfInput(ctx)}
     <div class="form-grid">
-      <label>Site timezone (e.g. America/New_York)
-        <input type="text" name="timezone" value="${esc(s.timezone)}" list="tz-list" placeholder="America/Los_Angeles" required>
-        <datalist id="tz-list">
-          ${timeZoneOptions().map((tz) => `<option value="${esc(tz)}">`).join("\n          ")}
-        </datalist>
+      <label>Site timezone
+        ${timeZoneSelect(s.timezone)}
       </label>
       <label>Screenshot interval (seconds, at least ${MIN_SCREENSHOT_INTERVAL})
         <input type="number" name="screenshot_interval" value="${esc(s.screenshot_interval)}" min="${MIN_SCREENSHOT_INTERVAL}" step="1" required>
