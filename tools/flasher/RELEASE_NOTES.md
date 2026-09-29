@@ -1,5 +1,14 @@
 # Release notes for the SD Flasher
 
+## v0.7.9 · Bunny
+
+Every release now has a name, shown next to its version in the window and in "Updated to 0.7.9 (Bunny).".
+FLASH stays off while an update is being installed: a flash started then was closed by the installer halfway
+through writing the card. An update that fails to install is tried once more, not downloaded again (about
+530 MB) at every start. When the log file cannot be written, the details box says so once instead of saying
+nothing. A line with an unusual character in it (from an odd file name) is now written to the log file instead
+of going missing with an "Internal error", and lines keep going to the log while another program has it open.
+
 ## v0.7.8 · Axolotl
 
 Cards always carry the Wi-Fi password. The flasher remembers the network name between runs but not its

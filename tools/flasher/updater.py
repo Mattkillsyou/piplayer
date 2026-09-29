@@ -18,11 +18,11 @@ import console
 import imagefetch
 from sysplat import host
 
-VERSION = "0.7.8"
-# Every release has a cute name, shown next to the version (cute animals, A to Z: 0.7.8 Axolotl, then B, C...):
-# here, in the RELEASE_NOTES.md heading
-# ("## v0.7.8 · Axolotl"), in the GitHub release title and on the website (FLASHER_NAME).
-NAME = "Axolotl"
+VERSION = "0.7.9"
+# Every release has a cute name, shown next to the version (cute animals, A to Z: 0.7.8 Axolotl, 0.7.9 Bunny,
+# then C...): here, in the RELEASE_NOTES.md heading ("## v0.7.9 · Bunny"), in the GitHub release title and on the
+# website (FLASHER_NAME).
+NAME = "Bunny"
 CHECK_EVERY = 7 * 24 * 3600  # seconds; the owner's "check for updates weekly"
 PATH = "/api/flasher/latest"
 KEYS = ("version", "name", "windows", "mac_arm64", "mac_intel", "notes")  # name: "" from a console before names
