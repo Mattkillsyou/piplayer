@@ -850,11 +850,23 @@ def test_log_goes_to_the_details_box_and_the_file(monkeypatch, tmp_path):
     app.log("after rotation")
     assert path.with_suffix(".log.1").stat().st_size == flasher.LOG_MAX + 1
     assert path.read_text("utf-8").endswith(" after rotation\n") and path.stat().st_size < 100
-    # An unwritable log never stops the program.
+    # A rotation that fails (a reader holds the file open on Windows) still writes the line.
+    path.write_text("x" * (flasher.LOG_MAX + 1))
+    with monkeypatch.context() as m:
+        m.setattr(flasher.Path, "replace", lambda *a: (_ for _ in ()).throw(PermissionError(13, "held open")))
+        app.log("rotation blocked")
+    assert path.read_text("utf-8").endswith(" rotation blocked\n") and not app.log_failed
+    # A lone surrogate (an odd Windows file name) is written escaped: it raised UnicodeEncodeError, not OSError.
+    app.log("card name \udc80")
+    assert path.read_text("utf-8").endswith(" card name \\udc80\n") and not app.log_failed
+    # An unwritable log never stops the program, and the details box says so once (the file cannot).
     monkeypatch.setattr(flasher, "log_path", lambda: tmp_path / "nope" / "dir" / "x" / "flasher.log")
     (tmp_path / "nope").write_text("a file, not a directory")
     app.log("still fine")
-    assert "still fine" in _log(app)
+    app.log("and again")
+    box = _log(app)
+    assert "still fine\nCould not write the log file " in box and "and again" in box
+    assert box.count("Could not write the log file") == 1 and str(tmp_path / "nope") in box
     root.destroy()
 
 

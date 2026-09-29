@@ -157,18 +157,23 @@ def log_path() -> Path:
     return imagefetch.app_dir() / LOG_NAME
 
 
-def append_log(line: str) -> None:
+def append_log(line: str) -> str:
     """The technical log on disk (what the details box shows), timestamped; rotated once at LOG_MAX. Never raises:
-    a full or read-only profile must not stop a flash."""
+    a full or read-only profile must not stop a flash. Returns why the line was not written ('' when it was)."""
     p = log_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         if p.exists() and p.stat().st_size > LOG_MAX:
-            p.replace(p.with_suffix(".log.1"))
-        with p.open("a", encoding="utf-8") as f:
+            try:
+                p.replace(p.with_suffix(".log.1"))
+            except OSError:
+                pass  # a reader holds a log file open (Windows): keep appending, rotate on a later line
+        # backslashreplace: a lone surrogate in a line (an odd Windows file name) raised UnicodeEncodeError
+        with p.open("a", encoding="utf-8", errors="backslashreplace") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line.rstrip()}\n")
-    except OSError:
-        pass
+    except OSError as e:
+        return str(e)
+    return ""
 
 
 # ---------------------------------------------------------------- operator config (sign-in token)
@@ -491,6 +496,7 @@ class App:
         self.cancel = threading.Event()
         self.worker = None
         self.q = queue.Queue()
+        self.log_failed = False  # the log file could not be written: said once, in the details box
         self.disks = []
         self.v = {}  # tk variables by key
         self.err = {}  # inline error labels by field
@@ -1292,12 +1298,16 @@ class App:
             self.root.after(50, self._pump)
 
     def log(self, line: str):
-        """A technical line: the details box (under Advanced, Show details) and the log file. Never the status line."""
+        """A technical line: the details box (under Advanced, Show details) and the log file. Never the status line.
+        A log file that cannot be written is said once, in the box only."""
+        why = append_log(line)
+        if why and not self.log_failed:
+            self.log_failed = True
+            line = f"{line.rstrip()}\nCould not write the log file {log_path()} ({why}); this box still has every line."
         self.log_text.configure(state="normal")
         self.log_text.insert("end", line.rstrip("\n") + "\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
-        append_log(line)
 
     def set_status(self, text: str):
         """The one sentence the user reads. Clears the phase, so a late progress tick cannot overwrite it."""
