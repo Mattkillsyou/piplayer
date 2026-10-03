@@ -122,7 +122,7 @@ if ($env:FLASHER_NO_BUNDLE -ne '1' -and -not ($bundled -like '*(trailer ok)')) {
 Write-Host $bundled
 $consoleLine = (Select-String -Path $out -Pattern '^console: ' | Select-Object -First 1).Line
 if ($ConsoleUrl) {
-    $keyState = if ($Key) { 'set' } else { 'fetched with the operator token' }
+    $keyState = if ($Key) { 'set' } else { 'none; projectors are registered with the sign-in' }  # flasher.console_summary
     if ($consoleLine -ne "console: $($ConsoleUrl.TrimEnd('/')) (enrollment key: $keyState)") {
         throw "exe does not see its console.json: '$consoleLine'"
     }
