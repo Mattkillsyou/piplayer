@@ -15,9 +15,9 @@ beforeAll(async () => {
 });
 
 describe("/flasher", () => {
-  it("every signed-in role gets the three v0.7.8 links and the steps", async () => {
-    expect(FLASHER_VERSION).toBe("0.7.8");
-    expect(FLASHER_NAME).toBe("Axolotl");
+  it("every signed-in role gets the three v0.7.9 links and the steps", async () => {
+    expect(FLASHER_VERSION).toBe("0.7.9");
+    expect(FLASHER_NAME).toBe("Bunny");
     for (const role of ["viewer", "editor", "admin"]) {
       const res = await r[role].get("/flasher");
       expect(res.status, role).toBe(200);
