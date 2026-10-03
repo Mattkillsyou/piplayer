@@ -3,8 +3,14 @@ main = "src/index.js"
 compatibility_date = "2026-08-22"   # newest date the bundled workerd (vitest-pool-workers 0.22) accepts
 compatibility_flags = ["nodejs_compat"]
 
+# projection5000.com is the console's address. projectors.photogen5000.com must stay: the SD Flasher
+# (tools/flasher DEFAULT_CONSOLE_URL) bakes it into every projector it sets up, and those devices keep
+# calling it. Keep it first: wrangler dev and cloud/e2e use routes[0] as the request host. wrangler deploy
+# replaces the worker's whole custom-domain list with this one, so every domain the worker serves is listed.
 routes = [
-  { pattern = "projectors.photogen5000.com", custom_domain = true }
+  { pattern = "projectors.photogen5000.com", custom_domain = true },
+  { pattern = "projection5000.com", custom_domain = true },
+  { pattern = "www.projection5000.com", custom_domain = true }
 ]
 
 [assets]

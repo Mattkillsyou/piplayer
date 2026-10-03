@@ -486,12 +486,12 @@ from one.
 ## Build the exe
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\flasher\build.ps1 -ConsoleUrl https://projectors.photogen5000.com
+powershell -ExecutionPolicy Bypass -File tools\flasher\build.ps1 -ConsoleUrl https://projection5000.com
 ```
 
 No secret is needed to build. `-ConsoleUrl <url>` (or `$env:FLASHER_CONSOLE_URL`)
 bakes the console into `console.json` (never shown on screen); without it the
-product default `https://projectors.photogen5000.com` applies. `-Key
+product default `https://projection5000.com` applies. `-Key
 <enrollment key>` (or `$env:FLASHER_ENROLL_KEY`, needs a URL) bakes a key for
 an offline build (a LAN-only `cms/` site that has no operator sign-in); such an
 exe carries the secret, flashes without signing in and its cards enroll on

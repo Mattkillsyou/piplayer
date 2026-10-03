@@ -260,8 +260,8 @@ def test_sed_cleanup_keeps_regdom(tmp_path):
     ("token", "tok'en", "Device token"),
     ("token", 'to"k\\en-0123456789', "Device token"),
     ("token", "short", "Device token"),
-    ("console_url", "projectors.photogen5000.com", "http:// or https://"),
-    ("console_url", "http://projectors.photogen5000.com", "https://"),
+    ("console_url", "projection5000.com", "http:// or https://"),
+    ("console_url", "http://projection5000.com", "https://"),
     ("timezone", "Europe/Londn ", "Timezone"),
     ("timezone", "America/Los Angeles", "Timezone"),
     ("timezone", "Mars/Phobos/X/Y", "Timezone"),
@@ -281,7 +281,7 @@ def test_validation_rejects(field, value, fragment):
     ("timezone", "UTC"), ("timezone", "America/Argentina/Buenos_Aires"), ("timezone", "Etc/GMT+1"),
     ("console_url", "http://192.168.1.20:8080"), ("console_url", "http://console.local"),
     ("console_url", "http://localhost:8080"), ("console_url", "http://controller:8080"),
-    ("console_url", "https://projectors.photogen5000.com"), ("token", "A-z_0123456789ab"),
+    ("console_url", "https://projection5000.com"), ("token", "A-z_0123456789ab"),
     ("enrollment_key", "k" * 20), ("enrollment_key", "k" * 128), ("enrollment_key", "a" * 43 + "="),
     ("enrollment_key", "aB0-_" * 8 + "=="),
 ])
@@ -290,10 +290,10 @@ def test_validation_accepts(field, value):
 
 
 def test_console_url_problem():
-    assert firstboot.console_url_problem("https://projectors.photogen5000.com") is None
+    assert firstboot.console_url_problem("https://projection5000.com") is None
     assert firstboot.console_url_problem("http://10.0.0.5") is None
     assert "https://" in firstboot.console_url_problem("http://8.8.8.8")
-    assert "https://" in firstboot.console_url_problem("http://projectors.photogen5000.com/")
+    assert "https://" in firstboot.console_url_problem("http://projection5000.com/")
     assert "http://" in firstboot.console_url_problem("ftp://x.example")
 
 
@@ -527,7 +527,7 @@ def test_provision_retries_enrollment_and_install(tmp_path):
     assert r["enroll_calls"] == 3 and r["log"].count("enrollment failed (curl rc=22)") == 1
     assert "enrollment failed (curl rc=0)" in r["log"]  # 200 without a token is a failure too
     assert "attempt 2 failed, retrying" in r["log"] and "install attempt 3" in r["log"]
-    assert r["install"][1:] == ["tok-0123456789abcdef", "https://projectors.photogen5000.com"]  # empty cms_url: CONSOLE
+    assert r["install"][1:] == ["tok-0123456789abcdef", "https://projection5000.com"]  # empty cms_url: CONSOLE
     # Installer failure: retried up to the limit without re-enrolling, then gives up with instructions.
     (tmp_path / "fails").mkdir()
     r = _provision_harness(tmp_path / "fails", s, [{"token": "tok-0123456789abcdef", "cms_url": "https://c"}],
@@ -562,7 +562,7 @@ def test_provision_waiting_log_contents_and_secrets():
         for cmd in ("tail -n 40 /var/log/projection5000-provision.log", "timedatectl show -p NTP -p NTPSynchronized",
                     '"nmcli general status"', '"nmcli device status"', '"nmcli -f active,ssid,signal,freq dev wifi"',
                     '"ip -4 addr"', '"ip route"', '"grep nameserver /etc/resolv.conf"',
-                    '"getent hosts projectors.photogen5000.com"',
+                    '"getent hosts projection5000.com"',
                     '"journalctl -u NetworkManager -u wpa_supplicant --no-pager -n 40"', '$(date)', '$c || true',
                     '"nmcli -f NAME,TYPE,AUTOCONNECT,DEVICE connection show"', '"rfkill list"', '"ls /sys/class/net"',
                     '"nmcli -g 802-11-wireless-security.key-mgmt connection show preconfigured"',
@@ -595,7 +595,7 @@ def test_provision_waiting_log_under_bash(tmp_path):
     assert "setup-waiting: try 8 for" in r["waiting"][9] and r["waiting"][11] == r["waiting"][9]
     assert "setup-waiting: try 12 for" in r["waiting"][13]
     for part in ("== provision log", "waiting for console at", "== timedatectl show", "== nmcli general status",
-                 "== ip route", "== getent hosts projectors.photogen5000.com", "== journalctl -u NetworkManager"):
+                 "== ip route", "== getent hosts projection5000.com", "== journalctl -u NetworkManager"):
         assert part in r["waiting"][13], part
     assert not any("tok-SECRET" in t for t in r["waiting"].values())
     assert not r["waiting_left"] and "install succeeded" in r["log"]

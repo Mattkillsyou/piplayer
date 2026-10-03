@@ -1,6 +1,6 @@
 # PiPlayer Cloud
 
-The PiPlayer manager as a Cloudflare Worker: `https://projectors.photogen5000.com`. It is a
+The PiPlayer manager as a Cloudflare Worker: `https://projection5000.com` (also `www.projection5000.com`; the original `https://projectors.photogen5000.com` still serves every device and SD Flasher already set up with it). It is a
 port of the Python CMS in `cms/app/` (same pages, same routes, same device API, byte-compatible
 `/api/sync` manifest) on Workers + D1 (SQLite) + R2 (media) + static assets, so the operator
 uploads video and adjusts settings on a site that is always on, and each Raspberry Pi keeps

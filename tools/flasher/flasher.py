@@ -66,7 +66,7 @@ OFFLINE_TEXT = (f"This model needs the 32-bit image. Connect to the internet onc
 # Entry fields whose value is taken verbatim (everything else is stripped of surrounding whitespace).
 UNSTRIPPED = ("wifi_password",)
 CONSOLE_JSON = "console.json"  # {"console_url": ..., "enrollment_key": ...}, written by build.ps1 (key optional)
-DEFAULT_CONSOLE_URL = "https://projectors.photogen5000.com"
+DEFAULT_CONSOLE_URL = "https://projection5000.com"
 # The Pi's login: one fixed user, SSH by key only (the flasher's key, see sshkey.py). The OS still needs a
 # password to create the user: a random one per flash that is never shown or saved (firstrun.sh writes a
 # sudoers drop-in, so sudo needs none).

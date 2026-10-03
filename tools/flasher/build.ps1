@@ -3,7 +3,7 @@
 # Set $env:FLASHER_PYTHON to pick the interpreter (default: python on PATH, must be 3.11+ with tkinter; no
 # third-party package is needed, the SSH key is generated in pure Python).
 # -ConsoleUrl (or FLASHER_CONSOLE_URL) bakes the console the exe talks to (never shown on the screen; without it
-# the product default https://projectors.photogen5000.com applies). No key is baked in: the
+# the product default https://projection5000.com applies). No key is baked in: the
 # operator signs in inside the app with their console username and password, and each projector is registered
 # under that account at flash time (the card carries a device token, never the enrollment key). -Key (or
 # FLASHER_ENROLL_KEY) bakes one anyway for offline builds (LAN-only cms sites); the UI never mentions it.

@@ -4,7 +4,7 @@
 # Environment, the same names as build.ps1:
 #   FLASHER_PYTHON       the interpreter (default: python3 on PATH; must be 3.11+ with tkinter)
 #   FLASHER_CONSOLE_URL  bakes the console the app talks to into console.json (never shown; without it the
-#                        product default https://projectors.photogen5000.com applies)
+#                        product default https://projection5000.com applies)
 #   FLASHER_ENROLL_KEY   bakes an enrollment key for an offline build (needs the URL); never for a public release
 #   FLASHER_IMAGE        a local .img.xz to embed instead of downloading the latest Raspberry Pi OS Lite (64-bit)
 #   FLASHER_NO_BUNDLE=1  build without an embedded image (every model's image is then downloaded at flash time)

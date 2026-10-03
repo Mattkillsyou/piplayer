@@ -634,7 +634,7 @@ def sample_config() -> dict:
         "ethernet_only": False,
         "timezone": "America/Los_Angeles",
         "keymap": "us",
-        "console_url": "https://projectors.photogen5000.com",
+        "console_url": "https://projection5000.com",
         "enrollment_key": "sample-enrollment-key_0123456789",
         "token": "",
         "ssh_pubkey": "",
