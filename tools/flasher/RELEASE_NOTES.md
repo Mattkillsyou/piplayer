@@ -2,6 +2,9 @@
 
 ## v0.7.9 · Bunny
 
+New SD cards point projectors at the console's new address, https://projection5000.com. Projectors
+set up before keep working: the old address still answers them.
+
 Every release now has a name, shown next to its version in the window and in "Updated to 0.7.9 (Bunny).".
 FLASH stays off while an update is being installed: a flash started then was closed by the installer halfway
 through writing the card. An update that fails to install is tried once more, not downloaded again (about
