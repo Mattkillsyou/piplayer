@@ -1017,6 +1017,26 @@ async function rotateTunnelBanner(ctx, row) {
   }
 }
 
+// After accounts.reassignDevice moved a projector to another content account: the previous
+// account's screenshot and camera snapshot leave R2 as well, and a tunnel is replaced. The card at
+// the old site keeps its cloudflared connector (and its camera) running whatever the console says;
+// deleting that tunnel stops the stream from reaching the new account's live view, and the new one
+// is guarded by the new account's Access list and reaches a Pi only with the new token. Returns the
+// tunnel error for a banner, or null.
+export async function finishHandover(ctx, moved) {
+  if (!moved.content_changed) return null;
+  for (const remove of [media.deleteScreenshot, media.deleteCamera]) {
+    try {
+      await remove(ctx.env, moved.device_id);
+    } catch (e) {
+      console.error(`snapshot of handed-over device ${moved.device_id} not removed: ${e && e.message || e}`);
+    }
+  }
+  if (!moved.tunnel_id || !cloudflare.configured(ctx.env)) return null;
+  const done = await rotateTunnelBanner(ctx, { id: moved.id, device_id: moved.device_id, tunnel_id: moved.tunnel_id, owner_id: moved.new_owner });
+  return done.error || null;
+}
+
 // "Create tunnel" (editor+): tunnel + DNS + ingress + Access app through the Cloudflare API
 // (cloudflare.provisionDevice), tunnel_id / tunnel_hostname / camera_live_url stored, audit
 // device_tunnel_created; a refusal comes back as a banner (audit device_tunnel_failed), never
@@ -1066,10 +1086,15 @@ async function devicesSetOwner(ctx) {
   await audit.log(ctx, "device_set_owner", "device", deviceId, {
     owner_id: ownerId, owner: owner ? owner.username : null,
     playlist_cleared: moved.playlist_cleared || undefined, group_cleared: moved.group_cleared || undefined,
-    schedules_deleted: moved.schedules_deleted || undefined,
+    schedules_deleted: moved.schedules_deleted || undefined, signed_out: moved.content_changed || undefined,
   }, undefined, ownerId);
+  const tunnelError = await finishHandover(ctx, moved);
   const accessError = await cloudflare.syncAccess(ctx, undefined, deviceId);
+  if (tunnelError) return auth.flashRedirect(ctx, "/devices", `Owner changed and the projector signed out. ${tunnelError}`, "error");
   if (accessError) return auth.flashRedirect(ctx, "/devices", `Owner changed, but the camera access list could not be updated: ${accessError}. Click Recreate tunnel to try again.`, "error");
+  if (moved.content_changed) {
+    return auth.flashRedirect(ctx, "/devices", `Owner changed. The projector is signed out and its camera settings, screenshot and snapshot are cleared: its new account installs the new token from Token / install (or flashes a new card).`);
+  }
   return redirect("/devices");
 }
 

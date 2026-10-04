@@ -212,12 +212,15 @@ describe("GET /api/camera-config/:device_id", () => {
     expect(ed.wyze).toMatchObject({ email: "ops@example.com", password: "new-pass" });
     expect(JSON.stringify(ed)).not.toContain("admin-pass");
     expect((await sync(desk)).camera_config_version).toBe(await version(r.ids.admin));
-    // handed to the editor, the same projector reads the editor's login and is told to refetch
+    // handed to the editor: the old card is signed out (it never reads the editor's login), and
+    // with the new token the projector reads the editor's login and is told to refetch
     const seen = (await sync(desk)).camera_config_version;
     expect((await post(r.admin, `/devices/${desk.id}/owner`, { owner_id: String(r.ids.editor) })).status).toBe(303);
-    const moved = await sync(desk);
+    expect((await config(desk)).status).toBe(401);
+    const fresh = { ...desk, token: (await one("SELECT token FROM devices WHERE id = ?", desk.id)).token };
+    const moved = await sync(fresh);
     expect(moved.camera_config_version).not.toBe(seen);
-    expect((await (await config(desk)).json()).wyze).toMatchObject({ email: "ops@example.com", password: "new-pass" });
+    expect((await (await config(fresh)).json()).wyze).toMatchObject({ email: "ops@example.com", password: "new-pass" });
     await query("DELETE FROM devices WHERE id = ?", desk.id);
     await post(r.admin, "/settings/wyze/clear");
   });

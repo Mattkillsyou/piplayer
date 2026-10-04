@@ -1554,6 +1554,12 @@ def start_dev(port, persist, https=False):
     """Apply migrations and start `wrangler dev --local`; https=True serves wrangler's self-signed
     cert (callers then pass verify=False). Returns (proc, base, log)."""
     npx = "npx.cmd" if os.name == "nt" else "npx"
+    if not https:  # a dev server an earlier run left behind would answer the health wait with its own database
+        try:
+            requests.get("http://127.0.0.1:%d/api/health" % port, timeout=2)
+            raise SystemExit("port %d is already in use (a dev server from an earlier run?): stop it or pass another --port" % port)
+        except requests.RequestException:
+            pass
     common = ["--persist-to", persist]
     subprocess.run([npx, "wrangler", "d1", "migrations", "apply", "piplayer-cloud-db", "--local"] + common,
                    cwd=CLOUD, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)

@@ -137,7 +137,7 @@ describe("Devices + dashboard markup", () => {
     expect(page).toContain(`<a href="/devices/${dev.id}/camera?t=`);
     expect(page).toContain(`class="device-thumb" alt="Latest camera snapshot from Cam One">`);
     expect(page).toContain('<div class="device-screen device-camera">');
-    expect(page).toContain('<span class="screen-chip tl">cam · 8 s ago</span>');
+    expect(page).toMatch(/<span class="screen-chip tl">cam · (8|9|10|11) s ago<\/span>/); // a slow machine renders a second or two later
     expect(page).not.toContain("Camera: ");
     // the other device never sent a snapshot: no camera block at all
     expect(page).not.toContain(`/devices/${other.id}/camera?t=`);

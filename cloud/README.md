@@ -208,7 +208,13 @@ account's projector plays (its playlist, group and schedule) and its device toke
 account's: the admin sees them read-only and gets a 403 that says to hand the projector over
 first. Handing a projector to another account (`accounts.reassignDevice`) clears what pointed at
 the old account's content (playlist, group, schedule rules, audited), so a projector only ever
-plays its owner's content. An admin's library, playlists, groups, schedules, settings, dashboard,
+plays its owner's content, and what it saw for the old account (camera source, RTSP address,
+Wyze camera name, live URL, the last screenshot and camera snapshot, the file it played, its
+error texts). It also replaces the device token and, when there is one, the camera tunnel: the
+card that holds the old token sits at the old account's site and would otherwise sync as the new
+account's projector, and its connector would keep streaming the old room into the new account's
+live view. The new account installs the new token from its Token / install block or flashes a
+new card; the flash after the Owner select says so. An admin's library, playlists, groups, schedules, settings, dashboard,
 alerts and audit log are its own like anyone's (the audit log also shows admins the rows about no
 account). A projector with no owner (enrolled with the site key, or left without one) plays the
 **site admin's** content and follows that account's settings. The site admin is recorded

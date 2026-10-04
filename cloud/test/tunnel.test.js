@@ -366,7 +366,7 @@ describe("provisioning", () => {
     await operators(r.ids.editor, null);
   });
 
-  it("handing a tunnelled projector to another account gives its Access policy to the new account's operators", async () => {
+  it("handing a tunnelled projector to another account replaces its tunnel, guarded by the new account's operators", async () => {
     await operators(r.ids.editor, "ed-ops@example.net");
     await operators(r.ids.admin, "admin-ops@example.net");
     configure();
@@ -375,8 +375,17 @@ describe("provisioning", () => {
     expect((await post(r.editor, `/devices/${desk.id}/tunnel`)).status).toBe(303);
     const app = fake.state.apps.find((a) => a.domain === "desk-tun-cam.photogen5000.com");
     expect(fake.state.policies[app.id][0].include).toEqual([{ email: { email: "ed-ops@example.net" } }]);
+    const before = (await devRow(desk.id)).tunnel_id;
     expect((await post(r.admin, `/devices/${desk.id}/owner`, { owner_id: String(r.ids.admin) })).status).toBe(303);
     expect(fake.state.policies[app.id][0].include).toEqual([{ email: { email: "admin-ops@example.net" } }]);
+    // the card at the old site keeps its connector running: the old tunnel is gone, a new one
+    // (same hostname) waits for the Pi that gets the new token
+    const after = await devRow(desk.id);
+    expect(after.tunnel_id).not.toBe(before);
+    expect(fake.state.tunnels.map((t) => t.id)).not.toContain(before);
+    expect(fake.state.tunnels.map((t) => t.id)).toContain(after.tunnel_id);
+    expect([after.tunnel_hostname, after.camera_live_url]).toEqual(["desk-tun-cam.photogen5000.com", "https://desk-tun-cam.photogen5000.com/"]);
+    expect((await audits("device_tunnel_rotated"))[0]).toMatchObject({ target_id: String(desk.id) });
     await query("DELETE FROM devices WHERE id = ?", desk.id);
     await operators(r.ids.editor, null);
     await operators(r.ids.admin, null);

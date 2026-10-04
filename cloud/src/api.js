@@ -12,7 +12,7 @@ import { cleanHostname, TOKEN_NAME_PREFIX } from "./device_codes.js";
 import * as manifest from "./manifest.js";
 import * as media from "./media.js";
 import * as secrets from "./secrets.js";
-import { installBaseUrl, MAX_DEVICE_NAME } from "./pages/devices.js";
+import { finishHandover, installBaseUrl, MAX_DEVICE_NAME } from "./pages/devices.js";
 import { FLASHER_NAME, FLASHER_VERSION, RELEASE } from "./pages/flasher.js";
 import { envInt, fail, HttpError, json, jsonObject, nowUtc, randomToken, utf8Len } from "./util.js";
 import { cameraConfig } from "./pages/devices.js";
@@ -292,6 +292,11 @@ async function enrollDefaults(env, ownerId) {
 }
 
 const OTHER_ACCOUNT = "A projector with that ID belongs to another account; pick another name";
+// Whether an existing devices row is out of reach for `owner` (a user, or null for the enrollment
+// key): an id with an owner belongs to that account alone, the key and admins included; an
+// ownerless one is the key's or an admin's to take, never an editor's. registerDevice and its
+// read-only pre-check (operatorDevice) answer OTHER_ACCOUNT on the same condition.
+const notCallers = (row, owner) => (row.owner_id !== null ? row.owner_id !== (owner ? owner.id : null) : Boolean(owner) && owner.role !== "admin");
 
 // The device_id / name rules shared by POST /api/enroll and POST /api/operator/devices.
 function deviceFields(body) {
@@ -343,15 +348,12 @@ async function registerDevice(ctx, { deviceId, name, piModel = null, owner = nul
       if (!row) throw e;
     }
   }
-  const caller = owner ? owner.id : null;
-  if (row.owner_id !== null ? row.owner_id !== caller : owner && owner.role !== "admin") {
-    fail(409, OTHER_ACCOUNT);
-  }
+  if (notCallers(row, owner)) fail(409, OTHER_ACCOUNT);
   // An ownerless projector registered by an account becomes theirs; what it pointed at (the site
   // admin's) goes unless it is theirs too (accounts.reassignDevice).
   let ownerId = row.owner_id;
   if (owner && row.owner_id === null) {
-    await accounts.reassignDevice(ctx, row.id, owner.id);
+    await finishHandover(ctx, await accounts.reassignDevice(ctx, row.id, owner.id));
     ownerId = owner.id;
   }
   const token = randomToken(32);
@@ -471,14 +473,15 @@ async function operatorDevices(ctx) {
 }
 
 // Before FLASH replaces a card, the flasher asks whether the id is already a projector here:
-// 200 {device_id, name, last_seen_at} for the user's own id (any id for an admin), 404 for a
-// free one, 409 (POST's words) for another account's. Read-only.
+// 200 {device_id, name, last_seen_at} for an id the POST would accept (the user's own; an
+// ownerless one for an admin), 404 for a free one, 409 (POST's words) for another account's.
+// Read-only.
 async function operatorDevice(ctx) {
   const op = await flasherOperator(ctx);
   const row = await db.first(ctx.env, "SELECT device_id, name, last_seen_at, owner_id FROM devices WHERE device_id = ?",
     ctx.params.device_id.trim().toLowerCase());
   if (!row) fail(404, "No projector with that ID");
-  if (op.role !== "admin" && row.owner_id !== op.id) fail(409, OTHER_ACCOUNT);
+  if (notCallers(row, op)) fail(409, OTHER_ACCOUNT);
   return json({ device_id: row.device_id, name: row.name, last_seen_at: row.last_seen_at });
 }
 

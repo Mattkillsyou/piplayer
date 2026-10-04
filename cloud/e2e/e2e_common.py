@@ -75,9 +75,22 @@ def migrate(persist):
     wrangler(persist, "d1", "migrations", "apply", DB_NAME)
 
 
+def port_in_use(port):
+    """True when something already answers on the port: a dev server an earlier run left behind
+    (a run killed before its `finally`) would otherwise pass the health wait below and every check
+    would run against its database instead of this run's."""
+    try:
+        requests.get("http://127.0.0.1:%d/api/health" % port, timeout=2)
+        return True
+    except requests.RequestException:
+        return False
+
+
 def start_dev(port, persist, log_name="wrangler-dev.log", extra_args=()):
     """Start `wrangler dev --local` on `port`, wait for /api/health. Returns (proc, base, log).
     `extra_args` are appended to the wrangler command (e.g. --test-scheduled for GET /__scheduled)."""
+    if port_in_use(port):
+        raise SystemExit("port %d is already in use (a dev server from an earlier run?): stop it or pass another --port" % port)
     # --local-upstream: without it wrangler dev rewrites every request URL/Host to the
     # custom domain from wrangler.toml, so manifest media urls would point at production.
     cmd = [NPX, "wrangler", "dev", "--local", "--port", str(port), "--ip", "127.0.0.1",

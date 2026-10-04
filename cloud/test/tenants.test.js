@@ -326,14 +326,17 @@ describe("the site admin", () => {
     for (const path of [`/playlists/${a.pid}`, `/api/media/${a.media.filename}`]) expect((await admin.get(path)).status, path).toBe(404);
   });
 
-  it("hands alice's projector to bob: it keeps nothing of alice's and plays bob's Default", async () => {
+  it("hands alice's projector to bob: it keeps nothing of alice's, signs alice's card out and plays bob's Default", async () => {
     expect((await post(admin, `/devices/${a.dev.id}/owner`, { owner_id: String(b.c.id) })).status).toBe(303);
     expect(await one("SELECT owner_id, playlist_id, group_id FROM devices WHERE id = ?", a.dev.id)).toEqual({ owner_id: b.c.id, playlist_id: null, group_id: null });
     expect(await query("SELECT id FROM device_schedules WHERE device_id = ?", a.dev.id)).toEqual([]);
     const [del] = await query("SELECT details, owner_id FROM audit_log WHERE action = 'device_schedule_delete' ORDER BY id DESC LIMIT 1");
     expect(JSON.parse(del.details)).toEqual({ device_id: a.dev.id, name: "alice-rule", cascade_from_owner_change: true });
     expect(del.owner_id).toBe(a.c.id);
-    const m = await (await SELF.fetch(`${BASE}/api/sync/${a.dev.device_id}`, { headers: bearer(a.deviceToken) })).json();
+    // the card at alice's site holds the old token: signed out, it never gets bob's content
+    expect((await SELF.fetch(`${BASE}/api/sync/${a.dev.device_id}`, { headers: bearer(a.deviceToken) })).status).toBe(401);
+    const token = /DEVICE_TOKEN=([0-9a-f]{64})/.exec(await (await b.c.get("/devices")).text())[1]; // bob's Token / install block
+    const m = await (await SELF.fetch(`${BASE}/api/sync/${a.dev.device_id}`, { headers: bearer(token) })).json();
     expect([m.playlist.id, m.playlist.source]).toEqual([b.defaultPid, "site-default"]);
     expect(m.playlist.items.map((i) => i.filename)).toEqual([b.media.filename]);
     expect(m.server_time).toMatch(/\+09:00$/); // bob's zone now

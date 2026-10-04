@@ -216,7 +216,7 @@ describe("owner select", () => {
     expect(await one("SELECT owner_id, playlist_id, group_id FROM devices WHERE id = ?", w.nobody.id)).toEqual({ owner_id: r.ids.editor, playlist_id: null, group_id: null });
     expect(await query("SELECT id FROM device_schedules WHERE device_id = ?", w.nobody.id)).toEqual([]);
     expect((await audits("device_set_owner"))[0]).toMatchObject({ username: "admin", target_type: "device", target_id: String(w.nobody.id),
-      details: `{"owner_id": ${r.ids.editor}, "owner": "ed", "playlist_cleared": true, "group_cleared": true, "schedules_deleted": 1}` });
+      details: `{"owner_id": ${r.ids.editor}, "owner": "ed", "playlist_cleared": true, "group_cleared": true, "schedules_deleted": 1, "signed_out": true}` });
     const [rule] = await audits("device_schedule_delete");
     expect(rule).toMatchObject({ target_id: String(ruleId) });
     expect(JSON.parse(rule.details)).toMatchObject({ device_id: w.nobody.id, cascade_from_owner_change: true });
@@ -232,13 +232,54 @@ describe("owner select", () => {
     // ownerless again: the site admin's content account, so the editor's playlist goes
     expect(await one("SELECT owner_id, playlist_id FROM devices WHERE id = ?", w.nobody.id)).toEqual({ owner_id: null, playlist_id: null });
     expect(await (await r.editor.get("/devices")).text()).not.toContain("Nobody One");
-    expect(JSON.parse((await audits("device_set_owner"))[0].details)).toEqual({ owner_id: null, owner: null, playlist_cleared: true });
+    expect(JSON.parse((await audits("device_set_owner"))[0].details)).toEqual({ owner_id: null, owner: null, playlist_cleared: true, signed_out: true });
     // a move that keeps the content account (the site admin's own projector made ownerless) clears nothing
     expect((await post(r.admin, `/devices/${w.nobody.id}/assign`, { playlist_id: String(w.adminPid) })).status).toBe(303);
+    const token = (await one("SELECT token FROM devices WHERE id = ?", w.nobody.id)).token;
     expect((await post(r.admin, `/devices/${w.nobody.id}/owner`, { owner_id: String(r.ids.admin) })).status).toBe(303);
-    expect(await one("SELECT owner_id, playlist_id FROM devices WHERE id = ?", w.nobody.id)).toEqual({ owner_id: r.ids.admin, playlist_id: w.adminPid });
+    expect(await one("SELECT owner_id, playlist_id, token FROM devices WHERE id = ?", w.nobody.id)).toEqual({ owner_id: r.ids.admin, playlist_id: w.adminPid, token });
     expect((await post(r.admin, `/devices/${w.nobody.id}/owner`, { owner_id: "" })).status).toBe(303);
-    expect(await one("SELECT owner_id, playlist_id FROM devices WHERE id = ?", w.nobody.id)).toEqual({ owner_id: null, playlist_id: w.adminPid });
+    expect(await one("SELECT owner_id, playlist_id, token FROM devices WHERE id = ?", w.nobody.id)).toEqual({ owner_id: null, playlist_id: w.adminPid, token });
+  });
+
+  it("a handover takes nothing of the old account's camera along: settings, live URL, snapshots and token go", async () => {
+    // the editor's projector with an RTSP camera (its password in the address), a live URL, a
+    // screenshot and a camera snapshot, all the editor's site
+    const d = await device("cam-move", "Cam Move");
+    const rtsp = "rtsp://cam-user:s3cret-pw@10.0.0.9:554/stream";
+    expect((await post(r.editor, `/devices/${d.id}/camera-source`, { camera_source: "rtsp", camera_rtsp_url: rtsp })).status).toBe(303);
+    expect((await post(r.editor, `/devices/${d.id}/camera-url`, { camera_live_url: "https://cam.example.net/room" })).status).toBe(303);
+    await env.MEDIA.put("screenshots/cam-move.jpg", new Uint8Array([0xff, 0xd8, 0xff, 1]));
+    await env.MEDIA.put("camera/cam-move.jpg", new Uint8Array([0xff, 0xd8, 0xff, 2]));
+    await query(`UPDATE devices SET last_screenshot_at = datetime('now'), last_camera_at = datetime('now'), camera_error = 'rtsp://cam-user:s3cret-pw@10.0.0.9 refused',
+                 current_filename = 'abc_u2_private.mp4', current_position = 3, last_error = 'private.mp4 missing' WHERE id = ?`, d.id);
+    const bearer = (token, path) => SELF.fetch(`${BASE}${path}`, { headers: { authorization: `Bearer ${token}` } });
+    expect((await (await bearer(d.token, "/api/camera-config/cam-move")).json()).rtsp_url).toBe(rtsp);
+    // an admin moves it to their own account
+    const res = await post(r.admin, `/devices/${d.id}/owner`, { owner_id: String(r.ids.admin) });
+    expect(res.status).toBe(303);
+    expect(await one(`SELECT camera_source, camera_rtsp_url, camera_wyze_name, camera_live_url, camera_error, last_screenshot_at, last_camera_at,
+                             current_filename, current_position, last_error FROM devices WHERE id = ?`, d.id)).toEqual({
+      camera_source: null, camera_rtsp_url: null, camera_wyze_name: null, camera_live_url: null, camera_error: null,
+      last_screenshot_at: null, last_camera_at: null, current_filename: null, current_position: null, last_error: null,
+    });
+    for (const key of ["screenshots/cam-move.jpg", "camera/cam-move.jpg"]) expect(await env.MEDIA.head(key), key).toBeNull();
+    // the card holding the old token is signed out; the new token reads the admin's own (empty)
+    // camera config, never the editor's RTSP address
+    for (const path of ["/api/camera-config/cam-move", "/api/sync/cam-move"]) expect((await bearer(d.token, path)).status, path).toBe(401);
+    const fresh = (await one("SELECT token FROM devices WHERE id = ?", d.id)).token;
+    expect(fresh).not.toBe(d.token);
+    const cfg = await bearer(fresh, "/api/camera-config/cam-move");
+    expect(cfg.status).toBe(200);
+    const text = await cfg.text();
+    expect(JSON.parse(text).source).toBe("none");
+    expect(text).not.toContain("s3cret");
+    const page = await (await r.admin.get("/devices")).text();
+    expect(page).toContain('<div class="alert ok" role="alert">Owner changed. The projector is signed out and its camera settings, screenshot and snapshot are cleared: its new account installs the new token from Token / install (or flashes a new card).</div>');
+    expect(page).toContain(`DEVICE_TOKEN=${fresh}`);
+    for (const secret of ["s3cret", "cam.example.net/room", "private.mp4", `/devices/${d.id}/screenshot?t=`]) expect(page).not.toContain(secret);
+    expect(JSON.parse((await audits("device_set_owner"))[0].details)).toMatchObject({ owner_id: r.ids.admin, signed_out: true });
+    await query("DELETE FROM devices WHERE id = ?", d.id);
   });
 });
 

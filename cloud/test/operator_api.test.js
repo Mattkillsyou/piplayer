@@ -256,15 +256,20 @@ describe("GET /api/operator/devices/:device_id", () => {
     expect(await dev("look-nope")).toBeNull();
   });
 
-  it("another account's id: 409 with POST's words; an admin sees it", async () => {
+  it("another account's id: 409 with POST's words, for an admin's token too; own and (for an admin) ownerless ids answer 200", async () => {
     const ed = await signIn("ed", "editor-pass");
     const admin = await signIn("admin", "test1234");
     await register(admin, { device_id: "look-admin", name: "Admin's" });
     expect(await detail(await get(ed, "look-admin"), 409)).toBe("A projector with that ID belongs to another account; pick another name");
     await register(ed, { device_id: "look-ed", name: "Ed's" });
-    const res = await get(admin, "look-ed");
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ name: "Ed's", last_seen_at: null });
+    // the pre-check answers as the registration would: the admin's POST would get the 409 too
+    expect(await detail(await get(admin, "look-ed"), 409)).toBe("A projector with that ID belongs to another account; pick another name");
+    expect((await register(admin, { device_id: "look-ed", name: "Ed's" })).status).toBe(409);
+    expect(await (await get(admin, "look-admin")).json()).toMatchObject({ device_id: "look-admin", name: "Admin's" });
+    // an ownerless id is the admin's to take, not the editor's
+    await device("look-free", "Free", { owner_id: null });
+    expect(await (await get(admin, "look-free")).json()).toMatchObject({ device_id: "look-free", name: "Free", last_seen_at: null });
+    expect(await detail(await get(ed, "look-free"), 409)).toBe("A projector with that ID belongs to another account; pick another name");
   });
 
   it("401 without or with a bad token; 403 for a viewer's token", async () => {

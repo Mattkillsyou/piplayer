@@ -94,13 +94,21 @@ export async function adoptOrphans(env, userId) {
 // content account's or go, so a projector only ever plays its owner's content: a playlist or group
 // of another account is cleared (it then plays the new account's Default playlist) and schedule
 // rules for another account's playlists are deleted, audited like the playlist delete's cascade.
+// What it saw and showed for the old account is the old account's too: the camera settings (the
+// stored RTSP address carries the camera's password, encrypted to the device id only), the live
+// URL, the last screenshot and camera snapshot, the file it played and its error texts are
+// cleared. And the token is replaced: the card that holds the old one sits at the old account's
+// site, and would otherwise sync as the new account's projector (its content, its Wyze login, its
+// tunnel token); the new account installs the new token from its Devices page or flashes a card.
 // The new account's camera_config_version is raised above the old one's so the Pi refetches the
-// camera config (it now comes from the new account's Wyze login). All in one batch. Returns
-// {old_owner, new_owner, playlist_cleared, group_cleared, schedules_deleted} for the caller's audit row.
+// camera config. All in one batch; the R2 snapshots and the tunnel are the caller's
+// (pages/devices.finishHandover), since neither can join a D1 transaction. Returns {id, device_id,
+// tunnel_id, old_owner, new_owner, content_changed, playlist_cleared, group_cleared,
+// schedules_deleted} for the caller.
 export async function reassignDevice(ctx, deviceId, newOwnerId) {
   const env = ctx.env;
   const site = await siteAdminId(env);
-  const row = await db.first(env, "SELECT id, owner_id, playlist_id, group_id FROM devices WHERE id = ?", deviceId);
+  const row = await db.first(env, "SELECT id, device_id, tunnel_id, owner_id, playlist_id, group_id FROM devices WHERE id = ?", deviceId);
   const oldContent = row.owner_id ?? site;
   const newContent = newOwnerId ?? site;
   const changes = { playlist_cleared: false, group_cleared: false, schedules_deleted: 0 };
@@ -120,6 +128,9 @@ export async function reassignDevice(ctx, deviceId, newOwnerId) {
         WHERE s.device_id = ? AND p.owner_id IS NOT ?`, deviceId, newContent);
     if (rules.length) stmts.push([`DELETE FROM device_schedules WHERE device_id = ? AND playlist_id NOT IN (SELECT id FROM playlists WHERE owner_id IS ?)`, deviceId, newContent]);
     changes.schedules_deleted = rules.length;
+    stmts.push([`UPDATE devices SET camera_source = NULL, camera_rtsp_url = NULL, camera_wyze_name = NULL, camera_live_url = NULL,
+        camera_error = NULL, last_screenshot_at = NULL, last_camera_at = NULL, current_filename = NULL, current_position = NULL,
+        last_error = NULL, token = lower(hex(randomblob(32))) WHERE id = ?`, deviceId]);
     if (newContent !== null) {
       const old = oldContent === null ? 0 : (await db.loadSettings(env, oldContent)).camera_config_version;
       stmts.push(db.cameraConfigBump(newContent, old));
@@ -130,7 +141,8 @@ export async function reassignDevice(ctx, deviceId, newOwnerId) {
     await audit.log(ctx, "device_schedule_delete", "device_schedule", rule.id,
       { device_id: deviceId, name: rule.name, cascade_from_owner_change: true }, undefined, row.owner_id);
   }
-  return { old_owner: row.owner_id, new_owner: newOwnerId, ...changes };
+  return { id: row.id, device_id: row.device_id, tunnel_id: row.tunnel_id, old_owner: row.owner_id, new_owner: newOwnerId,
+    content_changed: oldContent !== newContent, ...changes };
 }
 
 // Deleting an account takes its library with it (media.owner_id ON DELETE CASCADE); the R2 objects
