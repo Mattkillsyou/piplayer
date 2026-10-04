@@ -1,8 +1,11 @@
 // Playlist hash golden values (computed with the Python CMS formula), Python float
-// formatting, and the resolution order schedule -> device default -> group default -> site
-// default (the "Default" playlist migration 0010 seeds; test/default_playlist.test.js covers it).
+// formatting, and the resolution order schedule -> device default -> group default -> the
+// account's Default (test/default_playlist.test.js covers it), all from the projector's own
+// account (migration 0016): an ownerless projector plays the site admin's content, never another
+// account's.
 import { beforeAll, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
+import * as accounts from "../src/accounts.js";
 import * as manifest from "../src/manifest.js";
 import { wallClock } from "../src/util.js";
 import { query } from "./helpers.js";
@@ -70,15 +73,27 @@ describe("resolve_active_playlist_id / manifest_for_device", () => {
 
   beforeAll(async () => {
     const ins = async (sql, ...p) => (await env.DB.prepare(sql).bind(...p).run()).meta.last_row_id;
-    ids.plA = await ins("INSERT INTO playlists (name) VALUES ('A')");
-    ids.plB = await ins("INSERT INTO playlists (name) VALUES ('B')");
-    ids.plC = await ins("INSERT INTO playlists (name) VALUES ('C')");
-    ids.plD = await ins("INSERT INTO playlists (name) VALUES ('D')");
-    ids.grp = await ins("INSERT INTO device_groups (name, playlist_id) VALUES ('g', ?)", ids.plC);
-    ids.mVid = await ins(`INSERT INTO media (filename, original_name, media_type, size_bytes, duration_seconds, sha256)
-                          VALUES ('v.mp4', 'v.mp4', 'video', 100, 2.0, ?)`, SHA("1"));
-    ids.mImg = await ins(`INSERT INTO media (filename, original_name, media_type, size_bytes, sha256)
-                          VALUES ('i.png', 'i.png', 'image', 50, ?)`, SHA("2"));
+    // the site admin, adopting what the migrations seeded (the Default playlist) as /setup does
+    ids.admin = await ins("INSERT INTO users (username, password_hash, role) VALUES ('site', 'x', 'admin')");
+    await accounts.adoptOrphans(env, ids.admin);
+    ids.other = await ins("INSERT INTO users (username, password_hash, role) VALUES ('other', 'x', 'editor')");
+    ids.otherDefault = await accounts.ensureDefaultPlaylist(env, ids.other);
+    const pl = (name, owner = ids.admin) => ins("INSERT INTO playlists (owner_id, name, legacy_name) VALUES (?, ?, ?)", owner, name, `legacy-${owner}-${name}`);
+    ids.plA = await pl("A");
+    ids.plB = await pl("B");
+    ids.plC = await pl("C");
+    ids.plD = await pl("D");
+    ids.grp = await ins("INSERT INTO device_groups (owner_id, name, legacy_name, playlist_id) VALUES (?, 'g', 'legacy-g', ?)", ids.admin, ids.plC);
+    ids.mVid = await ins(`INSERT INTO media (filename, original_name, media_type, size_bytes, duration_seconds, sha256, owner_id)
+                          VALUES ('v.mp4', 'v.mp4', 'video', 100, 2.0, ?, ?)`, SHA("1"), ids.admin);
+    ids.mImg = await ins(`INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id)
+                          VALUES ('i.png', 'i.png', 'image', 50, ?, ?)`, SHA("2"), ids.admin);
+    // another account's playlist, group and file: never played by a projector of the site admin's
+    ids.plTheirs = await pl("Theirs", ids.other);
+    ids.grpTheirs = await ins("INSERT INTO device_groups (owner_id, name, legacy_name, playlist_id) VALUES (?, 'g', 'legacy-g2', ?)", ids.other, ids.plTheirs);
+    ids.mTheirs = await ins(`INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id)
+                          VALUES ('t.png', 't.png', 'image', 50, ?, ?)`, SHA("3"), ids.other);
+    await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0)", ids.plTheirs, ids.mTheirs);
     await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0)", ids.plA, ids.mVid);
     await ins("INSERT INTO playlist_items (playlist_id, media_id, position, duration_override_seconds) VALUES (?, ?, 1, 7.5)", ids.plA, ids.mImg);
     await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 2)", ids.plA, ids.mImg);
@@ -95,10 +110,36 @@ describe("resolve_active_playlist_id / manifest_for_device", () => {
     const d2 = (await query("SELECT * FROM devices WHERE id = ?", ids.devGroupOnly))[0];
     expect(await manifest.resolve_active_playlist_id(env, d2, now())).toEqual([ids.plC, "group-default"]);
     const d3 = (await query("SELECT * FROM devices WHERE id = ?", ids.devNone))[0];
-    const site = (await query("SELECT value FROM settings WHERE key = 'default_playlist_id'"))[0].value;
+    const site = (await query("SELECT value FROM account_settings WHERE user_id = ? AND key = 'default_playlist_id'", ids.admin))[0].value;
+    expect(Number(site)).toBe(1); // migration 0010's Default, the site admin's since /setup
     expect(await manifest.resolve_active_playlist_id(env, d3, now())).toEqual([Number(site), "site-default"]); // loads settings itself
     expect(await manifest.resolve_active_playlist_id(env, d3, now(), Number(site))).toEqual([Number(site), "site-default"]);
     expect(await manifest.resolve_active_playlist_id(env, d3, now(), null)).toEqual([null, null]);
+  });
+
+  it("only the projector's own account counts: another account's playlist, group or rule reads as none", async () => {
+    const site = Number((await query("SELECT value FROM account_settings WHERE user_id = ? AND key = 'default_playlist_id'", ids.admin))[0].value);
+    const row = (id) => query("SELECT * FROM devices WHERE id = ?", id).then((r) => r[0]);
+    // an ownerless projector (the site admin's content) pointed at another account's playlist and group
+    await query("UPDATE devices SET playlist_id = ?, group_id = ? WHERE id = ?", ids.plTheirs, ids.grpTheirs, ids.devNone);
+    const rule = (await env.DB.prepare("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'theirs', 99)").bind(ids.devNone, ids.plTheirs).run()).meta.last_row_id;
+    expect(await manifest.resolve_active_playlist_id(env, await row(ids.devNone), now())).toEqual([site, "site-default"]);
+    let m = await manifest.manifest_for_device(env, await row(ids.devNone), "https://cms.example", { ...settings, default_playlist_id: site }, new Date(Date.UTC(2026, 8, 14, 12, 0)));
+    expect(m.playlist.id).toBe(site);
+    expect(JSON.stringify(m)).not.toContain("t.png");
+    // the other account's own projector, pointed at the site admin's playlist: its own Default
+    const theirs = await env.DB.prepare("INSERT INTO devices (device_id, name, token, owner_id, playlist_id, group_id) VALUES ('d-theirs', 'Theirs', 't-theirs', ?, ?, ?)")
+      .bind(ids.other, ids.plA, ids.grp).run();
+    const t = await row(theirs.meta.last_row_id);
+    expect(await manifest.resolve_active_playlist_id(env, t, now())).toEqual([ids.otherDefault, "site-default"]);
+    m = await manifest.manifest_for_device(env, t, "https://cms.example", { ...settings, default_playlist_id: ids.otherDefault }, new Date(Date.UTC(2026, 8, 14, 12, 0)));
+    expect([m.playlist.id, m.playlist.name, m.playlist.items]).toEqual([ids.otherDefault, "Default", []]);
+    // its own group's playlist counts again
+    await query("UPDATE devices SET group_id = ? WHERE id = ?", ids.grpTheirs, t.id);
+    expect(await manifest.resolve_active_playlist_id(env, await row(t.id), now())).toEqual([ids.plTheirs, "group-default"]);
+    await query("DELETE FROM devices WHERE id = ?", t.id);
+    await query("DELETE FROM device_schedules WHERE id = ?", rule);
+    await query("UPDATE devices SET playlist_id = NULL, group_id = NULL WHERE id = ?", ids.devNone);
   });
 
   it("a matching schedule wins (highest priority, then highest id); a bad row is ignored", async () => {

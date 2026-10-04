@@ -1,15 +1,16 @@
 // The SD flasher's sign-in and per-account projectors (v0.7.0): POST /api/operator/login
 // (username + password -> p5k_ token named after the PC; viewers refused; /login's throttle and
 // audit), GET /api/operator/me, and POST /api/operator/devices (create with owner_id and the
-// Settings defaults, re-register with a NEW token, 409 for another account's id, admin takeover
-// of an ownerless id, the per-hour cap on new ids).
+// account's own Settings defaults, re-register with a NEW token, 409 for another account's id,
+// admin takeover of an ownerless id, the per-hour cap on new ids). Every list and default is the
+// signed-in account's own (migration 0016).
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as auth from "../src/auth.js";
 import { MAX_NEW_DEVICES_PER_HOUR } from "../src/api.js";
 import { BASE, query } from "./helpers.js";
-import { audits, detail, device, group, playlist, roles } from "./pages_common.js";
+import { audits, defaultPlaylistOf, detail, device, group, playlist, roles, setting } from "./pages_common.js";
 
 let r;
 const TOKEN_RX = /^p5k_[A-Za-z0-9_-]{32}$/;
@@ -101,13 +102,18 @@ describe("GET /api/operator/me", () => {
   it("shape; 401 on a bad token; 403 for a viewer's token", async () => {
     const gid = await group("Me group");
     const pid = await playlist("Me loop");
+    const theirs = [await group("Admin group", r.ids.admin), await playlist("Admin loop", r.ids.admin)]; // never listed
+    await setting(r.ids.admin, "timezone", "Asia/Tokyo");
     const token = await signIn("ed", "editor-pass");
     const res = await me(bearer(token));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       username: "ed", role: "editor", console_url: BASE, timezone: "UTC", wyze_configured: false,
-      groups: [{ id: gid, name: "Me group" }], playlists: [{ id: 1, name: "Default" }, { id: pid, name: "Me loop" }], // migration 0010 seeds Default
+      groups: [{ id: gid, name: "Me group" }], playlists: [{ id: await defaultPlaylistOf(r.ids.editor), name: "Default" }, { id: pid, name: "Me loop" }], // the editor's own Default
     });
+    await query("DELETE FROM account_settings WHERE key = 'timezone'");
+    await query("DELETE FROM device_groups WHERE id = ?", theirs[0]);
+    await query("DELETE FROM playlists WHERE id = ?", theirs[1]);
     expect(await detail(await me(), 401)).toBe("Missing bearer token");
     expect(await detail(await me(bearer(auth.newApiToken())), 401)).toBe("Invalid API token");
     // a token whose user was demoted to viewer stops working with the sign-in's words
@@ -126,10 +132,11 @@ describe("POST /api/operator/devices", () => {
     await query("DELETE FROM audit_log WHERE action LIKE 'device_%registered'");
     const gid = await group("Reg group");
     const pid = await playlist("Reg loop");
-    await env.DB.batch([
-      env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('enroll_group_id', ?)").bind(String(gid)),
-      env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('enroll_playlist_id', ?)").bind(String(pid)),
-    ]);
+    await setting(r.ids.editor, "enroll_group_id", gid);
+    await setting(r.ids.editor, "enroll_playlist_id", pid);
+    // the admin's own defaults never reach the editor's projectors
+    await setting(r.ids.admin, "enroll_group_id", await group("Admin reg group", r.ids.admin));
+    await setting(r.ids.admin, "enroll_playlist_id", await playlist("Admin reg loop", r.ids.admin));
     const token = await signIn("ed", "editor-pass");
     const res = await register(token, { device_id: " Lobby-1 ", name: "  Lobby  ", pi_model: " Raspberry Pi 4 " }, { "cf-connecting-ip": "10.2.2.2" });
     expect(res.status).toBe(201);
@@ -142,7 +149,7 @@ describe("POST /api/operator/devices", () => {
     const [a] = await audits("device_registered");
     expect(a).toEqual({ username: "ed", target_type: "device", target_id: String(row.id), details: `{"device_id": "lobby-1", "name": "Lobby", "owner": "ed", "group_id": ${gid}, "playlist_id": ${pid}}`, ip: "10.2.2.2" });
     expect((await query("SELECT details FROM audit_log")).some((x) => (x.details || "").includes(row.token))).toBe(false);
-    await query("DELETE FROM settings WHERE key IN ('enroll_group_id', 'enroll_playlist_id')");
+    await query("DELETE FROM account_settings WHERE key IN ('enroll_group_id', 'enroll_playlist_id')");
     // pi_model is optional and capped
     expect((await register(token, { device_id: "lobby-2", name: "Lobby 2" })).status).toBe(201);
     expect((await dev("lobby-2")).pi_model).toBeNull();

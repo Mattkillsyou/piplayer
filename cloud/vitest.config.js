@@ -12,6 +12,9 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.toml" },
         miniflare: {
+          // Empty databases for the migration tests (test/migrations.test.js, data_fixes): they
+          // apply part of TEST_MIGRATIONS, seed what an older live database held, then the rest.
+          d1Databases: { MIGRATION_DB: "migration-test-db", FRESH_DB: "fresh-test-db" },
           bindings: {
             TEST_MIGRATIONS: migrations,
             SESSION_SECRET: "test-session-secret",

@@ -14,10 +14,11 @@ beforeAll(async () => {
 
 describe("audit filter and paging (H7)", () => {
   it("an old human row is reachable through ?action= and the older link; params are validated", async () => {
+    // rows about the viewer's account: the viewer's page is the per-account one (migration 0016)
     await query("DELETE FROM audit_log");
-    const oldest = await ins("INSERT INTO audit_log (username, action, target_type, target_id) VALUES ('admin', 'user_delete', 'user', 'garret')");
+    const oldest = await ins("INSERT INTO audit_log (username, action, target_type, target_id, owner_id) VALUES ('admin', 'user_delete', 'user', 'garret', ?)", r.ids.viewer);
     await query(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1199)
-                 INSERT INTO audit_log (username, action) SELECT 'lobby', 'device_update_reported' FROM n`);
+                 INSERT INTO audit_log (username, action, owner_id) SELECT 'lobby', 'device_update_reported', ? FROM n`, r.ids.viewer);
 
     // the cap alone still hides it (that is the bug the filter and cursor fix)
     let page = await (await r.viewer.get("/audit?limit=1000")).text();

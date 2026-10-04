@@ -7,7 +7,7 @@ import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as media from "../src/media.js";
 import { BASE, Client, query } from "./helpers.js";
-import { audits, detail, device, one, post, roleMatrix, roles, XSS } from "./pages_common.js";
+import { audits, detail, device, one, post, roleMatrix, roles, setting, XSS } from "./pages_common.js";
 
 const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]);
 const bearer = (token) => ({ authorization: `Bearer ${token}` });
@@ -104,15 +104,20 @@ describe("sync + manifest", () => {
     res = await sync(dev); // a player that never sends the field reads as healthy
     expect((await row()).camera_error).toBeNull();
 
-    await query("INSERT INTO settings (key, value) VALUES ('camera_interval', '30')");
+    // the projector's own account sets it; another account's setting never reaches it
+    await setting(r.ids.admin, "camera_interval", "45");
+    expect((await (await sync(dev)).json()).camera_interval_seconds).toBe(10);
+    await setting(r.ids.editor, "camera_interval", "30");
     expect((await (await sync(dev)).json()).camera_interval_seconds).toBe(30);
-    await query("DELETE FROM settings WHERE key = 'camera_interval'");
+    await query("DELETE FROM account_settings WHERE key = 'camera_interval'");
   });
 });
 
 describe("/devices/:id/camera", () => {
-  it("serves image/jpeg no-store nosniff to any session; 303 anonymous; 404 when unset", async () => {
+  it("serves image/jpeg no-store nosniff to the projector's account and admins; 303 anonymous; 404 when unset", async () => {
     expect((await new Client().get(`/devices/${dev.id}/camera`)).status).toBe(303);
+    expect(await detail(await r.viewer.get(`/devices/${dev.id}/camera`), 404)).toBe("Device not found"); // another account's projector
+    expect((await r.admin.get(`/devices/${dev.id}/camera`)).status).toBe(200);
     expect((await r.editor.get("/devices/999999/camera")).status).toBe(404);
     expect((await r.editor.get("/devices/abc/camera")).status).toBe(400);
     expect(await detail(await r.editor.get(`/devices/${other.id}/camera`), 404)).toBe("no camera snapshot yet");
@@ -151,10 +156,10 @@ describe("Devices + dashboard markup", () => {
     expect(dash).not.toContain(`/devices/${other.id}/camera?t=`);
 
     // a bigger camera_interval un-stales it
-    await query("INSERT INTO settings (key, value) VALUES ('camera_interval', '30')");
+    await setting(r.ids.editor, "camera_interval", "30");
     page = await (await r.editor.get("/devices")).text();
     expect(page).toContain('<div class="device-screen device-camera">');
-    await query("DELETE FROM settings WHERE key = 'camera_interval'");
+    await query("DELETE FROM account_settings WHERE key = 'camera_interval'");
     // camera_error alone (no snapshot ever) still surfaces
     await query("UPDATE devices SET camera_error = 'no camera configured' WHERE id = ?", other.id);
     page = await (await r.editor.get("/devices")).text();

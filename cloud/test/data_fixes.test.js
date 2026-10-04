@@ -2,29 +2,20 @@
 // itself before its unique indexes go on (instead of failing on a live database), 0008 indexes
 // login_failures by username, and loadSettings reports a stored timezone it had to fall back from.
 import { describe, expect, it } from "vitest";
+import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as db from "../src/db.js";
 import { query } from "./helpers.js";
-import { ins, one } from "./pages_common.js";
-
-// The healing statements of migrations/0006_indexes.sql, verbatim (workerd cannot read the
-// file): change them there and here together.
-const HEAL_0006 = [
-  `UPDATE playlist_items SET media_id = (SELECT MIN(id) FROM media m2 WHERE m2.sha256 = (SELECT sha256 FROM media WHERE id = playlist_items.media_id))
-  WHERE media_id NOT IN (SELECT MIN(id) FROM media GROUP BY sha256)`,
-  "DELETE FROM playlist_items WHERE id NOT IN (SELECT MIN(id) FROM playlist_items GROUP BY playlist_id, media_id)",
-  "DELETE FROM media WHERE id NOT IN (SELECT MIN(id) FROM media GROUP BY sha256)",
-  `UPDATE alerts SET closed_at = datetime('now')
-  WHERE closed_at IS NULL AND id NOT IN (SELECT MAX(id) FROM alerts WHERE closed_at IS NULL GROUP BY device_id, kind)`,
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_media_sha256 ON media(sha256)",
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_one_open ON alerts(device_id, kind) WHERE closed_at IS NULL",
-];
+import { ins as insDB, one } from "./pages_common.js";
 
 describe("migration 0006 heals duplicates before indexing", () => {
   it("one media row per sha256 keeps the playlist item, one open alert per (device, kind) remains", async () => {
-    // the test database is already at schema 8: take the unique indexes off to seed what a live one may hold
-    await query("DROP INDEX idx_media_sha256");
-    await query("DROP INDEX idx_alerts_one_open");
+    // An empty database at schema 5 holding what a live one may have held, then the real 0006.
+    const m = env.MIGRATION_DB;
+    const upTo = (name) => env.TEST_MIGRATIONS.filter((x) => x.name < name);
+    await applyD1Migrations(m, upTo("0006"));
+    const ins = async (sql, ...p) => (await m.prepare(sql).bind(...p).run()).meta.last_row_id;
+    const mq = async (sql, ...p) => (await m.prepare(sql).bind(...p).all()).results;
     const sha = "d".repeat(64);
     const oldest = await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('h1.mp4', 'h1', 'video', 1, ?)", sha);
     const dup = await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('h2.mp4', 'h2', 'video', 1, ?)", sha);
@@ -40,20 +31,23 @@ describe("migration 0006 heals duplicates before indexing", () => {
     const a2 = await ins("INSERT INTO alerts (device_id, kind) VALUES (?, 'offline')", dev);
     const a3 = await ins("INSERT INTO alerts (device_id, kind) VALUES (?, 'mpv-down')", dev);
 
-    for (const sql of HEAL_0006) await query(sql);
+    await applyD1Migrations(m, env.TEST_MIGRATIONS.filter((x) => x.name.startsWith("0006")));
 
-    expect(await query("SELECT id FROM media WHERE sha256 = ?", sha)).toEqual([{ id: oldest }]);
-    expect(await query("SELECT id, media_id, position FROM playlist_items WHERE playlist_id = ? ORDER BY position", pl))
+    expect(await mq("SELECT id FROM media WHERE sha256 = ?", sha)).toEqual([{ id: oldest }]);
+    expect(await mq("SELECT id, media_id, position FROM playlist_items WHERE playlist_id = ? ORDER BY position", pl))
       .toEqual([{ id: keep, media_id: oldest, position: 0 }, { id: moved, media_id: other, position: 2 }]); // the gap stays
-    expect(await query("SELECT id, media_id FROM playlist_items WHERE playlist_id = ?", pl2)).toEqual([{ id: repointed, media_id: oldest }]);
-    expect(await query("SELECT id, notified_at FROM alerts WHERE device_id = ? AND closed_at IS NULL ORDER BY id", dev))
+    expect(await mq("SELECT id, media_id FROM playlist_items WHERE playlist_id = ?", pl2)).toEqual([{ id: repointed, media_id: oldest }]);
+    expect(await mq("SELECT id, notified_at FROM alerts WHERE device_id = ? AND closed_at IS NULL ORDER BY id", dev))
       .toEqual([{ id: a2, notified_at: null }, { id: a3, notified_at: null }]);
-    expect((await one("SELECT notified_at, closed_at FROM alerts WHERE id = ?", a1))).toEqual({ notified_at: "2026-01-01 00:00:00", closed_at: expect.any(String) });
-    // the indexes are back on
-    await expect(env.DB.prepare("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('h4.mp4', 'h4', 'video', 1, ?)").bind(sha).run())
+    expect((await mq("SELECT notified_at, closed_at FROM alerts WHERE id = ?", a1))[0]).toEqual({ notified_at: "2026-01-01 00:00:00", closed_at: expect.any(String) });
+    // the indexes are on
+    await expect(m.prepare("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('h4.mp4', 'h4', 'video', 1, ?)").bind(sha).run())
       .rejects.toThrow(/UNIQUE constraint failed: media.sha256/);
-    await expect(env.DB.prepare("INSERT INTO alerts (device_id, kind) VALUES (?, 'offline')").bind(dev).run())
+    await expect(m.prepare("INSERT INTO alerts (device_id, kind) VALUES (?, 'offline')").bind(dev).run())
       .rejects.toThrow(/UNIQUE constraint failed: alerts.device_id, alerts.kind/);
+    // and the rest of the migrations apply on top (0016 replaces the index with one per account)
+    await applyD1Migrations(m, env.TEST_MIGRATIONS);
+    expect((await mq("SELECT value FROM meta WHERE key = 'schema_version'"))[0].value).toBe(String(db.SCHEMA_VERSION));
   });
 });
 
@@ -73,25 +67,30 @@ describe("migration 0011", () => {
     expect(await query("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('users_email_lower', 'idx_password_resets_user') ORDER BY name"))
       .toEqual([{ name: "idx_password_resets_user" }, { name: "users_email_lower" }]);
     await query("DELETE FROM users WHERE username LIKE 'm11-%'");
-    await ins("INSERT INTO users (username, password_hash, role, email) VALUES ('m11-a', 'x', 'viewer', 'Same@Example.com')");
+    await insDB("INSERT INTO users (username, password_hash, role, email) VALUES ('m11-a', 'x', 'viewer', 'Same@Example.com')");
     await expect(env.DB.prepare("INSERT INTO users (username, password_hash, role, email) VALUES ('m11-b', 'x', 'viewer', 'same@example.com')").run())
       .rejects.toThrow(/UNIQUE constraint failed/);
     // several accounts without an address are fine
-    await ins("INSERT INTO users (username, password_hash, role) VALUES ('m11-c', 'x', 'viewer')");
-    await ins("INSERT INTO users (username, password_hash, role) VALUES ('m11-d', 'x', 'viewer')");
+    await insDB("INSERT INTO users (username, password_hash, role) VALUES ('m11-c', 'x', 'viewer')");
+    await insDB("INSERT INTO users (username, password_hash, role) VALUES ('m11-d', 'x', 'viewer')");
     await query("DELETE FROM users WHERE username LIKE 'm11-%'");
   });
 });
 
 describe("loadSettings", () => {
   it("a stored timezone that is no longer accepted falls back to UTC and is reported as timezone_problem", async () => {
-    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('timezone', ?)", "Mars/" + "x".repeat(100));
-    const s = await db.loadSettings(env);
+    const uid = await insDB("INSERT INTO users (username, password_hash, role) VALUES ('tz-user', 'x', 'editor')");
+    const other = await insDB("INSERT INTO users (username, password_hash, role) VALUES ('tz-other', 'x', 'editor')");
+    await query("INSERT OR REPLACE INTO account_settings (user_id, key, value) VALUES (?, 'timezone', ?)", uid, "Mars/" + "x".repeat(100));
+    const s = await db.loadSettings(env, uid);
     expect(s.timezone).toBe("UTC");
     expect(s.timezone_problem).toBe(("Mars/" + "x".repeat(100)).slice(0, 64));
-    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('timezone', 'Europe/Paris')");
-    const ok = await db.loadSettings(env);
+    expect(await db.loadSettings(env, other)).not.toHaveProperty("timezone_problem"); // another account's row
+    await query("INSERT OR REPLACE INTO account_settings (user_id, key, value) VALUES (?, 'timezone', 'Europe/Paris')", uid);
+    const ok = await db.loadSettings(env, uid);
     expect(ok.timezone).toBe("Europe/Paris");
     expect(ok).not.toHaveProperty("timezone_problem");
+    expect((await db.loadSettings(env, other)).timezone).toBe("UTC");
+    await query("DELETE FROM users WHERE id IN (?, ?)", uid, other);
   });
 });

@@ -123,11 +123,11 @@ describe("H6: browser errors are pages, API and script errors stay JSON", () => 
     expect(page.status).toBe(403);
     expect(page.headers.get("content-type")).toContain("text/html");
     const text = await page.text();
-    expect(text).toContain("requires admin role");
+    expect(text).toContain("requires editor role");
     expect(text).toContain('<a href="/dashboard" class="back">'); // off-site referer is not used
     const j = await vw.get("/settings");
     expect(j.status).toBe(403);
-    expect(await j.json()).toEqual({ detail: "requires admin role" });
+    expect(await j.json()).toEqual({ detail: "requires editor role" });
     // the device api never renders HTML, whatever Accept says
     const api = await SELF.fetch(BASE + "/api/sync/x", { headers: HTML, redirect: "manual" });
     expect(api.status).toBe(401);
