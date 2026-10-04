@@ -145,7 +145,7 @@ describe("L1 + L2 + L15: response headers", () => {
       expect(res.headers.get("x-content-type-options")).toBe("nosniff");
       expect(res.headers.get("x-frame-options")).toBe("DENY");
       expect(res.headers.get("referrer-policy")).toBe("same-origin");
-      expect(res.headers.get("content-security-policy")).toBe("default-src 'self'; img-src 'self' data:; frame-src https:; frame-ancestors 'none'");
+      expect(res.headers.get("content-security-policy")).toBe("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src https:; frame-ancestors 'none'");
       expect(res.headers.get("strict-transport-security")).toBe("max-age=31536000");
     }
     // The public home page (sign in / create an account) carries its own <style> block: same

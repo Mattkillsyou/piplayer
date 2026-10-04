@@ -7,12 +7,15 @@ What it asserts, in order:
   1. admin created through /setup; POST /settings/tokens shows the plain p5k_ token once and
      D1 holds only its SHA-256 hash (never the plaintext).
   2. GET /api/operator/enrollment with that bearer -> 200 {console_url, enrollment_key (the
-     settings row), groups, playlists, timezone, wyze_configured:false}; no header, a
+     settings row), groups, playlists, timezone, wyze_configured:false}, the groups and
+     playlists being the admin's own (its Default playlist; migration 0016); no header, a
      malformed header and an unknown token -> 401 JSON; last_used_at set; audit rows
      api_token_created + api_token_used; a second call within the hour adds no audit row.
-  3. Users page: an editor's token issued through POST /users/<id>/tokens works; a viewer
-     cannot hold one (400); POST /users/<id>/tokens/<token_id>/revoke -> 303 and the
-     revoked token gets 401; audit api_token_revoked carries the username.
+  3. Users page: an editor's token issued through POST /users/<id>/tokens works on
+     /api/operator/me and lists only the editor's own playlists (never the admin's), while the
+     enrollment key stays the admin's (401); a viewer cannot hold one (400);
+     POST /users/<id>/tokens/<token_id>/revoke -> 303 and the revoked token gets 401; audit
+     api_token_revoked carries the username.
 """
 import argparse
 import hashlib
@@ -40,6 +43,14 @@ def create_token(admin, path, name):
     token = m.group(1)
     assert token.startswith("p5k_") and len(token) == 36, token
     return token
+
+
+def me(base, token):
+    return requests.get(base + "/api/operator/me", headers={"Authorization": "Bearer " + token}, timeout=30)
+
+
+def default_playlist(persist, user_id):
+    return int(ec.d1_one(persist, "SELECT value FROM account_settings WHERE user_id = %d AND key = 'default_playlist_id'" % user_id)["value"])
 
 
 def enrollment(base, token=None, headers=None):
@@ -81,17 +92,19 @@ def run(base, persist):
     assert body["enrollment_key"] == key and key, (body, key)
     assert body["console_url"].startswith("http://127.0.0.1:"), body["console_url"]
     assert body["wyze_configured"] is False, body
-    assert body["groups"] == [] and body["playlists"] == [] and body["timezone"], body
+    admin_id = row["user_id"]
+    admin_default = default_playlist(persist, admin_id)  # migration 0010's Default, the admin's since /setup
+    assert body["groups"] == [] and body["playlists"] == [{"id": admin_default, "name": "Default"}] and body["timezone"], body
     used = ec.d1_one(persist, "SELECT last_used_at FROM api_tokens WHERE id = %d" % row["id"])["last_used_at"]
     assert used, "last_used_at not set"
     assert audit_count(persist, "api_token_used") == 1
     a = ec.d1_one(persist, "SELECT username, target_id, details FROM audit_log WHERE action = 'api_token_used'")
     assert a["username"] == "admin" and str(a["target_id"]) == str(row["id"]) and "e2e laptop" in a["details"], a
     # a group and a playlist show up on the next fetch; the hourly throttle adds no audit row
-    ec.d1(persist, "INSERT INTO device_groups (name) VALUES ('Lobby')")
-    ec.d1(persist, "INSERT INTO playlists (name) VALUES ('Loop A')")
+    ec.d1(persist, "INSERT INTO device_groups (owner_id, name, legacy_name) VALUES (%d, 'Lobby', 'e2e-lobby')" % admin_id)
+    ec.d1(persist, "INSERT INTO playlists (owner_id, name, legacy_name) VALUES (%d, 'Loop A', 'e2e-loop-a')" % admin_id)
     body = enrollment(base, token).json()
-    assert [g["name"] for g in body["groups"]] == ["Lobby"] and [p["name"] for p in body["playlists"]] == ["Loop A"], body
+    assert [g["name"] for g in body["groups"]] == ["Lobby"] and [p["name"] for p in body["playlists"]] == ["Default", "Loop A"], body
     assert audit_count(persist, "api_token_used") == 1, "api_token_used must be throttled to once per hour"
     print("2: bearer fetch returns the live key; 401s are JSON; last_used_at + throttled audit")
 
@@ -101,13 +114,18 @@ def run(base, persist):
         assert r.status_code == 303, (username, r.status_code, r.text[:200])
     ids = {u["username"]: u["id"] for u in ec.d1(persist, "SELECT id, username FROM users")}
     r = admin.post("/users/%d/tokens" % ids["vi"], {"name": "nope"})
-    assert r.status_code == 400 and "viewers cannot hold" in r.text, (r.status_code, r.text[:200])
+    assert r.status_code == 400 and "Viewers cannot hold API tokens" in r.text, (r.status_code, r.text[:200])
     ed_token = create_token(admin, "/users/%d/tokens" % ids["ed"], "ed flasher")
-    assert enrollment(base, ed_token).status_code == 200
+    r = me(base, ed_token)
+    assert r.status_code == 200, (r.status_code, r.text[:200])
+    body = r.json()
+    # the editor's own account: its own Default, none of the admin's groups or playlists
+    assert body["username"] == "ed" and body["groups"] == [] and body["playlists"] == [{"id": default_playlist(persist, ids["ed"]), "name": "Default"}], body
+    assert enrollment(base, ed_token).status_code == 401, "the site-wide enrollment key is for admins only"
     ed_row = ec.d1_one(persist, "SELECT id FROM api_tokens WHERE user_id = %d" % ids["ed"])
     r = admin.post("/users/%d/tokens/%d/revoke" % (ids["ed"], ed_row["id"]))
-    assert (r.status_code, r.headers.get("location")) == (303, "/users?revoked=1"), (r.status_code, r.text[:200])
-    assert enrollment(base, ed_token).status_code == 401, "revoked token still works"
+    assert (r.status_code, r.headers.get("location")) == (303, "/users"), (r.status_code, r.text[:200])
+    assert me(base, ed_token).status_code == 401, "revoked token still works"
     assert enrollment(base, token).status_code == 200, "revoking one token broke another"
     a = ec.d1_one(persist, "SELECT details FROM audit_log WHERE action = 'api_token_revoked'")
     assert a and "ed flasher" in a["details"] and '"ed"' in a["details"], a
@@ -115,7 +133,7 @@ def run(base, persist):
     r = admin.post("/users/%d/tokens/%d/revoke" % (ids["ed"], row["id"]))
     assert r.status_code == 404, (r.status_code, r.text[:200])
     assert ec.d1_one(persist, "SELECT COUNT(*) AS n FROM api_tokens")["n"] == 1
-    print("3: Users page issues/revokes tokens; viewer 400; revoked token 401")
+    print("3: Users page issues/revokes tokens; an editor's token sees its own account only; viewer 400; revoked token 401")
 
 
 def main():

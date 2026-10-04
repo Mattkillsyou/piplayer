@@ -13,6 +13,10 @@ Expected codes come from the spec / cms/app/routes/web.py + api.py (contracts 8,
   viewer on editor routes / editor on admin routes -> 403 {"detail": "requires <role> role"}
   malformed input -> 400, missing rows -> 404, conflicts -> 409, never 500.
 
+Every account is its own private space (migration 0016, src/accounts.js): the fixtures below are
+the admin's, so the editor and the viewer get the 404 of a missing id for them, and the accounts
+group signs two people up who each see only their own library, playlists and projectors.
+
 Other packages may still append plain assert-style functions to CHECKS; they are wrapped.
 """
 import argparse
@@ -182,14 +186,17 @@ SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 MAX_FILENAME_LEN = 120
 
 
-def final_media_name(sha, original, ext):
-    """Port of web._final_media_name so the expected R2 key / manifest filename is known."""
+def final_media_name(sha, original, ext, owner_id=None):
+    """Port of web._final_media_name so the expected R2 key / manifest filename is known; since
+    migration 0016 the name also carries the uploader's account (u<id>_), so the same file in two
+    libraries is two objects (uploads.finalMediaName)."""
     base = os.path.basename(original or "asset")
     safe = SAFE_NAME.sub("_", base).strip("._") or "asset"
     stem = safe[: -len(ext)] if ext and safe.lower().endswith(ext) else safe
-    budget = MAX_FILENAME_LEN - 17 - len(ext)
+    prefix = "%s_%s" % (sha[:16], "" if owner_id is None else "u%d_" % owner_id)
+    budget = MAX_FILENAME_LEN - len(prefix) - len(ext)
     stem = stem[:budget].strip("._") or "asset"
-    return "%s_%s%s" % (sha[:16], stem, ext)
+    return "%s%s%s" % (prefix, stem, ext)
 
 
 def make_media(kind, tmpdir, seed=""):
@@ -223,8 +230,9 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def upload(web, path, original_name=None, media_type=None, duration=None, width=None, height=None):
-    """Drive init -> part -> complete like public/upload.js. Returns the media dict or raises Blocked."""
+def upload(web, path, original_name=None, media_type=None, duration=None, width=None, height=None, owner_id=None):
+    """Drive init -> part -> complete like public/upload.js. Returns the media dict or raises Blocked.
+    `owner_id`: the uploading account's user id (it is part of the stored file name)."""
     name = original_name or os.path.basename(path)
     ext = os.path.splitext(name)[1].lower()
     media_type = media_type or ("video" if ext in (".mp4", ".mov", ".m4v", ".mkv", ".webm") else "image")
@@ -253,7 +261,7 @@ def upload(web, path, original_name=None, media_type=None, duration=None, width=
     rc = web.post_json("/library/upload/%s/complete" % init["upload_id"], {})
     if rc.status_code != 200:
         raise Blocked("upload complete %s %s" % (rc.status_code, rc.text[:160]))
-    return {"id": int(rc.json()["media_id"]), "filename": final_media_name(sha, name, ext), "sha256": sha,
+    return {"id": int(rc.json()["media_id"]), "filename": final_media_name(sha, name, ext, owner_id), "sha256": sha,
             "size_bytes": size, "media_type": media_type, "original_name": name, "duration_seconds": duration,
             "path": path}
 
@@ -277,6 +285,7 @@ class World:
         self.tmpdir = tmpdir
         self.tok = os.urandom(3).hex()
         self.admin = None
+        self.admin_id = None       # the admin's user id (part of its media file names)
         self.editor = self.viewer = None
         self.editor_name = "editor-" + self.tok
         self.viewer_name = "viewer-" + self.tok
@@ -369,6 +378,8 @@ def build_world(base, tmpdir):
     else:
         w.errors["admin"] = "admin session not established"
         return w
+    uid = id_after(a.get("/users").text, '<span class="muted small">(you)</span>', r"/users/(\d+)/")
+    w.admin_id = int(uid) if uid else 1
 
     def step(attr, fn):
         try:
@@ -393,8 +404,8 @@ def build_world(base, tmpdir):
     step("gid", lambda: create_group(a, w.gname))
     step("dev", lambda: create_device(a, "dev-" + w.tok, "Dev " + w.tok))
     step("dev2", lambda: create_device(a, "dev2-" + w.tok, "Dev2 " + w.tok))
-    step("png", lambda: upload(a, make_media("png", tmpdir, w.tok)))
-    step("mp4", lambda: upload(a, make_media("mp4", tmpdir, w.tok)))
+    step("png", lambda: upload(a, make_media("png", tmpdir, w.tok), owner_id=w.admin_id))
+    step("mp4", lambda: upload(a, make_media("mp4", tmpdir, w.tok), owner_id=w.admin_id))
     if w.pid and w.png and w.mp4:
         try:
             w.items[w.png["id"]] = add_item(a, w.pid, w.png["id"])
@@ -498,13 +509,15 @@ def route_table(w):
     A, V = 303, 403     # anonymous -> /login, forbidden
     T = []
     # read-only pages: every logged-in role (404 when the fixture behind the id is missing)
-    for p in ("/dashboard", "/library", "/playlists", "/playlists/%d" % pid, "/devices",
-              "/devices/%d/schedule" % did, "/groups", "/audit"):
+    for p in ("/dashboard", "/library", "/playlists", "/devices", "/groups", "/audit"):
+        T.append(("GET", p, None, None, {"anon": A, "viewer": 200, "editor": 200, "admin": 200}))
+    # the admin's playlist and projector: another account gets the 404 of a missing id
+    for p in ("/playlists/%d" % pid, "/devices/%d/schedule" % did):
         code = 404 if str(NOPE) in p else 200
-        T.append(("GET", p, None, None, {"anon": A, "viewer": code, "editor": code, "admin": code}))
+        T.append(("GET", p, None, None, {"anon": A, "viewer": 404, "editor": 404, "admin": code}))
     T.append(("GET", "/devices/%d/screenshot" % NOPE, None, None, {"anon": A, "viewer": 404, "editor": 404, "admin": 404}))
     T.append(("GET", "/users", None, None, {"anon": A, "viewer": V, "editor": V, "admin": 200}))
-    T.append(("GET", "/settings", None, None, {"anon": A, "viewer": V, "editor": V, "admin": 200}))
+    T.append(("GET", "/settings", None, None, {"anon": A, "viewer": V, "editor": 200, "admin": 200}))  # each account's own
     T.append(("GET", "/library/upload/%d" % NOPE, None, None, {"anon": A, "viewer": V, "editor": 404, "admin": 404}))
     # editor writes (non-mutating inputs: 400 malformed / 404 missing row)
     E = lambda code: {"anon": A, "viewer": V, "editor": code, "admin": code}  # noqa: E731
@@ -533,6 +546,7 @@ def route_table(w):
         ("POST", "/groups", {"name": " "}, "form", E(400)),
         ("POST", "/groups/%d/assign" % NOPE, {"playlist_id": ""}, "form", E(404)),
         ("POST", "/groups/%d/delete" % NOPE, {}, "form", E(404)),
+        ("POST", "/settings", {"timezone": "Not/AZone", "screenshot_interval": "60", "default_image_duration": "10", "camera_interval": "10"}, "form", E(400)),
     ]
     # admin writes
     AD = lambda code: {"anon": A, "viewer": V, "editor": V, "admin": code}  # noqa: E731
@@ -542,13 +556,12 @@ def route_table(w):
         ("POST", "/users/%d/password" % NOPE, {"password": "pw123456"}, "form", AD(404)),
         ("POST", "/users/%d/email" % NOPE, {"email": "nope@example.com"}, "form", AD(404)),
         ("POST", "/users/%d/delete" % NOPE, {}, "form", AD(404)),
-        ("POST", "/settings", {"timezone": "Not/AZone", "screenshot_interval": "60", "default_image_duration": "10", "camera_interval": "10"}, "form", AD(400)),
     ]
     # setup is gone for everyone once a user exists
     T.append(("GET", "/setup?token=" + SETUP_TOKEN, None, None, {"anon": 404, "viewer": 404, "editor": 404, "admin": 404}))
     T.append(("POST", "/setup", {"token": SETUP_TOKEN, "username": "x", "password": "pw123456", "password2": "pw123456"}, "form",
               {"anon": 404, "viewer": 404, "editor": 404, "admin": 404}))
-    T.append(("GET", "/", None, None, {"anon": 303, "viewer": 303, "editor": 303, "admin": 303}))
+    T.append(("GET", "/", None, None, {"anon": 200, "viewer": 303, "editor": 303, "admin": 303}))  # the public home page
     return T
 
 
@@ -583,7 +596,7 @@ def check_authz_matrix(w):
             ok = r.status_code == want
             if ok and want == 303 and role == "anon" and r.headers.get("location") != ("/login" if method == "GET" else "/login?expired=1"):
                 ok = False
-            if ok and want == 303 and path == "/" and role != "anon" and r.headers.get("location") != "/dashboard":
+            if ok and want == 303 and path == "/" and r.headers.get("location") != "/dashboard":
                 ok = False
             if r.status_code == 501:
                 S.not_implemented.add("%s %s" % (method, path.split("?")[0]))
@@ -606,7 +619,7 @@ def check_validation(w):
         for v in ("25:99", "24:00", "12:60", "7", "0800", "8am", "07:00:00", "junk", "1:5"):
             S.expect("validate: schedule start_time=%r is 400" % v, sched(start_time=v), 400)
             S.expect("validate: schedule end_time=%r is 400" % v, sched(end_time=v), 400)
-        S.expect("validate: schedule start == end is 400", sched(start_time="09:00", end_time="09:00"), 400, "start and end must differ")
+        S.expect("validate: schedule start == end is 400", sched(start_time="09:00", end_time="09:00"), 400, "Start and end must differ")
         for f, v in (("start_date", "2026-13-01"), ("start_date", "01/02/2026"), ("start_date", "2026-1-5"),
                      ("end_date", "junk"), ("end_date", "2026-02-30")):
             S.expect("validate: schedule %s=%r is 400" % (f, v), sched(**{f: v}), 400)
@@ -771,8 +784,10 @@ def check_xss(w):
     make("playlist", lambda: create_playlist(a, XSS + w.tok))
     make("device", lambda: create_device(a, "xss-" + w.tok, XSS + w.tok))
     make("group", lambda: create_group(a, XSS + w.tok))
-    make("user", lambda: create_user(a, XSS + w.tok, "pw123456", "viewer"))
-    make("media", lambda: upload(a, make_media("png", w.tmpdir, "xss" + w.tok), original_name=XSS + w.tok + ".png"))
+    # the username rule refuses the payload outright (letters, digits, . - _ @ only)
+    S.expect("xss: a payload username is refused by the username rule", a.post("/users", {"username": XSS + w.tok, "password": "pw123456", "role": "viewer"}),
+             400, "Username may only contain")
+    make("media", lambda: upload(a, make_media("png", w.tmpdir, "xss" + w.tok), original_name=XSS + w.tok + ".png", owner_id=w.admin_id))
     xss_pid = next((v for k, v in created if k == "playlist"), None)
     xss_dev = next((v for k, v in created if k == "device"), None)
     if xss_pid and xss_dev:
@@ -815,7 +830,6 @@ def check_xss(w):
     for label, page, fragment in (("playlist", "/playlists", "Delete playlist " + XSS_ESC),
                                   ("device", "/devices", "Delete device " + XSS_ESC),
                                   ("group", "/groups", "Delete " + XSS_ESC),
-                                  ("user", "/users", "Delete " + XSS_ESC),
                                   ("media", "/library", "Delete " + XSS_ESC)):
         if not any(k == label for k, _ in created):
             continue
@@ -862,11 +876,13 @@ def check_device_api(w):
              requests.post(base + "/api/screenshots/" + dev["device_id"], headers=bearer(dev2["token"]), files={"file": ("s.jpg", jpeg_bytes())}), 403)
     S.expect("api: command result without token is 401", requests.post(base + "/api/commands/1/result", json={"result": "x"}), 401)
     S.expect("api: session cookie alone does not authenticate /api/sync", w.admin.get("/api/sync/" + dev["device_id"]), 401)
-    # manifest: null playlist for an unassigned device
+    # manifest: an unassigned device plays its account's Default playlist (every upload joins it)
     r = sync(dev2, base, player_version="e2e-1.0", player_status="playing", current_position="3", current_filename="a.mp4")
     if S.expect("api: sync for a device with nothing assigned is 200", r, 200):
         m = r.json()
-        S.rec("api: unassigned device gets playlist null", m.get("playlist") is None and m.get("device") == {"id": dev2["device_id"], "name": dev2["name"]},
+        pl0 = m.get("playlist") or {}
+        S.rec("api: unassigned device plays its account's Default playlist",
+              pl0.get("name") == "Default" and pl0.get("source") == "site-default" and m.get("device") == {"id": dev2["device_id"], "name": dev2["name"]},
               json.dumps(m)[:200])
         S.rec("api: manifest has commands [] and screenshot_interval_seconds",
               m.get("commands") == [] and isinstance(m.get("screenshot_interval_seconds"), int))
@@ -963,8 +979,10 @@ def check_media(w):
         S.rec("media: ETag present", bool(r.headers.get("etag")))
         S.rec("media: Content-Length correct", r.headers.get("content-length") == str(len(full)), r.headers.get("content-length"))
         S.rec("media: X-Content-Type-Options: nosniff", r.headers.get("x-content-type-options") == "nosniff")
-    if w.viewer:
-        S.expect("media: viewer session can fetch media", w.viewer.get("/api/media/" + fn), 200)
+    # the file is the admin's: any other account's session gets the missing-file 404
+    for role, c in (("viewer", w.viewer), ("editor", w.editor)):
+        if c:
+            S.expect("media: another account's %s session gets the missing-file 404" % role, c.get("/api/media/" + fn), 404, "Not Found")
     r = a.head("/api/media/" + fn)
     S.rec("media: HEAD is 200 with Content-Length and empty body",
           r.status_code == 200 and r.headers.get("content-length") == str(len(full)) and not r.content, "%s %s" % (r.status_code, r.headers.get("content-length")))
@@ -986,9 +1004,10 @@ def check_media(w):
     S.expect("media: device in playlist may fetch", requests.get(base + "/api/media/" + fn, headers=bearer(dev["token"])), 200)
     S.expect("media: device in playlist may fetch the image", requests.get(base + "/api/media/" + png["filename"], headers=bearer(dev["token"])), 200)
     a.post("/devices/%d/group" % dev2["id"], {"group_id": ""})
-    S.expect("media: device with no playlist is 403", requests.get(base + "/api/media/" + fn, headers=bearer(dev2["token"])), 403)
+    S.expect("media: a device with nothing assigned plays its account's Default, which holds every upload (200)",
+             requests.get(base + "/api/media/" + fn, headers=bearer(dev2["token"])), 200)
     try:
-        other = upload(a, make_media("png", w.tmpdir, "other" + w.tok))
+        other = upload(a, make_media("png", w.tmpdir, "other" + w.tok), owner_id=w.admin_id)
         S.expect("media: device may not fetch a file outside its playlist (403)",
                  requests.get(base + "/api/media/" + other["filename"], headers=bearer(dev["token"])), 403)
         # scoping follows the schedule resolver
@@ -1035,7 +1054,7 @@ def check_screenshots(w):
               and r.headers.get("x-content-type-options") == "nosniff" and "no-store" in r.headers.get("cache-control", ""),
               "%s %s" % (r.headers.get("content-type"), r.headers.get("cache-control")))
     if w.viewer:
-        S.expect("screenshot: viewer can view it", w.viewer.get("/devices/%d/screenshot" % dev["id"]), 200)
+        S.expect("screenshot: another account's viewer gets the missing-device 404", w.viewer.get("/devices/%d/screenshot" % dev["id"]), 404, "Device not found")
     S.expect("screenshot: anonymous is redirected", w.anon().get("/devices/%d/screenshot" % dev["id"]), 303, location="/login")
     page = w.admin.get("/devices").text
     S.rec("screenshot: devices page links the screenshot with its age", "/devices/%d/screenshot" % dev["id"] in page and "s ago" in page)
@@ -1213,13 +1232,25 @@ def check_sessions(w):
         S.expect("throttle: another username from the same ip is unaffected", Web(base).login(ADMIN, ADMIN_PW), 303)
     except Blocked as e:
         S.rec("throttle: login lock", False, "blocked: %s" % e)
-    # viewer never sees tokens
+    # a viewer never sees a token; another account's projector is not on anyone's page but an admin's
     if w.viewer and w.dev:
         page = w.viewer.get("/devices").text
-        S.rec("roles: viewer page lacks the device token and install command", w.dev["token"] not in page and "DEVICE_TOKEN=" not in page and w.dev["name"] in page)
-        page = w.editor.get("/devices").text if w.editor else ""
-        S.rec("roles: editor page shows the token and install command",
-              w.dev["token"] in page and "deploy/install-player.sh" in page and "cd piplayer/player" in page and "DEVICE_ID=%s" % w.dev["device_id"] in page and "CMS_URL=" in page)
+        S.rec("roles: viewer page lacks the admin's projector, its token and the install command",
+              w.dev["token"] not in page and "DEVICE_TOKEN=" not in page and w.dev["device_id"] not in page)
+    if w.editor and w.dev:
+        try:
+            own = create_device(w.editor, "ed-" + w.tok, "Ed " + w.tok)
+            page = w.editor.get("/devices").text
+            S.rec("roles: editor page shows its own projector's token and install command",
+                  own["token"] in page and "deploy/install-player.sh" in page and "cd piplayer/player" in page
+                  and "DEVICE_ID=%s" % own["device_id"] in page and "CMS_URL=" in page)
+            S.rec("roles: editor page never lists the admin's projector", w.dev["device_id"] not in page and w.dev["token"] not in page)
+            page = w.admin.get("/devices").text
+            S.rec("roles: the admin's Devices page lists the editor's projector with its owner, never its token",
+                  own["device_id"] in page and esc(w.editor_name) in page and own["token"] not in page)
+            S.expect("roles: the editor deletes its own projector", w.editor.post("/devices/%d/delete" % own["id"]), 303)
+        except Blocked as e:
+            S.rec("roles: editor's own projector", False, "blocked: %s" % e)
     if w.viewer:
         page = w.viewer.get("/dashboard").text
         S.rec("roles: viewer nav has no Users/Settings links", 'href="/users"' not in page and 'href="/settings"' not in page and 'badge-viewer' in page)
@@ -1227,7 +1258,7 @@ def check_sessions(w):
     if w.editor:
         S.expect("roles: editor JSON 403 for admin routes", w.editor.get("/users"), 403, "requires admin role")
         page = w.editor.get("/dashboard").text
-        S.rec("roles: editor nav has no Users/Settings links", 'href="/users"' not in page and 'href="/settings"' not in page)
+        S.rec("roles: editor nav has its own Settings but no Users link", 'href="/users"' not in page and 'href="/settings"' in page)
 
 
 def check_uploads_protocol(w):
@@ -1270,7 +1301,7 @@ def check_uploads_protocol(w):
         S.expect("upload: complete again is 404 (uploads row gone)", a.post_json("/library/upload/%s/complete" % uid, {}), 404)
         page = a.get("/library").text
         S.rec("upload: library lists the new file", "proto-" + w.tok + ".png" in page and "badge-image" in page)
-        S.expect("upload: media is served", a.get("/api/media/" + final_media_name(sha, body["name"], ".png")), 200)
+        S.expect("upload: media is served", a.get("/api/media/" + final_media_name(sha, body["name"], ".png", w.admin_id)), 200)
         S.expect("upload: cleanup delete", a.post("/library/%s/delete" % mid), 303)
     # abort
     r = a.post_json("/library/upload/init", dict(body, name="abort-" + w.tok + ".png", sha256=hashlib.sha256(b"abort" + w.tok.encode()).hexdigest()))
@@ -1309,7 +1340,8 @@ def check_dashboard(w):
 
 def check_enroll(w):
     """Zero-touch enrollment: the key on /settings lets an anonymous POST /api/enroll create a
-    device (fresh token) and re-enroll it (same token, new name); bad key 401, throttled 429."""
+    device (fresh token) and re-enroll it (a NEW token: the key alone never hands out a live one;
+    new name); bad key 401, throttled 429."""
     a, base = w.admin, w.base
     page = a.get("/settings").text
     m = re.search(r'<input type="password" id="enrollment-key" value="([A-Za-z0-9_\-]+)" readonly', page)
@@ -1341,7 +1373,9 @@ def check_enroll(w):
     S.expect("enroll: the token authenticates /api/sync", requests.get(base + "/api/sync/" + did, headers=bearer(tok), timeout=30), 200)
     r2 = e({"key": key, "device_id": did, "name": "Renamed " + w.tok})
     if S.expect("enroll: re-enroll is 200", r2, 200):
-        S.rec("enroll: re-enroll keeps the existing token", r2.json().get("token") == tok)
+        tok2 = r2.json().get("token", "")
+        S.rec("enroll: re-enroll hands out a new token", len(tok2) > 20 and tok2 != tok)
+        S.expect("enroll: the old token stops working", requests.get(base + "/api/sync/" + did, headers=bearer(tok), timeout=30), 401)
     devices = a.get("/devices").text
     S.rec("enroll: device shows on /devices with the new name", ("Renamed " + w.tok) in devices and ("Enrolled " + w.tok) not in devices)
     html = a.get("/audit?limit=100").text
@@ -1356,13 +1390,66 @@ def check_enroll(w):
     # rotate: the old key stops working (the throttle also blocks it, so only check the page changed)
     if w.editor:
         S.expect("enroll: rotate is admin-only", w.editor.post("/settings/enrollment/rotate"), 403, detail_contains="requires admin role")
-    S.expect("enroll: rotate", a.post("/settings/enrollment/rotate"), 303, location="/settings?rotated=1")
-    page2 = a.get("/settings?rotated=1").text
+    S.expect("enroll: rotate", a.post("/settings/enrollment/rotate"), 303, location="/settings")
+    page2 = a.get("/settings").text
     S.rec("enroll: rotated key differs and the banner shows", key not in page2 and "Enrollment key rotated." in page2)
     S.rec("enroll: enrollment_key_rotated is audited", "enrollment_key_rotated" in a.get("/audit?limit=50").text)
     dev_id = id_after(devices, did, r"/devices/(\d+)/")
     if dev_id:
         a.post("/devices/%s/delete" % dev_id)
+
+
+def signup(base, username):
+    """A person signing up on /signup: signed in as the new (editor) account."""
+    c = Web(base)
+    r = c.post("/signup", {"username": username, "email": "%s@example.net" % username, "password": "pw-" + username,
+                           "password2": "pw-" + username})
+    if (r.status_code, r.headers.get("location")) != (303, "/dashboard"):
+        raise Blocked("POST /signup -> %s %s" % (r.status_code, r.text[:120]))
+    return c
+
+
+def check_accounts(w):
+    """Two sign-ups are two private spaces (migration 0016): each gets its own Default playlist,
+    the same file uploaded by both is two library entries, and neither can see, fetch or change
+    the other's things (the answer is the one a missing id gets); the admin sees neither's library."""
+    base = w.base
+    one, two = signup(base, "one-" + w.tok), signup(base, "two-" + w.tok)
+    path = make_media("png", w.tmpdir, "accounts" + w.tok)
+    files = {}
+    for name, c in (("one", one), ("two", two)):
+        r = c.post_json("/library/upload/init", {"name": "%s-%s.png" % (name, w.tok), "size": os.path.getsize(path), "sha256": sha256_file(path),
+                                                 "media_type": "image", "width": 64, "height": 64})
+        S.expect("accounts: %s may upload the file the other account has (init 200)" % name, r, 200)
+        if r.status_code != 200:
+            return
+        upload_id = r.json()["upload_id"]
+        with open(path, "rb") as f:
+            S.expect("accounts: %s part 1" % name, c.put("/library/upload/%s/part/1" % upload_id, f.read()), 200)
+        r = c.post_json("/library/upload/%s/complete" % upload_id, {})
+        S.expect("accounts: %s complete" % name, r, 200)
+        files[name] = r.json().get("media_id")
+    page_one, page_two = one.get("/library").text, two.get("/library").text
+    S.rec("accounts: each library lists only its own copy",
+          ("one-%s.png" % w.tok) in page_one and ("two-%s.png" % w.tok) not in page_one
+          and ("two-%s.png" % w.tok) in page_two and ("one-%s.png" % w.tok) not in page_two)
+    admin_library = w.admin.get("/library").text
+    S.rec("accounts: the admin's library lists neither", ("one-%s.png" % w.tok) not in admin_library and ("two-%s.png" % w.tok) not in admin_library)
+    # each upload joined its own account's Default playlist
+    for name, c in (("one", one), ("two", two)):
+        page = c.get("/playlists").text
+        pid = id_after(page, ">Default</a>", r"/playlists/(\d+)") or id_after(page, "Default", r"/playlists/(\d+)")
+        S.rec("accounts: %s has its own Default playlist holding its upload" % name,
+              bool(pid) and ("%s-%s.png" % (name, w.tok)) in c.get("/playlists/%s" % pid).text, "pid=%s" % pid)
+        if name == "two":
+            S.expect("accounts: one gets the 404 of a missing id for two's Default", one.get("/playlists/%s" % pid), 404)
+            S.expect("accounts: and for a missing one", one.get("/playlists/%d" % NOPE), 404)
+            S.expect("accounts: renaming two's playlist is the same 404 for one", one.post("/playlists/%s/rename" % pid, {"name": "mine"}), 404, "Playlist not found")
+    S.expect("accounts: one cannot delete two's file (404 like a missing one)", one.post("/library/%s/delete" % files["two"]), 404, "Not Found")
+    S.rec("accounts: two's file is still there", ("two-%s.png" % w.tok) in two.get("/library").text)
+    S.expect("accounts: the admin's playlist is a 404 for a sign-up", one.get("/playlists/%d" % (w.pid or NOPE)), 404)
+    S.rec("accounts: a sign-up has its own Settings and no Users page",
+          one.get("/settings").status_code == 200 and one.get("/users").status_code == 403)
 
 
 def check_cleanup(w):
@@ -1378,7 +1465,8 @@ def check_cleanup(w):
         S.expect("cleanup: delete playlist (cascades items, clears device default)", a.post("/playlists/%d/delete" % w.pid), 303)
         if w.dev:
             r = sync(w.dev, w.base)
-            S.rec("cleanup: device now gets playlist null", r.status_code == 200 and r.json().get("playlist") is None)
+            S.rec("cleanup: device now plays its account's Default playlist",
+                  r.status_code == 200 and (r.json().get("playlist") or {}).get("source") == "site-default")
     html = a.get("/audit?limit=100").text
     S.rec("cleanup: audit shows device_delete / group_delete / playlist_delete",
           all(x in html for x in ("device_delete", "group_delete", "playlist_delete")))
@@ -1431,6 +1519,7 @@ SUITE = [
     ("sessions/cookies/roles", check_sessions),
     ("audit", check_audit),
     ("dashboard/pages", check_dashboard),
+    ("accounts", check_accounts),
     ("cleanup", check_cleanup),
 ]
 

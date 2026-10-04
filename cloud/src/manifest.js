@@ -38,7 +38,7 @@ export function manifest_json(body) {
   return s.replace(FLOAT_KEYS, "$1$2");
 }
 
-// _resolve_duration: override wins, images get the site default, videos play naturally.
+// _resolve_duration: override wins, images get the account's default, videos play naturally.
 export function resolveDuration(item, defaultImageDuration) {
   if (item.duration_override_seconds) return Number(item.duration_override_seconds);
   if (item.media_type === "image") return defaultImageDuration;
@@ -126,7 +126,7 @@ export function ir_codes(raw) {
 // "on" | "off" for a device's projector in auto mode, from the same rows pick_playlist uses:
 // on while a playlist is active, from projector_lead_minutes before the next schedule rule
 // starts, and until nothing has been active for projector_idle_minutes; off otherwise. The
-// site default playlist does not count: it is always there, so it would keep every auto-mode
+// account's Default playlist does not count: it is always there, so it would keep every auto-mode
 // projector on around the clock; auto mode follows schedules and assigned playlists only.
 export function projector_want(device, scheduleRows, groupPlaylistId, now, settings) {
   const lead = settings.projector_lead_minutes ?? db.PROJECTOR_LEAD_MINUTES;

@@ -6,7 +6,9 @@ Reuses the runner from run_e2e.py (starts + migrates + kills the dev server). A 
 H.264 mp4 is generated with ffmpeg, hashed with hashlib and pushed through init / part /
 status / complete with 8 MiB parts, including an interrupted-and-resumed upload, the 409
 duplicate and 413 oversize answers at init, abort (checked down in Miniflare's R2 store), and
-the delete route.
+the delete route. Libraries are per account (migration 0016): the stored name carries the
+uploader's account, and a second account signed up on /signup may upload the same bytes but
+never sees or fetches the first account's file.
 
 Then the browser half: a headless Chrome driven over the DevTools protocol (the `websockets`
 package that uvicorn[standard] pulls into cms/.venv; no other dependency) logs in through the
@@ -112,6 +114,16 @@ def login(base):
     return s
 
 
+def signup(base, username):
+    """A second account, signed up on /signup (an editor of its own private space)."""
+    s = requests.Session()
+    r = s.post(base + "/signup", data={"username": username, "email": username + "@example.net", "password": "pw-" + username,
+                                       "password2": "pw-" + username, "csrf_token": csrf(s, base, "/signup")}, allow_redirects=False)
+    assert (r.status_code, r.headers.get("location")) == (303, "/dashboard"), (r.status_code, r.text[:300])
+    s.headers["X-CSRF-Token"] = csrf(s, base, "/library")
+    return s
+
+
 def put_part(s, base, upload_id, n, data):
     return s.put("%s/library/upload/%s/part/%d" % (base, upload_id, n), data=data,
                  headers={"Content-Type": "application/octet-stream"})
@@ -171,7 +183,8 @@ def check_uploads(base):
     assert (row["original_name"], row["media_type"], row["size_bytes"], row["width"], row["height"], row["sha256"]) == \
         (init_body["name"], "video", size, width, height, sha), row
     assert abs(row["duration_seconds"] - duration) < 0.01, row
-    assert row["filename"] == sha[:16] + "_e2e_clip_720p.mp4", row["filename"]
+    admin_id = d1("SELECT id FROM users WHERE username = 'admin'")[0]["id"]
+    assert row["filename"] == sha[:16] + "_u%d_e2e_clip_720p.mp4" % admin_id, row["filename"]
     assert d1("SELECT COUNT(*) AS n FROM uploads")[0]["n"] == 0
     assert d1("SELECT action FROM audit_log WHERE action = 'upload_media'") == [{"action": "upload_media"}]
 
@@ -192,6 +205,20 @@ def check_uploads(base):
     assert r.status_code == 409, (r.status_code, r.text[:200])
     assert r.json()["detail"] == "Already in the library as '%s'." % init_body["name"], r.text
     assert d1("SELECT COUNT(*) AS n FROM uploads")[0]["n"] == 0
+
+    # another account may hold the same bytes (duplicates are refused within one account only),
+    # and the admin's file answers it like a missing one
+    o = signup(base, "other-account")
+    r = o.post(base + "/library/upload/init", json=dict(init_body, name="their copy.mp4"))
+    assert r.status_code == 200, (r.status_code, r.text[:200])
+    r = o.post("%s/library/upload/%s/abort" % (base, r.json()["upload_id"]))
+    assert r.status_code == 200 and r.json() == {"ok": True}, (r.status_code, r.text[:200])
+    r = o.get("%s/api/media/%s" % (base, row["filename"]))
+    assert r.status_code == 404 and r.json() == {"detail": "Not Found"}, (r.status_code, r.text[:200])
+    assert init_body["name"] not in o.get(base + "/library").text
+    r = o.post("%s/library/%d/delete" % (base, media_id), data={"csrf_token": o.headers["X-CSRF-Token"]}, allow_redirects=False)
+    assert r.status_code == 404, (r.status_code, r.text[:200])
+    assert d1("SELECT COUNT(*) AS n FROM media WHERE id = %d" % media_id)[0]["n"] == 1
 
     # library page lists it
     page = s.get(base + "/library").text
@@ -426,9 +453,13 @@ def check_browser_upload(base, chrome):
     assert 'class="alert error"' in page, page[:800]
     rows = [[v, t] for i, v, t in out["log"] if i == 1]      # the 12 MiB file
     texts = [t for _, t in rows]
-    for want in ["Hashing 67%", "Hashing 100%", "Starting upload...", "Uploading 8.0 / 12.0 MB (67%)",
+    for want in ["Hashing 67%", "Hashing 100%", "Starting upload...",
                  "Uploading 12.0 / 12.0 MB (100%)", "Upload received, saving...", "Done."]:
         assert want in texts, (want, texts)
+    # byte progress between the parts (upload.js reports the XHR progress events, so the exact
+    # steps depend on the network; at least one lands strictly between 0 and 100)
+    mid = [t for t in texts if re.match(r"^Uploading \d+\.\d / 12\.0 MB \((\d+)%\)$", t) and 0 < int(t.rsplit("(", 1)[1][:-2]) < 100]
+    assert mid, texts
     order = [texts.index(w) for w in ("Hashing 67%", "Starting upload...", "Uploading 12.0 / 12.0 MB (100%)", "Done.")]
     assert order == sorted(order), texts
     uploading = [v for v, t in rows[texts.index("Starting upload..."):]]
@@ -436,7 +467,7 @@ def check_browser_upload(base, chrome):
     assert any(0 < v < 100 for v in uploading), uploading  # the bar visibly moved between the two parts
     hashing = [v for v, t in rows if t.startswith("Hashing")]
     assert hashing == sorted(hashing) and hashing[-1] == 100, hashing
-    assert [t for i, v, t in out["log"] if i == 2][-1].startswith("Error: Duplicate"), out["log"]
+    assert [t for i, v, t in out["log"] if i == 2][-1] == "Error: Already in the library as 'browser clip.mp4'.", out["log"]
     for i in (0, 1):
         assert [v for j, v, t in out["log"] if j == i][-1] == 100
 

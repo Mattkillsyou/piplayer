@@ -15,6 +15,18 @@ Each section says what the feature does, which settings drive it, and the
 one-time steps the operator must do by hand (tokens, accounts, dashboard
 settings).
 
+**Accounts (cloud console, migration 0016).** Every account on the cloud
+console is its own private space (`cloud/README.md`, "Accounts"). The
+settings below marked "Settings page, admin" are, on the cloud console, each
+account's own: its editors and admins change them on their own Settings page,
+and a projector follows the settings of its own account (the site admin's for
+a projector with no owner). That covers the auto-assign group and playlist,
+the Default playlist, the update release and window, the Wyze account, the
+projector timing, the alert channels and thresholds, and the camera operator
+list. Only the enrollment key stays site-wide (admins only). Where a section
+says "site default" or "site-wide", read "the account's" on the cloud
+console; the Python console (`cms/`) keeps the single site.
+
 ## A. Auto-assign on enrollment (cloud + cms)
 
 **What it does.** When the flasher registers a new projector (`POST
@@ -38,9 +50,10 @@ cleared on disk; the dangling id is just ignored), so pick a replacement on
 the Settings page when you delete one.
 
 **The default playlist.** Nobody has to assign a playlist for a projector to
-play. Every upload is appended to the site default playlist (the Library says
-so under the drop zone), and a projector plays that playlist whenever nothing
-more specific applies. The order the player resolves in is unchanged, with the
+play. Every upload is appended to the uploader's Default playlist (on the
+cloud console each account has its own; the Library says so under the drop
+zone), and a projector plays its account's Default whenever nothing more
+specific applies. The order the player resolves in is unchanged, with the
 default as the last step: a matching schedule rule → the device's own default
 playlist → its group's default playlist → the site default playlist. The
 Devices and Dashboard pages show "via default playlist" when that is what a
@@ -1095,10 +1108,11 @@ bridge; an RTSP camera needs something of your own listening there, as in
 camera.md). Device ids are already lowercase letters, digits and hyphens, so
 every `<device_id>-cam` is a valid hostname label.
 
-The Access policy's email list comes from the Settings page: **Email to**
-(`alert_email`, section F) doubles as the operator list. If it is empty the
-console falls back to the admin users' usernames, using those usernames
-that are email addresses; if neither gives a list, tunnel creation stops
+The Access policy's email list comes from the Settings page of the
+projector's account: **Email to** (`alert_email`, section F) doubles as the
+operator list. If it is empty the console falls back to that account's own
+email address (or its username when that is an address); if neither gives a
+list, tunnel creation stops
 with a message asking you to fill in **Email to** first, and nothing is
 created (the hostname must never go up without a policy in front of it,
 because the bridge player has no login of its own). The policy is rewritten

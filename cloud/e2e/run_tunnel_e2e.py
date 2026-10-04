@@ -16,14 +16,22 @@ What it asserts, in order:
      app + policy in that order with the bearer, stores tunnel_id / tunnel_hostname, sets
      camera_live_url, redirects with the hostname banner, audits device_tunnel_created; the
      Devices page shows the badge, the Recreate button and never the token.
-  3. Recreate tunnel is idempotent: no second tunnel / CNAME / app, ingress and policy rewritten.
-  4. a second enrollment provisions at enrollment; a re-enrollment of a tunnelled device does not
-     touch Cloudflare again.
+  3. Recreate tunnel replaces the tunnel (its connections and the tunnel deleted, a new one made,
+     so a leaked connector token stops working): the same hostname, the CNAME re-pointed, the
+     Access app and policy reused, audited device_tunnel_rotated.
+  4. a second enrollment provisions at enrollment; a re-enrollment of a tunnelled device (a new
+     device token) does not touch Cloudflare again.
   5. the device's own sync carries tunnel {token, hostname} (token fetched from the API, absent
      from D1); a wrong bearer is 401; a device without a tunnel gets tunnel: null; the API
      refusing the token call also yields null (the Pi keeps what it has).
-  6. a Cloudflare refusal comes back as the tunnel_error banner and device_tunnel_failed, never a
+  6. a Cloudflare refusal comes back as an error banner and device_tunnel_failed, never a
      500; the steps before the refusal stay and the retry finishes the job.
+  7. the operator list is per account (migration 0016): a sign-up's projector gets a tunnel whose
+     Access policy allows that account's own address only, never the admin's list.
+
+The enrolled and inserted projectors here have no owner, so they follow the site admin (the
+admin made by /setup): its alert addresses are their operator list. Banners come from the
+one-shot flash cookie, never the URL.
 """
 import argparse
 import json
@@ -115,6 +123,14 @@ class FakeCloudflare:
             pol = next(p for p in self.policies[m.group(1)] if p["id"] == m.group(2))
             pol.update(body)
             return pol
+        m = re.match(a + r"/cfd_tunnel/([^/]+)(/connections)?$", path)
+        if m and method == "DELETE":
+            tunnel = next((t for t in self.tunnels if t["id"] == m.group(1)), None)
+            if tunnel is None:
+                return None
+            if not m.group(2):
+                self.tunnels.remove(tunnel)
+            return tunnel
         return None
 
     def shapes(self, start=0):
@@ -180,14 +196,14 @@ def run(base, persist, fake):
     page = admin.get("/settings").text
     key = ec.d1_one(persist, "SELECT value FROM settings WHERE key = 'enrollment_key'")["value"]  # generated on first load
     assert "Camera tunnels (Cloudflare) <span class=\"badge badge-active\">configured</span>" in page, "tunnel panel configured"
-    assert '<span class="badge badge-stale">none</span> set the alert email addresses' in page and "Devices with a tunnel: 0" in page
+    assert '<span class="badge badge-stale">none</span> (set the alert email addresses above)' in page and "Devices with a tunnel: 0" in page
     a = enroll(base, key, "pi-a", "Lobby")
     row = dev_row(persist, "pi-a")
     assert row["tunnel_id"] is None and row["tunnel_hostname"] is None and row["camera_live_url"] is None, row
     failed = audit_rows(persist, "device_tunnel_failed")
     assert len(failed) == 1 and "no operator email known" in failed[0]["details"], failed
     assert fake.calls == [], "nothing was asked of Cloudflare without an operator list"
-    assert 'class="small primary" title="Cloudflare Tunnel + DNS + Access app' in admin.get("/devices").text, "Create tunnel button rendered"
+    assert '>Create tunnel</button>' in admin.get("/devices").text, "Create tunnel button rendered"
     print("1: configured panel; enrollment without an operator email succeeds tunnel-less, audited, no API call")
 
     # 2. Create tunnel
@@ -195,7 +211,7 @@ def run(base, persist, fake):
     assert r.status_code == 303, (r.status_code, r.text[:200])
     assert "<code>ops@example.net</code>, <code>matt@example.net</code>" in admin.get("/settings").text
     r = admin.post("/devices/%d/tunnel" % row["id"])
-    assert (r.status_code, r.headers.get("location")) == (303, "/devices?tunnel=pi-a-cam.%s" % ZONE_NAME), (r.status_code, r.headers.get("location"))
+    assert (r.status_code, r.headers.get("location")) == (303, "/devices"), (r.status_code, r.headers.get("location"))
     assert fake.shapes() == [
         "GET /accounts/%s/cfd_tunnel" % ACCT, "POST /accounts/%s/cfd_tunnel" % ACCT,
         "PUT /accounts/%s/cfd_tunnel/tun-1/configurations" % ACCT,
@@ -219,28 +235,38 @@ def run(base, persist, fake):
     assert "eyJ-e2e-token" not in page, "the tunnel token is never on a page"
     print("2: Create tunnel provisioned tunnel / ingress / CNAME / Access app + policy, stored, live URL set, audited")
 
-    # 3. idempotent recreate
+    # 3. Recreate tunnel: a new tunnel behind the same hostname
     n = len(fake.calls)
     r = admin.post("/devices/%d/tunnel" % row["id"])
-    assert r.status_code == 303 and r.headers["location"].endswith("tunnel=pi-a-cam.photogen5000.com"), (r.status_code, r.headers.get("location"))
+    assert (r.status_code, r.headers.get("location")) == (303, "/devices"), (r.status_code, r.headers.get("location"))
+    assert "Tunnel ready: https://pi-a-cam.photogen5000.com/" in admin.get("/devices").text
+    tun_a = dev_row(persist, "pi-a")["tunnel_id"]
+    assert tun_a not in (None, "tun-1"), tun_a
     assert fake.shapes(n) == [
-        "GET /accounts/%s/cfd_tunnel" % ACCT, "PUT /accounts/%s/cfd_tunnel/tun-1/configurations" % ACCT,
-        "GET /zones/%s/dns_records" % ZONE, "GET /accounts/%s/access/apps" % ACCT,
+        "DELETE /accounts/%s/cfd_tunnel/tun-1/connections" % ACCT, "DELETE /accounts/%s/cfd_tunnel/tun-1" % ACCT,
+        "GET /accounts/%s/cfd_tunnel" % ACCT, "POST /accounts/%s/cfd_tunnel" % ACCT,
+        "PUT /accounts/%s/cfd_tunnel/%s/configurations" % (ACCT, tun_a),
+        "GET /zones/%s/dns_records" % ZONE, "PUT /zones/%s/dns_records/dns-2" % ZONE,
+        "GET /accounts/%s/access/apps" % ACCT,
         "GET /accounts/%s/access/apps/app-3/policies" % ACCT, "PUT /accounts/%s/access/apps/app-3/policies/pol-4" % ACCT,
     ], fake.shapes(n)
-    assert len(fake.tunnels) == 1 and len(fake.dns) == 1 and len(fake.apps) == 1 and len(fake.policies["app-3"]) == 1
-    assert dev_row(persist, "pi-a")["tunnel_id"] == "tun-1"
-    print("3: Recreate tunnel reused every object (ingress + policy rewritten)")
+    assert [t["id"] for t in fake.tunnels] == [tun_a] and len(fake.dns) == 1 and fake.dns[0]["content"] == tun_a + ".cfargotunnel.com", fake.dns
+    assert len(fake.apps) == 1 and len(fake.policies["app-3"]) == 1
+    rotated = audit_rows(persist, "device_tunnel_rotated")
+    assert len(rotated) == 1 and '"old_tunnel_id": "tun-1"' in rotated[0]["details"] and '"tunnel_id": "%s"' % tun_a in rotated[0]["details"], rotated
+    print("3: Recreate tunnel replaced the tunnel; hostname, CNAME (re-pointed), Access app and policy reused")
 
     # 4. enrollment provisions; re-enrollment of a tunnelled device does not call again
     n = len(fake.calls)
     b = enroll(base, key, "pi-b", "Bar")
     row_b = dev_row(persist, "pi-b")
-    assert (row_b["tunnel_id"], row_b["tunnel_hostname"], row_b["camera_live_url"]) == ("tun-5", "pi-b-cam.photogen5000.com", "https://pi-b-cam.photogen5000.com/"), row_b
+    assert (row_b["tunnel_id"], row_b["tunnel_hostname"], row_b["camera_live_url"]) == (fake.tunnels[-1]["id"], "pi-b-cam.photogen5000.com", "https://pi-b-cam.photogen5000.com/"), row_b
     assert [t["name"] for t in fake.tunnels] == ["p5k-pi-a", "p5k-pi-b"]
     assert len(audit_rows(persist, "device_tunnel_created")) == 3
     n = len(fake.calls)
-    assert enroll(base, key, "pi-b", "Bar 2")["token"] == b["token"]
+    b2 = enroll(base, key, "pi-b", "Bar 2")
+    assert b2["token"] != b["token"], "a re-enrollment hands out a new token (the key alone never returns a live one)"
+    b = b2
     assert len(fake.calls) == n, "re-enrollment of a tunnelled device asks Cloudflare nothing"
     assert "Devices with a tunnel: 2" in admin.get("/settings").text
     print("4: enrollment provisions; re-enrollment leaves Cloudflare alone")
@@ -248,15 +274,15 @@ def run(base, persist, fake):
     # 5. manifest
     r = sync(base, "pi-a", a["token"])
     assert r.status_code == 200, (r.status_code, r.text[:300])
-    assert r.json()["tunnel"] == {"token": "eyJ-e2e-token-for-tun-1", "hostname": "pi-a-cam.photogen5000.com"}, r.json().get("tunnel")
-    assert fake.shapes()[-1] == "GET /accounts/%s/cfd_tunnel/tun-1/token" % ACCT
+    assert r.json()["tunnel"] == {"token": "eyJ-e2e-token-for-" + tun_a, "hostname": "pi-a-cam.photogen5000.com"}, r.json().get("tunnel")
+    assert fake.shapes()[-1] == "GET /accounts/%s/cfd_tunnel/%s/token" % (ACCT, tun_a)
     assert sync(base, "pi-a", "not-the-token").status_code == 401
     assert sync(base, "pi-a", b["token"]).status_code in (401, 403), "another device's bearer never sees pi-a's token"
     assert ec.d1(persist, "SELECT COUNT(*) AS n FROM devices WHERE token LIKE '%eyJ-e2e%'")[0]["n"] == 0
     ec.d1(persist, "INSERT INTO devices (device_id, name, token) VALUES ('pi-c', 'Plain', 'tok-c')")
     r = sync(base, "pi-c", "tok-c")
     assert r.status_code == 200 and "tunnel" in r.json() and r.json()["tunnel"] is None, r.json().get("tunnel", "missing")
-    fake.refuse = "GET /accounts/%s/cfd_tunnel/tun-1/token" % ACCT
+    fake.refuse = "GET /accounts/%s/cfd_tunnel/%s/token" % (ACCT, tun_a)
     r = sync(base, "pi-a", a["token"])
     assert r.status_code == 200 and r.json()["tunnel"] is None, "token fetch refused -> null, sync still 200"
     fake.refuse = None
@@ -267,11 +293,11 @@ def run(base, persist, fake):
     row_d = dev_row(persist, "pi-d")
     fake.refuse = "POST /zones/%s/dns_records" % ZONE
     r = admin.post("/devices/%d/tunnel" % row_d["id"])
-    assert r.status_code == 303 and r.headers["location"].startswith("/devices?tunnel_error="), (r.status_code, r.headers.get("location"))
-    msg = urllib.parse.unquote(r.headers["location"])
-    assert "Cloudflare API POST /zones/.../dns_records: refused by the e2e fake" in msg, msg
-    assert ZONE not in msg and ACCT not in msg, msg
-    assert "Tunnel creation failed: Cloudflare API POST" in admin.get(r.headers["location"]).text
+    assert (r.status_code, r.headers.get("location")) == (303, "/devices"), (r.status_code, r.headers.get("location"))
+    page = admin.get("/devices").text
+    banner = page.split('<div class="alert error" role="alert">', 1)[1].split("</div>", 1)[0] if '<div class="alert error" role="alert">' in page else ""
+    assert banner.startswith("Tunnel creation failed: Cloudflare API POST /zones/.../dns_records: refused by the e2e fake"), banner
+    assert ZONE not in banner and ACCT not in banner, banner
     assert dev_row(persist, "pi-d")["tunnel_id"] is None
     failed = audit_rows(persist, "device_tunnel_failed")
     assert len(failed) == 2 and "refused by the e2e fake" in failed[-1]["details"], failed
@@ -279,11 +305,33 @@ def run(base, persist, fake):
     fake.refuse = None
     n = len(fake.calls)
     r = admin.post("/devices/%d/tunnel" % row_d["id"])
-    assert r.status_code == 303 and r.headers["location"].endswith("tunnel=pi-d-cam.photogen5000.com"), (r.status_code, r.headers.get("location"))
+    assert (r.status_code, r.headers.get("location")) == (303, "/devices"), (r.status_code, r.headers.get("location"))
+    assert "Tunnel ready: https://pi-d-cam.photogen5000.com/" in admin.get("/devices").text
     assert "POST /accounts/%s/cfd_tunnel" % ACCT not in fake.shapes(n), "the retry reused the tunnel"
     assert [t["name"] for t in fake.tunnels].count("p5k-pi-d") == 1
     assert dev_row(persist, "pi-d")["tunnel_hostname"] == "pi-d-cam.photogen5000.com"
     print("6: a Cloudflare refusal is a banner + device_tunnel_failed; the retry finishes with the objects already made")
+
+    # 7. a sign-up's projector: its own address (given at sign-up) is its operator list
+    bob = ec.Admin(base)
+    r = bob.post("/signup", {"username": "bob", "email": "bob@example.net", "password": "bob-pass1", "password2": "bob-pass1"})
+    assert (r.status_code, r.headers.get("location")) == (303, "/dashboard"), (r.status_code, r.text[:300])
+    bob_id = ec.d1_one(persist, "SELECT id FROM users WHERE username = 'bob'")["id"]
+    ec.d1(persist, "INSERT INTO devices (device_id, name, token, owner_id) VALUES ('pi-e', 'Bob hall', 'tok-e', %d)" % bob_id)
+    row_e = dev_row(persist, "pi-e")
+    page = bob.get("/settings").text
+    assert "<code>bob@example.net</code>" in page and "ops@example.net" not in page and "Devices with a tunnel: 0" in page, page[:300]
+    r = bob.post("/devices/%d/tunnel" % row_e["id"])
+    assert (r.status_code, r.headers.get("location")) == (303, "/devices"), (r.status_code, r.headers.get("location"))
+    assert "Tunnel ready: https://pi-e-cam.photogen5000.com/" in bob.get("/devices").text
+    app = next(a for a in fake.apps if a["domain"] == "pi-e-cam.photogen5000.com")
+    include = [p["include"] for p in fake.policies[app["id"]]]
+    assert include == [[{"email": {"email": "bob@example.net"}}]], include
+    assert "Devices with a tunnel: 1" in bob.get("/settings").text and "Devices with a tunnel: 3" in admin.get("/settings").text
+    # the admin's tunnels kept the admin's list
+    pol_a = fake.policies["app-3"][-1]["include"]
+    assert pol_a == POLICY["include"], pol_a
+    print("7: a sign-up's tunnel allows its own address only; the admin's keep the admin's list")
 
 
 def main():

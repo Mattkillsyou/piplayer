@@ -6,8 +6,9 @@ Usage: python e2e/run_player_e2e.py [--port 8788] [--persist-to DIR] [--work DIR
 
 What it asserts, in order:
   1. admin created through /setup, logged in with CSRF; media rows + R2 objects seeded
-     through the wrangler CLI (uploads are a browser protocol, not the player's concern);
-     the device is registered through POST /devices when that page exists, else seeded.
+     through the wrangler CLI before /setup (uploads are a browser protocol, not the player's
+     concern), so the first admin adopts them as its own library (migration 0016); the device
+     is registered through POST /devices when that page exists, else seeded.
   2. cycle 1: three real ffmpeg files downloaded and sha256-verified, manifest.json saved
      with the server's hash, media_index.json written, D1 device row shows last_seen_at,
      last_ip, player_status/version, a screenshot landed in R2 + last_screenshot_at.
@@ -21,7 +22,8 @@ What it asserts, in order:
      lands in R2 as camera/<id>.jpg + last_camera_at; a failing capture round-trips as
      camera_error on the next sync and clears again; /devices and /dashboard show the snapshot.
   7. GET /api/camera-config/<id> (device bearer only): a per-device RTSP source set on the
-     Devices page is served, bumps the manifest's camera_config_version, is never rendered back.
+     Devices page is served, bumps the manifest's camera_config_version, is never rendered back
+     (the row is marked camera-capable first: the player on a PC reports camera_supported=0).
   8. projector power (console side; the player's projector.py is exercised by player/tests):
      the Devices page Projector form -> manifest `projector` block with the computed want, sync
      ?projector_state= / ?projector_error= land in D1 and on the page, an ir-learn:<name>
@@ -97,7 +99,9 @@ def seed_library(persist, media):
               % (ec.sql_str(name), ec.sql_str(name), ec.sql_str(m["mtype"]), m["size"], ec.sql_str(m["sha256"])))
     ec.d1(persist, "INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES (%s, %s, 'image', 10, %s)"
           % (ec.sql_str(GHOST), ec.sql_str(GHOST), ec.sql_str("c" * 64)))
-    ec.d1(persist, "INSERT INTO playlists (name) VALUES ('e2e playlist')")
+    # seeded before /setup, so the rows have no owner yet: the first admin adopts them (migration
+    # 0016, accounts.adoptOrphans); legacy_name is the old site-wide name column
+    ec.d1(persist, "INSERT INTO playlists (name, legacy_name) VALUES ('e2e playlist', 'e2e playlist')")
     pid = ec.d1_one(persist, "SELECT id FROM playlists WHERE name = 'e2e playlist'")["id"]
     for pos, name in enumerate([n for n, *_ in FILES] + [GHOST]):
         ec.d1(persist, "INSERT INTO playlist_items (playlist_id, media_id, position%s) SELECT %d, id, %d%s FROM media WHERE filename = %s"
@@ -106,13 +110,17 @@ def seed_library(persist, media):
     return pid
 
 
-def camera_config_probes(base, admin, dev_row):
+def camera_config_probes(base, persist, admin, dev_row):
     """GET /api/camera-config/<id> is device-bearer only; a per-device RTSP source set on the
     Devices page reaches it, bumps the manifest's camera_config_version, and its credentials
     never come back in the page. Runs last: the version bump would make the next player cycle
     refetch and replace the env-configured camera."""
     h = {"Authorization": "Bearer " + dev_row["token"]}
     url = base + "/api/camera-config/" + DEVICE_ID
+    # the real player on this PC (not an arm64 Pi) reported camera_supported=0, which answers
+    # source "none" whatever is configured (pi_info.camera_supported); the probe is about the
+    # console side, so make the row a camera-capable Pi again
+    ec.d1(persist, "UPDATE devices SET camera_supported = 1 WHERE id = %d" % dev_row["id"])
     assert requests.get(url).status_code == 401, "camera-config without a bearer is not 401"
     before = requests.get(url, headers=h).json()
     assert before["source"] == "none" and isinstance(before["version"], int), before
@@ -120,7 +128,8 @@ def camera_config_probes(base, admin, dev_row):
     rtsp = "rtsp://user:s3cret@10.0.0.9:554/e2e"
     r = admin.post("/devices/%d/camera-source" % dev_row["id"], {"camera_source": "rtsp", "camera_rtsp_url": rtsp})
     assert r.status_code == 303, (r.status_code, r.text[:300])
-    assert requests.get(url, headers=h).json() == {"source": "rtsp", "rtsp_url": rtsp, "version": v0 + 1}
+    got = requests.get(url, headers=h).json()
+    assert got == {"source": "rtsp", "rtsp_url": rtsp, "version": v0 + 1}, (got, v0)
     manifest = requests.get(base + "/api/sync/" + DEVICE_ID, headers=h).json()
     assert manifest["camera_config_version"] == v0 + 1, manifest.get("camera_config_version")
     page = admin.get("/devices").text
@@ -466,7 +475,7 @@ def run(base, persist, work, media, pid):
 
     # --- edge cases the golden verifier probes (the player never sends these) ------------
     parity_probes(base, dev_row["token"])
-    camera_config_probes(base, admin, dev_row)
+    camera_config_probes(base, persist, admin, dev_row)
     projector_probes(base, admin, persist, dev_row)
 
     # every status the player sends is visible to the browser too (page owned by P2; skip a stub)

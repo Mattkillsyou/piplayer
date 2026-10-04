@@ -147,9 +147,8 @@ export async function loadSettings(env, ownerId) {
   return (await loadSettingsFor(env, [ownerId])).get(ownerId) || defaultSettings(env);
 }
 
-// Map(ownerId -> settings) for several accounts in one statement: the Devices and Dashboard
-// pages of an admin (every projector, each by its own account's zone and default playlist) and
-// the alert cron. A default_playlist_id must name one of the account's own playlists, else it
+// Map(ownerId -> settings) for several accounts in one statement: the Devices page of an admin
+// (every projector, each by its own account's zone and default playlist) and the alert cron. A default_playlist_id must name one of the account's own playlists, else it
 // reads as null (a deleted row, a D1 edit).
 export async function loadSettingsFor(env, ownerIds) {
   const ids = [...new Set(ownerIds.filter((id) => id !== null && id !== undefined))];

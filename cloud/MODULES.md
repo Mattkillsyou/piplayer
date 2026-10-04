@@ -1,6 +1,7 @@
 # PiPlayer Cloud — module guide for package authors
 
-Read this together with `README.md` (see "Limits and design notes"). Everything below exists and is tested
+Read this together with `README.md` (see "Accounts" and "Limits and design notes"); the
+accounts rules every module follows are in "Accounts" below. Everything below exists and is tested
 (`npm test`, `npm run e2e`). Your module plugs in by replacing its stub; do not change the
 scaffold files (`index.js`, `router.js`, `util.js`, `db.js`, `auth.js`, `audit.js`,
 `pages/layout.js`, `pages/login.js`, `pages/setup.js`, `pages/signup.js`, `pages/forgot.js`) without telling the scaffold owner.
@@ -58,7 +59,7 @@ vitest-pool-workers 0.22 accepts (a later date makes `npm test` fail to boot).
    gets the JSON. `GET /setup` with a bad token renders a "not set up yet" card at 403.
 8. `withSecurityHeaders`: every response gets `X-Content-Type-Options: nosniff`,
    `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `Content-Security-Policy:
-   default-src 'self'; img-src 'self' data:; frame-src https:; frame-ancestors 'none'` and
+   default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src https:; frame-ancestors 'none'` and
    `Strict-Transport-Security: max-age=31536000`; `html()` adds `Cache-Control: no-store`.
    The CSP forbids inline `<script>`, inline `style` attributes, `on*=` handlers and
    `javascript:` links: behaviour goes in `public/app.js`, styles in `public/style.css`.
@@ -84,7 +85,7 @@ own try/catch. Locally: `wrangler dev --test-scheduled` then `GET /__scheduled?c
   cookies,           // Set-Cookie strings to append (auth.js fills it; you normally never touch it)
   form(),            // Promise<FormData>, memoised (the CSRF check already read it; reading again is free);
                      //   malformed body → 400. Use util.str(form, "name") for string fields.
-  settings(),        // Promise<settings object>, memoised: db.loadSettings(env); every key in db.SETTING_KEYS, see the Settings table below
+  settings(),        // Promise<settings object>, memoised: db.loadSettings(env, user.id), the signed-in account's own; every key in db.SETTING_KEYS, see the Settings table below
 }
 ```
 
@@ -144,7 +145,9 @@ All take `env` (not ctx) so housekeeping can use them too.
 | `batch(env, [[sql, ...params], ...])` | one D1 batch = one transaction; returns the per-statement D1 results |
 | `isConstraintError(e)` | UNIQUE/FK/CHECK violation (map it to a friendly 409/404 in your route; unmapped ones become the generic 409) |
 | `assertMigrated(env)` | the once-per-isolate schema guard |
-| `loadSettings(env)` / `defaultSettings(env)` / `saveSetting(env, key, value)` / `SETTING_KEYS` | settings table (see below) |
+| `loadSettings(env, ownerId)` / `loadSettingsFor(env, ownerIds)` (Map id -> settings, one statement) / `defaultSettings(env)` / `saveSetting(env, ownerId, key, value)` / `settingStatement(ownerId, key, value)` (for `batch`; null deletes) / `SETTING_KEYS` | an account's settings (`account_settings`, see Settings below) |
+| `enrollmentKey(env)` / `generateEnrollmentKey(env, replace)` | the one site-wide setting (`settings.enrollment_key`) |
+| `cameraConfigBump(ownerId, atLeast=0)` / `bumpCameraConfigVersion(env, ownerId)` | raise an account's `camera_config_version` (above `atLeast`: a projector moving accounts must not land on a version its Pi already applied) |
 | `pruneAuditLog(env, days)` | used by audit.housekeeping |
 
 Positions/orderings: keep the Python `ORDER BY position, id` style; D1 is SQLite, the schema is the
@@ -170,7 +173,7 @@ same, so the SQL from web.py/api.py ports verbatim (`?` placeholders, `datetime(
 | `csrfToken(ctx)` | `ctx.csrf` (the layout emits it; `csrfInput(ctx)` for forms) |
 | `requireCsrf(ctx)` | header `X-CSRF-Token` or form field `csrf_token`; index.js already applies it to every non-`/api/` unsafe request, JSON and raw-body endpoints included (so fetch/PUT callers must send the header) |
 | `loginLockedFor(env, ip, username, max?, seconds?)` / `recordLoginFailure` / `clearLoginFailures` | D1 `login_failures`; 5 failures for one ip+username in 30 s → seconds remaining; also `LOGIN_IP_MAX_FAILURES` (20) from one ip under any username in the same window, and `LOGIN_USER_MAX_FAILURES` (20) for one username from anywhere in `LOGIN_USER_WINDOW_SECONDS` (600). The ip is `util.ipBucket` (IPv4 as is, IPv6 as its /64); rows are kept 10 minutes. `POST /api/enroll` reuses it with username `ENROLL_KEY` and `ENROLL_MAX_FAILURES` (10) / `ENROLL_LOCK_SECONDS` (60), exempt from the per-username ceiling |
-| `deviceFromHeader(ctx)` | `{id, device_id, name, playlist_id, group_id}` for `Authorization: Bearer <token>`; 401 `"Missing bearer token"` / `"Invalid device token"`. The path `device_id` must equal `row.device_id` else 403 — your check |
+| `deviceFromHeader(ctx)` | `{id, device_id, name, playlist_id, group_id, owner_id, content_owner, ...}` for `Authorization: Bearer <token>` (`content_owner`: the account whose content it plays, accounts.contentOwnerSql); 401 `"Missing bearer token"` / `"Invalid device token"`. The path `device_id` must equal `row.device_id` else 403: your check |
 | `operatorFromHeader(ctx)` | `{token_id, token_name, id, username, role}` for `Authorization: Bearer p5k_<32 urlsafe>` (api_tokens, looked up by SHA-256 hex, `timingSafeEqual` on the stored hash); 401 `"Missing bearer token"` / `"Invalid API token"`. Role is the caller's check (`GET /api/operator/enrollment` wants admin: the key it returns can enroll any device id; `api.flasherOperator` wants editor+) |
 | `newApiToken()` / `apiTokenHash(token)` / `touchApiToken(env, id)` | mint `p5k_` + 32 chars; SHA-256 hex; stamp `last_used_at` at most once per `API_TOKEN_USED_AUDIT_HOURS` (returns true when it did, so the caller audits `api_token_used` then) |
 | `issueApiToken(ctx, userId, name, details?)` | mint + insert an `api_tokens` row and audit `api_token_created` (`{name, ...details}`, never the token); returns `{id, token}` for the one-time display. The Settings and Users pages and the device-code sign-in all go through it |
@@ -180,8 +183,12 @@ same, so the SQL from web.py/api.py ports verbatim (`?` placeholders, `datetime(
 
 ## audit.js
 
-`await audit.log(ctx, action, targetType=null, targetId=null, details=null, user=undefined)` —
-user defaults to `ctx.user`; pass `null` for `login_failed`; `details` is JSON-encoded when
+`await audit.log(ctx, action, targetType=null, targetId=null, details=null, user=undefined, owner=undefined)`:
+user defaults to `ctx.user`; pass `null` for `login_failed`; `owner` is the account the row is
+about (`audit_log.owner_id`, migration 0016), by default the acting user's own; pass the
+projector's `owner_id` for a row about a projector (so an admin's action on another account's
+projector shows in that account's log) and `null` for a row about no account (only admins read
+those); `details` is JSON-encoded when
 non-empty by `audit.pyJson()` (Python `json.dumps` text: `{"a": 1, "b": [1, 2]}`, non-ASCII as
 `\uXXXX`, so the Details column matches the CMS); `ip` = `CF-Connecting-IP`. Never throws. Action/target names are exactly web.py's:
 `login`, `login_failed`, `logout`, `upload_media`, `delete_media`, `create_playlist`,
@@ -201,7 +208,10 @@ feature sections below list theirs). `login_failed` carries the real account nam
 
 `/audit` (`pages/audit.js`, any role) lists newest first with `?limit=` (1..1000), `?action=`
 (one action name, the select above the table) and `?before=<id>` (the "older" link's cursor, so
-a human row stays reachable once the machine rows outnumber the tail).
+a human row stays reachable once the machine rows outnumber the tail). It shows the rows about
+the reader's own account and the reader's own actions (`audit.auditScope`: `owner_id = me OR
+user_id = me`), plus for admins the rows about no account (`owner_id IS NULL`); the dashboard's
+tail uses the same scope.
 
 ## pages/layout.js
 
@@ -211,7 +221,7 @@ return layout(ctx, { title: "Devices", content, status: 200, message: "", messag
 ```
 `layout()` is a plain function (not middleware): it wraps `content` (already-escaped HTML) in
 base.html's shell: `<meta name="csrf-token">`, the Projection5000 wordmark, the nav with active
-states (`Users` and `Settings` for admins only; below 1000px the nine links collapse behind the
+states (`Users` for admins only, `Settings` for editors and admins; below 1000px the nine links collapse behind the
 menu button, `style.css`), the user badge + logout form, the message slot
 (`alertBox`), then `scripts` and `/static/app.js`. An empty `message` is filled once from the
 `piplayer_flash` cookie a `flashRedirect()` left (then cleared). No nav when `ctx.user` is null
@@ -242,24 +252,26 @@ async function groupsCreate(ctx) {
   const user = auth.requireRole(ctx, "editor");            // viewer → 403, anonymous → 303 /login
   const form = await ctx.form();                            // CSRF already verified by index.js
   const name = str(form, "name").trim();
-  if (!name) fail(400, "Name required");                    // 400 {detail}
+  if (!name) fail(400, "Enter a name");                     // 400 {detail}
   let id;
-  try {
-    id = (await db.run(ctx.env, "INSERT INTO device_groups (name) VALUES (?)", name)).last_row_id;
+  try {                                                     // the account's own row; names are unique per account
+    id = (await db.run(ctx.env, "INSERT INTO device_groups (owner_id, name, legacy_name) VALUES (?, ?, ?)",
+      user.id, name, accounts.uniqueKey())).last_row_id;
   } catch (e) {
-    if (db.isConstraintError(e)) fail(409, "A group with that name already exists");  // friendly 409
+    if (db.isConstraintError(e)) fail(409, "A group with that name already exists");  // friendly 409, about its own group only
     throw e;
   }
-  await audit.log(ctx, "group_create", "device_group", id, { name });
+  await audit.log(ctx, "group_create", "group", id, { name });
   return redirect("/groups");
 }
 
 async function groupsAssign(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const groupId = idParam(ctx.params.group_id, "group_id");
   const pid = intField(str((await ctx.form()), "playlist_id"), "playlist_id");
-  if (!(await db.first(ctx.env, "SELECT id FROM device_groups WHERE id = ?", groupId))) fail(404, "Group not found");
-  if (pid !== null && !(await db.first(ctx.env, "SELECT id FROM playlists WHERE id = ?", pid))) fail(404, "Playlist not found");
+  // another account's id answers exactly like a missing one
+  if (!(await accounts.ownRow(ctx.env, "device_groups", groupId, user.id))) fail(404, "Group not found");
+  if (pid !== null && !(await accounts.ownRow(ctx.env, "playlists", pid, user.id))) fail(404, "Playlist not found");
   ...
 }
 
@@ -271,9 +283,12 @@ export function register(router) {
 ```
 
 - Read-only pages: `auth.requireUser(ctx)`; writes: `auth.requireRole(ctx, "editor")`;
-  users/settings: `"admin"`. Device tokens (the Token / install block, `New token`) are shown
-  to admins only, like the operator token and `/authorize`; editors get the device forms and
-  buttons, viewers read.
+  Users page, enrollment key, `/authorize`: `"admin"`; `/settings` is editor+ (each account's
+  own). Every query of an account's things is scoped to it (`WHERE owner_id = ?` with
+  `ctx.user.id`, `accounts.ownRow`, `pages/devices.requireDevice` for projectors), admins
+  included; only the Devices page lists every projector for an admin. A device token (the Token /
+  install block, `New token`) is shown to the editors and admins of the projector's own account;
+  viewers read.
 - After a POST, answer with `auth.flashRedirect(ctx, location, message, kind)` (kind `ok` |
   `error` | `warn`), never a `?saved=1`-style query string; `layout()` shows it once.
 - Validate before touching the DB; 400 for malformed, 404 for missing rows, 409 for conflicts
@@ -304,7 +319,14 @@ used and deletes every session of the user, audits `password_reset` and `flashRe
 the Cloudflare dashboard; any address needs Workers Paid with Email Sending and the domain
 onboarded (the `wrangler.toml` comment).
 
-## Settings (`settings` table, `/settings` page)
+## Settings (`account_settings` table, `/settings` page)
+
+Every account has its own settings (migration 0016: `account_settings(user_id, key, value)`, a
+row only for what was set; `db.loadSettings(env, ownerId)` fills the rest with the defaults). A
+projector follows its content account's (its owner's; the site admin's for an ownerless one), so
+its zone, intervals, update release and window, camera pattern and alert thresholds are its
+account's. `/settings` is editor+ and edits the signed-in account's own rows; the one site-wide
+key, `enrollment_key`, stays in the old `settings` table and its panel is shown to admins only.
 
 | key | default | used by |
 |---|---|---|
@@ -312,9 +334,9 @@ onboarded (the `wrangler.toml` comment).
 | `screenshot_interval` | `PIPLAYER_SCREENSHOT_INTERVAL` (60) | manifest `screenshot_interval_seconds`, stale badge (`> 3 ×`) |
 | `camera_interval` | `PIPLAYER_CAMERA_INTERVAL` (10, min 5) | manifest `camera_interval_seconds`, camera snapshot stale badge (`> 3 ×`) |
 | `default_image_duration` | `PIPLAYER_DEFAULT_IMAGE_DURATION` (10) | effective duration of images |
-| `enrollment_key` | random 32-byte urlsafe token, generated on the first `loadSettings` (never from env) | `POST /api/enroll` (the flasher fetches it live through `GET /api/operator/enrollment` and writes it to each card); `/settings` shows it and `POST /settings/enrollment/rotate` replaces it (`db.generateEnrollmentKey`) |
-| `enroll_group_id` / `enroll_playlist_id` | none (int or null; a deleted row reads as none) | applied to a device on its first `POST /api/enroll` or `POST /api/operator/devices` only |
-| `default_playlist_id` | the "Default" playlist migration 0010 creates (int; null only once its row is gone: `loadSettings` drops the key when no playlist has that id) | the site default playlist: `uploads.uploadComplete` appends every new media row to it (same transaction, `upload_media` audit row carries `playlist`); `manifest.pick_playlist` serves it as the last fallback (source `site-default`, shown as "via default playlist") after schedule → device default → group default; `projector_want` ignores it (auto mode follows schedules and assigned playlists only, or every projector would stay on); `/playlists` badges it and `POST /playlists/:id/delete` refuses it with 400; `/settings` moves it (must name an existing playlist; an omitted field keeps it) |
+| `enrollment_key` (site-wide, `settings` table) | random 32-byte urlsafe token, generated on first use by `db.enrollmentKey` (never from env) | `POST /api/enroll` (the flasher fetches it live through `GET /api/operator/enrollment`, admin tokens only, and writes it to each card); the admins' `/settings` shows it and `POST /settings/enrollment/rotate` (admin) replaces it (`db.generateEnrollmentKey`) |
+| `enroll_group_id` / `enroll_playlist_id` | none (int or null; a deleted row or another account's reads as none) | applied to the account's device on its first `POST /api/operator/devices` (the site admin's for `POST /api/enroll`, whose devices have no owner) only |
+| `default_playlist_id` | the account's own "Default" playlist (created at sign-up, on the Users page, at `/setup` and by migration 0016: `accounts.ensureDefaultPlaylist`; int; null only once its row is gone: `loadSettings` reads a value that is not one of the account's own playlists as null) | the account's Default playlist: `uploads.uploadComplete` appends every new media row of the uploader to it (same transaction, `upload_media` audit row carries `playlist`); `manifest.pick_playlist` serves it as the last fallback for the account's projectors (source `site-default`, the manifest string kept for the players, shown as "via default playlist") after schedule → device default → group default; `projector_want` ignores it (auto mode follows schedules and assigned playlists only, or every projector would stay on); `/playlists` badges it and `POST /playlists/:id/delete` refuses it with 400; `/settings` moves it (must name one of the account's playlists; an omitted field keeps it) |
 | `player_release` | `PIPLAYER_PLAYER_RELEASE` (`main`); git tag/branch/sha, `db.isGitRef` (alphanumeric first char, `[A-Za-z0-9._/-]`, no `..`, <= 100) | manifest `update.release`: what `update-player` checks out on the Pi |
 | `auto_update` | `PIPLAYER_AUTO_UPDATE` (`off`); `off` or `nightly` (`db.AUTO_UPDATE_MODES`) | manifest `update.auto` |
 | `auto_update_window` | `PIPLAYER_AUTO_UPDATE_WINDOW` (`03:00-05:00`); `HH:MM-HH:MM` Pi time (the Pi evaluates it on its own clock, set to the site zone at flash time), may wrap midnight (`db.UPDATE_WINDOW_RE`) | manifest `update.window` |
@@ -341,8 +363,8 @@ renders it under the facts: `p.update-status.muted.small` "Update ok ..." or `.a
 "Update failed ..." (ref, age + local time, message). A save of `/settings` that omits the three update
 fields keeps their current values (older callers only post the four site fields).
 
-**Operator API tokens** (`api_tokens`, migration 0003): the admin's own tokens live in the
-"My API tokens" panel of `/settings`. `POST /settings/tokens` (`name`, 1-60 chars) mints
+**Operator API tokens** (`api_tokens`, migration 0003): each editor's and admin's own tokens
+live in the "My API tokens" panel of their `/settings`. `POST /settings/tokens` (`name`, 1-60 chars) mints
 `p5k_<32 urlsafe chars>`, stores only its SHA-256 hex and renders the page with the plaintext
 once (no redirect, so the secret never sits in a URL); `POST /settings/tokens/:id/revoke` deletes
 the caller's own token (404 for anyone else's). The Users page does the same for any admin or
@@ -350,12 +372,16 @@ editor: `POST /users/:user_id/tokens` (400 for a viewer) and `POST /users/:user_
 (404 unless the token belongs to that user). On the Users page a password reset also deletes
 that user's other sessions (their tokens keep working until revoked), the last-admin guard sits
 inside the UPDATE / DELETE statement, and creating, deleting or re-roling a user calls
-`cloudflare.syncAccess` (admin usernames stand in for the camera operator list while no alert
-email is set), flashing "..., but the camera access list could not be updated" on an error. `GET /api/operator/enrollment` with
+`cloudflare.syncAccess` (an account's own address stands in for its camera operator list while
+it has no alert email set, and the site admin, whose list the ownerless projectors use, may
+change), flashing "..., but the camera access list could not be updated" on an error. Deleting a
+user deletes their library (the R2 objects first, `accounts.mediaKeys`), playlists, groups,
+settings and secrets with the account; their projectors stay, with no owner. `GET /api/operator/enrollment` with
 `Authorization: Bearer p5k_...` (token owner must be an admin, else 401: the key it returns can
 enroll any device id; an editor's token exists but gets 401 here) answers
 `{console_url, enrollment_key, groups: [{id, name}], playlists: [{id, name}], timezone,
-wyze_configured}` (`wyze_configured` = `secrets.wyzeConfigured`: a Wyze email and password are set). Audit:
+wyze_configured}` (the token holder's own groups, playlists, zone and `wyze_configured` =
+`secrets.wyzeConfigured`: its Wyze email and password are set). Audit:
 `api_token_created`, `api_token_revoked` (both carry the name, never the token) and
 `api_token_used` at most once per hour per token (`last_used_at`).
 
@@ -369,15 +395,16 @@ audit `login_failed` with `source: "flasher"`; a good password mints `issueApiTo
 and answers `{token, username, role}`; a viewer gets 403 "This account can only view; ask an
 admin to make it an editor" and no token. `api.flasherOperator` guards the two bearer endpoints
 (editor+, the same 403 for a viewer's token, `touchApiToken` + `api_token_used`):
-`GET /api/operator/me` -> `{username, role, console_url, timezone, wyze_configured, groups, playlists}`
+`GET /api/operator/me` -> `{username, role, console_url, timezone, wyze_configured, groups, playlists}` (the account's own)
 and `POST /api/operator/devices` `{device_id, name, pi_model?}` (validation as `/api/enroll`,
 `pi_model` cut to 64) -> `api.registerDevice`, shared with `enroll`: a new id is INSERTed with
-`owner_id` = the token's user and the enroll defaults (201 `{device_id, token, cms_url, owner,
-created: true}`, audit `device_registered` `{device_id, name, owner, group_id?, playlist_id?}`);
-a known id gets a NEW token, name and `pi_model`, `owner_id` set when it was NULL (200 `created:
-false`, audit `device_reregistered` with `renamed_from`), but only the caller's own or, for an
-admin, any id: otherwise 409 "A projector with that ID belongs to another account; pick another
-name". The new-id cap and `tryProvisionDevice` apply as for enroll. `GET /api/operator/enrollment`
+`owner_id` = the token's user and that account's enroll defaults (201 `{device_id, token, cms_url,
+owner, created: true}`, audit `device_registered` `{device_id, name, owner, group_id?, playlist_id?}`);
+a known id gets a NEW token, name and `pi_model`, `owner_id` set when it was NULL
+(`accounts.reassignDevice`: what it pointed at of the site admin's goes unless it is the caller's
+too) (200 `created: false`, audit `device_reregistered` with `renamed_from`), but only the caller's
+own or, for an admin, any id: otherwise 409 "A projector with that ID belongs to another account;
+pick another name" (device ids are global: the one thing an account learns about another). The new-id cap and `tryProvisionDevice` apply as for enroll. `GET /api/operator/enrollment`
 and the device-code flow stay for flashers before v0.7.0.
 
 **Device-code sign-in** (`device_codes.js`, table `device_codes`, migration 0004): how the SD flasher
@@ -470,31 +497,56 @@ DELETE CASCADE, token_hash UNIQUE, created_at, expires_at, used_at, ip)` + `idx_
 `migrations/0012_device_decode_mode.sql` (schema_version 12) adds to `devices`: `decode_mode TEXT`
 (what mpv is decoding with, `software` when nothing) and `play_rate REAL` (1.0 = real speed), both
 reported on every sync and kept with COALESCE when a player omits them.
+`migrations/0013_device_frame_pacing.sql` (13) adds `display_fps REAL`, `video_fps REAL` and
+`dropped_frames INTEGER`, `0014_device_decoder.sql` (14) `mpv_hwdec TEXT` and `drop_rate REAL`,
+`0015_device_render_profile.sql` (15) `mpv_profile TEXT`, all on `devices`.
+`migrations/0016_accounts.sql` (schema_version 16) makes every account its own space (see
+Accounts below): `owner_id → users` on `media`, `playlists`, `device_groups` (ON DELETE CASCADE)
+and `audit_log` (SET NULL); `playlists.name` / `device_groups.name` renamed `legacy_name` (keeps
+the old site-wide UNIQUE on a value nobody sees: D1 cannot rebuild a table others point at) and
+a new `name`, UNIQUE per account (`idx_playlists_owner_name`, `idx_device_groups_owner_name`);
+`idx_media_sha256` replaced by `idx_media_owner_sha256` on `media(owner_id, sha256)`;
+`account_settings(user_id, key, value)` and `account_secrets(user_id, name, value, updated_at)`;
+`idx_audit_log_owner` and `idx_audit_log_user`. Its data steps give everything from before to the
+site admin (lowest-id admin; rows keep no owner on a database without users, for `/setup`), move
+every setting but `enrollment_key` and every secret to that account, set `audit_log.owner_id` to
+the acting user, create a Default playlist for every other user, and clear (with an audit row
+each) a projector's playlist, group and schedule rules that belong to another account than its
+content account. Nothing else is deleted. `test/migrations.test.js` runs it on seeded data.
 
-`db.js` exports `SCHEMA_VERSION` (12) and `assertMigrated` compares `meta.schema_version`
+`db.js` exports `SCHEMA_VERSION` (16) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
+A test that needs an older schema applies part of `env.TEST_MIGRATIONS` to the empty
+`MIGRATION_DB` / `FRESH_DB` bindings instead (`test/migrations.test.js`, `test/data_fixes.test.js`).
 
 Foreign keys are enforced by D1. Add columns with a new `migrations/000N_*.sql`, never by editing 0001.
 
-## Secrets (`secrets.js`, table `secrets`, migration 0003)
+## Secrets (`secrets.js`, table `account_secrets`, migration 0016; `secrets` before it)
 
-Operator credentials the players need (the Wyze account; later Twilio). `set(env, name, value)`
-(empty deletes) / `get` / `getMany(names)` / `names()` (a Set of the names whose value still decrypts: the
-"set / not set" badges). Values are AES-256-GCM under a key HKDF-derived from `SESSION_SECRET` (info
-`p5k-secrets`, `secrets.HKDF_INFO`), stored as `v1:<iv b64url>:<ciphertext b64url>` with the
-name bound as additional data; `decrypt` answers null (never throws) for a tampered value or
-one written under another `SESSION_SECRET`, so rotating that secret reads as "not set". Nothing
-renders a plaintext: the only reader is `GET /api/camera-config` (device bearer).
+Each account's credentials (its Wyze account, its Twilio login). `set(env, ownerId, name, value)`
+(empty deletes) / `get(env, ownerId, name)` / `getMany(env, ownerId, names)` / `names(env, ownerId)`
+(a Set of the names whose value still decrypts: the "set / not set" badges) /
+`wyzeConfigured(env, ownerId)` / `wyzeConfiguredFor(env, ownerIds)` (Map, one statement). Values
+are AES-256-GCM under a key HKDF-derived from `SESSION_SECRET` (info `p5k-secrets`,
+`secrets.HKDF_INFO`): written as `v2:<iv b64url>:<ciphertext b64url>` with `<account id>/<name>`
+bound as additional data, so a value copied into another account's row does not decrypt; a `v1:`
+value (bound to the name only) is one migration 0016 moved over from the old site-wide table,
+read as is and rewritten as v2 by the nightly `secrets.housekeeping`. `encrypt` / `decrypt(env,
+name, ...)` stay v1 for the per-device RTSP URL (name `rtsp:<device_id>`). A tampered value or one
+written under another `SESSION_SECRET` reads as null (never throws), so rotating that secret reads
+as "not set". Nothing renders a plaintext: the only reader is `GET /api/camera-config` (device
+bearer), which serves the projector's own account's Wyze login. `/setup` adopts rows still in the
+old `secrets` table (`accounts.adoptOrphans`).
 
-**Camera zero-config (feature D).** `/settings` panel "Wyze account": `POST /settings/wyze`
-(admin) with `wyze_email`, `wyze_password`, `wyze_api_id`, `wyze_api_key` (each: filled replaces,
+**Camera zero-config (feature D).** `/settings` panel "Wyze account" (the account's own):
+`POST /settings/wyze` (editor+) with `wyze_email`, `wyze_password`, `wyze_api_id`, `wyze_api_key` (each: filled replaces,
 empty keeps; <= 500 printable chars) and `wyze_camera_pattern`; `POST /settings/wyze/clear` deletes
 the four. Both bump `camera_config_version` when something changed and audit
 `wyze_settings_update` (`{field: "set"}`, the pattern's value) / `wyze_settings_cleared`.
 Devices row "Camera" `<details>` gains `POST /devices/:id/camera-source` (editor+): `camera_source`
-`''` = site default (row NULL; wyze when the account is set, else none) | `none` | `wyze` | `rtsp`
+`''` = the account's default (row NULL; wyze when the projector's account has a Wyze login, else none) | `none` | `wyze` | `rtsp`
 (`pages/devices.CAMERA_SOURCES`), `camera_rtsp_url` (`rtsp://` / `rtsps://`, required for rtsp),
 `camera_wyze_name` (<= 100, empty = pattern); the RTSP URL is stored encrypted with
 `secrets.encrypt(env, "rtsp:<device_id>", url)` in `devices.camera_rtsp_url` (a plaintext row
@@ -525,34 +577,40 @@ last sync: measured against the sync, not the clock), `sync-error`
 IGNORE` against `idx_alerts_one_open`, so an overlapping run cannot open a second) + audits
 `alert_opened` (target device_id, `{kind}`), closes + audits `alert_closed` when the condition
 clears, and re-announces an open row when `alert_repeat_minutes` (> 0) have passed since
-`notified_at`; then one `digest(events, timezone)` (`{subject, text}`: ALERT / RECOVERED / STILL
-OPEN lines, times through `localTime` in the site zone) goes to every configured
-channel (`configured(env, settings)`), returning `{opened, closed, repeated, sent, errors}`. A
+`notified_at`; each projector is judged by its content account's settings (`loadSettingsFor`)
+and its events are grouped per account; then one `digest(events, timezone)` per account
+(`{subject, text}`: ALERT / RECOVERED / STILL OPEN lines, times through `localTime` in that
+account's zone) goes to every channel that account configured (`configured(env, settings,
+ownerId)`), returning `{opened, closed, repeated, sent, errors}` summed over the accounts. The
+`alert_opened` / `alert_closed` / `alert_notify_failed` rows are about the projector's or the
+channel's account. A
 channel failure is `console.error`ed and audited `alert_notify_failed` (target the channel,
 `{error}`), never retried: `notified_at` is stamped once the digest has been sent (whether or not
 a channel failed); a run that throws before the digest leaves its rows unstamped and the next run
 announces them as ALERT.
 
-Channels (`send(env, settings, channel, msg)` -> null or an error string, never throws):
+Channels (`send(env, settings, channel, msg, ownerId)` -> null or an error string, never throws):
 `email` = the `ALERT_MAIL` send_email binding (`wrangler.toml [[send_email]]`; `rawEmail()` builds
 the RFC 5322 text, one `EmailMessage` per address; "not configured" when the binding is absent,
 which the Settings page shows as a badge), `webhook` = `POST` JSON `{site, title, text, content,
 message}` (`webhookPayload`; Slack / Discord / ntfy read one of those), `sms` = Twilio
 `POST /2010-04-01/Accounts/{sid}/Messages.json` with basic auth and `From`/`To`/`Body` (`smsBody`,
-<= 600 chars); the four `alerts.TWILIO_NAMES` live in `secrets`; a Twilio error that quotes a
+<= 600 chars); the four `alerts.TWILIO_NAMES` are the account's `account_secrets`; a Twilio error that quotes a
 phone number is reported with `(number hidden)`. Both HTTP channels use
-`AbortSignal.timeout(10 s)`. `sendTest(env, settings, channel, username)` is the "Send test"
-button.
+`AbortSignal.timeout(10 s)`. `sendTest(env, settings, channel, username, ownerId)` is the "Send
+test" button.
 
-Pages: `/settings` panel "Alerts": `POST /settings/alerts` (admin; thresholds, addresses, URL;
-Twilio password inputs replace when filled / keep when empty; audit `alert_settings_update` with
-credentials as `"set"`; a changed email list is pushed to every camera tunnel's Access policy
-through `cloudflare.syncAccess`, and its error, if any, is flashed after "Saved, but ..."),
+Pages: `/settings` panel "Alerts" (the account's own): `POST /settings/alerts` (editor+;
+thresholds, addresses, URL; Twilio password inputs replace when filled / keep when empty; audit
+`alert_settings_update` with credentials as `"set"`; a changed email list is pushed to the Access
+policy of the account's tunnelled projectors through `cloudflare.syncAccess(ctx, ownerId)`, and
+its error, if any, is flashed after "Saved, but ..."),
 `POST /settings/alerts/twilio/clear`, `POST /settings/alerts/test`
 (`channel` in `alerts.CHANNELS`, 400 otherwise; flashes "Test <channel> alert sent." or
 "Test alert failed: <channel>: <why>"; audit `alert_test_sent`). `/alerts` (`pages/alerts.js`, any role)
-lists the open rows and the last 100 recovered; the dashboard's fourth card links there with the
-open count (`alerts.openCount`); "Alerts" sits in the nav for every role. Closed rows older than
+lists the open rows and the last 100 recovered of the reader's own projectors
+(`pages/devices.contentClause`; admins too); the dashboard's fourth card links there with the
+same open count; "Alerts" sits in the nav for every role. Closed rows older than
 90 days are pruned by the nightly housekeeping (`alerts.housekeeping`).
 
 ## Camera feed (room camera on the Pi)
@@ -566,7 +624,7 @@ Mirrors the screenshot path end to end; the Pi side is `player/player/camera.py`
 | `GET /api/sync/:device_id?camera_error=` | trimmed to `MAX_SYNC_ERROR_LEN` (200), empty/absent -> NULL, stored in `devices.camera_error` on every sync |
 | `GET /api/sync/:device_id?pi_model=&camera_supported=` | `pi_model` trimmed to `MAX_PI_MODEL_LEN` (64), `camera_supported` 0 or 1; absent, empty or junk keeps the stored value (COALESCE, like `player_version`). The Devices and Dashboard id lines append the model; `camera_supported = 0` replaces the camera source picker with "Camera is not supported on this Pi model." and the sync skips the tunnel token for that board |
 | manifest | `camera_interval_seconds` from the `camera_interval` setting |
-| `GET /devices/:id/camera` (`pages/devices.js`) | session users only, `image/jpeg`, `cache-control: no-store`, nosniff; 404 "no camera snapshot yet". The pages link it with `?t=<last_camera_at>` |
+| `GET /devices/:id/camera` (`pages/devices.js`) | session users of the projector's account and admins only (anyone else gets the 404 of an unknown device), `image/jpeg`, `cache-control: no-store`, nosniff; 404 "no camera snapshot yet". The pages link it with `?t=<last_camera_at>` |
 | `pages/devices.cameraScreen(d, opts)` | the `.device-screen.device-camera` thumb + `cam · <age>` chip + live/stale chip (stale = `> 3 × camera_interval`, set by `decorateDevices` as `camera_age` / `camera_stale`), then `camera_error` as `.alert.warn.small`; renders only the alert when there is no snapshot yet. Used by the Devices rows and the dashboard tiles |
 | `POST /devices/:id/camera-url` (editor+) | form field `camera_live_url`: empty clears, else `liveUrl()` (absolute https, no credentials, <= 2048 chars) or 400; audit `device_set_camera_url` |
 | Devices row "Camera" `<details>` | the live URL form (disabled for viewers), and when the stored URL passes `liveUrl()` again: a "Live" new-tab link and a `Show live` button (`public/app.js` `data-live-frame`) that copies the iframe's `data-src` into `src` on first click; the iframe is `sandbox="allow-same-origin allow-scripts" referrerpolicy="no-referrer"` and starts `hidden`. A stored value that fails validation is never rendered |
@@ -599,17 +657,48 @@ and the manual live URL keeps working.
 | where | what |
 |---|---|
 | `cloudflare.provision(env, deviceId, emails)` | four idempotent steps over `fetch` to `api.cloudflare.com/client/v4` (the `CF_API_BASE` var overrides the base for `e2e/run_tunnel_e2e.py`'s in-process fake; bearer `CF_API_TOKEN`, 15 s timeout; a `success: false` envelope or a non-2xx answer throws `Cloudflare API <METHOD> <path>: <messages or HTTP status>` with the account / zone ids elided and the HTTP status on `.status`): tunnel `p5k-<device_id>` (`GET cfd_tunnel?name=&is_deleted=false`, else `POST` with `config_src: cloudflare`), `PUT .../configurations` with ingress `<hostname> -> http://127.0.0.1:5000` + `http_status:404`, the proxied CNAME `<device_id>-cam.<zone>` -> `<tunnel_id>.cfargotunnel.com` (`GET dns_records?type=CNAME&name=`, `POST`, or `PUT` when it points elsewhere), the Access self-hosted app on the hostname (`GET access/apps?domain=`, else `POST`) with one policy `p5k operators` (allow, `include: [{email}]`; `POST` or `PUT` so a changed operator list is applied on the next run). Returns `{tunnel_id, hostname}`; `hostnameFor(env, deviceId)` uses `CF_ZONE_NAME` or `photogen5000.com` |
-| `cloudflare.operatorEmails(env, settings)` | who the Access policy allows: `db.parseEmails(settings.alert_email)`, else the admin usernames that are addresses, else null (provisioning refuses with "no operator email known") |
-| `cloudflare.provisionDevice(ctx, {id, device_id})` / `tryProvisionDevice` | provision + `UPDATE devices SET tunnel_id, tunnel_hostname, camera_live_url = https://<hostname>/` + audit `device_tunnel_created` (`{device_id, tunnel_id, hostname, emails: n}`); the try variant never throws: it logs, audits `device_tunnel_failed` (`{device_id, error}`) and returns `{error}` |
-| `cloudflare.syncAccess(ctx)` | rewrites the Access policy of every device that has a tunnel to the current `operatorEmails` (settings re-read, not the memoised ctx copy); audits `camera_access_updated` (`{devices, emails}`); returns null when there is nothing to do (not configured, no email known, no tunnels) or on success, else the error text for a banner. Called when the alert email list or the admin user list changes |
+| `cloudflare.operatorEmails(env, settings, ownerId)` | who the Access policy of an account's projectors allows: `db.parseEmails(settings.alert_email)` of that account, else its own address (`users.email`, or the username when it is one), else null (provisioning refuses with "no operator email known"). A projector's list is its content account's (the site admin's for an ownerless one); another account's addresses are never on it |
+| `cloudflare.provisionDevice(ctx, {id, device_id, owner_id or content_owner})` / `tryProvisionDevice` | provision + `UPDATE devices SET tunnel_id, tunnel_hostname, camera_live_url = https://<hostname>/` + audit `device_tunnel_created` (`{device_id, tunnel_id, hostname, emails: n}`); the try variant never throws: it logs, audits `device_tunnel_failed` (`{device_id, error}`) and returns `{error}` |
+| `cloudflare.syncAccess(ctx, ownerId?, deviceId?)` | rewrites the Access policy of the tunnelled projectors (of one content account, or one projector; every one when omitted) to their own account's `operatorEmails` (settings re-read, not the memoised ctx copy); audits `camera_access_updated` (`{devices, emails}`) per account; returns null when there is nothing to do (not configured, no email known, no tunnels) or on success, else the error text for a banner. Called when an account's alert email list changes, when users are created, deleted or re-roled, and when a projector changes hands |
 | `cloudflare.rotateTunnel(ctx, device)` | a fresh tunnel for a device whose connector token may have leaked: `DELETE` the old tunnel's connections then the tunnel (a 404 is fine), then `provisionDevice`; the Pi gets a new token on its next sync and the old one stops working. Throws like `provisionDevice` |
 | `POST /api/enroll` / `POST /api/operator/devices` (`api.registerDevice`) | when configured, a first registration and a re-registration of a device without `tunnel_id` call `tryProvisionDevice` after the audit row; the answer never depends on it |
 | `POST /devices/:id/tunnel` (editor+, `pages/devices.devicesCreateTunnel`) | the "Create tunnel" / "Recreate tunnel" button in the Camera block; 400 when not configured, 404 unknown device. Create = `tryProvisionDevice`; Recreate (the device has a `tunnel_id`) = `rotateTunnel`, so the old connector token stops working and the Pi gets a new one on its next sync, audited `device_tunnel_rotated` (`{device_id, old_tunnel_id, tunnel_id, hostname}`). The outcome is flashed ("Tunnel ready: https://..." or the plain-English failure). `POST /devices/:id/regen-token` rotates the tunnel too (its confirm says so). The block also shows the `tunnel · <hostname>` / `no tunnel` badge (every role) |
 | `GET /api/sync/:id` (`api.tunnelBlock`) | manifest `tunnel`: `{token, hostname}` with the token from `GET cfd_tunnel/<id>/token` on every sync (never stored, never rendered; `auth.deviceFromHeader` selects `tunnel_id` / `tunnel_hostname`), `null` when the device has no tunnel, the secrets are unset or the API fails (the sync still answers; the player keeps the token it already wrote) |
-| `/settings` panel "Camera tunnels (Cloudflare)" | configured / not configured badge with the missing secret names and the permissions, the zone, the operator emails the policy will get (or a warning to set `alert_email`), the count of devices with a tunnel. Read-only: the secrets are `wrangler secret put` |
+| `/settings` panel "Camera tunnels (Cloudflare)" | configured / not configured badge (the missing secret names for admins), the operator emails the account's policies will get (or a warning to set `alert_email`), the count of the account's projectors with a tunnel. Read-only: the secrets are `wrangler secret put` |
 
 Deleting a device leaves its tunnel, CNAME and Access app in Cloudflare (still gated by Access);
 remove them by hand or recreate the device with the same id to reuse them.
+
+## Accounts (`accounts.js`, migration 0016)
+
+Every account is its own private space; README "Accounts" has the model. The rules every module
+follows, and the helpers that carry them:
+
+| helper | semantics |
+|---|---|
+| `SITE_ADMIN_SQL` / `siteAdminId(env)` | the site admin: the lowest-id admin (owner of everything from before accounts; ownerless projectors play its content) |
+| `contentOwnerSql(alias="d")` / `contentOwnerOf(env, device)` | a projector's content account, `COALESCE(owner_id, site admin)`: whose playlists, groups, schedules, settings, Wyze login and camera operator list it uses. `auth.deviceFromHeader` and `pages/devices.requireDevice` select it as `content_owner` |
+| `ownRow(env, table, id, ownerId, cols="id")` | the row of one account or null, the same answer as a missing row (`media`, `playlists`, `device_groups`) |
+| `uniqueKey()` | the value a new playlist or group gets in `legacy_name` (the renamed old name column; nobody sees it) |
+| `ensureDefaultPlaylist(env, userId)` | the account's Default playlist id (its `default_playlist_id` when that is one of its own playlists, else its playlist called Default, created when missing); sign-up, the Users page and `/setup` call it |
+| `adoptOrphans(env, userId)` | `/setup` only: the first admin owns what the migrations left without an owner (library, playlists, groups, uploads, settings but the enrollment key, secrets) |
+| `reassignDevice(ctx, deviceId, newOwnerId)` | the Owner select and an admin's registration of an ownerless id: clears the playlist and group that are not the new content account's, deletes its schedule rules for another account's playlists (audited `device_schedule_delete` with `cascade_from_owner_change`), raises the new account's `camera_config_version` above the old one's; one batch; returns `{old_owner, new_owner, playlist_cleared, group_cleared, schedules_deleted}` |
+| `mediaKeys(env, userId)` | the R2 keys of an account's library, for the Users page delete |
+
+- A lookup of another account's thing answers exactly like a missing one (same status, same
+  `detail`), and a list shows only the reader's own; checks happen before anything changes.
+- Names (playlists, groups) are unique per account; the 409 only ever names the caller's own row,
+  and the duplicate-upload 409 only the caller's own file.
+- A projector only ever plays its content account's content: `manifest.device_content` reads its
+  schedules, playlist and group restricted to that account, and the last fallback is that
+  account's Default. The manifest keeps its shape (`source` stays `site-default`).
+- Pages for projectors: `pages/devices.ownedClause` (Devices page: the user's own, every one for
+  an admin), `pages/devices.contentClause` (Dashboard wall, Alerts: the user's content account's,
+  admins included), `requireDevice` (the 404 of an unknown id for anyone else),
+  `requireContentOwner` (changing what a projector plays or its schedule, and a new token: its
+  content account only; an admin acting on another account's projector gets the 403
+  `OTHER_ACCOUNT_DEVICE`, and reads what it plays and its schedule but never its token).
+- Audit rows carry the account they are about (`audit.log`'s `owner`).
 
 ## Tests
 
@@ -618,3 +707,10 @@ remove them by hand or recreate the device with the same id to reuse them.
 `SETUP_TOKEN`. Storage is isolated per test; `beforeAll` writes are visible to the file's tests.
 Note the worker caches "users exist" per isolate, so create the admin in `beforeAll` and never
 expect the `/setup` redirect after that in the same file.
+
+`test/pages_common.js`: `roles()` makes an admin (through `/setup`), an editor and a viewer, each
+with its own account; the fixture factories (`media`, `playlist`, `group`, `device`) put their
+rows in the editor's account unless given an owner, `setting(owner, key, value)` writes an
+account setting and `defaultPlaylistOf(owner)` reads its Default. A page test reads and writes as
+the account that owns its fixtures and checks another account gets the 404 of a missing id;
+`test/tenants.test.js` does that for every route with two signed-up accounts.

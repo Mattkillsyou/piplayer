@@ -6,25 +6,29 @@ Usage: python e2e/run_alerts_e2e.py [--port 9100] [--persist-to DIR]
 
 What it asserts, in order:
   1. admin created through /setup; POST /settings/alerts validates (400 for http webhook /
-     bad address) and stores the thresholds + a webhook URL (only that channel: the digests
-     below go to an unreachable https host and nowhere else).
+     bad address) and stores the thresholds + a webhook URL as the admin's own settings
+     (account_settings, migration 0016; only that channel: the digests below go to an
+     unreachable https host and nowhere else).
   2. a device whose last sync is 20 minutes old: GET /__scheduled?cron=*/5 * * * * opens one
      `offline` alert (dedupe: a second run adds nothing), audit alert_opened, /alerts lists it,
      the dashboard card counts 1; the daily cron leaves alerts alone.
   3. the device syncs again -> the next cron run closes it (audit alert_closed), /alerts shows
      it under recovered, the dashboard says all clear; the webhook send failed (unreachable
      host) and was audited as alert_notify_failed, not retried.
-  4. Send test: unknown channel 400; email without an address -> test_error banner; the
-     webhook against an unreachable https host -> test_error banner; audit alert_test_sent.
-  5. the Twilio fields land in `secrets` encrypted (never the plaintext, never on the page),
-     the audit row says "set", the SMS test button is enabled; Clear Twilio empties them.
+  4. Send test: unknown channel 400; email without an address -> error banner; the
+     webhook against an unreachable https host -> error banner; audit alert_test_sent.
+  5. the Twilio fields land in the admin's `account_secrets` encrypted (never the plaintext,
+     never on the page), the audit row says "set", the SMS test button is enabled; Clear Twilio
+     empties them.
+  6. a sign-up's offline projector opens an alert judged by its own account: listed on its own
+     Alerts page, not the admin's, audited as about that account, and sent through its channels
+     only (it has none, so nothing goes out and nothing fails).
 """
 import argparse
 import os
 import shutil
 import sys
 import tempfile
-import urllib.parse
 
 import requests
 
@@ -51,6 +55,10 @@ def alerts(persist):
     return ec.d1(persist, "SELECT device_id, kind, closed_at, notified_at FROM alerts ORDER BY id")
 
 
+def user_id(persist, username):
+    return ec.d1_one(persist, "SELECT id FROM users WHERE username = %s" % ec.sql_str(username))["id"]
+
+
 def run(base, persist):
     admin = ec.Admin(base)
     admin.setup_admin()
@@ -61,8 +69,9 @@ def run(base, persist):
     r = admin.post("/settings/alerts", {**GOOD, "alert_email": "nope"})
     assert r.status_code == 400, (r.status_code, r.text[:200])
     r = admin.post("/settings/alerts", GOOD)
-    assert (r.status_code, r.headers.get("location")) == (303, "/settings?saved=1"), (r.status_code, r.text[:300])
-    rows = {x["key"]: x["value"] for x in ec.d1(persist, "SELECT key, value FROM settings WHERE key LIKE 'alert_%'")}
+    assert (r.status_code, r.headers.get("location")) == (303, "/settings"), (r.status_code, r.text[:300])
+    admin_id = user_id(persist, "admin")
+    rows = {x["key"]: x["value"] for x in ec.d1(persist, "SELECT key, value FROM account_settings WHERE user_id = %d AND key LIKE 'alert_%%'" % admin_id)}
     assert rows == {"alert_offline_minutes": "10", "alert_repeat_minutes": "60", "alert_webhook_url": WEBHOOK}, rows
     page = admin.get("/settings").text
     assert 'class="small">Send test webhook</button>' in page, "webhook test button enabled"
@@ -104,11 +113,12 @@ def run(base, persist):
     # 4. Send test
     r = admin.post("/settings/alerts/test", {"channel": "pigeon"})
     assert r.status_code == 400, (r.status_code, r.text[:200])
+    # the outcome is a one-shot banner on the next page (flash cookie), never words in the URL
     r = admin.post("/settings/alerts/test", {"channel": "email"})
-    assert r.status_code == 303 and r.headers["location"].startswith("/settings?test_error="), (r.status_code, r.headers.get("location"))
-    assert "no alert email address set" in urllib.parse.unquote(r.headers["location"])
+    assert (r.status_code, r.headers.get("location")) == (303, "/settings"), (r.status_code, r.headers.get("location"))
+    assert "Test alert failed: email: no alert email address set" in admin.get("/settings").text
     r = admin.post("/settings/alerts/test", {"channel": "webhook"})
-    assert r.status_code == 303 and r.headers["location"].startswith("/settings?test_error=webhook"), (r.status_code, r.headers.get("location"))
+    assert (r.status_code, r.headers.get("location")) == (303, "/settings"), (r.status_code, r.headers.get("location"))
     page = admin.get(r.headers["location"]).text
     assert "Test alert failed: webhook:" in page, page[:500]
     assert audit_count(persist, "alert_test_sent") == 2
@@ -116,10 +126,10 @@ def run(base, persist):
 
     # 5. Twilio credentials: encrypted at rest, never echoed, cleared
     r = admin.post("/settings/alerts", {**GOOD, "twilio_account_sid": "ACe2e", "twilio_auth_token": "tok-e2e", "twilio_from": "+15550001", "twilio_to": "+15550002"})
-    assert (r.status_code, r.headers.get("location")) == (303, "/settings?saved=1"), (r.status_code, r.text[:300])
-    sec = ec.d1(persist, "SELECT name, value FROM secrets ORDER BY name")
+    assert (r.status_code, r.headers.get("location")) == (303, "/settings"), (r.status_code, r.text[:300])
+    sec = ec.d1(persist, "SELECT name, value FROM account_secrets WHERE user_id = %d ORDER BY name" % admin_id)
     assert [x["name"] for x in sec] == ["twilio_account_sid", "twilio_auth_token", "twilio_from", "twilio_to"], sec
-    assert all(x["value"].startswith("v1:") and "tok-e2e" not in x["value"] for x in sec), sec
+    assert all(x["value"].startswith("v2:") and "tok-e2e" not in x["value"] for x in sec), sec
     a = ec.d1(persist, "SELECT details FROM audit_log WHERE action = 'alert_settings_update' ORDER BY id DESC LIMIT 1")[0]
     assert '"twilio_auth_token": "set"' in a["details"] and "tok-e2e" not in a["details"], a
     page = admin.get("/settings").text
@@ -127,9 +137,29 @@ def run(base, persist):
     assert 'class="small">Send test sms</button>' in page and "Clear Twilio" in page
     r = admin.post("/settings/alerts/twilio/clear")
     assert r.status_code == 303, (r.status_code, r.text[:200])
-    assert ec.d1(persist, "SELECT name FROM secrets") == []
+    assert ec.d1(persist, "SELECT name FROM account_secrets") == []
     assert "Clear Twilio" not in admin.get("/settings").text
     print("5: Twilio credentials encrypted, never echoed, cleared")
+
+    # 6. a sign-up's projector is its own account's business
+    bob = ec.Admin(base)
+    r = bob.post("/signup", {"username": "bob", "email": "bob@example.net", "password": "bob-pass1", "password2": "bob-pass1"})
+    assert (r.status_code, r.headers.get("location")) == (303, "/dashboard"), (r.status_code, r.text[:300])
+    bob_id = user_id(persist, "bob")
+    ec.d1(persist, "INSERT INTO devices (device_id, name, token, last_seen_at, player_status, owner_id) "
+                   "VALUES ('pi-b', 'Bob hall', 'tok-b', datetime('now', '-20 minutes'), 'playing', %d)" % bob_id)
+    failed = audit_count(persist, "alert_notify_failed")
+    cron(base, ALERT_CRON)
+    rows = ec.d1(persist, "SELECT a.kind, a.closed_at FROM alerts a JOIN devices d ON d.id = a.device_id WHERE d.device_id = 'pi-b'")
+    assert rows == [{"kind": "offline", "closed_at": None}], rows
+    assert audit_count(persist, "alert_notify_failed") == failed, "bob has no channel: nothing sent, nothing failed (the admin's webhook was not used)"
+    a = ec.d1_one(persist, "SELECT owner_id FROM audit_log WHERE action = 'alert_opened' AND target_id = 'pi-b'")
+    assert a == {"owner_id": bob_id}, a
+    page = bob.get("/alerts").text
+    assert "<strong>1 open</strong>" in page and "Bob hall" in page and "Lobby" not in page, page[:500]
+    page = admin.get("/alerts").text
+    assert "<strong>0 open</strong>" in page and "Bob hall" not in page, page[:500]
+    print("6: a sign-up's offline projector is judged and listed in its own account only")
 
 
 def main():

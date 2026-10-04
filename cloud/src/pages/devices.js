@@ -246,7 +246,7 @@ export function validateLiveUrl(value) {
 }
 
 // Camera zero-config (per-device override of the Settings default; the player fetches the
-// result through GET /api/camera-config). Stored: camera_source NULL = site default.
+// result through GET /api/camera-config). Stored: camera_source NULL = the account's default.
 export const CAMERA_SOURCES = ["none", "wyze", "rtsp"];
 export const MAX_WYZE_NAME = 100;
 export const RTSP_URL_RE = /^rtsps?:\/\/[^\s"'<>]{1,2040}$/;

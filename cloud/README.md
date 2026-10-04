@@ -69,12 +69,32 @@ real request origin.
 
 `migrations/0001_init.sql` is the base schema; `0002_camera`, `0003_automation`,
 `0004_device_codes`, `0005_pi_model`, `0006_indexes`, `0007_command_undeliverable`,
-`0008_login_failures_index`, `0009_device_owner` and `0010_default_playlist` add to it (see the
-Schema section of MODULES.md for what each one adds; the database is at `schema_version` 10).
+`0008_login_failures_index`, `0009_device_owner`, `0010_default_playlist`, `0011_password_reset`,
+`0012_device_decode_mode`, `0013_device_frame_pacing`, `0014_device_decoder`,
+`0015_device_render_profile` and `0016_accounts` add to it (see the Schema section of MODULES.md
+for what each one adds; the database is at `schema_version` 16).
 `0006` heals duplicate media rows and duplicate open alerts itself before its unique indexes go
 on, so no manual step precedes it. `0010` creates the "Default" playlist (unless one of that name
 exists), points `settings.default_playlist_id` at it and appends every media file that is in no
-playlist at all, so nothing that was uploaded before it stays silent. To change the schema, add the next `migrations/000N_<name>.sql`
+playlist at all, so nothing that was uploaded before it stays silent.
+
+`0016_accounts` makes every account its own private space (see "Accounts" below). It adds
+`owner_id` to `media`, `playlists`, `device_groups` and `audit_log`, the tables `account_settings`
+and `account_secrets`, and gives everything that existed before (the shared library, playlists,
+groups, uploads in flight with no uploader, every setting but the enrollment key, the Wyze and
+Twilio secrets) to the **site admin**, the lowest-id user with role admin; the site Default
+playlist becomes that admin's Default and every other user gets an empty Default of their own.
+A projector owned by another account than the site admin loses the playlist, group and schedule
+rules that now belong to someone else (one audit row each, reason "migration 0016"), so it plays
+its owner's (empty) Default until its owner picks something; the header comment of the file has
+the two SELECTs that list those projectors and rules before you apply it. Nothing else is
+deleted. On a database with no users yet (a fresh install) the rows keep no owner and `/setup`
+hands them to the first admin. Playlist and group names become unique per account: the old
+`name` column cannot lose its site-wide UNIQUE in D1 (a table others point at cannot be rebuilt),
+so it is renamed `legacy_name` and keeps an unseen value (the old name, a random token for new
+rows), and a new `name` column, unique per account, takes its place.
+
+To change the schema, add the next `migrations/000N_<name>.sql`
 (one higher than the last file present; never edit an existing one; `ALTER TABLE ... ADD COLUMN`,
 new tables, indexes; end it with the `schema_version` write and bump `db.SCHEMA_VERSION` to match)
 and apply with `npm run migrate:local` (dev) / `npm run migrate:remote` (production; `npm run
@@ -93,25 +113,37 @@ npm run e2e       # the e2e scripts below in turn, each against a wrangler dev i
 `npm test` covers units (schedules, hash, csrf, pbkdf2, validation, sha256.js) and integration
 (every route x role in `test/roles_csrf.test.js`, device API golden manifest, media Range,
 chunked uploads, screenshots, command cap, setup flow, settings/timezone effects, XSS escaping
-and session security in `test/security.test.js`).
+and session security in `test/security.test.js`). The accounts model has two suites of its own:
+`test/tenants.test.js` signs two people up and checks every page, form and API route against the
+other account's ids (the same answer as a missing id, nothing changed), the manifests, media,
+alerts and the admin handing a projector over; `test/migrations.test.js` runs the real migration
+files on a seeded schema-9 database and on an empty one (the `MIGRATION_DB` / `FRESH_DB`
+bindings in `vitest.config.js`).
 
 The e2e directory holds six Python scripts (`cms/.venv` python with `requests`; `ffmpeg` on
-PATH for test media). Each starts `npx wrangler dev --local` on its own port, applies migrations,
+PATH for test media; the browser half of `run_upload_e2e.py` drives a headless Chrome through
+the `websockets` package that `cms/.venv` has, so run `npm run e2e` with that python first on
+PATH). Each starts `npx wrangler dev --local` on its own port, applies migrations,
 waits for `/api/health`, runs, and always kills the dev server:
 
 ```sh
 python e2e/run_e2e.py        --port 8787 --persist-to <dir>   # setup, CSRF, authz matrix, contract-10 sweep,
                                                              # XSS, device API, media/Range, screenshots,
-                                                             # commands, settings/timezone, audit, cookies/sessions
-python e2e/run_upload_e2e.py --port 8790 --persist-to <dir>   # 12 MiB upload through init/part/complete + resume
+                                                             # commands, settings/timezone, audit, cookies/sessions,
+                                                             # two sign-ups as two private accounts
+python e2e/run_upload_e2e.py --port 8790 --persist-to <dir>   # 12 MiB upload through init/part/complete + resume,
+                                                             # the same bytes in a second account
 python e2e/run_operator_e2e.py --port 8789 --persist-to <dir> # operator API tokens: Settings/Users create + revoke,
-                                                             # bearer GET /api/operator/enrollment, audit throttle
+                                                             # bearer GET /api/operator/enrollment, audit throttle,
+                                                             # an editor's token sees its own account only
 python e2e/run_player_e2e.py --port 8788 --persist-to <dir>   # the REAL player/player daemon with a fake mpv
 python e2e/run_alerts_e2e.py --port 9100 --persist-to <dir>   # alerts: settings, */5 cron opens/closes, pages,
-                                                             # Send test banners, Twilio secrets (wrangler --test-scheduled)
+                                                             # Send test banners, Twilio secrets (wrangler --test-scheduled),
+                                                             # a sign-up's projector judged in its own account
 python e2e/run_tunnel_e2e.py --port 9120 --persist-to <dir>   # auto camera tunnel against an in-process fake Cloudflare
                                                              # API on port+1 (CF_API_BASE var): enrollment / Create tunnel,
-                                                             # idempotent recreate, manifest tunnel block, refusal banners
+                                                             # Recreate (a new tunnel), manifest tunnel block, refusal
+                                                             # banners, a sign-up's own operator list
 ```
 
 `run_e2e.py` prints a PASS/FAIL table and exits non-zero on any failure; a 501 answer is
@@ -149,14 +181,39 @@ flasher downloads (`FLASHER_VERSION` in `src/pages/flasher.js` names the release
 first-run steps; the old `/download` address goes there when signed in, to `/` otherwise.
 While the `users` table is empty every page redirects to `/setup`; `GET /setup?token=<SETUP_TOKEN>`
 shows the form (username, password twice), `POST /setup` creates the admin and logs in. Wrong
-or missing token → 403; once a user exists `/setup` → 404. Roles are `admin > editor > viewer`
-exactly as in the CMS (viewers read; editors manage media, playlists, devices, groups,
-schedules; admins also manage users and `/settings`), except that device tokens (the Token /
-install block and New token on the Devices page) are admin-only here, like the operator tokens
-and `/authorize`. Anyone can create their own account from the login page (`/signup`, linked as
-"create an account"): it starts as an **editor** straight away, no invite or approval (the owner's
-choice; it means whoever finds the site can edit playlists, schedules and projectors), capped at
-5 attempts per address per 10 minutes and audited as `user_signup`. Sign-up asks for an email
+or missing token → 403; once a user exists `/setup` → 404 (the first admin also adopts whatever
+the migrations seeded before any user existed, `accounts.adoptOrphans`).
+
+**Accounts** (migration 0016, `src/accounts.js`). Every account is its own private space: its
+projectors (`devices.owner_id`), media library and uploads, playlists (with its own Default
+playlist), groups, schedules, device commands, projector power and IR codes, camera settings and
+credentials, alert channels and alerts, settings (time zone, new-projector defaults, update window,
+and the rest: `account_settings`) and the audit rows about it. Nobody else can list, read, change
+or even learn the name of any of it: another account's id gets exactly the answer a missing id
+gets (404 "Playlist not found", the same 404 for a media file, and so on), names are unique per
+account (two accounts may both have a "Lobby"), and the same file uploaded by two accounts is two
+library entries and two R2 objects. Roles say what a user may do inside their own account:
+`viewer` reads; `editor` has full control of everything in it (library, playlists, groups,
+schedules, its projectors and their tokens, Settings, alerts, camera, API tokens); `admin` is an
+editor of its own account plus the site: the Devices page lists **every** projector with its
+owner and keeps the device controls (rename, commands, updates, camera, projector, tunnel, delete)
+and the Owner select, the Users page, the site-wide enrollment key and `/authorize`. What another
+account's projector plays (its playlist, group and schedule) and its device token stay that
+account's: the admin sees them read-only and gets a 403 that says to hand the projector over
+first. Handing a projector to another account (`accounts.reassignDevice`) clears what pointed at
+the old account's content (playlist, group, schedule rules, audited), so a projector only ever
+plays its owner's content. An admin's library, playlists, groups, schedules, settings, dashboard,
+alerts and audit log are its own like anyone's (the audit log also shows admins the rows about no
+account). A projector with no owner (enrolled with the site key, or left without one) plays the
+**site admin's** content (the lowest-id admin) and follows that account's settings. The role names
+stay `admin`, `editor`, `viewer` because `users.role` has a CHECK constraint SQLite cannot change
+without rebuilding the table; `editor` was redefined (it used to mean "may edit the shared
+content") rather than adding a fourth role.
+
+Anyone can create their own account from the login page (`/signup`, linked as "create an
+account"): it starts as an **editor** of its own new, empty account straight away, with its own
+Default playlist, no invite or approval (the owner's choice), capped at 5 attempts per address per
+10 minutes and audited as `user_signup`. It sees nothing of anyone else's and has no Users page. Sign-up asks for an email
 address (`users.email`, one account per address, `auth.emailProblem`); admins put one on older
 accounts from the Users page. Forgot password (`/forgot`, linked from the sign-in card and the
 home page) takes a username or email and always answers the same card; when the account has an
@@ -193,8 +250,9 @@ mirrors `cms/app/auth.py require_csrf`.
 
 ## Pointing a Pi at it
 
-Register the device on `/devices`, open its "Token / install" block (admins only) and run the
-printed command on the Pi from the directory the repo was cloned into:
+Register the device on `/devices`, open its "Token / install" block (editors and admins, on the
+projector's own account: the token also reads that account's Wyze login) and run the printed
+command on the Pi from the directory the repo was cloned into:
 
 ```sh
 cd piplayer/player && \
@@ -249,21 +307,24 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   `POST /library/upload/{id}/complete`. `GET /library/upload/{id}` returns `{received, parts}`
   so a reload resumes by skipping received parts (the browser re-hashes from 0). Uploads
   abandoned for 24 h are aborted by the daily cron.
-- **Dedupe before bytes move**: `init` checks the client's sha256 against the library and
-  answers 409 with the existing file's name; it also refuses (409) a name whose storage key
-  (`<sha16>_<name>`) is already held by a library file or an in-flight upload, and
-  `media.sha256` is UNIQUE since migration 0006, so a same-instant race cannot slip a duplicate
-  in either. The size is checked against `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB) at init too. Upload
+- **Dedupe before bytes move**, within one account: `init` checks the client's sha256 against
+  the uploader's own library and answers 409 with that file's name (never another account's); it
+  also refuses (409) a name whose storage key (`<sha16>_u<account id>_<name>`, so two accounts'
+  copies are two objects and deleting one never removes the other) is already held by a library
+  file or an in-flight upload, and `media(owner_id, sha256)` is UNIQUE since migration 0016
+  (`media.sha256` site-wide from 0006), so a same-instant race cannot slip a duplicate in either. The size is checked against `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB) at init too. Upload
   error messages are plain English ("That file type (.exe) is not supported...", "This file is
   X GB; the limit is Y GB.", "Already in the library as ...").
-- **Every upload joins the default playlist**: `complete` appends the new media row to the
-  site default playlist (`settings.default_playlist_id`, the "Default" playlist migration 0010
-  creates; the Settings page can point it at another playlist) in the same transaction as the
-  media row, after its last item, and bumps that playlist's `updated_at`; the `upload_media`
-  audit row carries `playlist: <id>`. A projector plays it whenever no schedule rule matches and
-  neither the device nor its group has a playlist of its own (`manifest.pick_playlist`:
-  schedule → device default → group default → site default), so a fresh upload plays on every
-  projector that nobody has assigned anything to. The Playlists page marks it with a `default`
+- **Every upload joins the uploader's Default playlist**: `complete` appends the new media row
+  to the uploading account's Default (`default_playlist_id` in its `account_settings`, created at
+  sign-up, on the Users page, at `/setup` and by migration 0016; its Settings page can point it at
+  another of its playlists) in the same transaction as the media row, after its last item, and
+  bumps that playlist's `updated_at`; the `upload_media` audit row carries `playlist: <id>`. A
+  projector plays its account's Default whenever no schedule rule matches and neither the device
+  nor its group has a playlist of its own (`manifest.pick_playlist`: schedule → device default →
+  group default → the account's Default, every step from the projector's own account only), so a
+  fresh upload plays on every one of that account's projectors that nobody has assigned anything
+  to. The Playlists page marks it with a `default`
   badge and refuses to delete it until another playlist is made the default on Settings.
 - **Complete verifies the hash**: `POST /library/upload/{id}/complete` re-hashes the stored
   object and refuses a mismatch with 400, deleting the object, so a wrong browser hash never
@@ -280,18 +341,22 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
 - **Per-account projectors** (`POST /api/operator/devices`, `api.registerDevice`, migration
   0009 `devices.owner_id`): the flasher registers each projector as the account signed in to the
   app before it writes the card, and the card carries the device token (no enrollment key on
-  cards). A new `device_id` gets a row owned by that user with the Settings group/playlist
-  defaults (201, `created: true`, audit `device_registered` with `owner`); the user's own id gets
+  cards). A new `device_id` gets a row owned by that user with that account's Settings
+  group/playlist defaults (201, `created: true`, audit `device_registered` with `owner`); the user's own id gets
   a NEW token (200, `created: false`, the old card stops syncing, a rename is audited as
   `renamed_from` under `device_reregistered`); an id owned by another account is a 409 ("belongs
-  to another account; pick another name"). Admins may re-register any id, and an ownerless one
-  (from before migration 0009, the Devices page form or `/api/enroll`) becomes theirs; editors
-  get the 409 for those too. Editors and viewers see only their own projectors on the console,
-  admins see every projector and can change the owner. The new-id cap below applies.
+  to another account; pick another name"; device ids are one namespace for the whole site, so
+  that answer is the one thing an account can learn about another: that an id is taken). Admins
+  may re-register any id, and an ownerless one (from before migration 0009 or `/api/enroll`)
+  becomes theirs, dropping what it pointed at of the site admin's unless that is theirs too
+  (`accounts.reassignDevice`); editors get the 409 for those too. A projector added with the
+  Devices page form belongs to whoever added it. Editors and viewers see only their own projectors
+  on the console, admins see every projector and can change the owner. The new-id cap below
+  applies.
 - **Zero-touch enrollment** (legacy: cards written by flashers before v0.7.0): `POST /api/enroll`
-  `{"key", "device_id", "name"}` trades the site's enrollment key (Settings page; "Rotate"
-  invalidates cards not yet booted) for the device's token: `{"device_id", "token", "cms_url"}`.
-  The row it creates has no owner. Re-enrolling a known `device_id` issues a NEW token: the old
+  `{"key", "device_id", "name"}` trades the site's enrollment key (the admins' Settings page;
+  "Rotate" invalidates cards not yet booted) for the device's token: `{"device_id", "token", "cms_url"}`.
+  The row it creates has no owner, so it plays the site admin's content until an admin gives it one. Re-enrolling a known `device_id` issues a NEW token: the old
   card (and anything that learned the old token) stops syncing, the console's view of the
   device (group, playlist, history) is kept and a rename is audited as `renamed_from`. The
   enrollment key alone can re-enroll any device id, so rotate it whenever a card, a flasher PC
@@ -299,13 +364,14 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   `Retry-After`); new device ids are capped fleet-wide at 20 per hour whichever endpoint creates
   them (429 with `Retry-After: 3600`, audited as `device_enroll_capped`); re-enrollments are not
   counted. Audit: `device_enrolled`, `device_reenrolled`, `enrollment_key_rotated`.
-- **Timezone is a setting**, not the server's clock: `/settings` stores an IANA zone (validated
-  with `Intl.DateTimeFormat`), default `UTC`. A stored zone that no longer validates (a D1 edit,
-  a restore) does not break the console: the site falls back to `UTC`, `loadSettings` reports
-  the stored value as `timezone_problem`, and the Settings page warns with it so the admin can
-  pick a real zone. Schedule rules evaluate wall-clock time in that
-  zone (`formatToParts`), every displayed timestamp is rendered in it with the zone
-  abbreviation, and the manifest `server_time` carries its numeric offset. Timestamps in D1 stay
+- **Timezone is a per-account setting**, not the server's clock: each account's `/settings`
+  stores an IANA zone (validated with `Intl.DateTimeFormat`), default `UTC`. A stored zone that no
+  longer validates (a D1 edit, a restore) does not break the console: the account falls back to
+  `UTC`, `loadSettings` reports the stored value as `timezone_problem`, and the Settings page
+  warns with it so its owner can pick a real zone. Schedule rules of a projector evaluate
+  wall-clock time in its account's zone (`formatToParts`), every timestamp a user sees is
+  rendered in their own zone with the zone abbreviation, and the manifest `server_time` carries
+  the projector's account's offset. Timestamps in D1 stay
   UTC (`datetime('now')`). Wrap-midnight windows are anchored to the day they start, as in the
   CMS.
 - **Media serving** streams R2 objects with `Content-Type` from the stored metadata,
@@ -314,8 +380,9 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   `FileResponse`, 416 when unsatisfiable, `If-Range` honoured, more than 100 parts → the whole
   object) and HEAD. Malformed and inverted ranges are 400; like Starlette these 400/416 answers
   are `text/plain`, not the JSON `{detail}` envelope. A device token only unlocks the files of the playlist
-  it currently resolves to (schedule → device default → group default → site default); logged-in users may
-  fetch anything. A media filename starts with 16 hex chars of the file's sha256, so the bytes
+  it currently resolves to (schedule → device default → group default → its account's Default); a
+  signed-in user may fetch the files of their own library only (another account's file is the same
+  404 as a missing one, admins included). A media filename starts with 16 hex chars of the file's sha256, so the bytes
   behind a name never change: media goes out with `Cache-Control: public, max-age=31536000,
   immutable` and a plain GET is kept in the edge cache (`caches.default`, keyed on the URL, looked
   up only after the auth and scoping checks) so the next projector on the same edge gets the edge
@@ -334,7 +401,9 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   answers carry an `Allow` header. `/openapi.json`, `/docs`, `/redoc` are 404.
 - **Response headers**: every response carries `X-Content-Type-Options: nosniff`,
   `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `Content-Security-Policy:
-  default-src 'self'; img-src 'self' data:; frame-src https:; frame-ancestors 'none'` and
+  default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src https:;
+  frame-ancestors 'none'` (blob: so the Library page can read a picked file's size and duration
+  before uploading it) and
   `Strict-Transport-Security: max-age=31536000`; every HTML page is `Cache-Control: no-store`.
   For page work: the CSP forbids inline `<script>`, inline `style` attributes, `on*=` handlers
   and `javascript:` links, so behaviour goes in `public/app.js` and styles in `style.css`.
@@ -343,13 +412,16 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   closed alerts older than 90 days, and enrollment codes older than an hour (an approved but
   never-claimed flasher token is deleted with its code); it also encrypts any camera RTSP URL
   still stored in plain text from before encryption.
-- **The dashboard's audit tail shows people's actions only** (rows with a username); device
-  syncs and cron rows are on `/audit`. Every validation message on the pages is plain English
+- **The dashboard's audit tail shows people's actions only** (rows with a username) about the
+  reader's own account; device syncs and cron rows are on `/audit`, which shows each account the
+  rows about itself and its own actions (admins also the rows about no account). Every validation message on the pages is plain English
   for a non-technical owner.
 - **Alerts** (`*/5 * * * *`, `src/alerts.js`): offline / mpv-down / stale screenshot / sync,
   update, camera and projector errors per device; one row per (device, kind) while it holds,
   notified on open, on recovery and every `alert_repeat_minutes` while open, through email
-  (`ALERT_MAIL`), a JSON webhook and Twilio SMS as set on `/settings`; `/alerts` lists them.
+  (`ALERT_MAIL`), a JSON webhook and Twilio SMS as set on `/settings`. Each projector is judged by
+  its own account's thresholds and reported through its own account's channels only (one digest
+  per account); `/alerts` lists the reader's own projectors' alerts.
 
 ## Backups
 

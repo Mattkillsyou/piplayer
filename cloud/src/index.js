@@ -45,12 +45,15 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const ANON_FORMS = new Set(["/login", "/setup", "/signup", "/forgot", "/reset"]);
 
 // On every response, pages and JSON alike. frame-src stays "https:" because the Devices page
-// frames any operator-pasted live camera URL; img-src needs data: for style.css's select arrow.
+// frames any operator-pasted live camera URL; img-src needs data: for style.css's select arrow,
+// and img-src / media-src need blob: for the Library page reading a picked file's size and
+// duration before the upload (public/upload.js loads it from a blob: URL; without it every
+// browser upload stored no width, height or duration).
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "same-origin",
-  "content-security-policy": "default-src 'self'; img-src 'self' data:; frame-src https:; frame-ancestors 'none'",
+  "content-security-policy": "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src https:; frame-ancestors 'none'",
   "strict-transport-security": "max-age=31536000",
 };
 
