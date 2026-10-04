@@ -5,8 +5,8 @@
 // so a route added later without a row here fails the sweep instead of going untested.
 import { beforeAll, describe, expect, it } from "vitest";
 import { isApiPath, Router } from "../src/router.js";
-import { Client, SETUP_TOKEN } from "./helpers.js";
-import { NOPE, device, playlist, post, postJson, roles } from "./pages_common.js";
+import { Client, query, SETUP_TOKEN } from "./helpers.js";
+import { NOPE, defaultPlaylistOf, device, playlist, post, postJson, roles } from "./pages_common.js";
 
 // Every src module (index.js's MODULES list, without copying it): the ones with register() are the routes.
 const modules = Object.values(import.meta.glob(["../src/*.js", "../src/pages/*.js"], { eager: true }));
@@ -56,7 +56,7 @@ function table() {
     ["GET", "/dashboard", null, null, ALL(200)],
     ["GET", "/library", null, null, ALL(200)],
     ["GET", "/playlists", null, null, ALL(200)],
-    ["GET", `/playlists/${pid}`, null, null, ALL(200)],
+    ["GET", `/playlists/${pid}`, null, null, { viewer: 404, editor: 200, admin: 404 }], // the editor's playlist: a missing one to anyone else
     ["GET", "/devices", null, null, ALL(200)],
     ["GET", `/devices/${dev.id}/schedule`, null, null, { viewer: 404, editor: 200, admin: 200 }], // the editor's projector: a 404 for anyone else below admin
     ["GET", "/flasher", null, null, ALL(200)],
@@ -65,7 +65,7 @@ function table() {
     ["GET", "/audit", null, null, ALL(200)],
     ["GET", "/alerts", null, null, ALL(200)],
     ["GET", "/users", null, null, AD(200)],
-    ["GET", "/settings", null, null, AD(200)],
+    ["GET", "/settings", null, null, E(200)], // each account's own (migration 0016)
     ["GET", `/library/upload/${NOPE}`, null, null, E(404)],
     ["POST", "/library/upload/init", { name: "x.exe", size: 10, sha256: "0".repeat(64), media_type: "video", duration_seconds: 1, width: 1, height: 1 }, "json", E(400)],
     ["PUT", `/library/upload/${NOPE}/part/1`, "x", "raw", E(404)],
@@ -106,15 +106,15 @@ function table() {
     ["POST", `/users/${NOPE}/delete`, {}, "form", AD(404)],
     ["POST", `/users/${NOPE}/tokens`, { name: "m" }, "form", AD(404)],
     ["POST", `/users/${NOPE}/tokens/${NOPE}/revoke`, {}, "form", AD(404)],
-    ["POST", "/settings", { timezone: "Not/AZone", screenshot_interval: "60", default_image_duration: "10" }, "form", AD(400)],
-    ["POST", "/settings/tokens", { name: " " }, "form", AD(400)],
-    ["POST", "/settings/alerts", { alert_offline_minutes: "0", alert_repeat_minutes: "60" }, "form", AD(400)],
-    ["POST", "/settings/alerts/test", { channel: "nope" }, "form", AD(400)],
-    ["POST", "/settings/alerts/twilio/clear", {}, "form", AD(303)],
-    ["POST", `/settings/tokens/${NOPE}/revoke`, {}, "form", AD(404)],
-    ["POST", "/settings/enrollment/rotate", {}, "form", AD(303)],
-    ["POST", "/settings/wyze", { wyze_camera_pattern: "\u0001" }, "form", AD(400)],
-    ["POST", "/settings/wyze/clear", {}, "form", AD(303)],
+    ["POST", "/settings", { timezone: "Not/AZone", screenshot_interval: "60", default_image_duration: "10" }, "form", E(400)],
+    ["POST", "/settings/tokens", { name: " " }, "form", E(400)],
+    ["POST", "/settings/alerts", { alert_offline_minutes: "0", alert_repeat_minutes: "60" }, "form", E(400)],
+    ["POST", "/settings/alerts/test", { channel: "nope" }, "form", E(400)],
+    ["POST", "/settings/alerts/twilio/clear", {}, "form", E(303)],
+    ["POST", `/settings/tokens/${NOPE}/revoke`, {}, "form", E(404)],
+    ["POST", "/settings/enrollment/rotate", {}, "form", AD(303)], // the site-wide key
+    ["POST", "/settings/wyze", { wyze_camera_pattern: "\u0001" }, "form", E(400)],
+    ["POST", "/settings/wyze/clear", {}, "form", E(303)],
     ["GET", "/authorize", null, null, AD(200)],
     ["POST", "/authorize", { code: "ZZZZZZ", action: "deny" }, "form", AD(400)],
     ["GET", `/setup?token=${SETUP_TOKEN}`, null, null, ALL(404)],
@@ -147,27 +147,35 @@ describe("authorization matrix", () => {
     });
   }
 
-  it("viewers and editors never see device tokens or the install command; admins do", async () => {
-    // a device token reads the Wyze login through /api/camera-config, so it is admin-only like the operator token
-    for (const [c, d] of [[r.viewer, vdev], [r.editor, dev]]) {
-      const v = await (await c.get("/devices")).text();
-      expect(v).toContain(d.name);
-      expect(v).not.toContain(d.token);
-      expect(v).not.toContain("DEVICE_TOKEN=");
-    }
-    const t = await (await r.admin.get("/devices")).text();
+  it("a device token and the install command are shown to its own account's editors and admins only", async () => {
+    // a device token reads its account's Wyze login through /api/camera-config: the account's own
+    // business. The editor sees its projector's; a viewer never sees one, not even its own.
+    const v = await (await r.viewer.get("/devices")).text();
+    expect(v).toContain(vdev.name);
+    expect(v).not.toContain(vdev.token);
+    expect(v).not.toContain("DEVICE_TOKEN=");
+    const t = await (await r.editor.get("/devices")).text();
     expect(t).toContain(dev.token);
     expect(t).toContain("cd piplayer/player");
     expect(t).toContain(`DEVICE_ID=${dev.device_id}`);
     expect(t).toContain("deploy/install-player.sh");
     expect(t).toMatch(/CMS_URL=https?:\/\//);
+    // the admin sees every projector, but the token of its own account's only
+    const desk = await device("matrix-admin", "Matrix Admin Dev", { owner_id: r.ids.admin });
+    const a = await (await r.admin.get("/devices")).text();
+    expect(a).toContain(dev.name);
+    expect(a).not.toContain(dev.token);
+    expect(a).not.toContain(vdev.token);
+    expect(a).toContain(desk.token);
+    expect(a).toContain(`DEVICE_ID=${desk.device_id}`);
+    await query("DELETE FROM devices WHERE id = ?", desk.id);
   });
 
-  it("nav shows Users/Settings only to admins", async () => {
-    for (const [c, has] of [[r.viewer, false], [r.editor, false], [r.admin, true]]) {
+  it("nav shows Settings to editors and admins (their own), Users to admins only", async () => {
+    for (const [c, users, settings] of [[r.viewer, false, false], [r.editor, false, true], [r.admin, true, true]]) {
       const t = await (await c.get("/dashboard")).text();
-      expect(t.includes('href="/users"')).toBe(has);
-      expect(t.includes('href="/settings"')).toBe(has);
+      expect(t.includes('href="/users"')).toBe(users);
+      expect(t.includes('href="/settings"')).toBe(settings);
     }
   });
 
@@ -254,7 +262,8 @@ describe("csrf (contract 8)", () => {
   });
 
   it("every rendered POST form carries the hidden csrf_token input and every page the meta tag", async () => {
-    const pages = ["/dashboard", "/library", "/playlists", `/playlists/${pid}`, "/devices", `/devices/${dev.id}/schedule`,
+    const adminPl = await defaultPlaylistOf(r.ids.admin); // the admin's own playlist (the editor's is a 404 to them)
+    const pages = ["/dashboard", "/library", "/playlists", `/playlists/${adminPl}`, "/devices", `/devices/${dev.id}/schedule`,
       "/groups", "/users", "/audit", "/settings"];
     for (const p of pages) {
       const res = await r.admin.get(p);

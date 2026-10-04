@@ -1,9 +1,12 @@
 // Chunked uploads (src/uploads.js) and the Library page (src/pages/library.js): naming rules
 // ported from web.py, init validation, the 12 MiB happy path through R2 multipart, dedupe
-// before bytes move, resume, idempotent parts, abort, housekeeping, list + delete.
+// before bytes move, resume, idempotent parts, abort, housekeeping, list + delete. Every library
+// is its own account's (migration 0016): dedupe is per account, the file name carries the
+// account, and another account's upload id answers like an unknown one.
 import { beforeAll, describe, expect, it } from "vitest";
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import * as accounts from "../src/accounts.js";
 import * as auth from "../src/auth.js";
 import worker from "../src/index.js";
 import * as uploads from "../src/uploads.js";
@@ -25,15 +28,18 @@ function fakeFile(size, seed = 1) {
   return data;
 }
 
-let admin, editor, viewer, csrf, editorCsrf, viewerCsrf;
+let admin, editor, viewer, csrf, editorCsrf, viewerCsrf, edId;
 
 async function makeUser(username, role, password = "test1234") {
   const hash = await auth.hashPassword(password);
-  await env.DB.prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)").bind(username, hash, role).run();
+  const id = (await env.DB.prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)").bind(username, hash, role).run()).meta.last_row_id;
+  await accounts.ensureDefaultPlaylist(env, id); // what /signup and the Users page do
   const c = new Client();
   expect((await c.login(username, password)).status).toBe(303);
   return c;
 }
+
+const defaultOf = async (id) => Number((await query("SELECT value FROM account_settings WHERE user_id = ? AND key = 'default_playlist_id'", id))[0].value);
 
 beforeAll(async () => {
   admin = await setupAdmin("admin", "test1234");
@@ -42,6 +48,7 @@ beforeAll(async () => {
   editorCsrf = await editor.csrf("/library");
   viewer = await makeUser("vi", "viewer");
   viewerCsrf = await viewer.csrf("/library");
+  edId = (await query("SELECT id FROM users WHERE username = 'ed'"))[0].id;
 });
 
 const initBody = (over = {}) => ({
@@ -75,7 +82,13 @@ describe("filename rules (port of web._final_media_name / _sanitize_filename)", 
       expect(uploads.finalMediaName(SHA, name, ext), name).toBe(final);
       expect(uploads.finalMediaName(SHA, name, ext).length).toBeLessThanOrEqual(120);
       if (name !== "...") expect(uploads.extOf(name), name).toBe(ext);
+      // with the account (every upload since migration 0016): after the hash, still <= 120
+      const owned = uploads.finalMediaName(SHA, name, ext, 12345);
+      expect(owned.startsWith("0123456789abcdef_u12345_"), name).toBe(true);
+      expect(owned.length, name).toBeLessThanOrEqual(120);
+      expect(owned.endsWith(ext), name).toBe(true);
     }
+    expect(uploads.finalMediaName(SHA, "video.mp4", ".mp4", 7)).toBe("0123456789abcdef_u7_video.mp4");
   });
 
   it("media type by extension, gif is an image unless animated", () => {
@@ -152,7 +165,8 @@ describe("upload protocol", () => {
     expect(body).toEqual({ upload_id: expect.any(String), part_size: 8 * MiB, received: 0 });
     uploadId = body.upload_id;
     const row = (await query("SELECT * FROM uploads WHERE id = ?", uploadId))[0];
-    expect(row.key).toBe(`media/${sha.slice(0, 16)}_My_Clip_1.mp4`);
+    expect(row.key).toBe(`media/${sha.slice(0, 16)}_u${edId}_My_Clip_1.mp4`);
+    expect(row.user_id).toBe(edId);
     expect(row.sha256).toBe(sha);
     expect(row.media_type).toBe("video");
     expect(row.upload_id).toBeTruthy();
@@ -200,8 +214,8 @@ describe("upload protocol", () => {
 
     const media = (await query("SELECT * FROM media WHERE id = ?", mediaId))[0];
     expect(media).toMatchObject({
-      filename: `${sha.slice(0, 16)}_My_Clip_1.mp4`, original_name: "My Clip (1).mp4", media_type: "video",
-      size_bytes: 12 * MiB, duration_seconds: 2, width: 320, height: 240, codec: null, sha256: sha,
+      filename: `${sha.slice(0, 16)}_u${edId}_My_Clip_1.mp4`, original_name: "My Clip (1).mp4", media_type: "video",
+      size_bytes: 12 * MiB, duration_seconds: 2, width: 320, height: 240, codec: null, sha256: sha, owner_id: edId,
     });
     expect(await query("SELECT id FROM uploads")).toEqual([]);
     const obj = await env.MEDIA.head("media/" + media.filename);
@@ -210,8 +224,8 @@ describe("upload protocol", () => {
     const stored = new Uint8Array(await (await env.MEDIA.get("media/" + media.filename)).arrayBuffer());
     expect(await digest(stored)).toBe(sha);
     const audit = await query("SELECT username, action, target_id, details FROM audit_log WHERE action = 'upload_media'");
-    // every upload joins the site default playlist (migration 0010; test/default_playlist.test.js)
-    const dflt = (await query("SELECT value FROM settings WHERE key = 'default_playlist_id'"))[0].value;
+    // every upload joins the uploader's own Default playlist (test/default_playlist.test.js)
+    const dflt = await defaultOf(edId);
     expect(audit).toEqual([{ username: "ed", action: "upload_media", target_id: String(mediaId), details: `{"filename": "My Clip (1).mp4", "type": "video", "playlist": ${dflt}}` }]);
     // the completed upload is gone on the R2 side too
     r = await editor.postJson(`/library/upload/${uploadId}/complete`, {}, { "X-CSRF-Token": editorCsrf });
@@ -310,31 +324,41 @@ describe("upload protocol", () => {
     await editor.postJson(`/library/upload/${upload_id}/abort`, {}, { "X-CSRF-Token": editorCsrf });
   });
 
-  it("two editors uploading the same bytes: the second complete is a 409 and leaves the first media row and object intact", async () => {
+  it("two accounts uploading the same bytes: each gets its own media row and object; the dedupe message never names the other's file", async () => {
     const same = fakeFile(1 * MiB, 20);
     const sha = await digest(same);
     const other = await makeUser("ed3", "editor");
     const otherCsrf = await other.csrf("/library");
-    // init only dedupes in-flight rows per user, so both uploads open (under their own names)
+    const otherId = (await query("SELECT id FROM users WHERE username = 'ed3'"))[0].id;
     let r = await init(editor, editorCsrf, initBody({ name: "one.mp4", size: same.length, sha256: sha }));
     const a = (await r.json()).upload_id;
     r = await init(other, otherCsrf, initBody({ name: "two.mp4", size: same.length, sha256: sha }));
     const b = (await r.json()).upload_id;
     expect((await query("SELECT COUNT(*) AS n FROM uploads WHERE sha256 = ?", sha))[0].n).toBe(2);
-    const keyB = (await query("SELECT key FROM uploads WHERE id = ?", b))[0].key;
     expect((await putPart(editor, editorCsrf, a, 1, same)).status).toBe(200);
     expect((await putPart(other, otherCsrf, b, 1, same)).status).toBe(200);
     r = await editor.postJson(`/library/upload/${a}/complete`, {}, { "X-CSRF-Token": editorCsrf });
     expect(r.status, await r.clone().text()).toBe(200);
     r = await other.postJson(`/library/upload/${b}/complete`, {}, { "X-CSRF-Token": otherCsrf });
-    expect(r.status).toBe(409);
-    expect((await r.json()).detail).toBe("Already in the library as 'one.mp4'.");
+    expect(r.status, await r.clone().text()).toBe(200);
+    const rows = await query("SELECT original_name, owner_id, filename FROM media WHERE sha256 = ? ORDER BY id", sha);
+    expect(rows.map((x) => [x.original_name, x.owner_id])).toEqual([["one.mp4", edId], ["two.mp4", otherId]]);
+    for (const x of rows) expect(await digest(new Uint8Array(await (await env.MEDIA.get("media/" + x.filename)).arrayBuffer()))).toBe(sha);
+    // each joined its own account's Default playlist
+    expect(await query("SELECT playlist_id FROM playlist_items pi JOIN media m ON m.id = pi.media_id WHERE m.sha256 = ? ORDER BY m.id", sha))
+      .toEqual([{ playlist_id: await defaultOf(edId) }, { playlist_id: await defaultOf(otherId) }]);
+    // the same bytes again: refused in the library that has them, with its own name only
+    r = await init(other, otherCsrf, initBody({ name: "three.mp4", size: same.length, sha256: sha }));
+    expect([r.status, await r.json()]).toEqual([409, { detail: "Already in the library as 'two.mp4'." }]);
+    r = await init(editor, editorCsrf, initBody({ name: "three.mp4", size: same.length, sha256: sha }));
+    expect([r.status, await r.json()]).toEqual([409, { detail: "Already in the library as 'one.mp4'." }]);
+    // deleting one account's copy leaves the other's row and object
+    const mine = await query("SELECT id, filename FROM media WHERE sha256 = ? AND owner_id = ?", sha, edId);
+    expect((await editor.post(`/library/${mine[0].id}/delete`, { csrf_token: editorCsrf })).status).toBe(303);
+    expect(await env.MEDIA.head("media/" + mine[0].filename)).toBeNull();
+    const theirs = rows.find((x) => x.owner_id === otherId);
+    expect((await env.MEDIA.head("media/" + theirs.filename)).size).toBe(1 * MiB);
     expect((await query("SELECT COUNT(*) AS n FROM media WHERE sha256 = ?", sha))[0].n).toBe(1);
-    expect(await query("SELECT id FROM uploads WHERE sha256 = ?", sha)).toEqual([]);
-    const filename = (await query("SELECT filename FROM media WHERE sha256 = ?", sha))[0].filename;
-    expect(await digest(new Uint8Array(await (await env.MEDIA.get("media/" + filename)).arrayBuffer()))).toBe(sha);
-    // the loser's multipart was aborted, never completed into an object
-    expect(await env.MEDIA.head(keyB)).toBeNull();
   });
 
   it("gif: image by default, video when the browser reports animated", async () => {
@@ -356,16 +380,23 @@ describe("upload protocol", () => {
     expect(await query("SELECT duration_seconds FROM media WHERE original_name = 'pic.png'")).toEqual([{ duration_seconds: null }]);
   });
 
-  it("admins may drive another user's upload, other editors may not", async () => {
+  it("only the uploader drives an upload: another editor and an admin get the 404 of an unknown id", async () => {
     const small = fakeFile(100, 14);
     const r = await init(editor, editorCsrf, initBody({ name: "mine.mp4", size: 100, sha256: await digest(small) }));
     const { upload_id } = await r.json();
     const other = await makeUser("ed2", "editor");
     const otherCsrf = await other.csrf("/library");
-    expect((await other.get(`/library/upload/${upload_id}`)).status).toBe(403);
-    expect((await admin.get(`/library/upload/${upload_id}`)).status).toBe(200);
-    expect((await other.postJson(`/library/upload/${upload_id}/abort`, {}, { "X-CSRF-Token": otherCsrf })).status).toBe(403);
-    expect((await admin.postJson(`/library/upload/${upload_id}/abort`, {}, { "X-CSRF-Token": csrf })).status).toBe(200);
+    for (const [c, token] of [[other, otherCsrf], [admin, csrf]]) {
+      for (const res of [
+        await c.get(`/library/upload/${upload_id}`),
+        await putPart(c, token, upload_id, 1, small),
+        await c.postJson(`/library/upload/${upload_id}/complete`, {}, { "X-CSRF-Token": token }),
+        await c.postJson(`/library/upload/${upload_id}/abort`, {}, { "X-CSRF-Token": token }),
+      ]) expect([res.status, await res.json()]).toEqual([404, { detail: "Upload not found" }]);
+    }
+    expect(await query("SELECT received FROM uploads WHERE id = ?", upload_id)).toEqual([{ received: 0 }]);
+    expect((await editor.get(`/library/upload/${upload_id}`)).status).toBe(200);
+    expect((await editor.postJson(`/library/upload/${upload_id}/abort`, {}, { "X-CSRF-Token": editorCsrf })).status).toBe(200);
   });
 
   it("housekeeping aborts uploads older than 24 h and drops orphaned rows", async () => {
@@ -392,7 +423,7 @@ describe("upload protocol", () => {
 
 describe("library page", () => {
   it("lists media with badges, size, duration, resolution, codec and local time; viewers get no upload panel", async () => {
-    let r = await admin.get("/library");
+    let r = await editor.get("/library");
     expect(r.status).toBe(200);
     let html = await r.text();
     expect(html).toContain("<h1>Library</h1>");
@@ -419,13 +450,19 @@ describe("library page", () => {
     expect(html).not.toContain("upload.js");
     expect(html).not.toContain("Delete</button>");
     expect((await new Client().get("/library")).status).toBe(303);
+    // another account's library, an admin's included, holds none of the editor's files
+    for (const c of [viewer, admin]) {
+      html = await (await c.get("/library")).text();
+      expect(html).not.toContain("My Clip (1).mp4");
+      expect(html).toContain("Media (0)");
+    }
   });
 
   it("escapes names", async () => {
     const d = fakeFile(300, 17);
     const r = await uploadWhole(editor, editorCsrf, `x<img src=x onerror=alert(1)>.png`, d, { media_type: "image" });
     expect(r.status, await r.clone().text()).toBe(200);
-    const html = await admin.get("/library").then((x) => x.text());
+    const html = await editor.get("/library").then((x) => x.text());
     expect(html).not.toContain("<img src=x");
     expect(html).toContain("x&lt;img src=x onerror=alert(1)&gt;.png");
   });
@@ -437,7 +474,7 @@ describe("library page", () => {
     const other = (await query("SELECT id FROM media WHERE original_name = 'pic.png'"))[0].id;
     const filename = (await query("SELECT filename FROM media WHERE id = ?", media_id))[0].filename;
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO playlists (id, name, updated_at) VALUES (77, 'pl', '2000-01-01 00:00:00')"),
+      env.DB.prepare("INSERT INTO playlists (id, owner_id, name, legacy_name, updated_at) VALUES (77, ?, 'pl', 'pl', '2000-01-01 00:00:00')").bind(edId),
       env.DB.prepare("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (77, ?, 0)").bind(other),
       env.DB.prepare("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (77, ?, 1)").bind(media_id),
       env.DB.prepare("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (77, ?, 2)").bind(other),
@@ -448,6 +485,10 @@ describe("library page", () => {
     expect(r.status).toBe(403);
     r = await editor.post(`/library/abc/delete`, { csrf_token: editorCsrf });
     expect(r.status).toBe(400);
+    // an admin cannot delete another account's file: the 404 of a missing id, nothing removed
+    r = await admin.post(`/library/${media_id}/delete`, { csrf_token: csrf });
+    expect([r.status, await r.json()]).toEqual([404, { detail: "Not Found" }]);
+    expect(await query("SELECT id FROM media WHERE id = ?", media_id)).toEqual([{ id: media_id }]);
     r = await editor.post(`/library/${media_id}/delete`, { csrf_token: editorCsrf });
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/library");
@@ -456,9 +497,9 @@ describe("library page", () => {
     expect(await query("SELECT media_id, position FROM playlist_items WHERE playlist_id = 77 ORDER BY position"))
       .toEqual([{ media_id: other, position: 0 }, { media_id: other, position: 1 }]);
     expect((await query("SELECT updated_at FROM playlists WHERE id = 77"))[0].updated_at).not.toBe("2000-01-01 00:00:00");
-    const a = (await query("SELECT details FROM audit_log WHERE action = 'delete_media'"))[0];
-    const dflt = Number((await query("SELECT value FROM settings WHERE key = 'default_playlist_id'"))[0].value);
-    expect(JSON.parse(a.details)).toEqual({ filename: "todelete.png", playlists: [dflt, 77] }); // the upload put it in the site default too
+    const a = (await query("SELECT details FROM audit_log WHERE action = 'delete_media' ORDER BY id DESC"))[0];
+    const dflt = await defaultOf(edId);
+    expect(JSON.parse(a.details)).toEqual({ filename: "todelete.png", playlists: [dflt, 77] }); // the upload put it in the editor's Default too
     r = await editor.post(`/library/${media_id}/delete`, { csrf_token: editorCsrf });
     expect(r.status).toBe(404);
   });

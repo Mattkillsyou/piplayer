@@ -1,7 +1,9 @@
 // Alerts (F): conditions + evaluate with fixed clocks (open once, recovered, repeat after the
 // quiet period, offline freezes the rest), the cron dispatch, channel payload shapes with fetch
 // and the mail binding faked, the Settings panel (validation, secrets never echoed, Send test
-// banners), the /alerts page and the dashboard badge.
+// banners), the /alerts page and the dashboard badge. Thresholds and channels are per account
+// (migration 0016): the lobby and hall projectors are the editor's, so they are judged by the
+// editor's settings and reported through the editor's channels only.
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createExecutionContext, createScheduledController } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -10,7 +12,7 @@ import * as alerts from "../src/alerts.js";
 import * as secrets from "../src/secrets.js";
 import { nowUtc } from "../src/util.js";
 import { query } from "./helpers.js";
-import { audits, detail, device, one, post, roleMatrix, roles } from "./pages_common.js";
+import { audits, detail, device, one, post, roleMatrix, roles, setting } from "./pages_common.js";
 
 const NOW = new Date("2026-09-16T10:00:00Z");
 const ago = (seconds, from = NOW) => nowUtc(new Date(from.getTime() - seconds * 1000));
@@ -39,6 +41,9 @@ function stubFetch(status = 200, body = "{}") {
 let r;
 let lobby;
 let hall;
+// The editor's own setting rows (the projectors' account); drop them by key pattern.
+const edSetting = (key, value) => setting(r.ids.editor, key, value);
+const dropEdSettings = (like) => query("DELETE FROM account_settings WHERE user_id = ? AND key LIKE ?", r.ids.editor, like);
 
 beforeAll(async () => {
   r = await roles();
@@ -108,10 +113,10 @@ describe("evaluate", () => {
   });
 
   it("repeat 0 never re-notifies; offline keeps the other alerts frozen until the device is back", async () => {
-    await query("INSERT INTO settings (key, value) VALUES ('alert_repeat_minutes', '0')");
+    await edSetting("alert_repeat_minutes", 0);
     expect((await run(NOW, { camera_error: "no cam" })).opened).toBe(1);
     expect((await run(later(600))).repeated).toBe(0);
-    await query("DELETE FROM settings WHERE key = 'alert_repeat_minutes'");
+    await dropEdSettings("alert_repeat_minutes");
     // goes offline (last sync at 600): only "offline" opens; camera-error stays open (the columns are frozen)
     const res = await alerts.evaluate(env, later(611));
     expect(res.opened).toBe(1);
@@ -169,7 +174,7 @@ describe("evaluate", () => {
   }
 
   it("a run that throws before its digest leaves the rows unstamped; the next run announces them", async () => {
-    await query("INSERT INTO settings (key, value) VALUES ('alert_webhook_url', 'https://hooks.example.com/a')");
+    await edSetting("alert_webhook_url", "https://hooks.example.com/a");
     await setDevice(hall.id, { last_seen_at: ago(30), last_error: "hall broke" });
     let inserts = 0;
     const restore = hookInsert(/INSERT OR IGNORE INTO alerts/, async () => { if (++inserts === 2) throw new Error("D1 hiccup"); });
@@ -189,7 +194,7 @@ describe("evaluate", () => {
     expect(await run(later(10))).toEqual({ opened: 0, closed: 0, repeated: 0, sent: [], errors: [] });
     await setDevice(hall.id, { last_seen_at: null, last_error: null });
     await run(later(15), { last_error: null });
-    await query("DELETE FROM settings WHERE key = 'alert_webhook_url'");
+    await dropEdSettings("alert_webhook_url");
     await query("DELETE FROM alerts");
   });
 
@@ -265,24 +270,27 @@ describe("channels", () => {
   });
 
   it("sms: Twilio Messages.json with basic auth and From/To/Body; error text from the JSON answer", async () => {
-    expect(await alerts.send(env, SETTINGS, "sms", MSG)).toBe("Twilio account sid, auth token, from and to must all be set");
-    for (const [n, v] of [["twilio_account_sid", "AC123"], ["twilio_auth_token", "tok"], ["twilio_from", "+15550001111"], ["twilio_to", "+15550002222"]]) await secrets.set(env, n, v);
+    const ed = r.ids.editor;
+    expect(await alerts.send(env, SETTINGS, "sms", MSG, ed)).toBe("Twilio account sid, auth token, from and to must all be set");
+    for (const [n, v] of [["twilio_account_sid", "AC123"], ["twilio_auth_token", "tok"], ["twilio_from", "+15550001111"], ["twilio_to", "+15550002222"]]) await secrets.set(env, ed, n, v);
+    // another account's Twilio login is not this one's
+    expect(await alerts.send(env, SETTINGS, "sms", MSG, r.ids.admin)).toBe("Twilio account sid, auth token, from and to must all be set");
     let calls = stubFetch(201, '{"sid":"SM1"}');
-    expect(await alerts.send(env, SETTINGS, "sms", MSG)).toBeNull();
+    expect(await alerts.send(env, SETTINGS, "sms", MSG, ed)).toBeNull();
     expect(calls[0].url).toBe("https://api.twilio.com/2010-04-01/Accounts/AC123/Messages.json");
     expect(calls[0].init.headers.authorization).toBe(`Basic ${btoa("AC123:tok")}`);
     expect(calls[0].body).toEqual({ From: "+15550001111", To: "+15550002222", Body: `${MSG.subject}\n${MSG.text}` });
     calls = stubFetch(401, '{"code":20003,"message":"Authenticate"}');
-    expect(await alerts.send(env, SETTINGS, "sms", MSG)).toBe("Twilio answered 401: Authenticate");
+    expect(await alerts.send(env, SETTINGS, "sms", MSG, ed)).toBe("Twilio answered 401: Authenticate");
     // the To / From numbers are secrets: Twilio's validation text must not leak them
     calls = stubFetch(400, JSON.stringify({ code: 21211, message: "The 'To' number +15550002222 is not a valid phone number." }));
-    expect(await alerts.send(env, SETTINGS, "sms", MSG)).toBe("Twilio answered 400: The 'To' number (number hidden) is not a valid phone number.");
+    expect(await alerts.send(env, SETTINGS, "sms", MSG, ed)).toBe("Twilio answered 400: The 'To' number (number hidden) is not a valid phone number.");
     expect(alerts.smsBody({ subject: "s", text: "x".repeat(1000) }).length).toBe(600);
-    for (const n of alerts.TWILIO_NAMES) await secrets.set(env, n, "");
+    for (const n of alerts.TWILIO_NAMES) await secrets.set(env, ed, n, "");
   });
 
   it("evaluate sends one digest per configured channel, records failures without retrying, unknown channel", async () => {
-    await query("INSERT INTO settings (key, value) VALUES ('alert_webhook_url', 'https://hooks.example.com/a')");
+    await edSetting("alert_webhook_url", "https://hooks.example.com/a");
     const calls = stubFetch(503);
     const res = await run(NOW, { projector_error: "no ir" });
     expect(res).toEqual({ opened: 1, closed: 0, repeated: 0, sent: [], errors: ["webhook: webhook answered 503"] });
@@ -295,21 +303,56 @@ describe("channels", () => {
     stubFetch(200);
     expect(await run(later(10), { projector_error: null })).toEqual({ opened: 0, closed: 1, repeated: 0, sent: ["webhook"], errors: [] });
     expect(await alerts.send(env, SETTINGS, "pigeon", MSG)).toBe("unknown channel pigeon");
-    await query("DELETE FROM settings WHERE key = 'alert_webhook_url'");
+    await dropEdSettings("alert_webhook_url");
+    await query("DELETE FROM alerts");
+  });
+
+  it("each projector is judged by its own account's thresholds and told through its own account's channels only", async () => {
+    // the admin has a projector and a webhook of their own; the editor another webhook
+    const desk = await device("desk", "Desk", { owner_id: r.ids.admin, last_seen_at: ago(30), last_error: "desk broke" });
+    await setting(r.ids.admin, "alert_webhook_url", "https://hooks.example.com/admin");
+    await edSetting("alert_webhook_url", "https://hooks.example.com/editor");
+    const calls = stubFetch(200);
+    const res = await run(NOW, { last_error: "lobby broke" });
+    expect(res).toEqual({ opened: 2, closed: 0, repeated: 0, sent: ["webhook", "webhook"], errors: [] });
+    const byUrl = Object.fromEntries(calls.map((c) => [c.url, JSON.parse(c.body).text]));
+    expect(Object.keys(byUrl).sort()).toEqual(["https://hooks.example.com/admin", "https://hooks.example.com/editor"]);
+    expect(byUrl["https://hooks.example.com/editor"]).toContain("Lobby (lobby)");
+    expect(byUrl["https://hooks.example.com/editor"]).not.toContain("Desk");
+    expect(byUrl["https://hooks.example.com/admin"]).toContain("Desk (desk)");
+    expect(byUrl["https://hooks.example.com/admin"]).not.toContain("Lobby");
+    // the audit rows are about each projector's own account
+    const owners = await query("SELECT DISTINCT target_id, owner_id FROM audit_log WHERE action = 'alert_opened' AND target_id IN ('desk', 'lobby') ORDER BY target_id");
+    expect(owners).toEqual([{ target_id: "desk", owner_id: r.ids.admin }, { target_id: "lobby", owner_id: r.ids.editor }]);
+    // thresholds too: the admin's projectors go offline after 1 minute, the editor's after the default 10
+    await setting(r.ids.admin, "alert_offline_minutes", 1);
+    await query("UPDATE devices SET last_seen_at = ?, last_error = NULL WHERE id = ?", ago(200, later(5)), desk.id);
+    const res2 = await run(later(5), { last_seen_at: ago(200, later(5)), last_error: null });
+    const open = (await rows("a.closed_at IS NULL")).map((a) => [a.device_id, a.kind]);
+    expect(open).toContainEqual([desk.id, "offline"]); // 200 s without a sync: past the admin's 1 minute
+    expect(open.filter(([id]) => id === lobby.id)).toEqual([]); // ... not past the editor's 10
+    expect(res2).toMatchObject({ opened: 1, closed: 1 });
+    await query("DELETE FROM devices WHERE id = ?", desk.id);
+    await query("DELETE FROM account_settings WHERE key IN ('alert_webhook_url', 'alert_offline_minutes')");
     await query("DELETE FROM alerts");
   });
 });
 
 describe("settings panel", () => {
   const GOOD = { alert_offline_minutes: "15", alert_repeat_minutes: "60", alert_email: "ops@example.com", alert_webhook_url: "https://hooks.example.com/z" };
-  const alertRows = () => query("SELECT key, value FROM settings WHERE key LIKE 'alert_%' ORDER BY key");
+  // The admin's own channels (the panel is each account's own).
+  const alertRows = () => query("SELECT key, value FROM account_settings WHERE user_id = ? AND key LIKE 'alert_%' ORDER BY key", r.ids.admin);
 
-  it("admin only; page shows the defaults and the not-configured badges", async () => {
-    await roleMatrix(r, "GET", "/settings", { minRole: "admin" });
-    await roleMatrix(r, "POST", "/settings/alerts", { minRole: "admin", fields: GOOD });
-    await roleMatrix(r, "POST", "/settings/alerts/test", { minRole: "admin", fields: { channel: "nope" }, ok: 400 });
-    await roleMatrix(r, "POST", "/settings/alerts/twilio/clear", { minRole: "admin" });
-    await query("DELETE FROM settings WHERE key LIKE 'alert_%'");
+  it("editors and admins, each for their own account; page shows the defaults and the not-configured badges", async () => {
+    await roleMatrix(r, "GET", "/settings", { minRole: "editor" });
+    await roleMatrix(r, "POST", "/settings/alerts", { minRole: "editor", fields: GOOD });
+    await roleMatrix(r, "POST", "/settings/alerts/test", { minRole: "editor", fields: { channel: "nope" }, ok: 400 });
+    await roleMatrix(r, "POST", "/settings/alerts/twilio/clear", { minRole: "editor" });
+    // the editor's save went to the editor's account only
+    expect(await query("SELECT user_id, value FROM account_settings WHERE key = 'alert_email'")).toEqual([{ user_id: r.ids.editor, value: "ops@example.com" }]);
+    expect(await (await r.editor.get("/settings")).text()).toContain('name="alert_email" value="ops@example.com"');
+    expect(await (await r.admin.get("/settings")).text()).toContain('name="alert_email" value=""');
+    await query("DELETE FROM account_settings WHERE key LIKE 'alert_%'");
     const page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('name="alert_offline_minutes" value="10"');
     expect(page).toContain('name="alert_repeat_minutes" value="240"');
@@ -349,7 +392,8 @@ describe("settings panel", () => {
       { key: "alert_email", value: "ops@example.com" }, { key: "alert_offline_minutes", value: "15" },
       { key: "alert_repeat_minutes", value: "60" }, { key: "alert_webhook_url", value: "https://hooks.example.com/z" },
     ]);
-    expect(await secrets.get(env, "twilio_auth_token")).toBe("secret-tok");
+    expect(await secrets.get(env, r.ids.admin, "twilio_auth_token")).toBe("secret-tok");
+    expect(await secrets.get(env, r.ids.editor, "twilio_auth_token")).toBeNull();
     const a = (await audits("alert_settings_update"))[0];
     expect(a.details).toBe('{"alert_offline_minutes": 15, "alert_repeat_minutes": 60, "alert_email": "ops@example.com", "alert_webhook_url": "set", "twilio_account_sid": "set", "twilio_auth_token": "set", "twilio_from": "set", "twilio_to": "set"}');
     let page = await (await r.admin.get("/settings")).text();
@@ -363,14 +407,14 @@ describe("settings panel", () => {
     expect((page.match(/badge-active" title="Twilio credential">set</g) || []).length).toBe(4);
     // empty Twilio fields keep the secrets; an empty address / URL turns the channel off
     expect((await post(r.admin, "/settings/alerts", { ...GOOD, alert_email: "", alert_webhook_url: "" })).status).toBe(303);
-    expect(await secrets.get(env, "twilio_auth_token")).toBe("secret-tok");
+    expect(await secrets.get(env, r.ids.admin, "twilio_auth_token")).toBe("secret-tok");
     expect((await alertRows()).map((x) => x.key)).toEqual(["alert_offline_minutes", "alert_repeat_minutes"]);
     page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('<button type="submit" class="small" disabled>Send test email</button>');
     expect((await post(r.admin, "/settings/alerts/twilio/clear")).status).toBe(303);
-    expect(await secrets.names(env)).toEqual(new Set());
+    expect(await secrets.names(env, r.ids.admin)).toEqual(new Set());
     expect(await (await r.admin.get("/settings")).text()).not.toContain("Clear Twilio");
-    await query("DELETE FROM settings WHERE key LIKE 'alert_%'");
+    await query("DELETE FROM account_settings WHERE key LIKE 'alert_%'");
   });
 
   it("Send test: unknown channel 400; unconfigured channel -> failure banner; webhook success banner; audited", async () => {
@@ -381,7 +425,7 @@ describe("settings panel", () => {
     let page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('<div class="alert error" role="alert">Test alert failed: email: no alert email address set</div>');
     expect(await (await r.admin.get("/settings")).text()).not.toContain("Test alert failed"); // shown once
-    await query("INSERT INTO settings (key, value) VALUES ('alert_webhook_url', 'https://hooks.example.com/t')");
+    await setting(r.ids.admin, "alert_webhook_url", "https://hooks.example.com/t");
     const calls = stubFetch(200);
     res = await post(r.admin, "/settings/alerts/test", { channel: "webhook" });
     expect(res.headers.get("location")).toBe("/settings");
@@ -395,7 +439,7 @@ describe("settings panel", () => {
     page = await (await r.admin.get("/settings?test_error=" + encodeURIComponent("<b>x") + "&tested=webhook")).text();
     expect(page).not.toContain("Test alert failed");
     expect(page).not.toContain("alert sent");
-    await query("DELETE FROM settings WHERE key LIKE 'alert_%'");
+    await query("DELETE FROM account_settings WHERE key LIKE 'alert_%'");
   });
 });
 
@@ -406,7 +450,8 @@ describe("/alerts page + dashboard badge", () => {
     expect(page).toContain('href="/alerts" class="active"');
     expect(page).toContain("ALL CLEAR");
     expect(page).toContain("Nothing recovered yet.");
-    expect(page).not.toContain('href="/settings"'); // viewer: no settings hint
+    expect(page).toContain(' · channels on the <a href="/settings">Settings</a> page'); // the editor's own channels
+    expect(await (await r.viewer.get("/alerts")).text()).not.toContain('href="/settings"'); // a viewer has no Settings
     await query("INSERT INTO alerts (device_id, kind, opened_at, closed_at, notified_at) VALUES (?, 'offline', '2026-09-16 09:00:00', NULL, '2026-09-16 09:00:00')", lobby.id);
     await query("INSERT INTO alerts (device_id, kind, opened_at, closed_at, notified_at) VALUES (?, 'camera-error', '2026-09-15 09:00:00', '2026-09-15 10:30:00', '2026-09-15 10:30:00')", hall.id);
     page = await (await r.admin.get("/alerts")).text();

@@ -221,8 +221,9 @@ export function saveSetting(env, ownerId, key, value) {
 // GET /api/camera-config when the manifest's number differs from the one it applied, so the new
 // one must differ from anything it saw: past every value of its old account).
 export function cameraConfigBump(ownerId, atLeast = 0) {
-  return [`INSERT INTO account_settings (user_id, key, value) VALUES (?1, 'camera_config_version', CAST(?2 + 1 AS TEXT))
-      ON CONFLICT(user_id, key) DO UPDATE SET value = CAST(MAX(CAST(value AS INTEGER), ?2) + 1 AS TEXT)`, ownerId, atLeast];
+  // CAST(?2 AS INTEGER): D1 may bind a JS number as REAL, and "1.0" would not read back as a version.
+  return [`INSERT INTO account_settings (user_id, key, value) VALUES (?1, 'camera_config_version', CAST(CAST(?2 AS INTEGER) + 1 AS TEXT))
+      ON CONFLICT(user_id, key) DO UPDATE SET value = CAST(MAX(CAST(value AS INTEGER), CAST(?2 AS INTEGER)) + 1 AS TEXT)`, ownerId, atLeast];
 }
 
 // Any change to an account's Wyze login or camera pattern, or to the camera source or name of one

@@ -1,6 +1,7 @@
 // POST /api/enroll: key check (constant-time, throttled per ip), device_id/name validation,
 // create vs re-enroll (a NEW token, the old one stops, name updated), the per-hour cap on new
-// device ids, audit rows, no token in the audit log.
+// device ids, audit rows, no token in the audit log. The key is site-wide; the row it creates
+// has no owner, so it follows the site admin's settings and plays the site admin's content.
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -10,22 +11,24 @@ import { BASE, query, setupAdmin } from "./helpers.js";
 import { MAX_NEW_DEVICES_PER_HOUR } from "../src/api.js";
 import { audits, detail, group, playlist } from "./pages_common.js";
 
-let key;
+let key, adminId;
 
 const enroll = (body, headers = {}) => SELF.fetch(`${BASE}/api/enroll`, {
   method: "POST", body: typeof body === "string" ? body : JSON.stringify(body),
   headers: { "content-type": "application/json", ...headers },
 });
-const dev = (deviceId) => query("SELECT id, device_id, name, token, group_id, playlist_id FROM devices WHERE device_id = ?", deviceId).then((r) => r[0] ?? null);
+const dev = (deviceId) => query("SELECT id, device_id, name, token, group_id, playlist_id, owner_id FROM devices WHERE device_id = ?", deviceId).then((r) => r[0] ?? null);
+// The site admin's enrollment defaults (an ownerless projector follows the site admin).
 const setDefaults = (gid, pid) => env.DB.batch([
-  env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('enroll_group_id', ?)").bind(gid === null ? "" : String(gid)),
-  env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('enroll_playlist_id', ?)").bind(pid === null ? "" : String(pid)),
+  env.DB.prepare("INSERT OR REPLACE INTO account_settings (user_id, key, value) VALUES (?, 'enroll_group_id', ?)").bind(adminId, gid === null ? "" : String(gid)),
+  env.DB.prepare("INSERT OR REPLACE INTO account_settings (user_id, key, value) VALUES (?, 'enroll_playlist_id', ?)").bind(adminId, pid === null ? "" : String(pid)),
 ]);
 const clear = (ip = null) => auth.clearLoginFailures(env, ip, auth.ENROLL_KEY);
 
 beforeAll(async () => {
   await setupAdmin("admin", "test1234");
-  key = (await db.loadSettings(env)).enrollment_key; // generated on first read
+  adminId = (await query("SELECT id FROM users WHERE username = 'admin'"))[0].id;
+  key = await db.enrollmentKey(env); // generated on first read
 });
 
 describe("POST /api/enroll", () => {
@@ -39,6 +42,7 @@ describe("POST /api/enroll", () => {
     expect(body).toEqual({ device_id: "lobby-1", token: row.token, cms_url: BASE });
     expect(row.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(row.name).toBe("Lobby");
+    expect(row.owner_id).toBeNull(); // the site key gives no owner
     const [a] = await audits("device_enrolled");
     expect(a).toEqual({ username: null, target_type: "device", target_id: String(row.id), details: '{"device_id": "lobby-1", "name": "Lobby"}', ip: "10.1.1.1" });
     expect(await audits("device_reenrolled")).toEqual([]);
@@ -66,7 +70,8 @@ describe("POST /api/enroll", () => {
     expect((await bearer(first.token)).status).toBe(401);
     expect((await bearer(body.token)).status).toBe(200);
     // a rename can change the derived Wyze camera name, so the Pi must refetch its camera config
-    const ver = async () => parseInt((await query("SELECT value FROM settings WHERE key = 'camera_config_version'"))[0]?.value || "0", 10);
+    // (the version of its account: the site admin's for an ownerless projector)
+    const ver = async () => parseInt((await query("SELECT value FROM account_settings WHERE user_id = ? AND key = 'camera_config_version'", adminId))[0]?.value || "0", 10);
     const afterRename = await ver();
     expect(afterRename).toBeGreaterThan(0);
     expect((await query("SELECT COUNT(*) AS n FROM devices WHERE device_id = 'hall-2'"))[0].n).toBe(1);
@@ -169,11 +174,20 @@ describe("POST /api/enroll", () => {
     }
   });
 
-  it("applies the Settings group/playlist on first enrollment only; deleted rows count as none", async () => {
+  it("applies the site admin's Settings group/playlist on first enrollment only; deleted rows or another account's count as none", async () => {
     await query("DELETE FROM audit_log WHERE action LIKE 'device_%enrolled'");
-    const gid = await group("Enroll group");
-    const pid = await playlist("Enroll playlist");
+    const gid = await group("Enroll group", adminId);
+    const pid = await playlist("Enroll playlist", adminId);
+    // another account's group and playlist: never put on a projector of the site admin's
+    const edId = (await query("INSERT INTO users (username, password_hash, role) VALUES ('ed-enroll', 'x', 'editor') RETURNING id"))[0].id;
+    const foreignGroup = await group("Theirs", edId);
+    const foreignPlaylist = await playlist("Theirs", edId);
     try {
+      await setDefaults(foreignGroup, foreignPlaylist);
+      expect((await enroll({ key, device_id: "auto-x", name: "x" })).status).toBe(200);
+      expect(await dev("auto-x")).toMatchObject({ group_id: null, playlist_id: null });
+      await query("DELETE FROM account_settings WHERE key LIKE 'enroll_%_id'");
+
       // nothing configured (the default): no assignment
       expect((await enroll({ key, device_id: "auto-0", name: "x" })).status).toBe(200);
       expect(await dev("auto-0")).toMatchObject({ group_id: null, playlist_id: null });
@@ -208,9 +222,10 @@ describe("POST /api/enroll", () => {
       expect(await dev("auto-3")).toMatchObject({ group_id: null, playlist_id: null });
       expect((await audits("device_enrolled"))[0].details).toBe('{"device_id": "auto-3", "name": "x"}');
     } finally {
-      await query("DELETE FROM settings WHERE key LIKE 'enroll_%_id'");
+      await query("DELETE FROM account_settings WHERE key LIKE 'enroll_%_id'");
       await query("DELETE FROM device_groups WHERE id = ?", gid);
       await query("DELETE FROM playlists WHERE id = ?", pid);
+      await query("DELETE FROM users WHERE id = ?", edId);
     }
   });
 

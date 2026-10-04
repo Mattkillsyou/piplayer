@@ -2,14 +2,16 @@
 // when the tunnel / DNS / Access app already exist, error surfacing), the operator email
 // fallback, provisioning at enrollment and from the Devices page button, the manifest `tunnel`
 // block gated by the device bearer (never on a page), graceful degradation without the secrets
-// and the Settings status panel.
+// and the Settings status panel. Who a tunnel lets in is its projector's account's business
+// (migration 0016): the lobby projector is the editor's, so the editor's alert addresses are its
+// operators; a projector enrolled with the site key has no owner and follows the site admin.
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as cloudflare from "../src/cloudflare.js";
 import * as db from "../src/db.js";
 import { BASE, query } from "./helpers.js";
-import { audits, detail, device, one, post, roleMatrix, roles } from "./pages_common.js";
+import { audits, detail, device, one, post, roleMatrix, roles, setting } from "./pages_common.js";
 
 const CF = { CF_API_TOKEN: "cf-test-token", CF_ACCOUNT_ID: "acct1", CF_ZONE_ID: "zone1" };
 const API = cloudflare.API;
@@ -80,11 +82,15 @@ const enroll = (body) => SELF.fetch(`${BASE}/api/enroll`, { method: "POST", body
 let r;
 let lobby;
 let key;
+// An account's alert addresses (its tunnels' operators); null removes them.
+const operators = (owner, value) => (value === null
+  ? query("DELETE FROM account_settings WHERE user_id = ? AND key = 'alert_email'", owner)
+  : setting(owner, "alert_email", value));
 
 beforeAll(async () => {
   r = await roles();
   lobby = await device("lobby", "Lobby");
-  key = (await db.loadSettings(env)).enrollment_key;
+  key = await db.enrollmentKey(env);
 });
 
 afterEach(() => {
@@ -196,14 +202,19 @@ describe("cloudflare client", () => {
     await expect(cloudflare.provision(CF, "lobby", EMAILS)).rejects.toThrow("connect failed");
   });
 
-  it("operator emails: the alert addresses, else admin usernames that are addresses, else null", async () => {
-    expect(await cloudflare.operatorEmails(env, { alert_email: "a@x.org, b@y.org" })).toEqual(["a@x.org", "b@y.org"]);
-    expect(await cloudflare.operatorEmails(env, { alert_email: "" })).toBeNull(); // admin is "admin", ed / vw are not admins
+  it("operator emails: the account's alert addresses, else its email, else its username when that is an address, else null", async () => {
+    expect(await cloudflare.operatorEmails(env, { alert_email: "a@x.org, b@y.org" }, r.ids.admin)).toEqual(["a@x.org", "b@y.org"]);
+    expect(await cloudflare.operatorEmails(env, { alert_email: "" }, r.ids.admin)).toBeNull(); // "admin", no email on file
+    expect(await cloudflare.operatorEmails(env, { alert_email: "" }, null)).toBeNull();
     const uid = (await query("INSERT INTO users (username, password_hash, role) VALUES ('root@example.net', 'x', 'admin') RETURNING id"))[0].id;
     await query("INSERT INTO users (username, password_hash, role) VALUES ('ed@example.net', 'x', 'editor')");
     try {
-      expect(await cloudflare.operatorEmails(env, { alert_email: "" })).toEqual(["root@example.net"]);
-      expect(await cloudflare.operatorEmails(env, { alert_email: "a@x.org" })).toEqual(["a@x.org"]);
+      expect(await cloudflare.operatorEmails(env, { alert_email: "" }, uid)).toEqual(["root@example.net"]);
+      await query("UPDATE users SET email = 'root.mail@example.net' WHERE id = ?", uid);
+      expect(await cloudflare.operatorEmails(env, { alert_email: "" }, uid)).toEqual(["root.mail@example.net"]);
+      expect(await cloudflare.operatorEmails(env, { alert_email: "a@x.org" }, uid)).toEqual(["a@x.org"]);
+      // another account's address never stands in: the site admin "admin" still has none
+      expect(await cloudflare.operatorEmails(env, { alert_email: "" }, r.ids.admin)).toBeNull();
     } finally {
       await query("DELETE FROM users WHERE id = ? OR username = 'ed@example.net'", uid);
     }
@@ -213,7 +224,8 @@ describe("cloudflare client", () => {
 describe("provisioning", () => {
   it("enrollment provisions when configured (columns, live URL, audit) and succeeds without a tunnel on failure or when not configured", async () => {
     await query("DELETE FROM audit_log WHERE action LIKE 'device_tunnel_%'");
-    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net')");
+    // an enrolled projector has no owner: the site admin's operators let people in
+    await operators(r.ids.admin, "ops@example.net");
     // not configured: no API call, no tunnel, enrollment fine
     const fake = fakeCloudflare();
     expect((await enroll({ key, device_id: "e-none", name: "x" })).status).toBe(200);
@@ -244,18 +256,20 @@ describe("provisioning", () => {
     expect(await devRow((await one("SELECT id FROM devices WHERE device_id = 'e-fail'")).id)).toEqual({ tunnel_id: null, tunnel_hostname: null, camera_live_url: null });
     const [f] = await audits("device_tunnel_failed");
     expect(JSON.parse(f.details)).toEqual({ device_id: "e-fail", error: "Cloudflare API POST /accounts/.../cfd_tunnel: Authentication error" });
-    // no operator email known: refused before any API call
-    await query("DELETE FROM settings WHERE key = 'alert_email'");
+    // no operator email known: refused before any API call (the editor's addresses do not count)
+    await operators(r.ids.admin, null);
+    await operators(r.ids.editor, "ed-ops@example.net");
     fake.refuse = null;
     fake.calls.length = 0;
     expect((await enroll({ key, device_id: "e-mail", name: "x" })).status).toBe(200);
     expect(fake.calls.length).toBe(0);
     expect(JSON.parse((await audits("device_tunnel_failed"))[0].details).error).toMatch(/^no operator email known/);
+    await operators(r.ids.editor, null);
     await query("DELETE FROM devices WHERE device_id LIKE 'e-%'");
   });
 
   it("Create tunnel button (editor+): provisions, banners the hostname or the error, 400 when not configured", async () => {
-    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net')");
+    await operators(r.ids.editor, "ops@example.net"); // lobby is the editor's
     expect(await detail(await post(r.editor, `/devices/${lobby.id}/tunnel`), 400)).toBe("automatic tunnels are not configured (CF_API_TOKEN, CF_ACCOUNT_ID, CF_ZONE_ID not set)");
     configure();
     const fake = fakeCloudflare();
@@ -302,18 +316,19 @@ describe("provisioning", () => {
     expect((await post(r.editor, "/devices/999999/tunnel")).status).toBe(404);
     expect((await post(r.editor, "/devices/abc/tunnel")).status).toBe(400);
     await query("UPDATE devices SET tunnel_id = NULL, tunnel_hostname = NULL, camera_live_url = NULL WHERE id = ?", lobby.id);
-    await query("DELETE FROM settings WHERE key = 'alert_email'");
+    await operators(r.ids.editor, null);
   });
 
   it("New token on a device with a tunnel rotates the tunnel too; without one, or unconfigured, only the token changes (audit M8)", async () => {
-    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net')");
+    // the token is the projector's own account's to handle (here the editor's)
+    await operators(r.ids.editor, "ops@example.net");
     const hall = await device("hall-tok", "Hall <tok>");
     const token = () => one("SELECT token FROM devices WHERE id = ?", hall.id).then((x) => x.token);
     // not configured: the token changes, nothing is called, plain banner
-    let res = await post(r.admin, `/devices/${hall.id}/regen-token`);
+    let res = await post(r.editor, `/devices/${hall.id}/regen-token`);
     expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${hall.id}`]);
     expect(await token()).not.toBe(hall.token);
-    let page = await (await r.admin.get(`/devices?open=${hall.id}`)).text();
+    let page = await (await r.editor.get(`/devices?open=${hall.id}`)).text();
     expect(page).toContain('<div class="alert ok" role="alert">New token made for Hall &lt;tok&gt;: open Token / install and run the install command on the Pi again.</div>');
     expect(page).toContain(`data-confirm="Make a new token for Hall &lt;tok&gt;? The Pi stops syncing until you run the install command with the new token."`);
     configure();
@@ -321,47 +336,66 @@ describe("provisioning", () => {
     await post(r.editor, `/devices/${hall.id}/tunnel`);
     expect((await devRow(hall.id)).tunnel_id).toBe("tun-1");
     expect((await (await sync({ ...hall, token: await token() })).json()).tunnel.token).toBe("eyJ-token-for-tun-1");
-    page = await (await r.admin.get("/devices")).text();
+    page = await (await r.editor.get("/devices")).text();
     expect(page).toContain(`data-confirm="Make a new token for Hall &lt;tok&gt;? The Pi stops syncing until you run the install command with the new token; its camera tunnel is recreated too."`);
+    // an admin sees the projector but not its token, and cannot make a new one
+    expect(await (await r.admin.get("/devices")).text()).not.toContain(`action="/devices/${hall.id}/regen-token"`);
+    expect((await post(r.admin, `/devices/${hall.id}/regen-token`)).status).toBe(403);
     fake.calls.length = 0;
     const before = await token();
-    res = await post(r.admin, `/devices/${hall.id}/regen-token`);
+    res = await post(r.editor, `/devices/${hall.id}/regen-token`);
     expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${hall.id}`]);
     expect(await token()).not.toBe(before);
     expect(shapes(fake.calls).slice(0, 2)).toEqual(["DELETE /accounts/acct1/cfd_tunnel/tun-1/connections", "DELETE /accounts/acct1/cfd_tunnel/tun-1"]);
     expect((await devRow(hall.id)).tunnel_id).toBe("tun-5");
     expect((await (await sync({ ...hall, token: await token() })).json()).tunnel.token).toBe("eyJ-token-for-tun-5");
-    expect((await audits("device_tunnel_rotated"))[0]).toMatchObject({ username: "admin", target_id: String(hall.id) });
-    page = await (await r.admin.get(`/devices?open=${hall.id}`)).text();
+    expect((await audits("device_tunnel_rotated"))[0]).toMatchObject({ username: "ed", target_id: String(hall.id) });
+    page = await (await r.editor.get(`/devices?open=${hall.id}`)).text();
     expect(page).toContain('<div class="alert ok" role="alert">New token made for Hall &lt;tok&gt;: open Token / install and run the install command on the Pi again. Its camera tunnel was recreated too.</div>');
     // the API refusing: the token still changed, the banner says the tunnel did not
     fake.refuse = { key: "DELETE /accounts/acct1/cfd_tunnel/tun-5", message: "tunnel has active connections" };
     const mid = await token();
-    res = await post(r.admin, `/devices/${hall.id}/regen-token`);
+    res = await post(r.editor, `/devices/${hall.id}/regen-token`);
     expect(res.status).toBe(303);
     expect(await token()).not.toBe(mid);
-    page = await (await r.admin.get(`/devices?open=${hall.id}`)).text();
+    page = await (await r.editor.get(`/devices?open=${hall.id}`)).text();
     expect(page).toContain('<div class="alert error" role="alert">New token made for Hall &lt;tok&gt;: open Token / install and run the install command on the Pi again. The camera tunnel could not be recreated: Cloudflare API DELETE /accounts/.../cfd_tunnel/tun-5: tunnel has active connections. Click Recreate tunnel on the Devices page to try again.</div>');
     expect((await devRow(hall.id)).tunnel_id).toBe("tun-5");
-    expect((await audits("device_tunnel_failed"))[0]).toMatchObject({ username: "admin", target_id: String(hall.id) });
+    expect((await audits("device_tunnel_failed"))[0]).toMatchObject({ username: "ed", target_id: String(hall.id) });
     await query("DELETE FROM devices WHERE id = ?", hall.id);
-    await query("DELETE FROM settings WHERE key = 'alert_email'");
+    await operators(r.ids.editor, null);
+  });
+
+  it("handing a tunnelled projector to another account gives its Access policy to the new account's operators", async () => {
+    await operators(r.ids.editor, "ed-ops@example.net");
+    await operators(r.ids.admin, "admin-ops@example.net");
+    configure();
+    const fake = fakeCloudflare();
+    const desk = await device("desk-tun", "Desk");
+    expect((await post(r.editor, `/devices/${desk.id}/tunnel`)).status).toBe(303);
+    const app = fake.state.apps.find((a) => a.domain === "desk-tun-cam.photogen5000.com");
+    expect(fake.state.policies[app.id][0].include).toEqual([{ email: { email: "ed-ops@example.net" } }]);
+    expect((await post(r.admin, `/devices/${desk.id}/owner`, { owner_id: String(r.ids.admin) })).status).toBe(303);
+    expect(fake.state.policies[app.id][0].include).toEqual([{ email: { email: "admin-ops@example.net" } }]);
+    await query("DELETE FROM devices WHERE id = ?", desk.id);
+    await operators(r.ids.editor, null);
+    await operators(r.ids.admin, null);
   });
 });
 
 describe("operator list changes and token rotation", () => {
   // The route ctx shape the stage-2 callers (Settings / Users / Devices) hand these helpers.
-  const ctx = () => ({ env, user: { id: 1, username: "admin" }, settings: () => db.loadSettings(env) });
+  const ctx = () => ({ env, user: { id: 1, username: "admin" }, settings: () => db.loadSettings(env, 1) });
 
-  it("syncAccess rewrites the policy of every device with a tunnel; no-op without secrets, emails or tunnels; the API refusing is the reason", async () => {
+  it("syncAccess rewrites the policy of every device with a tunnel to its account's list; no-op without secrets, emails or tunnels; the API refusing is the reason", async () => {
     await query("DELETE FROM audit_log WHERE action = 'camera_access_updated'");
     await query("UPDATE devices SET tunnel_id = NULL, tunnel_hostname = NULL, camera_live_url = NULL WHERE id = ?", lobby.id);
     const fake = fakeCloudflare();
     expect(await cloudflare.syncAccess(ctx())).toBeNull(); // not configured
     configure();
-    await query("DELETE FROM settings WHERE key = 'alert_email'");
+    await operators(r.ids.editor, null);
     expect(await cloudflare.syncAccess(ctx())).toBeNull(); // no operator email known
-    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net, matt@example.net')");
+    await operators(r.ids.editor, "ops@example.net, matt@example.net");
     expect(await cloudflare.syncAccess(ctx())).toBeNull(); // no device has a tunnel
     expect(fake.calls.length).toBe(0);
     expect((await audits("camera_access_updated")).length).toBe(0);
@@ -370,8 +404,12 @@ describe("operator list changes and token rotation", () => {
     const hall = await device("hall", "Hall");
     await query("UPDATE devices SET tunnel_id = 'tun-1' WHERE id = ?", lobby.id);
     await query("UPDATE devices SET tunnel_id = 'tun-5' WHERE id = ?", hall.id);
-    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'new@example.net')");
+    await operators(r.ids.editor, "new@example.net");
+    // the admin's own list is another account's: it changes nothing here
+    await operators(r.ids.admin, "admin-ops@example.net");
     fake.calls.length = 0;
+    expect(await cloudflare.syncAccess(ctx(), r.ids.admin)).toBeNull(); // the admin has no tunnelled projector
+    expect(fake.calls.length).toBe(0);
     expect(await cloudflare.syncAccess(ctx())).toBeNull();
     // only the Access app + policy per device: nothing about tunnels or DNS
     expect(shapes(fake.calls)).toEqual([
@@ -383,17 +421,19 @@ describe("operator list changes and token rotation", () => {
     expect(fake.state.policies["app-7"][0].include).toEqual(want);
     const [a] = await audits("camera_access_updated");
     expect(a).toMatchObject({ target_type: "settings", target_id: "operators", details: '{"devices": 2, "emails": 1}' });
+    expect(await one("SELECT owner_id FROM audit_log WHERE action = 'camera_access_updated'")).toEqual({ owner_id: r.ids.editor });
     // a refusal comes back as the reason, nothing audited for it
     fake.refuse = { key: "PUT /accounts/acct1/access/apps/app-3/policies/pol-4", message: "policy is locked" };
     expect(await cloudflare.syncAccess(ctx())).toBe("Cloudflare API PUT /accounts/.../access/apps/app-3/policies/pol-4: policy is locked");
     expect((await audits("camera_access_updated")).length).toBe(1);
     await query("DELETE FROM devices WHERE id = ?", hall.id);
     await query("UPDATE devices SET tunnel_id = NULL WHERE id = ?", lobby.id);
-    await query("DELETE FROM settings WHERE key = 'alert_email'");
+    await operators(r.ids.editor, null);
+    await operators(r.ids.admin, null);
   });
 
   it("rotateTunnel deletes the old tunnel (connections first) and provisions a new one with a new token; a tunnel already gone is fine", async () => {
-    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net')");
+    await operators(r.ids.editor, "ops@example.net");
     await query("UPDATE devices SET tunnel_id = NULL, tunnel_hostname = NULL, camera_live_url = NULL WHERE id = ?", lobby.id);
     const fake = fakeCloudflare();
     const row = () => one("SELECT id, device_id, tunnel_id FROM devices WHERE id = ?", lobby.id);
@@ -426,7 +466,7 @@ describe("operator list changes and token rotation", () => {
     await expect(cloudflare.rotateTunnel(ctx(), await row())).rejects.toThrow("Cloudflare API DELETE /accounts/.../cfd_tunnel/tun-5: tunnel has active connections");
     expect((await devRow(lobby.id)).tunnel_id).toBe("tun-5");
     await query("UPDATE devices SET tunnel_id = NULL, tunnel_hostname = NULL, camera_live_url = NULL WHERE id = ?", lobby.id);
-    await query("DELETE FROM settings WHERE key = 'alert_email'");
+    await operators(r.ids.editor, null);
   });
 });
 
@@ -448,7 +488,7 @@ describe("manifest tunnel block", () => {
     expect(m.tunnel.token).toBe("eyJ-token-for-tun-9");
     expect(fake.calls.length).toBe(2);
     expect((await query("SELECT * FROM devices WHERE id = ?", lobby.id))[0]).not.toMatchObject({ token: expect.stringContaining("eyJ") });
-    expect(JSON.stringify(await query("SELECT * FROM devices")) + JSON.stringify(await query("SELECT * FROM settings"))).not.toContain("eyJ-token");
+    expect(JSON.stringify(await query("SELECT * FROM devices")) + JSON.stringify(await query("SELECT * FROM settings")) + JSON.stringify(await query("SELECT * FROM account_settings"))).not.toContain("eyJ-token");
     // no tunnel on this device
     expect((await (await sync(hall)).json()).tunnel).toBeNull();
     // the API down: sync still answers, tunnel null (the player keeps its token file)
@@ -492,26 +532,34 @@ describe("manifest tunnel block", () => {
 });
 
 describe("settings panel", () => {
-  it("shows not configured with the missing secret names, configured otherwise, and the operator emails", async () => {
+  it("shows not configured (with the missing secret names to admins), configured otherwise, and the account's own operators and tunnels", async () => {
     let page = await (await r.admin.get("/settings")).text();
     expect(page).toContain("Camera tunnels (Cloudflare) <span class=\"badge badge-muted\">not configured</span>");
     expect(page).toContain("Missing: <code>CF_API_TOKEN</code>, <code>CF_ACCOUNT_ID</code>, <code>CF_ZONE_ID</code>");
     expect(page).toContain('<span class="badge badge-stale">none</span> (set the alert email addresses above)');
     expect(page).toContain("Devices with a tunnel: 0.");
+    // the worker secrets are the site's: an editor sees the status, not which secret is missing
+    page = await (await r.editor.get("/settings")).text();
+    expect(page).toContain("Camera tunnels (Cloudflare) <span class=\"badge badge-muted\">not configured</span>");
+    expect(page).not.toContain("Missing:");
     env.CF_API_TOKEN = "x";
     page = await (await r.admin.get("/settings")).text();
     expect(page).toContain("Missing: <code>CF_ACCOUNT_ID</code>, <code>CF_ZONE_ID</code>");
     configure();
-    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net, <b>@x.y')");
-    page = await (await r.admin.get("/settings")).text();
+    await operators(r.ids.editor, "ops@example.net, <b>@x.y");
+    page = await (await r.editor.get("/settings")).text();
     // a junk address list is not one (loadSettings drops it) -> fallback wins; the escape is checked with a valid one below
     expect(page).toContain("Camera tunnels (Cloudflare) <span class=\"badge badge-active\">configured</span>");
     expect(page).not.toContain("Missing:");
-    await query("INSERT OR REPLACE INTO settings (key, value) VALUES ('alert_email', 'ops@example.net, matt@example.net')");
+    await operators(r.ids.editor, "ops@example.net, matt@example.net");
     await query("UPDATE devices SET tunnel_id = 't' WHERE id = ?", lobby.id);
-    page = await (await r.admin.get("/settings")).text();
+    page = await (await r.editor.get("/settings")).text();
     expect(page).toContain("Operators: <code>ops@example.net</code>, <code>matt@example.net</code>. Devices with a tunnel: 1.");
-    await query("DELETE FROM settings WHERE key = 'alert_email'");
+    // the admin's panel: their own operators (none) and their own tunnels (the lobby is the editor's)
+    page = await (await r.admin.get("/settings")).text();
+    expect(page).toContain('<span class="badge badge-stale">none</span> (set the alert email addresses above). Devices with a tunnel: 0.');
+    expect(page).not.toContain("matt@example.net");
+    await operators(r.ids.editor, null);
     await query("UPDATE devices SET tunnel_id = NULL WHERE id = ?", lobby.id);
   });
 });
