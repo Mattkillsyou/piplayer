@@ -1,7 +1,8 @@
 // Cross-cutting security checks: cookie flags, session invalidation, throttle, XSS escaping on
 // every page, docs routes 404, device API auth, media scoping + Range, screenshot JPEG rule,
 // command delivery cap, settings timezone effects, audit ordering/limit, contract-10 sweep.
-// Mirrors the black-box groups in e2e/run_e2e.py inside workerd.
+// Mirrors the black-box groups in e2e/run_e2e.py inside workerd. The fixtures are the editor's
+// (migration 0016: every account its own library, playlists and settings).
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -132,7 +133,7 @@ describe("xss (contract 9)", () => {
     expect((await post(a, "/groups", { name: XSS + "grp" })).status).toBe(303);
     expect((await post(a, "/users", { username: XSS + "usr", password: "pw123456", role: "viewer" })).status).toBe(400); // the username rule
     await ins("INSERT INTO users (username, password_hash, role) VALUES (?, 'x', 'viewer')", XSS + "usr"); // a row from before the rule
-    await media(XSS + "media.png", "image", { filename: "xss.png" });
+    await media(XSS + "media.png", "image", { filename: "xss.png", owner: r.ids.admin }); // the admin's own library
     const xdev = await one("SELECT id, device_id, token FROM devices WHERE device_id = 'xss-dev'");
     expect((await post(a, `/devices/${xdev.id}/schedule`, { name: XSS + "rule", playlist_id: String(xpid), priority: "1" })).status).toBe(303);
     expect((await api(`/api/sync/${xdev.device_id}?sync_error=${encodeURIComponent("<b>" + XSS)}`, { headers: bearer(xdev.token) })).status).toBe(200);
@@ -179,13 +180,15 @@ describe("device api auth", () => {
 });
 
 describe("media scoping and Range (contracts 6, 15)", () => {
-  it("session or in-playlist device only; safe filenames; nosniff; 206/416; HEAD", async () => {
+  it("own-library session or in-playlist device only; safe filenames; nosniff; 206/416; HEAD", async () => {
     expect((await api("/api/media/sec-a.mp4")).status).toBe(401);
     expect((await api("/api/media/sec-a.mp4", { headers: bearer("nope") })).status).toBe(401);
     expect((await r.admin.get("/api/media/..%2Fx")).status).toBe(400);
     expect((await r.admin.get("/api/media/a%20b.mp4")).status).toBe(400);
     expect((await r.admin.get("/api/media/missing.mp4")).status).toBe(404);
-    const full = await r.viewer.get("/api/media/sec-a.mp4");
+    // the file is the editor's: any other session, an admin's too, gets the missing-file 404
+    for (const c of [r.viewer, r.admin]) expect(await detail(await c.get("/api/media/sec-a.mp4"), 404)).toBe("Not Found");
+    const full = await r.editor.get("/api/media/sec-a.mp4");
     expect(full.status).toBe(200);
     expect(full.headers.get("content-type")).toMatch(/^video\/mp4/);
     expect(full.headers.get("accept-ranges")).toBe("bytes");
@@ -212,7 +215,7 @@ describe("media scoping and Range (contracts 6, 15)", () => {
     // scoping follows the schedule resolver
     const pidB = await playlist("sec-b");
     await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0)", pidB, mB);
-    expect((await post(r.admin, `/devices/${dev.id}/schedule`, { name: "b-now", playlist_id: String(pidB), priority: "50" })).status).toBe(303);
+    expect((await post(r.editor, `/devices/${dev.id}/schedule`, { name: "b-now", playlist_id: String(pidB), priority: "50" })).status).toBe(303);
     expect((await sync(dev).then((x) => x.json())).playlist.source).toBe("schedule:b-now");
     expect((await api("/api/media/sec-b.png", { headers: bearer(dev.token) })).status).toBe(200);
     expect((await api("/api/media/sec-a.mp4", { headers: bearer(dev.token) })).status).toBe(403);
@@ -280,9 +283,9 @@ describe("commands", () => {
   });
 });
 
-describe("settings: site timezone", () => {
-  it("drives server_time, displayed timestamps and schedule evaluation", async () => {
-    const a = r.admin;
+describe("settings: the account's timezone", () => {
+  it("drives server_time, displayed timestamps and schedule evaluation of the account's projectors", async () => {
+    const a = r.editor; // the projectors' account
     expect((await settings(a, { timezone: "Not/AZone" })).status).toBe(400);
     expect((await settings(a, { screenshot_interval: "abc" })).status).toBe(400);
     expect((await settings(a, { default_image_duration: "0" })).status).toBe(400);
@@ -304,7 +307,11 @@ describe("settings: site timezone", () => {
     await env.DB.prepare("DELETE FROM device_schedules WHERE name = 'tz'").run();
     expect((await settings(a, {})).status).toBe(303);
     expect((await query("SELECT action FROM audit_log WHERE action = 'settings_update'")).length).toBeGreaterThan(0);
-    expect((await settings(r.editor, {})).status).toBe(403);
+    expect((await settings(r.viewer, {})).status).toBe(403);
+    // another account's zone never moves these projectors
+    expect((await settings(r.admin, { timezone: "Asia/Tokyo" })).status).toBe(303);
+    expect((await (await sync(dev)).json()).server_time).toMatch(/\+00:00$/);
+    expect((await settings(r.admin, {})).status).toBe(303);
   });
 });
 

@@ -1,8 +1,10 @@
 // /devices/:id/schedule: page (zone, matches_now, describe), create with contract-10
-// validation (HH:MM normalised, start != end, ISO dates, priority range, 404s), delete.
+// validation (HH:MM normalised, start != end, ISO dates, priority range, 404s), delete. A
+// projector's rules use its own account's playlists and zone (migration 0016); an admin reads
+// another account's schedule but does not change it.
 import { beforeAll, describe, expect, it } from "vitest";
 import { Client, query } from "./helpers.js";
-import { audits, detail, device, ins, NOPE, one, playlist, post, roleMatrix, roles, XSS } from "./pages_common.js";
+import { audits, detail, device, ins, NOPE, one, playlist, post, roleMatrix, roles, setting, XSS } from "./pages_common.js";
 
 let r;
 const w = {};
@@ -33,22 +35,25 @@ describe("role matrix", () => {
 describe("page", () => {
   it("names the zone, escapes names, shows summary + matches_now, viewer has no forms", async () => {
     await query("DELETE FROM device_schedules");
-    const always = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, days_of_week) VALUES (?, ?, ?, 5, '0123456')", w.dev.id, w.pid, XSS + "r");
-    const never = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, start_date, end_date) VALUES (?, ?, 'past', 1, '2000-01-01', '2000-01-02')", w.dev.id, w.pid);
+    // the viewer's own projector and playlist for the read-only checks
+    const vdev = await device("sched-v", "Sched <dev>", { owner_id: r.ids.viewer });
+    const vpid = await playlist("Morning", r.ids.viewer); // names are per account: the editor has one too
+    const vbase = `/devices/${vdev.id}/schedule`;
+    await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, days_of_week) VALUES (?, ?, ?, 5, '0123456')", vdev.id, vpid, XSS + "r");
+    await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, start_date, end_date) VALUES (?, ?, 'past', 1, '2000-01-01', '2000-01-02')", vdev.id, vpid);
     // a second always-matching rule at lower priority: it matches, but only the top one plays (L19)
-    const shadowed = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, days_of_week) VALUES (?, ?, 'all day', 0, '0123456')", w.dev.id, w.pid);
-    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, w.dev.id); // the viewer's projector for the read-only checks
-    let page = await (await r.viewer.get(base())).text();
+    const shadowed = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, days_of_week) VALUES (?, ?, 'all day', 0, '0123456')", vdev.id, vpid);
+    let page = await (await r.viewer.get(vbase)).text();
     expect(page.match(/active now/g)).toHaveLength(1);
     expect(page.match(/class="rule-active"/g)).toHaveLength(1);
     expect(page).toContain('<span class="badge badge-muted">matches, but a higher-priority rule is playing</span>');
     expect(page).toContain("Rules (3)");
     await query("DELETE FROM device_schedules WHERE id = ?", shadowed);
-    page = await (await r.viewer.get(base())).text();
+    page = await (await r.viewer.get(vbase)).text();
     expect(page).toContain("<h1>Sched &lt;dev&gt;</h1>");
-    expect(page).toContain('<span class="eyebrow">Schedule · sched-1</span>');
+    expect(page).toContain('<span class="eyebrow">Schedule · sched-v</span>');
     expect(page).toContain("(zone UTC)");
-    expect(page).toMatch(/<strong>site time \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC<\/strong>/);
+    expect(page).toMatch(/<strong>local time \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC<\/strong>/);
     expect(page).toContain("Rules (2)");
     expect(page).not.toContain(XSS);
     expect(page).toContain("x&#39;);alert(1);//r");
@@ -59,28 +64,50 @@ describe("page", () => {
     expect(page).toContain('<span class="badge badge-muted">waiting</span>');
     expect(page).not.toContain("Add rule");
     expect(page).not.toContain("data-confirm");
-    // /settings is admin-only, so only admins get the link
+    // a viewer cannot open Settings, so no link: the note says how its zone could change
     expect(page).not.toContain('href="/settings"');
-    expect(page).toContain("ask an administrator to change the site timezone");
-    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.editor, w.dev.id);
+    expect(page).toContain("this account can only view: an admin can make it an editor, which can change the timezone on the Settings page.");
+    await query("DELETE FROM devices WHERE id = ?", vdev.id);
+
+    // the editor's own projector: forms, delete buttons, its own playlists, the Settings link
+    const always = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority, days_of_week) VALUES (?, ?, ?, 5, '0123456')", w.dev.id, w.pid, XSS + "r");
     page = await (await r.editor.get(base())).text();
-    expect(page).not.toContain('href="/settings"');
-    page = await (await r.admin.get(base())).text();
-    expect(page).toContain('<a href="/settings">Settings</a>');
-    page = await (await r.editor.get(base())).text();
+    expect(page).toContain('change the timezone on the <a href="/settings">Settings</a> page.');
     expect(page).toContain('data-confirm="Delete rule x&#39;);alert(1);//r?"');
     expect(page).toContain(`action="${base()}/${always}/delete"`);
     expect(page).toContain("Add rule");
     expect(page).toContain('name="days_of_week_chk" value="6"');
     expect(page).toContain(`<option value="${w.pid}">Morning</option>`);
+    expect(page).not.toContain(`<option value="${vpid}">`); // another account's playlist never offered
     expect(page).not.toContain("onsubmit");
     expect(page).not.toContain("belongs to the day it starts on");
-    // the site timezone shows up in the zone name
-    await query("INSERT INTO settings (key, value) VALUES ('timezone', 'Europe/Berlin')");
+    // the admin reads it (another account's projector): no forms, its account changes the zone
+    page = await (await r.admin.get(base())).text();
+    expect(page).toContain("Rules (1)");
+    expect(page).not.toContain("Add rule");
+    expect(page).not.toContain(`action="${base()}/${always}/delete"`);
+    expect(page).toContain("its own account changes the timezone on its Settings page.");
+    // the projector's account's zone drives the page, whoever reads it
+    await setting(r.ids.editor, "timezone", "Europe/Berlin");
     page = await (await r.editor.get(base())).text();
     expect(page).toMatch(/\(zone (CET|CEST|GMT\+[12])\)/);
-    await query("DELETE FROM settings");
-    void never;
+    page = await (await r.admin.get(base())).text();
+    expect(page).toMatch(/\(zone (CET|CEST|GMT\+[12])\)/);
+    await query("DELETE FROM account_settings WHERE key = 'timezone'");
+    await query("DELETE FROM device_schedules");
+  });
+
+  it("the admin cannot add or delete rules on another account's projector; nobody uses another account's playlist", async () => {
+    const sid = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'keep', 1)", w.dev.id, w.pid);
+    const adminPl = await playlist("Admin rules", r.ids.admin);
+    const OTHER = "This projector belongs to another account: only that account can change what it plays or see its token. Hand it over with the Owner select first if it should be yours.";
+    expect(await detail(await post(r.admin, base(), { name: "x", playlist_id: String(adminPl) }), 403)).toBe(OTHER);
+    expect(await detail(await post(r.admin, `${base()}/${sid}/delete`), 403)).toBe(OTHER);
+    expect(await one("SELECT id FROM device_schedules WHERE id = ?", sid)).toEqual({ id: sid });
+    // the editor naming the admin's playlist gets the 404 of a missing one
+    expect(await detail(await rule({ playlist_id: String(adminPl) }), 404)).toBe("Playlist not found");
+    expect((await query("SELECT COUNT(*) AS n FROM device_schedules"))[0].n).toBe(1);
+    await query("DELETE FROM device_schedules");
   });
 });
 

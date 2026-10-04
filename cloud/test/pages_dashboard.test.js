@@ -2,7 +2,7 @@
 // actions for editor+), wall filters and the audit tail.
 import { beforeAll, describe, expect, it } from "vitest";
 import { query } from "./helpers.js";
-import { device, group, ins, media, playlist, roleMatrix, roles, XSS } from "./pages_common.js";
+import { device, group, ins, media, playlist, roleMatrix, roles, setting, XSS } from "./pages_common.js";
 
 let r;
 
@@ -145,14 +145,17 @@ describe("dashboard", () => {
     await query("DELETE FROM audit_log");
     let page = await (await r.editor.get("/dashboard")).text();
     expect(page).toContain('<li class="empty-line">no activity yet</li>');
-    // 11 rows with a username plus two without one (device sync, cron): only people show
+    // 11 rows about the editor's account with a username plus two without one (device sync, cron):
+    // only people show; a row about another account never does
     for (let i = 0; i < 11; i++) {
-      await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at) VALUES (NULL, ?, ?, 'device', ?, '10.0.0.9', ?)",
-        "ed<b>", `act_${i}`, String(i), `2021-03-04 05:${String(i).padStart(2, "0")}:00`);
+      await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at, owner_id) VALUES (NULL, ?, ?, 'device', ?, '10.0.0.9', ?, ?)",
+        "ed<b>", `act_${i}`, String(i), `2021-03-04 05:${String(i).padStart(2, "0")}:00`, r.ids.editor);
     }
-    await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at) VALUES (NULL, NULL, 'device_sync', 'device', '99', '10.0.0.9', '2021-03-04 05:20:00')");
+    await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at, owner_id) VALUES (NULL, NULL, 'device_sync', 'device', '99', '10.0.0.9', '2021-03-04 05:20:00', ?)", r.ids.editor);
     await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at) VALUES (NULL, NULL, 'housekeeping', NULL, NULL, NULL, '2021-03-04 05:21:00')");
+    await ins("INSERT INTO audit_log (user_id, username, action, target_type, target_id, ip, created_at, owner_id) VALUES (NULL, 'vw', 'their_act', 'device', '7', '10.0.0.9', '2021-03-04 05:30:00', ?)", r.ids.viewer);
     page = await (await r.editor.get("/dashboard")).text();
+    expect(page).not.toContain("their_act");
     expect(page).not.toContain("no activity yet");
     expect((page.match(/<span class="log-t">/g) || []).length).toBe(8);
     expect(page).not.toContain("device_sync");
@@ -165,13 +168,13 @@ describe("dashboard", () => {
     expect(page).toContain('<h2>Audit tail (people) · <a href="/audit">full log</a></h2>');
   });
 
-  it("timestamps follow the site timezone setting", async () => {
-    await query("INSERT INTO settings (key, value) VALUES ('timezone', 'America/Los_Angeles') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+  it("timestamps follow the account's timezone setting", async () => {
+    await setting(r.ids.editor, "timezone", "America/Los_Angeles");
     const page = await (await r.editor.get("/dashboard")).text();
     expect(page).toContain("d ago · 2019-12-31 16:00 PST</span>");
     expect(page).toContain('title="2019-12-31 16:00 PST"');
     expect(page).toContain('<span class="log-t">2021-03-03 21:09</span>');
     expect(page).toMatch(/server \d{4}-\d{2}-\d{2} \d{2}:\d{2} P[DS]T · P[DS]T<\/span>/);
-    await query("DELETE FROM settings WHERE key = 'timezone'");
+    await query("DELETE FROM account_settings WHERE key = 'timezone'");
   });
 });

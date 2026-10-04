@@ -1,6 +1,8 @@
-// /settings (admin only): timezone validated via Intl, screenshot interval >= 15, camera
-// interval >= 5, default image duration, player update policy (git ref, off|nightly, HH:MM-HH:MM
-// window), saved to the settings table, audit settings_update, effects on other pages + manifest.
+// /settings (editors and admins, each their own account's, migration 0016): timezone validated
+// via Intl, screenshot interval >= 15, camera interval >= 5, default image duration, player
+// update policy (git ref, off|nightly, HH:MM-HH:MM window), saved to account_settings, audit
+// settings_update, effects on the account's own pages + its projectors' manifests; the site-wide
+// enrollment key for admins only.
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { query } from "./helpers.js";
@@ -12,30 +14,34 @@ const GOOD = { timezone: "America/Los_Angeles", screenshot_interval: "120", came
 const UPDATE_ROWS = [{ key: "auto_update", value: "off" }, { key: "auto_update_window", value: "03:00-05:00" }, { key: "player_release", value: "main" }];
 const withUpdate = (rows) => [...rows, ...UPDATE_ROWS].sort((a, b) => (a.key < b.key ? -1 : 1));
 const UPDATE_AUDIT = { player_release: "main", auto_update: "off", auto_update_window: "03:00-05:00" };
-// The enrollment key is generated on first read, so it is always present, and migration 0010 seeds
-// default_playlist_id (test/default_playlist.test.js covers it); keep both out of the diffs.
-const settings = () => query("SELECT key, value FROM settings WHERE key NOT IN ('enrollment_key', 'default_playlist_id') ORDER BY key");
-const enrollmentKey = () => query("SELECT value FROM settings WHERE key = 'enrollment_key'").then((r) => r[0]?.value);
+// An account's own rows, without its Default playlist (test/default_playlist.test.js covers it).
+const settings = (owner = r.ids.admin) => query("SELECT key, value FROM account_settings WHERE user_id = ? AND key != 'default_playlist_id' ORDER BY key", owner);
+const reset = (owner = r.ids.admin) => query("DELETE FROM account_settings WHERE user_id = ? AND key != 'default_playlist_id'", owner);
+const setRow = (key, value, owner = r.ids.admin) => query("UPDATE account_settings SET value = ? WHERE user_id = ? AND key = ?", value, owner, key);
+const enrollmentKey = () => query("SELECT value FROM settings WHERE key = 'enrollment_key'").then((x) => x[0]?.value);
+const sync = (d) => SELF.fetch(`http://piplayer.test/api/sync/${d.device_id}`, { headers: { authorization: `Bearer ${d.token}` } });
 
 beforeAll(async () => {
   r = await roles();
 });
 
 describe("settings", () => {
-  it("admin only", async () => {
-    await roleMatrix(r, "GET", "/settings", { minRole: "admin" });
-    await roleMatrix(r, "POST", "/settings", { minRole: "admin", fields: GOOD });
-    expect(await settings()).toEqual(withUpdate([
+  it("editors and admins, each saving their own account only", async () => {
+    await roleMatrix(r, "GET", "/settings", { minRole: "editor" });
+    await roleMatrix(r, "POST", "/settings", { minRole: "editor", fields: GOOD }); // the editor saves
+    expect(await settings(r.ids.editor)).toEqual(withUpdate([
       { key: "camera_interval", value: "20" },
       { key: "default_image_duration", value: "7.5" },
       { key: "screenshot_interval", value: "120" },
       { key: "timezone", value: "America/Los_Angeles" },
     ]));
-    await query("DELETE FROM settings");
+    expect(await settings(r.ids.admin)).toEqual([]); // the admin's are untouched
+    expect(await (await r.admin.get("/settings")).text()).toContain('<option value="UTC" selected>UTC</option>');
+    await reset(r.ids.editor);
   });
 
   it("page shows the current values (env defaults) and a real timezone dropdown", async () => {
-    await r.admin.get("/settings"); // consumes the one-shot notice left by the save above
+    await r.editor.get("/settings"); // consumes the one-shot notice left by the save above
     const page = await (await r.admin.get("/settings")).text();
     // a <select> grouped by region, not a text box whose suggestions only match what is typed
     expect(page).toContain('<select name="timezone" required>');
@@ -54,6 +60,7 @@ describe("settings", () => {
     expect(page).toContain('pattern="([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]"');
     expect(page).toContain('<option value="Europe/London">');
     expect(page).toContain('href="/settings" class="active"');
+    expect(page).toContain("<h2>Account settings</h2>");
     expect(page).not.toContain("Settings saved.");
   });
 
@@ -95,7 +102,7 @@ describe("settings", () => {
     expect(await audits("settings_update")).toEqual([]);
   });
 
-  it("saves, audits, redirects with the saved banner, and the zone drives other pages + manifest", async () => {
+  it("saves, audits, redirects with the saved banner, and the zone drives the account's pages + its projectors' manifests", async () => {
     const res = await post(r.admin, "/settings", { ...GOOD, timezone: " Europe/Berlin " });
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/settings");
@@ -108,8 +115,9 @@ describe("settings", () => {
     ]));
     const [a] = await audits("settings_update");
     expect(a.username).toBe("admin");
+    const adminDefault = Number((await query("SELECT value FROM account_settings WHERE user_id = ? AND key = 'default_playlist_id'", r.ids.admin))[0].value);
     expect(JSON.parse(a.details)).toEqual({ timezone: "Europe/Berlin", screenshot_interval: 120, camera_interval: 20, default_image_duration: 7.5,
-      enroll_group_id: null, enroll_playlist_id: null, default_playlist_id: null, ...UPDATE_AUDIT }); // null: the "admin only" save above wiped the settings table
+      enroll_group_id: null, enroll_playlist_id: null, default_playlist_id: adminDefault, ...UPDATE_AUDIT });
     const page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('<div class="alert ok" role="alert">Settings saved.</div>');
     // one-shot: the next load, and a forged query string, show nothing
@@ -119,41 +127,51 @@ describe("settings", () => {
     expect(page).toContain('name="camera_interval" value="20"');
     expect(page).toContain('name="default_image_duration" value="7.5"');
 
-    // other pages: zone name, image duration hint, stale threshold (3 x 120 s), manifest interval
-    const dev = await device("set-dev", "Set dev", { last_screenshot_at: "2020-06-01 12:00:00", last_seen_at: "2020-06-01 12:00:00" });
+    // the admin's pages and projector: zone name, stale threshold (3 x 120 s), manifest intervals
+    const dev = await device("set-dev", "Set dev", { owner_id: r.ids.admin, last_screenshot_at: "2020-06-01 12:00:00", last_seen_at: "2020-06-01 12:00:00" });
     const audit = await (await r.admin.get("/audit")).text();
     expect(audit).toMatch(/times in (CET|CEST|GMT\+[12])/);
     const dash = await (await r.admin.get("/dashboard")).text();
     expect(dash).toMatch(/2020-06-01 14:00 (CEST|GMT\+2)/);
-    const sync = await SELF.fetch(`http://piplayer.test/api/sync/${dev.device_id}`, { headers: { authorization: `Bearer ${dev.token}` } });
-    if (sync.status === 200) {
-      const body = await sync.json();
-      expect(body.screenshot_interval_seconds).toBe(120);
-      expect(body.camera_interval_seconds).toBe(20);
-      expect(body.server_time).toMatch(/\+0[12]:00$/);
-    }
+    const body = await (await sync(dev)).json();
+    expect(body.screenshot_interval_seconds).toBe(120);
+    expect(body.camera_interval_seconds).toBe(20);
+    expect(body.server_time).toMatch(/\+0[12]:00$/);
+    // another account's pages and projectors keep their own (the defaults)
+    expect(await (await r.editor.get("/audit")).text()).toMatch(/times in UTC/);
+    const edDev = await device("set-ed", "Set ed");
+    const edBody = await (await sync(edDev)).json();
+    expect([edBody.screenshot_interval_seconds, edBody.camera_interval_seconds]).toEqual([60, 10]);
+    expect(edBody.server_time).toMatch(/\+00:00$/);
     // a fresh screenshot within 3 x 120 s is not stale
     await query("UPDATE devices SET last_screenshot_at = datetime('now', '-200 seconds') WHERE id = ?", dev.id);
     expect(await (await r.admin.get("/devices")).text()).not.toContain(">stale<");
     await query("UPDATE devices SET last_screenshot_at = datetime('now', '-400 seconds') WHERE id = ?", dev.id);
     expect(await (await r.admin.get("/devices")).text()).toContain(">stale<");
-    await query("DELETE FROM settings");
+    await query("DELETE FROM devices WHERE id IN (?, ?)", dev.id, edDev.id);
+    await reset();
   });
 
-  it("enrollment defaults: selects list groups/playlists, unknown ids are 400, none deletes the row, deleted rows show as none", async () => {
-    await query("DELETE FROM settings");
-    const gid = await group("Lobby screens");
-    const pid = await playlist("Welcome loop");
+  it("enrollment defaults: the selects list the account's own groups/playlists, any other id is 400, none deletes the row, deleted rows show as none", async () => {
+    await reset();
+    const gid = await group("Lobby screens", r.ids.admin);
+    const pid = await playlist("Welcome loop", r.ids.admin);
+    const edGroup = await group("Editor screens"); // the editor's: not the admin's to pick
+    const edPlaylist = await playlist("Editor loop");
     let page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('<select name="enroll_group_id">');
     expect(page).toContain('<select name="enroll_playlist_id">');
     expect(page).toContain(`<option value="${gid}">Lobby screens</option>`);
     expect(page).toContain(`<option value="${pid}">Welcome loop</option>`);
+    expect(page).not.toContain("Editor screens");
+    expect(page).not.toContain("Editor loop");
 
     for (const [fields, msg] of [
       [{ ...GOOD, enroll_group_id: "999999" }, "Pick a group from the list"],
+      [{ ...GOOD, enroll_group_id: String(edGroup) }, "Pick a group from the list"],
       [{ ...GOOD, enroll_group_id: "abc" }, "New devices join group must be a whole number"],
       [{ ...GOOD, enroll_playlist_id: "999999" }, "Pick a playlist from the list"],
+      [{ ...GOOD, enroll_playlist_id: String(edPlaylist) }, "Pick a playlist from the list"],
       [{ ...GOOD, enroll_playlist_id: "1.5" }, "New devices get playlist must be a whole number"],
     ]) {
       expect(await detail(await post(r.admin, "/settings", fields), 400), JSON.stringify(fields)).toContain(msg);
@@ -178,12 +196,13 @@ describe("settings", () => {
     // saving with none removes the rows
     expect((await post(r.admin, "/settings", { ...GOOD, enroll_group_id: "", enroll_playlist_id: "" })).status).toBe(303);
     expect((await settings()).filter((x) => x.key.startsWith("enroll_"))).toEqual([]);
-    await query("DELETE FROM device_groups WHERE id = ?", gid);
-    await query("DELETE FROM settings");
+    await query("DELETE FROM device_groups WHERE id IN (?, ?)", gid, edGroup);
+    await query("DELETE FROM playlists WHERE id = ?", edPlaylist);
+    await reset();
   });
 
-  it("player updates: git ref / mode / window saved, shown selected, carried by the manifest; omitted fields keep their value", async () => {
-    await query("DELETE FROM settings");
+  it("player updates: git ref / mode / window saved, shown selected, carried by the account's manifests; omitted fields keep their value", async () => {
+    await reset();
     let res = await post(r.admin, "/settings", { ...GOOD, player_release: " v2.1.0 ", auto_update: "nightly", auto_update_window: "22:30-01:15" });
     expect(res.status).toBe(303);
     expect((await settings()).filter((x) => x.key in UPDATE_AUDIT)).toEqual([
@@ -194,11 +213,16 @@ describe("settings", () => {
     expect(page).toContain('name="player_release" value="v2.1.0"');
     expect(page).toContain('<option value="nightly" selected>nightly</option>');
     expect(page).toContain('name="auto_update_window" value="22:30-01:15"');
-    // the player sees the policy on its next sync
-    const dev = await device("upd-dev", "Upd dev");
-    const sync = await SELF.fetch(`http://piplayer.test/api/sync/${dev.device_id}`, { headers: { authorization: `Bearer ${dev.token}` } });
-    expect(sync.status).toBe(200);
-    expect((await sync.json()).update).toEqual({ release: "v2.1.0", auto: "nightly", window: "22:30-01:15" });
+    // the admin's player sees the policy on its next sync; the editor's keeps the defaults
+    const dev = await device("upd-dev", "Upd dev", { owner_id: r.ids.admin });
+    const s = await sync(dev);
+    expect(s.status).toBe(200);
+    expect((await s.json()).update).toEqual({ release: "v2.1.0", auto: "nightly", window: "22:30-01:15" });
+    const edDev = await device("upd-ed", "Upd ed");
+    expect((await (await sync(edDev)).json()).update).toEqual({ release: "main", auto: "off", window: "03:00-05:00" });
+    // an ownerless projector follows the site admin (here the admin)
+    const loose = await device("upd-loose", "Upd loose", { owner_id: null });
+    expect((await (await sync(loose)).json()).update).toEqual({ release: "v2.1.0", auto: "nightly", window: "22:30-01:15" });
     // a save without the update fields (older form) keeps them
     res = await post(r.admin, "/settings", GOOD);
     expect(res.status).toBe(303);
@@ -208,15 +232,16 @@ describe("settings", () => {
       expect((await post(r.admin, "/settings", { ...GOOD, player_release: ref })).status, ref).toBe(303);
     }
     // a junk stored value falls back to the default rather than reaching the player
-    await query("UPDATE settings SET value = '-rf' WHERE key = 'player_release'");
-    await query("UPDATE settings SET value = 'x' WHERE key = 'auto_update_window'");
-    const m = await (await SELF.fetch(`http://piplayer.test/api/sync/${dev.device_id}`, { headers: { authorization: `Bearer ${dev.token}` } })).json();
+    await setRow("player_release", "-rf");
+    await setRow("auto_update_window", "x");
+    const m = await (await sync(dev)).json();
     expect(m.update).toEqual({ release: "main", auto: "nightly", window: "03:00-05:00" });
-    await query("DELETE FROM settings");
+    await query("DELETE FROM devices WHERE id IN (?, ?, ?)", dev.id, edDev.id, loose.id);
+    await reset();
   });
 
-  it("enrollment key: generated on first read, shown to admins, rotated with audit", async () => {
-    await query("DELETE FROM settings");
+  it("enrollment key: site-wide, generated on first read, shown to admins only, rotated with audit", async () => {
+    await reset();
     await query("DELETE FROM audit_log WHERE action = 'enrollment_key_rotated'");
     const page = await (await r.admin.get("/settings")).text();
     const key = await enrollmentKey();
@@ -225,6 +250,11 @@ describe("settings", () => {
     expect(page).toContain('data-reveal="enrollment-key">Show</button>');
     expect(page).toContain('action="/settings/enrollment/rotate"');
     expect(page).toContain("data-confirm=");
+    // an editor's own Settings has no enrollment key: it can enroll any device id
+    const ed = await (await r.editor.get("/settings")).text();
+    expect(ed).not.toContain(key);
+    expect(ed).not.toContain("enrollment-key");
+    expect(ed).not.toContain("/settings/enrollment/rotate");
     // stable across reads
     await (await r.admin.get("/dashboard")).text();
     expect(await enrollmentKey()).toBe(key);
@@ -249,7 +279,7 @@ describe("settings", () => {
 // E: projector lead / idle minutes (manifest projector.want for auto-mode devices).
 describe("projector power settings", () => {
   it("shows the 3 / 10 defaults, validates, saves and audits only when posted, drives the manifest want", async () => {
-    await query("DELETE FROM settings");
+    await reset();
     let page = await (await r.admin.get("/settings")).text();
     expect(page).toContain('name="projector_lead_minutes" value="3"');
     expect(page).toContain('name="projector_idle_minutes" value="10"');
@@ -270,24 +300,24 @@ describe("projector power settings", () => {
     expect(res.status).toBe(303);
     expect((await settings()).filter((x) => x.key.startsWith("projector_")).map((x) => x.value)).toEqual(["0", "15"]);
     expect(JSON.parse((await audits("settings_update"))[0].details)).not.toHaveProperty("projector_lead_minutes");
-    // an auto-mode device with a rule starting in 10 min wants on with a 15 min lead (site zone: LA)
-    const dev = await device("proj-set", "Proj set", { projector_control: "cec", projector_power_mode: "auto" });
+    // an auto-mode projector of the admin's with a rule starting in 10 min wants on with a 15 min lead (zone: LA)
+    const dev = await device("proj-set", "Proj set", { owner_id: r.ids.admin, projector_control: "cec", projector_power_mode: "auto" });
     const start = new Date(Date.now() + 10 * 60000);
     const fmt = new Intl.DateTimeFormat("en-GB", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     const hhmm = fmt.format(start);
     const end = fmt.format(new Date(start.getTime() + 20 * 60000));
     if (hhmm < end) { // not across midnight, where a wrap window would need a different assertion
-      await query("INSERT INTO device_schedules (device_id, playlist_id, name, priority, start_time, end_time) VALUES (?, ?, 'soon', 1, ?, ?)", dev.id, await playlist("Soon PL"), hhmm, end);
-      const sync = () => SELF.fetch(`http://piplayer.test/api/sync/${dev.device_id}`, { headers: { authorization: `Bearer ${dev.token}` } }).then((x) => x.json());
-      expect((await sync()).projector).toEqual({ control: "cec", mode: "auto", want: "on", codes: {}, broadlink_host: null });
-      await query("UPDATE settings SET value = '5' WHERE key = 'projector_lead_minutes'");
-      expect((await sync()).projector.want).toBe("off");
+      await query("INSERT INTO device_schedules (device_id, playlist_id, name, priority, start_time, end_time) VALUES (?, ?, 'soon', 1, ?, ?)", dev.id, await playlist("Soon PL", r.ids.admin), hhmm, end);
+      const want = () => sync(dev).then((x) => x.json());
+      expect((await want()).projector).toEqual({ control: "cec", mode: "auto", want: "on", codes: {}, broadlink_host: null });
+      await setRow("projector_lead_minutes", "5");
+      expect((await want()).projector.want).toBe("off");
       // a junk stored value falls back to the default (3)
-      await query("UPDATE settings SET value = 'soon' WHERE key = 'projector_lead_minutes'");
-      expect((await sync()).projector.want).toBe("off");
+      await setRow("projector_lead_minutes", "soon");
+      expect((await want()).projector.want).toBe("off");
       expect(await (await r.admin.get("/settings")).text()).toContain('name="projector_lead_minutes" value="3"');
       await query("DELETE FROM device_schedules WHERE device_id = ?", dev.id);
     }
-    await query("DELETE FROM settings");
+    await reset();
   });
 });

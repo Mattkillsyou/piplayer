@@ -1,10 +1,12 @@
-// Audit fixes on the Devices page (package pages-devices): device tokens admin-only (H3, in
-// pages_devices / roles_csrf), one queued row per command with a banner (M15, M18), flash
+// Audit fixes on the Devices page (package pages-devices): device tokens for the projector's own
+// account only (H3, in pages_devices / roles_csrf), one queued row per command with a banner (M15, M18), flash
 // notices for token / delete (M18, L24), camera_supported = 0 never gets the Wyze login (L3)
 // and shows a way to clear a stored override (L20), RTSP URLs encrypted at rest (L8), a
 // 120-char name cap and rename in place (L14, L22), a player result cannot fake the
 // undeliverable badge (L16), "player down" instead of MPV-DOWN (L28), no docs link (L41),
-// Settings links only for admins (H6) and a delete that survives R2 trouble (L10 sibling).
+// Settings links for those who can open their Settings (H6; editors and admins since migration
+// 0016) and a delete that survives R2 trouble (L10 sibling). The projectors here are the editor's,
+// so the camera config, the Wyze login and camera_config_version are the editor's account's.
 // The tunnel rotation on New token / Recreate tunnel (M8) is in tunnel.test.js, next to the fake.
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createExecutionContext, SELF } from "cloudflare:test";
@@ -18,7 +20,7 @@ import { audits, detail, device, NOPE, one, post, roleMatrix, roles } from "./pa
 let r;
 const bearer = (d) => ({ authorization: `Bearer ${d.token}` });
 const config = (d) => SELF.fetch(`${BASE}/api/camera-config/${d.device_id}`, { headers: bearer(d) }).then((x) => x.json());
-const version = async () => Number((await one("SELECT value FROM settings WHERE key = 'camera_config_version'"))?.value ?? 0);
+const version = async () => Number((await one("SELECT value FROM account_settings WHERE user_id = ? AND key = 'camera_config_version'", r.ids.editor))?.value ?? 0);
 const banner = async (c, kind) => {
   const page = await (await c.get("/devices")).text();
   const m = new RegExp(`<div class="alert ${kind}" role="alert">([^<]*)</div>`).exec(page);
@@ -91,15 +93,15 @@ describe("M15 / M18: per-device commands", () => {
 describe("M18: New token and Delete acknowledge", () => {
   it("New token banners, lands with that device's Token / install open; delete banners the name", async () => {
     const dev = await device("ack-1", "Ack <dev>");
-    const res = await post(r.admin, `/devices/${dev.id}/regen-token`);
+    const res = await post(r.editor, `/devices/${dev.id}/regen-token`);
     expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${dev.id}`]);
-    const page = await (await r.admin.get(`/devices?open=${dev.id}`)).text();
+    const page = await (await r.editor.get(`/devices?open=${dev.id}`)).text();
     expect(page).toContain('<div class="alert ok" role="alert">New token made for Ack &lt;dev&gt;: open Token / install and run the install command on the Pi again.</div>');
     const i = page.indexOf(`action="/devices/${dev.id}/regen-token"`);
     expect(page.lastIndexOf("<details open>", i)).toBeGreaterThan(page.lastIndexOf("<details>", i));
     // only that device's block opens; a junk ?open= opens none
     expect(page.match(/<details open>/g)).toHaveLength(1);
-    expect(await (await r.admin.get("/devices?open=abc")).text()).not.toContain("<details open>");
+    expect(await (await r.editor.get("/devices?open=abc")).text()).not.toContain("<details open>");
     const del = await post(r.editor, `/devices/${dev.id}/delete`);
     expect([del.status, del.headers.get("location")]).toEqual([303, "/devices"]);
     expect(await banner(r.editor, "ok")).toBe("Device Ack &lt;dev&gt; deleted.");
@@ -124,7 +126,7 @@ describe("M18: New token and Delete acknowledge", () => {
 
 describe("L3 / L20: camera_supported = 0", () => {
   it("the API answers none even with a Wyze account and a stored wyze override; the page offers to clear the override", async () => {
-    for (const [k, v] of Object.entries({ wyze_email: "ops@example.com", wyze_password: "hunter2!" })) await secrets.set(env, k, v);
+    for (const [k, v] of Object.entries({ wyze_email: "ops@example.com", wyze_password: "hunter2!" })) await secrets.set(env, r.ids.editor, k, v);
     const dev = await device("zero-1", "Zero");
     await query("UPDATE devices SET camera_supported = 0, camera_source = 'wyze', camera_wyze_name = 'Front door', camera_live_url = 'https://cam.example/', tunnel_hostname = 'zero-1-cam.example' WHERE id = ?", dev.id);
     expect(await config(dev)).toEqual({ source: "none", version: await version() });
@@ -146,7 +148,7 @@ describe("L3 / L20: camera_supported = 0", () => {
     await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, dev.id);
     expect(block(await (await r.viewer.get("/devices")).text())).toContain('<button type="submit" class="small" disabled>Clear camera setting</button>');
     await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.editor, dev.id);
-    // clearing goes back to the site default, after which nothing is offered
+    // clearing goes back to the account default, after which nothing is offered
     expect((await post(r.editor, `/devices/${dev.id}/camera-source`, { camera_source: "" })).status).toBe(303);
     expect(await one("SELECT camera_source, camera_wyze_name FROM devices WHERE id = ?", dev.id)).toEqual({ camera_source: null, camera_wyze_name: null });
     b = block(await (await r.editor.get("/devices")).text());
@@ -156,7 +158,7 @@ describe("L3 / L20: camera_supported = 0", () => {
     // a supported board with the same account gets wyze
     await query("UPDATE devices SET camera_supported = 1 WHERE id = ?", dev.id);
     expect((await config(dev)).source).toBe("wyze");
-    for (const k of ["wyze_email", "wyze_password"]) await secrets.set(env, k, "");
+    for (const k of ["wyze_email", "wyze_password"]) await secrets.set(env, r.ids.editor, k, "");
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 });
@@ -232,7 +234,7 @@ describe("L16: the undeliverable badge is the console's, never the player's", ()
 });
 
 describe("L28 / L41 / H6: wording and links", () => {
-  it("mpv-down reads 'player down' on both pages (class unchanged); no docs path; Settings is a link only for admins", async () => {
+  it("mpv-down reads 'player down' on both pages (class unchanged); no docs path; Settings is a link for editors and admins only", async () => {
     const now = new Date().toISOString().slice(0, 19).replace("T", " ");
     const dev = await device("down-1", "Down", { last_seen_at: now, player_status: "mpv-down", current_filename: "clip.mp4" });
     for (const path of ["/devices", "/dashboard"]) {
@@ -244,12 +246,19 @@ describe("L28 / L41 / H6: wording and links", () => {
     expect(ed).toContain('<span class="now-file">#1 clip.mp4 · player down</span>');
     expect(ed).not.toContain("docs/camera.md");
     expect(ed).not.toContain("Snapshots come from the Pi on their own.");
-    expect(ed).not.toContain('href="/settings"');
-    expect(ed).toContain("No Wyze account set (Settings).</p>");
-    expect(ed).toContain("Automatic tunnels are not configured (Settings): paste a live URL above.");
+    // an editor opens its own Settings
+    expect(ed).toContain('No Wyze account set (<a href="/settings">Settings</a>).</p>');
+    expect(ed).toContain('Automatic tunnels are not configured (<a href="/settings">Settings</a>): paste a live URL above.');
+    // a viewer cannot: the page names it without a link
+    const mine = await device("down-v", "Down viewer", { owner_id: r.ids.viewer });
+    const vw = await (await r.viewer.get("/devices")).text();
+    expect(vw).not.toContain('href="/settings"');
+    expect(vw).toContain("No Wyze account set (Settings).</p>");
+    expect(vw).toContain("Automatic tunnels are not configured (Settings): paste a live URL above.");
+    // the admin looking at the editor's projector: its account's login, not the admin's Settings
     const ad = await (await r.admin.get("/devices")).text();
-    expect(ad).toContain('No Wyze account set (<a href="/settings">Settings</a>).</p>');
+    expect(ad).toContain('<p class="help small">Its account has no Wyze login set.</p>');
     expect(ad).toContain('Automatic tunnels are not configured (<a href="/settings">Settings</a>): paste a live URL above.');
-    await query("DELETE FROM devices WHERE id = ?", dev.id);
+    await query("DELETE FROM devices WHERE id IN (?, ?)", dev.id, mine.id);
   });
 });

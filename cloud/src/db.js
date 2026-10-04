@@ -155,12 +155,13 @@ export async function loadSettingsFor(env, ownerIds) {
   const ids = [...new Set(ownerIds.filter((id) => id !== null && id !== undefined))];
   const out = new Map(ids.map((id) => [id, defaultSettings(env)]));
   if (!ids.length) return out;
-  const valid = "(a.key != 'default_playlist_id' OR a.value IN (SELECT CAST(p.id AS TEXT) FROM playlists p WHERE p.owner_id = a.user_id))";
-  // One account: only its rows. Several: every account's rows in one unbound statement (an IN
-  // list would hit D1's bound-parameter limit), kept for the accounts asked about.
-  const rows = ids.length === 1
-    ? await all(env, `SELECT a.user_id, a.key, a.value FROM account_settings a WHERE a.user_id = ? AND ${valid}`, ids[0])
-    : await all(env, `SELECT a.user_id, a.key, a.value FROM account_settings a WHERE ${valid}`);
+  // The ids go in as one JSON parameter: an IN (?, ?, ...) list would hit D1's bound-parameter
+  // limit on a large fleet page.
+  const rows = await all(env,
+    `SELECT a.user_id, a.key, a.value FROM account_settings a
+      WHERE a.user_id IN (SELECT value FROM json_each(?))
+        AND (a.key != 'default_playlist_id' OR a.value IN (SELECT CAST(p.id AS TEXT) FROM playlists p WHERE p.owner_id = a.user_id))`,
+    JSON.stringify(ids));
   for (const row of rows) {
     const s = out.get(row.user_id);
     if (s) applySetting(s, row);

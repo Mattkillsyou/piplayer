@@ -1,13 +1,15 @@
 // Plain-English validation: a bad value typed into a form comes back on the HTML error page as
 // a sentence that names the field by its on-page label, never by its form name. Plus the
 // Settings warning for a stored timezone that is no longer accepted, and the daily cron that
-// encrypts RTSP URLs stored in the clear before the encrypted column existed.
+// encrypts RTSP URLs stored in the clear before the encrypted column existed. The fixtures are
+// the editor's, so each form is sent by the account that owns what it changes (the admin for the
+// Users page).
 import { beforeAll, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import * as db from "../src/db.js";
 import * as devices from "../src/pages/devices.js";
 import { query } from "./helpers.js";
-import { device, media, one, playlist, post, roles } from "./pages_common.js";
+import { device, media, one, playlist, post, roles, setting } from "./pages_common.js";
 
 let r, dev, pid, mid;
 
@@ -20,6 +22,7 @@ beforeAll(async () => {
 
 // A browser form post: the error page instead of the JSON detail.
 const html = (c, path, fields) => c.post(path, fields, { "X-CSRF-Token": c.token, accept: "text/html" }).then(async (res) => [res.status, await res.text()]);
+const sender = (path) => (path.startsWith("/users") ? r.admin : r.editor);
 
 const SETTINGS = { timezone: "UTC", screenshot_interval: "60", camera_interval: "10", default_image_duration: "10" };
 const ALERTS = { alert_offline_minutes: "10", alert_repeat_minutes: "60" };
@@ -62,15 +65,15 @@ describe("validation messages read as sentences on the error page", () => {
   it.each(cases)("%s %j", async (path, fields, sentence) => {
     const p = path.replace("DEV", `/devices/${dev.id}`).replace("PL", `/playlists/${pid}`);
     const f = Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, v === "PID" ? String(pid) : v]));
-    const [status, page] = await html(r.admin, p, f);
+    const [status, page] = await html(sender(p), p, f);
     expect(status, sentence).toBe(400);
     expect(page).toContain("Something went wrong");
     expect(page).toContain(sentence);
   });
 
   it("adding the same file twice says so in a sentence", async () => {
-    expect((await post(r.admin, `/playlists/${pid}/items`, { media_id: String(mid) })).status).toBe(303);
-    const [status, page] = await html(r.admin, `/playlists/${pid}/items`, { media_id: String(mid) });
+    expect((await post(r.editor, `/playlists/${pid}/items`, { media_id: String(mid) })).status).toBe(303);
+    const [status, page] = await html(r.editor, `/playlists/${pid}/items`, { media_id: String(mid) });
     expect(status).toBe(409);
     expect(page).toContain("That file is already in this playlist");
   });
@@ -79,7 +82,7 @@ describe("validation messages read as sentences on the error page", () => {
     for (const [path, fields] of cases) {
       const p = path.replace("DEV", `/devices/${dev.id}`).replace("PL", `/playlists/${pid}`);
       const f = Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, v === "PID" ? String(pid) : v]));
-      const [, page] = await html(r.admin, p, f);
+      const [, page] = await html(sender(p), p, f);
       const m = /<div class="alert error" role="alert">([^<]*)<\/div>/.exec(page);
       expect(m, p).not.toBeNull();
       expect(m[1], p).not.toMatch(/\b[a-z]+_[a-z_]+\b/);
@@ -89,11 +92,12 @@ describe("validation messages read as sentences on the error page", () => {
 
 describe("Settings warns when the stored timezone is no longer accepted", () => {
   it("shows the offending value with UTC in use, gone after a real zone is saved", async () => {
-    await query("INSERT INTO settings (key, value) VALUES ('timezone', 'EST') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-    let page = await (await r.admin.get("/settings")).text();
+    await setting(r.ids.editor, "timezone", "EST");
+    let page = await (await r.editor.get("/settings")).text();
     expect(page).toContain('The saved timezone &quot;EST&quot; is no longer accepted, so times are shown in UTC. Pick a timezone from the list and save.');
-    expect((await post(r.admin, "/settings", { ...SETTINGS, timezone: "Europe/London" })).status).toBe(303);
-    page = await (await r.admin.get("/settings")).text();
+    expect(await (await r.admin.get("/settings")).text()).not.toContain("is no longer accepted"); // another account's zone
+    expect((await post(r.editor, "/settings", { ...SETTINGS, timezone: "Europe/London" })).status).toBe(303);
+    page = await (await r.editor.get("/settings")).text();
     expect(page).not.toContain("is no longer accepted");
     expect(page).toContain('<option value="Europe/London" selected>Europe/London</option>');
   });
@@ -107,7 +111,7 @@ describe("devices.housekeeping encrypts RTSP URLs stored in the clear", () => {
     const row = await one("SELECT * FROM devices WHERE id = ?", d.id);
     expect(row.camera_rtsp_url).toMatch(/^v1:/);
     expect(row.camera_rtsp_url).not.toContain("pw@");
-    expect(await devices.cameraConfig(env, row, await db.loadSettings(env))).toMatchObject({ source: "rtsp", rtsp_url: url });
+    expect(await devices.cameraConfig(env, row, await db.loadSettings(env, r.ids.editor))).toMatchObject({ source: "rtsp", rtsp_url: url });
     expect(await devices.housekeeping(env)).toBe(0);
     expect((await one("SELECT camera_rtsp_url AS u FROM devices WHERE id = ?", d.id)).u).toBe(row.camera_rtsp_url);
   });

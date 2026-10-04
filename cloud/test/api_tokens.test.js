@@ -1,7 +1,8 @@
-// Operator API tokens (feature B): create/revoke on /settings (admin, own tokens only, plaintext
-// shown once, only the SHA-256 hash stored), the same for any admin/editor on /users, and
-// GET /api/operator/enrollment with a p5k_ bearer: payload shape, 401 cases, last_used_at +
-// api_token_used audit at most once per hour.
+// Operator API tokens (feature B): create/revoke on /settings (editors and admins, own tokens
+// only, plaintext shown once, only the SHA-256 hash stored), the same for any admin/editor on
+// /users, and GET /api/operator/enrollment with a p5k_ bearer: payload shape (the token holder's
+// own groups, playlists and zone), 401 cases, last_used_at + api_token_used audit at most once
+// per hour.
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -31,9 +32,15 @@ beforeAll(async () => {
 });
 
 describe("/settings API tokens", () => {
-  it("admin only", async () => {
-    await roleMatrix(r, "POST", "/settings/tokens", { minRole: "admin", fields: { name: "m" }, ok: 200 });
-    await roleMatrix(r, "POST", `/settings/tokens/${NOPE}/revoke`, { minRole: "admin", ok: 404 });
+  it("editors and admins, each their own", async () => {
+    await roleMatrix(r, "POST", "/settings/tokens", { minRole: "editor", fields: { name: "m" }, ok: 200 });
+    await roleMatrix(r, "POST", `/settings/tokens/${NOPE}/revoke`, { minRole: "editor", ok: 404 });
+    // the editor's token is the editor's: listed on its own Settings, not on the admin's
+    const [t] = await tokens();
+    expect(t.user_id).toBe(r.ids.editor);
+    expect(await (await r.editor.get("/settings")).text()).toContain(`action="/settings/tokens/${t.id}/revoke"`);
+    expect(await (await r.admin.get("/settings")).text()).not.toContain(`action="/settings/tokens/${t.id}/revoke"`);
+    expect(await detail(await post(r.admin, `/settings/tokens/${t.id}/revoke`), 404)).toBe("token not found");
     await query("DELETE FROM api_tokens");
   });
 
@@ -117,9 +124,9 @@ describe("/users API tokens (admin issues tokens for other users)", () => {
     expect(page).not.toContain(token);
     expect(page).not.toContain(row.token_hash);
     expect(page).toContain(`action="/users/${ed.id}/tokens/${row.id}/revoke"`);
-    // the token is the editor's, not the admin's: /settings does not list it
+    // the token is the editor's, not the admin's: the admin's /settings does not list it, the editor's does
     expect(await (await r.admin.get("/settings")).text()).not.toContain("editor laptop");
-    expect(await (await r.editor.get("/settings")).status).toBe(403);
+    expect(await (await r.editor.get("/settings")).text()).toContain("editor laptop");
   });
 
   it("400 for a viewer target (no create form on the page), 404 for an unknown user, name validation", async () => {
@@ -175,24 +182,26 @@ describe("GET /api/operator/enrollment", () => {
     expect(await audits("api_token_used")).toEqual([]);
   });
 
-  it("returns the live enrollment key, groups, playlists, timezone and wyze_configured:false", async () => {
-    await query("DELETE FROM settings WHERE key = 'timezone'");
-    await db.saveSetting(env, "timezone", "Europe/Berlin");
-    const gid = await group("Lobby group");
-    const pid = await playlist("Lobby loop");
+  it("returns the live enrollment key and the admin's own groups, playlists, timezone and wyze_configured:false", async () => {
+    await db.saveSetting(env, r.ids.admin, "timezone", "Europe/Berlin");
+    await db.saveSetting(env, r.ids.editor, "timezone", "Asia/Tokyo"); // another account's: never in the answer
+    const gid = await group("Lobby group", r.ids.admin);
+    const pid = await playlist("Lobby loop", r.ids.admin);
+    await group("Editor group");
+    await playlist("Editor loop");
     const token = await create(r.admin, "flasher");
     const res = await fetchEnrollment(bearer(token));
     expect(res.status).toBe(200);
     const body = await res.json();
-    const key = (await db.loadSettings(env)).enrollment_key;
+    const key = await db.enrollmentKey(env);
     expect(body).toEqual({
       console_url: BASE, enrollment_key: key, timezone: "Europe/Berlin", wyze_configured: false,
-      groups: [{ id: gid, name: "Lobby group" }], playlists: [{ id: 1, name: "Default" }, { id: pid, name: "Lobby loop" }], // migration 0010 seeds Default
+      groups: [{ id: gid, name: "Lobby group" }], playlists: [{ id: 1, name: "Default" }, { id: pid, name: "Lobby loop" }], // migration 0010's Default, adopted at /setup
     });
     // rotating the key is reflected on the next call (the flasher never caches it)
     await post(r.admin, "/settings/enrollment/rotate");
     expect((await (await fetchEnrollment(bearer(token))).json()).enrollment_key).not.toBe(key);
-    await query("DELETE FROM settings WHERE key = 'timezone'");
+    await query("DELETE FROM account_settings WHERE key = 'timezone'");
   });
 
   it("stamps last_used_at and audits api_token_used at most once per hour per token", async () => {

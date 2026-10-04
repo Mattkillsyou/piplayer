@@ -1,7 +1,8 @@
-// Audit fixes on the Settings and Users pages: the alert addresses drive the camera Access
-// policy on every device (H4, M21), legacy zone abbreviations are refused (H5), the username cap
-// (H1) and form attributes (H6), the last-admin guard survives two admins colliding (M16), and
-// no banner is ever driven by the query string (L24).
+// Audit fixes on the Settings and Users pages: an account's alert addresses drive the camera
+// Access policy on that account's projectors (H4, M21; per account since migration 0016), legacy
+// zone abbreviations are refused (H5), the username cap (H1) and form attributes (H6), the
+// last-admin guard survives two admins colliding (M16), and no banner is ever driven by the query
+// string (L24).
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -52,46 +53,57 @@ beforeAll(async () => {
 afterEach(async () => {
   vi.unstubAllGlobals();
   configure(false);
-  await query("DELETE FROM settings WHERE key LIKE 'alert_%'");
+  await query("DELETE FROM account_settings WHERE key LIKE 'alert_%'");
+  await query("UPDATE users SET email = NULL");
 });
 
-describe("H4 + M21: the alert addresses are the camera operator list", () => {
-  it("saving a changed address list rewrites every device's Access policy; an unchanged list makes no call", async () => {
+describe("H4 + M21: an account's alert addresses are the camera operator list of its projectors", () => {
+  it("saving a changed address list rewrites the Access policy of the account's projectors; an unchanged list makes no call", async () => {
     configure();
     const fake = fakeAccess();
-    expect((await post(r.admin, "/settings/alerts", { ...GOOD, alert_email: "owner@example.net, leaver@example.net" })).status).toBe(303);
+    // the lobby projector is the editor's: the editor's Settings decide who may open its camera
+    expect((await post(r.editor, "/settings/alerts", { ...GOOD, alert_email: "owner@example.net, leaver@example.net" })).status).toBe(303);
     expect(fake.puts).toEqual([["owner@example.net", "leaver@example.net"]]);
     // the leaver goes: the policy follows on save, no Recreate tunnel loop needed
-    expect((await post(r.admin, "/settings/alerts", { ...GOOD, alert_email: "owner@example.net" })).status).toBe(303);
+    expect((await post(r.editor, "/settings/alerts", { ...GOOD, alert_email: "owner@example.net" })).status).toBe(303);
     expect(fake.puts).toEqual([["owner@example.net", "leaver@example.net"], ["owner@example.net"]]);
-    expect(await (await r.admin.get("/settings")).text()).toContain('<div class="alert ok" role="alert">Settings saved.</div>');
-    expect((await audits("camera_access_updated"))[0]).toMatchObject({ username: "admin", details: '{"devices": 1, "emails": 1}' });
+    expect(await (await r.editor.get("/settings")).text()).toContain('<div class="alert ok" role="alert">Settings saved.</div>');
+    expect((await audits("camera_access_updated"))[0]).toMatchObject({ username: "ed", details: '{"devices": 1, "emails": 1}' });
     // same list again: nothing to push
-    expect((await post(r.admin, "/settings/alerts", { ...GOOD, alert_email: "owner@example.net" })).status).toBe(303);
+    expect((await post(r.editor, "/settings/alerts", { ...GOOD, alert_email: "owner@example.net" })).status).toBe(303);
+    expect(fake.puts.length).toBe(2);
+    // another account's list (the admin's too) never reaches this projector
+    expect((await post(r.admin, "/settings/alerts", { ...GOOD, alert_email: "boss@example.net" })).status).toBe(303);
     expect(fake.puts.length).toBe(2);
   });
 
-  it("a refused policy update still saves and tells the admin what to do by hand", async () => {
+  it("a refused policy update still saves and tells the account what to do by hand", async () => {
     configure();
     const fake = fakeAccess();
     fake.refuse = true;
-    expect((await post(r.admin, "/settings/alerts", { ...GOOD, alert_email: "owner@example.net" })).status).toBe(303);
-    expect(await one("SELECT value FROM settings WHERE key = 'alert_email'")).toEqual({ value: "owner@example.net" });
-    const page = await (await r.admin.get("/settings")).text();
+    expect((await post(r.editor, "/settings/alerts", { ...GOOD, alert_email: "owner@example.net" })).status).toBe(303);
+    expect(await one("SELECT value FROM account_settings WHERE user_id = ? AND key = 'alert_email'", r.ids.editor)).toEqual({ value: "owner@example.net" });
+    const page = await (await r.editor.get("/settings")).text();
     expect(page).toContain('<div class="alert error" role="alert">Saved, but the camera access list could not be updated on every device: Cloudflare API PUT /accounts/.../access/apps/app-1/policies/pol-1: policy is locked. Click Recreate tunnel on each device on the Devices page.</div>');
   });
 
-  it("creating, re-roling or deleting a user pushes the admin-username fallback list; a refusal is a banner", async () => {
+  it("creating, re-roling or deleting a user re-pushes each projector's own account list; a refusal is a banner", async () => {
     configure();
     const fake = fakeAccess();
-    // no alert email: admin usernames that are addresses are the operator list
+    // no alert email set: the account's own address is its operator list. Another account's
+    // address, an admin's too, is never on it.
+    await query("UPDATE users SET email = 'ed@example.net' WHERE id = ?", r.ids.editor);
     expect((await post(r.admin, "/users", { username: "ops@example.net", password: "pw123456", role: "admin" })).status).toBe(303);
-    expect(fake.puts).toEqual([["ops@example.net"]]);
+    expect(fake.puts).toEqual([["ed@example.net"]]);
     expect(await (await r.admin.get("/users")).text()).toContain('<div class="alert ok" role="alert">User created.</div>');
     const u = await one("SELECT id FROM users WHERE username = 'ops@example.net'");
+    // an ownerless tunnelled projector follows the site admin (the lowest-id admin): no address known, nothing pushed for it
+    const spare = await device("spare", "Spare", { owner_id: null, tunnel_id: "tun-2", tunnel_hostname: "spare-cam.photogen5000.com" });
     expect((await post(r.admin, `/users/${u.id}/role`, { role: "editor" })).status).toBe(303);
-    expect(fake.puts.length).toBe(1); // no admin address left -> nothing to push (syncAccess null)
+    expect(fake.puts).toEqual([["ed@example.net"], ["ed@example.net"]]);
     expect(await (await r.admin.get("/users")).text()).toContain('<div class="alert ok" role="alert">Role updated.</div>');
+    // the site admin's address reaches the ownerless one only
+    await query("UPDATE users SET email = 'boss@example.net' WHERE id = ?", r.ids.admin);
     fake.refuse = true;
     expect((await post(r.admin, `/users/${u.id}/role`, { role: "admin" })).status).toBe(303);
     expect((await one("SELECT role FROM users WHERE id = ?", u.id)).role).toBe("admin");
@@ -102,7 +114,8 @@ describe("H4 + M21: the alert addresses are the camera operator list", () => {
     expect(await one("SELECT id FROM users WHERE id = ?", u.id)).toBeNull();
     page = await (await r.admin.get("/users")).text();
     expect(page).toContain('<div class="alert ok" role="alert">User deleted.</div>');
-    expect(fake.puts.length).toBe(1); // the last admin address went with the user: nothing to push
+    expect(fake.puts.slice(2).sort()).toEqual([["boss@example.net"], ["ed@example.net"]]);
+    await query("DELETE FROM devices WHERE id = ?", spare.id);
   });
 
   it("the Email field says it is also the camera access list, only when tunnels are configured", async () => {

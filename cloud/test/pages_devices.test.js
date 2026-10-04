@@ -1,6 +1,8 @@
 // /devices: register (device_id regex), assign, group, regen-token, delete (+ R2 screenshot),
-// command, screenshot serving, recent commands, token/install block gated by role, remote
-// update buttons + fleet "Update all players" + the player's reported update status.
+// command, screenshot serving, recent commands, token/install block for the projector's own
+// account (editors and admins), remote update buttons + fleet "Update all players" + the player's
+// reported update status. The fixture projectors are the editor's: an admin sees them, with the
+// device controls, but what they play and their tokens read-only / hidden (accounts.js).
 import { beforeAll, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import * as media from "../src/media.js";
@@ -34,7 +36,7 @@ describe("role matrix", () => {
     expect((await r.viewer.get(`/devices/${w.dev.id}/screenshot`)).status).toBe(404);
   });
 
-  it("viewer never sees a token or the install command; editor and admin can act, only admin gets the token", async () => {
+  it("viewer never sees a token or the install command; editor and admin can act; the token is the owning account's", async () => {
     await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, w.dev.id); // the viewer's for a moment
     const vw = await (await r.viewer.get("/devices")).text();
     expect(vw).toContain("Lobby One");
@@ -53,25 +55,26 @@ describe("role matrix", () => {
     expect(vw).toContain('name="group_id" data-autosubmit disabled');
     expect(vw).toContain('name="playlist_id" data-autosubmit disabled');
     await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.editor, w.dev.id);
-    // the token reads the Wyze login through /api/camera-config, so editors never see it (H3)
+    // the token reads its account's Wyze login through /api/camera-config: the owning account's
+    // editors and admins see it (H3); an admin looking at another account's projector does not
     const ed = await (await r.editor.get("/devices")).text();
-    expect(ed).not.toContain(w.dev.token);
-    expect(ed).not.toContain("DEVICE_TOKEN=");
-    expect(ed).not.toContain("<summary>Token / install</summary>");
-    expect(ed).not.toContain("New token");
     expect(ed).not.toContain("Device ID: lowercase letters, digits and hyphens");
     expect(ed).toContain("Delete device");
+    expect(ed).toContain("<summary>Token / install</summary>");
+    expect(ed).toContain(`<code class="token">${w.dev.token}</code>`);
+    expect(ed).toContain("cd piplayer/player");
+    expect(ed).toContain(`DEVICE_ID=${w.dev.device_id}`);
+    expect(ed).toContain(`DEVICE_TOKEN=${w.dev.token}`);
+    expect(ed).toContain("CMS_URL=http://piplayer.test");
+    expect(ed).toContain("deploy/install-player.sh");
+    expect(ed).not.toContain("CMS_URL is the address your browser is using");
+    expect(ed).toContain(">New token</button>");
     const ad = await (await r.admin.get("/devices")).text();
     expect(ad).not.toContain("Device ID: lowercase letters, digits and hyphens");
-    expect(ad).toContain("<summary>Token / install</summary>");
-    expect(ad).toContain(`<code class="token">${w.dev.token}</code>`);
-    expect(ad).toContain("cd piplayer/player");
-    expect(ad).toContain(`DEVICE_ID=${w.dev.device_id}`);
-    expect(ad).toContain(`DEVICE_TOKEN=${w.dev.token}`);
-    expect(ad).toContain("CMS_URL=http://piplayer.test");
-    expect(ad).toContain("deploy/install-player.sh");
-    expect(ad).not.toContain("CMS_URL is the address your browser is using");
-    expect(ad).toContain(">New token</button>");
+    expect(ad).not.toContain(w.dev.token);
+    expect(ad).not.toContain("DEVICE_TOKEN=");
+    expect(ad).not.toContain("<summary>Token / install</summary>");
+    expect(ad).not.toContain(">New token</button>");
     for (const c of [r.editor, r.admin]) {
       const page = await (await c.get("/devices")).text();
       expect(page).toContain('<form method="post" action="/devices" class="head-actions">');
@@ -86,18 +89,22 @@ describe("role matrix", () => {
       expect(page).toContain(">Update player</button>");
       expect(page).toContain(">Update OS</button>");
       expect(page).toContain(">Update all</button>");
-      expect(page).toContain('<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Update the player software (release main) on every device? Playback restarts on each Pi.">');
       expect(page).toContain(">Update all players</button>");
-      expect(page).toContain('name="group_id" data-autosubmit>');
       expect(page).not.toContain("onchange");
       expect(page).not.toContain("onsubmit");
     }
+    // the owner picks what it plays; the admin reads it
+    expect(ed).toContain('name="group_id" data-autosubmit>');
+    expect(ed).toContain('<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Update the player software (release main) on every device? Playback restarts on each Pi.">');
+    expect(ad).not.toContain('name="group_id"');
+    expect(ad).toContain("Plays what ed picks: group none, default playlist Default PL.");
+    expect(ad).toContain('<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Update the player software on every device (each to the release its own account set on Settings)? Playback restarts on each Pi.">');
   });
 
   it("PIPLAYER_PUBLIC_BASE_URL overrides CMS_URL and hides the edit-it note", async () => {
     env.PIPLAYER_PUBLIC_BASE_URL = "https://cms.example.com/";
     try {
-      const page = await (await r.admin.get("/devices")).text();
+      const page = await (await r.editor.get("/devices")).text();
       expect(page).toContain("CMS_URL=https://cms.example.com \\");
       expect(page).not.toContain("CMS_URL=http://piplayer.test");
       expect(page).not.toContain("CMS_URL is the address your browser is using");
@@ -113,7 +120,7 @@ describe("page content", () => {
     await query("UPDATE devices SET group_id = ?, last_error = ?, last_seen_at = datetime('now', '-90 seconds'), last_ip = '10.0.0.7', player_version = '1.2.3', current_position = 2, current_filename = 'clip.mp4', player_status = 'playing' WHERE id = ?",
       w.gid, "download failed: <b>a.mp4</b>", w.dev.id);
     await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'r', 1)", w.dev.id, w.pid);
-    const page = await (await r.admin.get("/devices")).text();
+    const page = await (await r.editor.get("/devices")).text();
     expect(page).not.toContain(XSS);
     expect(page).toContain('data-confirm="Delete device x&#39;);alert(1);//dev? Its schedule');
     expect(page).toContain('data-confirm="Reboot x&#39;);alert(1);//dev?"');
@@ -136,12 +143,17 @@ describe("page content", () => {
     expect(page).toContain("<summary>Camera</summary>"); // but the live URL form is always there
     expect(page).toContain('<span class="value">never</span>');
     expect(page).toContain('<span class="value">—</span>');
-    expect(page).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group · ed</span>'); // no pi_model yet: nothing appended before the owner (admins only)
+    expect(page).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group</span>'); // the owner's own page: no owner name
     expect(page).toContain(`<option value="${w.gid}" selected>Lobby group</option>`);
     expect(page).toContain(`<option value="${w.pid}" selected>Default PL</option>`);
     expect(page).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+    // the admin sees the same projector with its owner, what it plays as text
+    const ad = await (await r.admin.get("/devices")).text();
+    expect(ad).toContain('<span class="device-id"><code>lobby-1</code> · Lobby group · ed</span>'); // no pi_model yet: nothing appended before the owner (admins only)
+    expect(ad).toContain('<span class="now-label">active now · via schedule: r</span>');
+    expect(ad).toContain("Plays what ed picks: group Lobby group, default playlist Default PL.");
     await query("DELETE FROM device_schedules WHERE device_id = ?", w.dev.id);
-    const again = await (await r.admin.get("/devices")).text();
+    const again = await (await r.editor.get("/devices")).text();
     expect(again).toContain('<span class="now-label">active now · via device default</span>');
   });
 
@@ -343,11 +355,11 @@ describe("query budget", () => {
     await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'always', 1)", devs[2].id, spl);
     let statements = 0;
     const counting = { ...env, DB: new Proxy(env.DB, { get: (t, k) => (k === "prepare" ? (...a) => (statements++, t.prepare(...a)) : t[k]) }) };
-    const settings = await loadSettings(env);
-    const rows = await query(
-      `SELECT d.id, d.playlist_id, d.group_id, g.name AS group_name FROM devices d
-         LEFT JOIN device_groups g ON g.id = d.group_id WHERE d.device_id LIKE 'budget-%' ORDER BY d.id`);
-    await decorateDevices(counting, rows, settings);
+    const settings = await loadSettings(env, r.ids.editor);
+    const select = `SELECT d.id, d.playlist_id, d.group_id, d.owner_id, COALESCE(d.owner_id, (SELECT MIN(id) FROM users WHERE role = 'admin')) AS content_owner,
+             g.name AS group_name FROM devices d LEFT JOIN device_groups g ON g.id = d.group_id WHERE d.device_id LIKE 'budget-%' ORDER BY d.id`;
+    const rows = await query(select);
+    await decorateDevices(counting, rows, new Map([[r.ids.editor, settings]]));
     expect(statements).toBe(3);
     const wall = (await import("../src/util.js")).wallClock(settings.timezone, new Date());
     for (const row of rows) {
@@ -358,9 +370,19 @@ describe("query budget", () => {
     expect(rows[1].active_source).toBe("group: Budget group");
     expect(rows[2].active_source).toBe("schedule: always");
     expect(rows[2].active_playlist_name).toBe("Budget sched PL");
-    expect(rows[5].active_playlist_id).toBe(settings.default_playlist_id); // nothing of its own: the site default
+    expect(rows[5].active_playlist_id).toBe(settings.default_playlist_id); // nothing of its own: the account's Default
     expect(rows[5].active_source).toBe("default playlist");
-    for (const d of devs) await query("DELETE FROM devices WHERE id = ?", d.id);
+    // an admin's page holds several accounts' projectors: still 3 statements, each by its own account
+    const theirs = await device("budget-admin", "Budget admin", { owner_id: r.ids.admin, playlist_id: w.pid }); // a foreign playlist id
+    const mixed = await query(select);
+    statements = 0;
+    const adminSettings = await loadSettings(env, r.ids.admin);
+    await decorateDevices(counting, mixed, new Map([[r.ids.editor, settings], [r.ids.admin, adminSettings]]));
+    expect(statements).toBe(3);
+    const a = mixed.find((x) => x.id === theirs.id);
+    expect([a.active_playlist_id, a.active_source]).toEqual([adminSettings.default_playlist_id, "default playlist"]); // the editor's playlist never plays there
+    expect(mixed.find((x) => x.id === devs[0].id).active_playlist_id).toBe(w.pid);
+    for (const d of [...devs, theirs]) await query("DELETE FROM devices WHERE id = ?", d.id);
   });
 });
 

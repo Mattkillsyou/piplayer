@@ -1,6 +1,9 @@
 // Owner-facing wording (L27, L29) and the accessibility basics (L32): no developer jargon on
 // the pages a non-technical owner reads, one name per concept across pages, every data table
-// captioned with scoped column headers, and the skip link + main landmark on every page.
+// captioned with scoped column headers, and the skip link + main landmark on every page. The
+// fixtures are the editor's (every account its own library, playlists and groups since migration
+// 0016), so each page is read by the account whose content it shows: the editor, or the admin for
+// the Users page.
 import { beforeAll, describe, expect, it } from "vitest";
 import { Client } from "./helpers.js";
 import { device, group, ins, media, playlist, post, roles } from "./pages_common.js";
@@ -20,6 +23,7 @@ beforeAll(async () => {
   await ins("INSERT INTO alerts (device_id, kind, opened_at) VALUES (?, 'mpv-down', datetime('now'))", dev.id);
   await ins("INSERT INTO alerts (device_id, kind, opened_at, closed_at) VALUES (?, 'offline', datetime('now', '-1 hour'), datetime('now'))", dev.id);
   expect((await post(r.admin, "/settings/tokens", { name: "laptop" })).status).toBe(200); // renders the tokens table
+  expect((await post(r.editor, "/settings/tokens", { name: "laptop" })).status).toBe(200);
 });
 
 const page = (c, p) => c.get(p).then((res) => res.text());
@@ -27,12 +31,14 @@ const page = (c, p) => c.get(p).then((res) => res.text());
 // Every page an owner reads, each with at least one data table rendered by the fixtures above.
 const PAGES = ["/dashboard", "/library", "/playlists", "/playlists/:pid", "/devices", "/devices/:id/schedule", "/groups", "/alerts", "/audit", "/users", "/settings", "/flasher"];
 const path = (p) => p.replace(":pid", pid).replace(":id", dev.id);
+// Who reads a page: the account whose content it shows.
+const reader = (p) => (p === "/users" ? r.admin : r.editor);
 
 describe("accessibility basics (L32)", () => {
   it("every data table has a screen-reader caption and scoped column headers", async () => {
     let tables = 0;
     for (const p of PAGES.map(path)) {
-      const html = await page(r.admin, p);
+      const html = await page(reader(p), p);
       expect(html, p).not.toMatch(/<th(?=[\s>])(?![^>]*\bscope="col")/);
       const found = html.match(/<table class="data[^>]*>\s*<caption class="sr-only">[^<]+<\/caption>/g) || [];
       expect(found.length, `${p} captions`).toBe((html.match(/<table class="data/g) || []).length);
@@ -43,7 +49,7 @@ describe("accessibility basics (L32)", () => {
 
   it("every signed-in page has the skip link before the nav and the main landmark; the login card has neither", async () => {
     for (const p of PAGES.map(path)) {
-      const html = await page(r.admin, p);
+      const html = await page(reader(p), p);
       expect(html, p).toMatch(/<a class="skip-link" href="#main">Skip to content<\/a>\s*<header class="topbar">/);
       expect(html, p).toContain('<main id="main" class="container">');
     }
@@ -56,7 +62,8 @@ describe("accessibility basics (L32)", () => {
 describe("owner wording (L27, L29)", () => {
   it("no developer jargon on the pages an owner reads", async () => {
     const jargon = /\bIANA\b|E\.164|apt-get|wrangler|HDMI-CEC|RM4|Restart mpv|mpv playback|git tag|database stores|<code>mpv-down<\/code>|<code>force-sync<\/code>|\/api\/camera-config|\/api\/enroll\b/;
-    for (const p of PAGES.map(path)) expect(await page(r.admin, p), p).not.toMatch(jargon);
+    for (const p of PAGES.map(path)) expect(await page(reader(p), p), p).not.toMatch(jargon);
+    expect(await page(r.admin, "/settings")).not.toMatch(jargon); // with the admin-only enrollment panel
   });
 
   it("Devices: Restart playback, Device ID, Add device, the button label in Recent commands, player version", async () => {
@@ -77,7 +84,7 @@ describe("owner wording (L27, L29)", () => {
   it("Settings: alert kinds in plain words, timezone / release / phone labels, New key", async () => {
     const html = await page(r.admin, "/settings");
     expect(html).not.toContain("checks each device for:");
-    expect(html).toContain('<label>Site timezone\n        <select name="timezone" required>');
+    expect(html).toContain('<label>Timezone\n        <select name="timezone" required>');
     expect(html).toContain("<label>Player software version (release name)");
     expect(html).toContain("<label>Text messages from (phone number with country code, e.g. +15551234567)");
     expect(html).toContain("<label>Text messages to (phone number with country code, e.g. +15551234567)");

@@ -1,7 +1,9 @@
-// /audit: ?limit validated 1..1000 (default 200), ORDER BY created_at DESC, id DESC, site zone.
+// /audit: ?limit validated 1..1000 (default 200), ORDER BY created_at DESC, id DESC, the reader's
+// zone. Each account reads the rows about itself (audit_log.owner_id, migration 0016); an admin
+// reads the whole log.
 import { beforeAll, describe, expect, it } from "vitest";
 import { query } from "./helpers.js";
-import { detail, ins, post, roleMatrix, roles, XSS } from "./pages_common.js";
+import { detail, ins, post, roleMatrix, roles, setting, XSS } from "./pages_common.js";
 
 let r;
 
@@ -27,10 +29,10 @@ describe("audit page", () => {
     }
     // three rows sharing one created_at, ids ascending: the page must still show 2, 1, 0
     for (let i = 0; i < 3; i++) {
-      await ins("INSERT INTO audit_log (username, action, target_type, target_id, details, ip, created_at) VALUES ('t', 'tie', 'x', ?, ?, '1.2.3.4', '2030-01-01 00:00:00')", i, `tie-${i}`);
+      await ins("INSERT INTO audit_log (username, action, target_type, target_id, details, ip, created_at, owner_id) VALUES ('t', 'tie', 'x', ?, ?, '1.2.3.4', '2030-01-01 00:00:00', ?)", i, `tie-${i}`, r.ids.editor);
     }
-    await ins("INSERT INTO audit_log (username, action, details) VALUES (?, 'xss', ?)", XSS + "user", `{"name":"${XSS}"}`);
-    let page = await (await r.viewer.get("/audit?limit=1000")).text();
+    await ins("INSERT INTO audit_log (username, action, details, owner_id) VALUES (?, 'xss', ?, ?)", XSS + "user", `{"name":"${XSS}"}`, r.ids.editor);
+    let page = await (await r.editor.get("/audit?limit=1000")).text();
     const at = (s) => page.indexOf(s);
     expect(at("tie-2")).toBeLessThan(at("tie-1"));
     expect(at("tie-1")).toBeLessThan(at("tie-0"));
@@ -43,9 +45,9 @@ describe("audit page", () => {
     expect(page).toContain('<span class="muted small">x</span> 1');
     expect(page).toContain("1.2.3.4");
     expect(page).toContain("times in UTC</span>");
-    expect(page).toContain(`<span class="badge badge-viewer">viewer</span>`);
+    expect(page).toContain(`<span class="badge badge-editor">editor</span>`);
 
-    page = await (await r.viewer.get("/audit?limit=2")).text();
+    page = await (await r.editor.get("/audit?limit=2")).text();
     expect(page).toContain("last 2 entries");
     expect(page).toContain("tail -n 2 audit.log");
     expect(page).toContain("tie-2");
@@ -54,11 +56,29 @@ describe("audit page", () => {
     expect((page.match(/<tr>/g) || []).length).toBe(3); // header + 2 rows
   });
 
-  it("renders in the site timezone", async () => {
-    await query("INSERT INTO settings (key, value) VALUES ('timezone', 'Asia/Tokyo')");
-    const page = await (await r.viewer.get("/audit")).text();
+  it("renders in the reader's own timezone", async () => {
+    await setting(r.ids.editor, "timezone", "Asia/Tokyo");
+    const page = await (await r.editor.get("/audit")).text();
     expect(page).toContain("<code>2030-01-01 09:00 GMT+9</code>");
     expect(page).toContain("times in GMT+9");
-    await query("DELETE FROM settings");
+    expect(await (await r.admin.get("/audit")).text()).toContain("<code>2030-01-01 00:00 UTC</code>"); // the admin's zone
+    await query("DELETE FROM account_settings WHERE key = 'timezone'");
+  });
+
+  it("each account reads only the rows about itself; an admin the whole log; the action list is scoped the same way", async () => {
+    await ins("INSERT INTO audit_log (username, action, details, owner_id) VALUES ('vw', 'viewer_thing', 'viewer-row', ?)", r.ids.viewer);
+    await ins("INSERT INTO audit_log (username, action, details, owner_id) VALUES (NULL, 'site_thing', 'site-row', NULL)");
+    const vw = await (await r.viewer.get("/audit?limit=1000")).text();
+    expect(vw).toContain("viewer-row");
+    for (const other of ["tie-0", "audit-0", "site-row", "<code>create_playlist</code>"]) expect(vw).not.toContain(other);
+    expect(vw).not.toContain('<option value="create_playlist"');
+    expect(vw).toContain('<option value="viewer_thing"');
+    const ed = await (await r.editor.get("/audit?limit=1000")).text();
+    for (const other of ["viewer-row", "site-row"]) expect(ed).not.toContain(other);
+    expect(ed).not.toContain('<option value="viewer_thing"');
+    // a filter or a cursor cannot widen it
+    expect(await (await r.editor.get("/audit?action=viewer_thing")).text()).not.toContain("viewer-row");
+    const ad = await (await r.admin.get("/audit?limit=1000")).text();
+    for (const row of ["viewer-row", "site-row", "tie-0", "audit-0"]) expect(ad).toContain(row);
   });
 });

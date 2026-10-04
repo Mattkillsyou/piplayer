@@ -1,7 +1,9 @@
 // /playlists: list + cascade-warning confirm, create, edit page, items add/duration/reorder/
 // delete (positions renumbered), rename, delete (cascade audit). Role matrix + contract 10.
+// Every account its own playlists (migration 0016): the fixtures are the editor's, another
+// account (the admin's too) gets the 404 of a missing id, and names are unique per account.
 import { beforeAll, describe, expect, it } from "vitest";
-import { query } from "./helpers.js";
+import { Client, query } from "./helpers.js";
 import { audits, detail, device, group, ins, media, NOPE, one, playlist, post, postJson, roleMatrix, roles, XSS } from "./pages_common.js";
 
 let r;
@@ -22,7 +24,9 @@ beforeAll(async () => {
 describe("role matrix", () => {
   it("pages are for every user, writes for editor+", async () => {
     await roleMatrix(r, "GET", "/playlists");
-    await roleMatrix(r, "GET", `/playlists/${w.pid}`);
+    // the playlist is the editor's: every other account gets the 404 of an unknown id
+    expect((await new Client().get(`/playlists/${w.pid}`)).status).toBe(303);
+    for (const [c, status] of [[r.viewer, 404], [r.editor, 200], [r.admin, 404]]) expect((await c.get(`/playlists/${w.pid}`)).status).toBe(status);
     const scratch = await playlist("Scratch");
     const item = await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0)", scratch, w.m3);
     await roleMatrix(r, "POST", "/playlists", { fields: { name: "matrix" } });
@@ -38,11 +42,15 @@ describe("role matrix", () => {
   });
 
   it("viewer sees View and no forms; editor sees Edit, rename, add, drag handle", async () => {
+    const vpid = await playlist("Lobby", r.ids.viewer); // the viewer's own (names are per account)
+    await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0)", vpid, await media("v.png", "image", { owner: r.ids.viewer }));
     let page = await (await r.viewer.get("/playlists")).text();
     expect(page).toContain(">View<");
     expect(page).not.toContain("new playlist");
     expect(page).not.toContain("data-confirm");
-    page = await (await r.viewer.get(`/playlists/${w.pid}`)).text();
+    expect(page).toContain(`href="/playlists/${vpid}"`);
+    expect(page).not.toContain(`href="/playlists/${w.pid}"`);
+    page = await (await r.viewer.get(`/playlists/${vpid}`)).text();
     expect(page).toContain('data-readonly="1"');
     expect(page).not.toContain("/rename");
     expect(page).not.toContain("Add media");
@@ -65,7 +73,7 @@ describe("list page", () => {
     const dev = await device("d-list", "D list", { playlist_id: pid });
     await query("UPDATE device_groups SET playlist_id = ? WHERE id = ?", pid, gid);
     await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'r', 1)", dev.id, pid);
-    const page = await (await r.admin.get("/playlists")).text();
+    const page = await (await r.editor.get("/playlists")).text();
     expect(page).not.toContain(XSS);
     expect(page).toContain(`data-confirm="Delete playlist x&#39;);alert(1);//-list? 1 schedule rule(s) will be deleted; 1 device(s) will lose it as their default playlist; 1 group(s) will lose it as their default playlist."`);
     expect(page).toContain(`data-confirm="Delete playlist Lobby?"`);
@@ -74,6 +82,9 @@ describe("list page", () => {
     expect(page).toContain("· 1 schedule rule");
     expect(page).not.toContain("onsubmit");
     expect(page).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+    // another account's list holds none of it, not even the counts
+    const ad = await (await r.admin.get("/playlists")).text();
+    for (const theirs of [">Lobby<", "x&#39;);alert(1);//-list", "1 device</span>", "schedule rule"]) expect(ad).not.toContain(theirs);
   });
 });
 
@@ -89,6 +100,9 @@ describe("create / rename / delete", () => {
     expect(dup.toLowerCase()).not.toContain("sqlite");
     const [a] = await audits("create_playlist");
     expect(a).toMatchObject({ username: "ed", target_type: "playlist", target_id: String(pid), details: '{"name": "Fresh"}' });
+    // names are unique per account: another account may have its own Fresh
+    expect((await post(r.admin, "/playlists", { name: "Fresh" })).status).toBe(303);
+    expect((await query("SELECT owner_id FROM playlists WHERE name = 'Fresh' ORDER BY id")).map((x) => x.owner_id)).toEqual([r.ids.editor, r.ids.admin]);
   });
 
   it("rename: 400 empty, 404 missing, 409 duplicate (name unchanged), audits", async () => {
@@ -103,6 +117,11 @@ describe("create / rename / delete", () => {
     expect((await one("SELECT name FROM playlists WHERE id = ?", pid)).name).toBe("Renamed");
     expect((await audits("playlist_rename"))[0].details).toBe('{"name": "Renamed"}');
     expect((await post(r.editor, "/playlists/abc/rename", { name: "z" })).status).toBe(400);
+    // another account's playlist: the 404 of a missing one, unchanged; its names never collide
+    expect(await detail(await post(r.admin, `/playlists/${pid}/rename`, { name: "Mine now" }), 404)).toBe("Playlist not found");
+    expect((await one("SELECT name FROM playlists WHERE id = ?", pid)).name).toBe("Renamed");
+    await playlist("Admins only", r.ids.admin);
+    expect((await post(r.editor, `/playlists/${pid}/rename`, { name: "Admins only" })).status).toBe(303);
   });
 
   it("delete cascades and audits the removed rules / cleared defaults", async () => {
@@ -113,6 +132,8 @@ describe("create / rename / delete", () => {
     const sid = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'night', 1)", dev.id, pid);
     await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0)", pid, w.m3);
     expect(await detail(await post(r.editor, `/playlists/${NOPE}/delete`), 404)).toBe("Playlist not found");
+    expect(await detail(await post(r.admin, `/playlists/${pid}/delete`), 404)).toBe("Playlist not found"); // not the admin's
+    expect(await one("SELECT id FROM playlists WHERE id = ?", pid)).not.toBeNull();
     const res = await post(r.editor, `/playlists/${pid}/delete`);
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/playlists");
@@ -143,6 +164,11 @@ describe("items", () => {
     expect(await detail(await post(r.editor, `/playlists/${pid}/items`, { media_id: "" }), 400)).toBe("Pick a file to add");
     expect(await detail(await post(r.editor, `/playlists/${pid}/items`, { media_id: String(NOPE) }), 404)).toBe("Media not found");
     expect(await detail(await post(r.editor, `/playlists/${NOPE}/items`, { media_id: String(ma) }), 404)).toBe("Playlist not found");
+    // another account's file is a missing one; another account cannot add to this playlist
+    const theirs = await media("their.png", "image", { owner: r.ids.admin });
+    expect(await detail(await post(r.editor, `/playlists/${pid}/items`, { media_id: String(theirs) }), 404)).toBe("Media not found");
+    expect(await detail(await post(r.admin, `/playlists/${pid}/items`, { media_id: String(theirs) }), 404)).toBe("Playlist not found");
+    expect(await positions(pid)).toEqual([]);
     await query("UPDATE playlists SET updated_at = '2000-01-01 00:00:00' WHERE id = ?", pid);
     for (const m of [ma, mb]) {
       const res = await post(r.editor, `/playlists/${pid}/items`, { media_id: String(m) });
@@ -156,6 +182,7 @@ describe("items", () => {
     const page = await (await r.editor.get(`/playlists/${pid}`)).text();
     expect(page).toContain("Playlist order (2)");
     expect(page).not.toContain("<option value=\"" + ma + "\">");
+    expect(page).not.toContain("their.png"); // never offered
   });
 
   it("duration override: bad values 400 and unchanged, good values stored, 404 for a foreign item", async () => {
@@ -172,6 +199,8 @@ describe("items", () => {
     expect(await detail(await post(r.editor, `/playlists/${w.pid}/items/${NOPE}/duration`, { duration: "5" }), 404)).toBe("Playlist item not found");
     const other = await playlist("Other");
     expect((await post(r.editor, `/playlists/${other}/items/${w.i1}/duration`, { duration: "5" })).status).toBe(404);
+    expect(await detail(await post(r.admin, `/playlists/${w.pid}/items/${w.i1}/duration`, { duration: "5" }), 404)).toBe("Playlist item not found");
+    expect((await one("SELECT duration_override_seconds AS d FROM playlist_items WHERE id = ?", w.i1)).d).toBeNull();
     expect((await audits("playlist_set_duration"))[0]).toMatchObject({ target_type: "playlist_item", target_id: String(w.i1) });
   });
 
@@ -195,6 +224,8 @@ describe("items", () => {
     expect(await detail(await postJson(r.editor, `/playlists/${pid}/items/reorder`, { order: [items[0], items[0], items[1]] }), 400)).toBe("order must contain exactly the current items of this playlist");
     expect(await detail(await postJson(r.editor, `/playlists/${pid}/items/reorder`, { nope: 1 }), 400)).toBe("body must be {order: [item_id, ...]}");
     expect(await detail(await postJson(r.editor, `/playlists/${NOPE}/items/reorder`, { order: [] }), 404)).toBe("Playlist not found");
+    expect(await detail(await postJson(r.admin, `/playlists/${pid}/items/reorder`, { order: [items[2], items[0], items[1]] }), 404)).toBe("Playlist not found");
+    expect((await positions(pid)).map((x) => x.id)).toEqual(items);
     const res = await postJson(r.editor, `/playlists/${pid}/items/reorder`, { order: [items[2], items[0], items[1]] });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
@@ -216,6 +247,7 @@ describe("items", () => {
     expect(await (await r.editor.get(`/playlists/${pid}`)).text()).toContain(`action="/playlists/${pid}/items/${items[0]}/delete" class="inline" data-confirm="Remove one.png from Remove? Projectors playing it skip it from their next sync."`);
     expect(await detail(await post(r.editor, `/playlists/${pid}/items/${NOPE}/delete`), 404)).toBe("Playlist item not found");
     expect((await post(r.editor, `/playlists/${w.pid}/items/${items[0]}/delete`)).status).toBe(404);
+    expect(await detail(await post(r.admin, `/playlists/${pid}/items/${items[0]}/delete`), 404)).toBe("Playlist item not found");
     const res = await post(r.editor, `/playlists/${pid}/items/${items[1]}/delete`);
     expect(res.status).toBe(303);
     expect(await positions(pid)).toEqual([{ id: items[0], position: 0 }, { id: items[2], position: 1 }]);
