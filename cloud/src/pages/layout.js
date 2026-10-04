@@ -1,13 +1,15 @@
 // Port of templates/base.html. Pages build their content string (every value through esc())
 // and call layout(ctx, {title, content}) to get the HTML Response.
-import { cookieHeader, FLASH_COOKIE, readCookie } from "../auth.js";
+import { cookieHeader, FLASH_COOKIE, readCookie, roleRank } from "../auth.js";
 import { esc, html } from "../util.js";
 
 export const APP_NAME = "Projection5000";
 export const APP_EYEBROW = "Matt Brown's";
 
 // Order is the order in the top bar; the SD Flasher comes first and is drawn as a white-on-black
-// pill (.nav-flasher) so the one thing a new user needs stands out.
+// pill (.nav-flasher) so the one thing a new user needs stands out. The fourth field is the
+// lowest role that gets the link: an account's own Settings for editors and admins, the Users
+// page (every account) for admins.
 const NAV = [
   ["/flasher", "SD Flasher"],
   ["/dashboard", "Dashboard", (p) => p === "/dashboard"],
@@ -18,7 +20,7 @@ const NAV = [
   ["/alerts", "Alerts"],
   ["/audit", "Audit"],
   ["/users", "Users", null, "admin"],
-  ["/settings", "Settings", null, "admin"],
+  ["/settings", "Settings", null, "editor"],
 ];
 
 // Hidden CSRF input for a <form method="post"> (contract 8).
@@ -50,7 +52,7 @@ function navHtml(ctx) {
   const user = ctx.user;
   const path = ctx.url.pathname;
   const links = NAV
-    .filter(([, , , role]) => !role || user.role === role)
+    .filter(([, , , role]) => !role || roleRank(user.role) >= roleRank(role))
     .map(([href, label, test]) => {
       const active = test ? test(path) : path.startsWith(href);
       const cls = [href === "/flasher" ? "nav-flasher" : "", active ? "active" : ""].filter(Boolean).join(" ");

@@ -1,9 +1,11 @@
-// Port of web.playlists_* + playlists.html / playlist_edit.html.
+// Port of web.playlists_* + playlists.html / playlist_edit.html. Each account has its own
+// playlists (playlists.owner_id, migration 0016; names unique per account) holding its own files
+// only: every route answers another account's playlist, item or file id exactly like a missing one.
+import * as accounts from "../accounts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, idParam, intField, json, jsonObject, localTime, redirect, str } from "../util.js";
-import { ownedClause } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -17,20 +19,27 @@ const RENUMBER_SQL = `UPDATE playlist_items
  WHERE playlist_id = ?1`;
 const TOUCH_SQL = "UPDATE playlists SET updated_at = datetime('now') WHERE id = ?";
 
+// The caller's own playlist row (`cols`) or the 404 a missing id gets.
+async function ownPlaylist(ctx, playlistId, cols = "id") {
+  const row = await accounts.ownRow(ctx.env, "playlists", playlistId, ctx.user.id, cols);
+  if (!row) fail(404, "Playlist not found");
+  return row;
+}
+
 async function playlistsPage(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = user.role !== "viewer";
   const { timezone: tz, default_playlist_id: defaultId } = await ctx.settings();
-  // Playlists are shared; "used by" counts only the devices this user may see (the schedule
-  // rule count stays fleet-wide: deleting the playlist removes them all).
-  const own = ownedClause(user);
+  // The account's own playlists; "used by" counts the projectors, groups and schedule rules that
+  // play them, which are all the account's own (only its projectors may point at its playlists).
+  const co = accounts.contentOwnerSql("d");
   const rows = await db.all(ctx.env,
     `SELECT p.id, p.name, p.updated_at,
             (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) AS item_count,
-            (SELECT COUNT(*) FROM devices d WHERE d.playlist_id = p.id AND ${own.sql}) AS device_count,
-            (SELECT COUNT(*) FROM device_groups g WHERE g.playlist_id = p.id) AS group_count,
-            (SELECT COUNT(*) FROM device_schedules s WHERE s.playlist_id = p.id) AS schedule_count
-       FROM playlists p ORDER BY p.name`, ...own.params);
+            (SELECT COUNT(*) FROM devices d WHERE d.playlist_id = p.id AND ${co} = ?1) AS device_count,
+            (SELECT COUNT(*) FROM device_groups g WHERE g.playlist_id = p.id AND g.owner_id = ?1) AS group_count,
+            (SELECT COUNT(*) FROM device_schedules s JOIN devices d ON d.id = s.device_id WHERE s.playlist_id = p.id AND ${co} = ?1) AS schedule_count
+       FROM playlists p WHERE p.owner_id = ?1 ORDER BY p.name`, user.id);
   const rowHtml = (p) => {
     const parts = [];
     if (p.schedule_count) parts.push(`${p.schedule_count} schedule rule(s) will be deleted`);
@@ -82,13 +91,15 @@ ${!rows.length ? emptyState("NO PLAYLISTS", `No playlists yet.${canEdit ? " Crea
   return layout(ctx, { title: "Playlists", content });
 }
 
+// Names are unique within the account (idx_playlists_owner_name): another account's playlist of
+// the same name is no conflict, and the 409 can only ever be about one's own.
 async function playlistsCreate(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const name = str(await ctx.form(), "name").trim();
   if (!name) fail(400, "Enter a name");
   let pid;
   try {
-    pid = (await db.run(ctx.env, "INSERT INTO playlists (name) VALUES (?)", name)).last_row_id;
+    pid = (await db.run(ctx.env, "INSERT INTO playlists (owner_id, name, legacy_name) VALUES (?, ?, ?)", user.id, name, accounts.uniqueKey())).last_row_id;
   } catch (e) {
     if (db.isConstraintError(e)) fail(409, "A playlist with that name already exists");
     throw e;
@@ -101,7 +112,7 @@ async function playlistsEdit(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = user.role !== "viewer";
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
-  const playlist = await db.first(ctx.env, "SELECT id, name FROM playlists WHERE id = ?", playlistId);
+  const playlist = await accounts.ownRow(ctx.env, "playlists", playlistId, user.id, "id, name");
   if (!playlist) fail(404, "Not Found");
   const items = await db.all(ctx.env,
     `SELECT pi.id, pi.position, pi.duration_override_seconds,
@@ -114,8 +125,8 @@ async function playlistsEdit(ctx) {
   const available = await db.all(ctx.env,
     `SELECT m.id, m.original_name, m.media_type, m.duration_seconds
        FROM media m
-      WHERE m.id NOT IN (SELECT media_id FROM playlist_items WHERE playlist_id = ?)
-      ORDER BY m.original_name`, playlistId);
+      WHERE m.owner_id = ? AND m.id NOT IN (SELECT media_id FROM playlist_items WHERE playlist_id = ?)
+      ORDER BY m.original_name`, user.id, playlistId);
   // Python renders config.DEFAULT_IMAGE_DURATION (a float) with repr, so 10 shows as "10.0".
   const dur = (await ctx.settings()).default_image_duration;
   const defaultImageDuration = Number.isInteger(dur) ? dur.toFixed(1) : String(dur);
@@ -193,13 +204,14 @@ ${items.length ? '<div class="drop-hint"><span>⣿</span><span class="sans">Drag
 }
 
 async function playlistAddItem(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
   const mid = intField(str(await ctx.form(), "media_id"), "Media to add");
   if (mid === null) fail(400, "Pick a file to add");
   const env = ctx.env;
-  if (!(await db.first(env, "SELECT id FROM playlists WHERE id = ?", playlistId))) fail(404, "Playlist not found");
-  if (!(await db.first(env, "SELECT id FROM media WHERE id = ?", mid))) fail(404, "Media not found");
+  await ownPlaylist(ctx, playlistId);
+  // A playlist holds its own account's files only (the manifest serves nothing else either).
+  if (!(await accounts.ownRow(env, "media", mid, user.id))) fail(404, "Media not found");
   if (await db.first(env, "SELECT id FROM playlist_items WHERE playlist_id = ? AND media_id = ?", playlistId, mid)) {
     fail(409, "That file is already in this playlist");
   }
@@ -230,7 +242,8 @@ async function playlistSetDuration(ctx) {
     if (!Number.isFinite(dur) || dur < 0.5 || dur > 86400) fail(400, "Duration must be a number of seconds between 0.5 and 86400");
   }
   const r = await db.run(ctx.env,
-    "UPDATE playlist_items SET duration_override_seconds = ? WHERE id = ? AND playlist_id = ?", dur, itemId, playlistId);
+    `UPDATE playlist_items SET duration_override_seconds = ? WHERE id = ? AND playlist_id = ?
+        AND playlist_id IN (SELECT id FROM playlists WHERE owner_id = ?)`, dur, itemId, playlistId, ctx.user.id);
   if (!r.changes) fail(404, "Playlist item not found");
   await db.run(ctx.env, TOUCH_SQL, playlistId);
   await audit.log(ctx, "playlist_set_duration", "playlist_item", itemId, { duration: dur });
@@ -247,7 +260,7 @@ async function playlistReorder(ctx) {
   const ids = order.map((x) => (Number.isInteger(x) ? x : NaN));
   if (ids.some((x) => Number.isNaN(x))) fail(400, "order must be a list of integers");
   const env = ctx.env;
-  if (!(await db.first(env, "SELECT id FROM playlists WHERE id = ?", playlistId))) fail(404, "Playlist not found");
+  await ownPlaylist(ctx, playlistId);
   const existing = new Set((await db.all(env, "SELECT id FROM playlist_items WHERE playlist_id = ?", playlistId)).map((r) => r.id));
   const given = new Set(ids);
   if (given.size !== existing.size || ids.length !== existing.size || [...given].some((x) => !existing.has(x))) {
@@ -267,7 +280,9 @@ async function playlistRemoveItem(ctx) {
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
   const itemId = idParam(ctx.params.item_id, "item_id");
   const env = ctx.env;
-  if (!(await db.first(env, "SELECT id FROM playlist_items WHERE id = ? AND playlist_id = ?", itemId, playlistId))) {
+  if (!(await db.first(env,
+    "SELECT pi.id FROM playlist_items pi JOIN playlists p ON p.id = pi.playlist_id WHERE pi.id = ? AND pi.playlist_id = ? AND p.owner_id = ?",
+    itemId, playlistId, ctx.user.id))) {
     fail(404, "Playlist item not found");
   }
   await db.batch(env, [
@@ -286,7 +301,7 @@ async function playlistRename(ctx) {
   if (!name) fail(400, "Enter a name");
   let r;
   try {
-    r = await db.run(ctx.env, "UPDATE playlists SET name = ?, updated_at = datetime('now') WHERE id = ?", name, playlistId);
+    r = await db.run(ctx.env, "UPDATE playlists SET name = ?, updated_at = datetime('now') WHERE id = ? AND owner_id = ?", name, playlistId, ctx.user.id);
   } catch (e) {
     if (db.isConstraintError(e)) fail(409, "A playlist with that name already exists");
     throw e;
@@ -300,8 +315,7 @@ async function playlistDelete(ctx) {
   auth.requireRole(ctx, "editor");
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
   const env = ctx.env;
-  const row = await db.first(env, "SELECT name FROM playlists WHERE id = ?", playlistId);
-  if (!row) fail(404, "Playlist not found");
+  const row = await ownPlaylist(ctx, playlistId, "name");
   if (playlistId === (await ctx.settings()).default_playlist_id) fail(400, "This is the default playlist. Pick another default on Settings first.");
   // Record what the cascade is about to remove so the audit trail explains it.
   const rules = await db.all(env, "SELECT id, device_id, name FROM device_schedules WHERE playlist_id = ?", playlistId);

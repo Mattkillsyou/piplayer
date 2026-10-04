@@ -1,9 +1,13 @@
-// Port of web.dashboard + dashboard.html: stat tiles, the monitor wall and the audit tail.
+// Port of web.dashboard + dashboard.html: stat tiles, the monitor wall and the audit tail. The
+// media and playlist tiles count the user's own library; the wall, the device count and the
+// alert count are the projectors they see (every one for an admin, like the Devices page); the
+// audit tail is their own account's people rows (every one for an admin, like /audit).
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, localTime, nowUtc, zoneName } from "../util.js";
-import { cameraScreen, decorateDevices, deviceScreen, isFault, noProjectors, ownedClause, projectorState, statusLamp, updateStatus } from "./devices.js";
+import { cameraScreen, decorateDevices, deviceScreen, isFault, noProjectors, ownedClause, projectorState, settingsForRows, statusLamp, updateStatus, visibleDevices } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
+import { auditScope } from "./audit.js";
 
 const DASHBOARD_AUDIT_TAIL = 8;
 
@@ -56,27 +60,20 @@ async function dashboard(ctx) {
   const env = ctx.env;
   const settings = await ctx.settings();
   const tz = settings.timezone;
-  const media = await db.first(env, "SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS bytes FROM media");
-  const playlistCount = (await db.first(env, "SELECT COUNT(*) AS n FROM playlists")).n;
-  // Media and playlists are shared; the wall, the device count and the alert count are the
-  // user's own projectors (every one for an admin).
+  const media = await db.first(env, "SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS bytes FROM media WHERE owner_id = ?", user.id);
+  const playlistCount = (await db.first(env, "SELECT COUNT(*) AS n FROM playlists WHERE owner_id = ?", user.id)).n;
   const own = ownedClause(user);
-  const rows = await db.all(env,
-    `SELECT d.id, d.device_id, d.name, d.last_seen_at, d.last_ip, d.playlist_id, d.group_id,
+  const rows = await visibleDevices(env, user,
+    `d.id, d.device_id, d.name, d.last_seen_at, d.last_ip,
             d.current_position, d.current_filename, d.player_status,
             d.last_screenshot_at, d.last_error, d.last_camera_at, d.camera_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
-            d.projector_control, d.projector_power_state, d.projector_error, d.pi_model,
-            p.name AS playlist_name, g.name AS group_name
-       FROM devices d
-       LEFT JOIN playlists p ON p.id = d.playlist_id
-       LEFT JOIN device_groups g ON g.id = d.group_id
-      WHERE ${own.sql}
-      ORDER BY d.name`, ...own.params);
-  const devices = await decorateDevices(env, rows, settings);
+            d.projector_control, d.projector_power_state, d.projector_error, d.pi_model`);
+  const devices = await decorateDevices(env, rows, await settingsForRows(ctx, rows));
+  const scope = auditScope(user);
   const auditTail = await db.all(env,
     `SELECT username, action, target_type, target_id, ip, created_at
-       FROM audit_log WHERE username IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT ?`, DASHBOARD_AUDIT_TAIL);
+       FROM audit_log WHERE username IS NOT NULL AND ${scope.sql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...scope.params, DASHBOARD_AUDIT_TAIL);
   const openAlerts = (await db.first(env,
     `SELECT COUNT(*) AS n FROM alerts a JOIN devices d ON d.id = a.device_id WHERE a.closed_at IS NULL AND ${own.sql}`, ...own.params)).n;
   const faultCount = devices.filter(isFault).length;

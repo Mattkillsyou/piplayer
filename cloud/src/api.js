@@ -1,6 +1,9 @@
 // Device API (port of cms/app/routes/api.py): health, sync manifest, screenshot and camera
 // snapshot uploads, command results. Auth is `Authorization: Bearer <device token>`; the device_id in the
-// path must be the token's own device.
+// path must be the token's own device. A projector gets its content account's content and
+// settings only (its owner's, or the site admin's for an ownerless one: accounts.js); the SD
+// flasher's operator endpoints answer with the signed-in account's own groups and playlists.
+import * as accounts from "./accounts.js";
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
 import * as cloudflare from "./cloudflare.js";
@@ -136,7 +139,8 @@ async function sync(ctx) {
 
   await storeUpdateStatus(ctx, device, q.get("update_status"));
 
-  const settings = await ctx.settings();
+  // The projector's own account's settings (zone, intervals, update policy, Default playlist).
+  const settings = await db.loadSettings(ctx.env, device.content_owner);
   const body = await manifest.manifest_for_device(ctx.env, device, ctx.url.origin, settings);
   // A board that cannot run the camera bridge (Zero / Pi 1, camera_supported=0) never runs
   // cloudflared either: no point fetching a connector token for it on every sync.
@@ -184,7 +188,7 @@ async function storeUpdateStatus(ctx, device, raw) {
     `UPDATE devices SET last_update_at = COALESCE(?, datetime('now')), last_update_ok = ?,
         last_update_message = ?, last_update_ref = ? WHERE id = ?`, at, ok, message, ref, device.id);
   await audit.log(ctx, "device_update_reported", "device", device.id,
-    { device_id: device.device_id, ref: ref ?? undefined, ok: Boolean(ok), message: message ?? undefined }, null);
+    { device_id: device.device_id, ref: ref ?? undefined, ok: Boolean(ok), message: message ?? undefined }, null, device.owner_id);
 }
 
 async function reportCommandResult(ctx) {
@@ -227,7 +231,7 @@ async function storeLearnedCode(ctx, device, command, body) {
   const row = await db.first(ctx.env, "SELECT projector_ir_codes FROM devices WHERE id = ?", device.id);
   const codes = { ...manifest.ir_codes(row && row.projector_ir_codes), [name]: code.trim() };
   await db.run(ctx.env, "UPDATE devices SET projector_ir_codes = ? WHERE id = ?", JSON.stringify(codes), device.id);
-  await audit.log(ctx, "device_ir_code_learned", "device", device.id, { device_id: device.device_id, name }, null);
+  await audit.log(ctx, "device_ir_code_learned", "device", device.id, { device_id: device.device_id, name }, null, device.owner_id);
 }
 
 // Multipart JPEG upload shared by /api/screenshots and /api/camera: `what` names the image in
@@ -278,10 +282,12 @@ async function uploadCamera(ctx) {
   return json({ ok: true, size_bytes: bytes.length });
 }
 
-// Settings enroll_group_id / enroll_playlist_id resolved against the live rows: a deleted
-// group or playlist counts as "none" (the settings row is not cleared on delete).
-async function enrollDefaults(env, settings) {
-  const live = async (table, id) => (id !== null && await db.first(env, `SELECT id FROM ${table} WHERE id = ?`, id)) ? id : null;
+// The account's Settings enroll_group_id / enroll_playlist_id resolved against its own live rows:
+// a deleted group or playlist (or one that is not the account's) counts as "none" (the settings
+// row is not cleared on delete).
+async function enrollDefaults(env, ownerId) {
+  const settings = await db.loadSettings(env, ownerId);
+  const live = async (table, id) => ((await accounts.ownRow(env, table, id, ownerId)) ? id : null);
   return { group_id: await live("device_groups", settings.enroll_group_id), playlist_id: await live("playlists", settings.enroll_playlist_id) };
 }
 
@@ -299,13 +305,16 @@ function deviceFields(body) {
 // Create the row for a NEW device id, or issue a fresh token for a known one: the re-flashed
 // card works, the old card and anything that learned the old token stop. The console's view of
 // that device is kept (group/playlist untouched; only a FIRST registration applies the Settings
-// defaults, and the audit row says which; a rename is audited as renamed_from). New device ids
-// are capped per hour fleet-wide; the token is never logged or audited. With the Cloudflare
-// secrets set, a device without a tunnel gets one here (cloudflare.tryProvisionDevice: a
-// failure is audited, never fatal). `owner` is null for the enrollment key (it may re-register
-// any device id) or the operator token's user, who becomes the owner of a new row and of an
-// ownerless one, and may only re-register their own unless they are an admin. `actions` names
-// the create / re-register audit rows. Returns {id, token, created}.
+// defaults of the account it lands in, and the audit row says which; a rename is audited as
+// renamed_from). New device ids are capped per hour fleet-wide; the token is never logged or
+// audited. With the Cloudflare secrets set, a device without a tunnel gets one here
+// (cloudflare.tryProvisionDevice: a failure is audited, never fatal). `owner` is null for the
+// enrollment key (it may re-register any device id; the row has no owner, so it plays the site
+// admin's content) or the operator token's user, who becomes the owner of a new row and of an
+// ownerless one, and may only re-register their own unless they are an admin. A device id is
+// one site-wide name (the sync URL, the tunnel hostname), so another account's id is refused with
+// a 409 that names nothing but the id the flasher sent. `actions` names the create / re-register
+// audit rows. Returns {id, token, created}.
 async function registerDevice(ctx, { deviceId, name, piModel = null, owner = null }, [createdAction, againAction]) {
   const existing = () => db.first(ctx.env, "SELECT id, name, tunnel_id, owner_id FROM devices WHERE device_id = ?", deviceId);
   let row = await existing();
@@ -316,14 +325,14 @@ async function registerDevice(ctx, { deviceId, name, piModel = null, owner = nul
       throw new HttpError(429, "Too many new projectors enrolled in the last hour; try again later", { "Retry-After": "3600" });
     }
     const token = randomToken(32);
-    const { group_id, playlist_id } = await enrollDefaults(ctx.env, await ctx.settings());
+    const { group_id, playlist_id } = await enrollDefaults(ctx.env, owner ? owner.id : await accounts.siteAdminId(ctx.env));
     try {
       const id = (await db.run(ctx.env,
         "INSERT INTO devices (device_id, name, token, group_id, playlist_id, owner_id, pi_model) VALUES (?, ?, ?, ?, ?, ?, ?)",
         deviceId, name, token, group_id, playlist_id, owner ? owner.id : null, piModel)).last_row_id;
       await audit.log(ctx, createdAction, "device", id,
         { device_id: deviceId, name, owner: owner ? owner.username : undefined, group_id: group_id ?? undefined, playlist_id: playlist_id ?? undefined }, owner);
-      if (cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id, device_id: deviceId });
+      if (cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id, device_id: deviceId, owner_id: owner ? owner.id : null });
       return { id, token, created: true };
     } catch (e) {
       if (!db.isConstraintError(e)) throw e;
@@ -334,15 +343,22 @@ async function registerDevice(ctx, { deviceId, name, piModel = null, owner = nul
   if (owner && owner.role !== "admin" && row.owner_id !== owner.id) {
     fail(409, OTHER_ACCOUNT);
   }
+  // An ownerless projector registered by an account becomes theirs; what it pointed at (the site
+  // admin's) goes unless it is theirs too (accounts.reassignDevice).
+  let ownerId = row.owner_id;
+  if (owner && row.owner_id === null) {
+    await accounts.reassignDevice(ctx, row.id, owner.id);
+    ownerId = owner.id;
+  }
   const token = randomToken(32);
-  await db.run(ctx.env, "UPDATE devices SET token = ?, name = ?, pi_model = COALESCE(?, pi_model), owner_id = COALESCE(owner_id, ?) WHERE id = ?",
-    token, name, piModel, owner ? owner.id : null, row.id);
+  await db.run(ctx.env, "UPDATE devices SET token = ?, name = ?, pi_model = COALESCE(?, pi_model) WHERE id = ?",
+    token, name, piModel, row.id);
   // The Wyze camera name can derive from the device name (wyze_camera_pattern), so a rename
   // must make the Pi refetch its camera config.
-  if (row.name !== name) await db.bumpCameraConfigVersion(ctx.env);
+  if (row.name !== name) await db.bumpCameraConfigVersion(ctx.env, ownerId ?? await accounts.siteAdminId(ctx.env));
   await audit.log(ctx, againAction, "device", row.id,
-    { device_id: deviceId, name, renamed_from: row.name !== name ? row.name : undefined }, owner);
-  if (!row.tunnel_id && cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id: row.id, device_id: deviceId });
+    { device_id: deviceId, name, renamed_from: row.name !== name ? row.name : undefined }, owner, ownerId);
+  if (!row.tunnel_id && cloudflare.configured(ctx.env)) await cloudflare.tryProvisionDevice(ctx, { id: row.id, device_id: deviceId, owner_id: ownerId });
   return { id: row.id, token, created: false };
 }
 
@@ -354,8 +370,7 @@ async function enroll(ctx) {
   const wait = await auth.loginLockedFor(ctx.env, ctx.ip, auth.ENROLL_KEY, auth.ENROLL_MAX_FAILURES, auth.ENROLL_LOCK_SECONDS);
   if (wait) throw new HttpError(429, `Too many failed attempts; try again in ${wait} s`, { "Retry-After": String(wait) });
   const body = await jsonObject(ctx.request);
-  const settings = await ctx.settings();
-  const expected = settings.enrollment_key;
+  const expected = await db.enrollmentKey(ctx.env);
   if (typeof body.key !== "string" || !auth.timingSafeEqual(body.key, expected)) {
     await auth.recordLoginFailure(ctx.env, ctx.ip, auth.ENROLL_KEY);
     fail(401, "invalid enrollment key");
@@ -383,7 +398,8 @@ async function operatorLogin(ctx) {
   const row = await db.first(ctx.env, "SELECT id, username, password_hash, role FROM users WHERE username = ?", username);
   if (!row) await auth.burnPasswordCheck(password);
   if (!row || !(await auth.verifyPassword(password, row.password_hash))) {
-    await audit.log(ctx, "login_failed", "user", row ? row.id : null, { username: row ? row.username : "(no such user)", source: "flasher" }, null);
+    // About the account that was tried (its owner sees it on /audit), never what was typed.
+    await audit.log(ctx, "login_failed", "user", row ? row.id : null, { username: row ? row.username : "(no such user)", source: "flasher" }, null, row ? row.id : null);
     await auth.recordLoginFailure(ctx.env, ctx.ip, username);
     fail(401, "Invalid username or password");
   }
@@ -407,19 +423,31 @@ async function flasherOperator(ctx) {
   return op;
 }
 
+// The signed-in account's own groups, playlists, zone and Wyze state for the flasher: the same
+// fields operatorMe and operatorEnrollment answer with.
+async function accountSummary(env, userId) {
+  const settings = await db.loadSettings(env, userId);
+  return {
+    timezone: settings.timezone,
+    wyze_configured: await secrets.wyzeConfigured(env, userId),
+    groups: await db.all(env, "SELECT id, name FROM device_groups WHERE owner_id = ? ORDER BY name", userId),
+    playlists: await db.all(env, "SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name", userId),
+  };
+}
+
 // Who the flasher is signed in as, plus what it needs to sanity-check the console (the same
 // fields as operatorEnrollment minus the enrollment key: cards carry their device token now).
 async function operatorMe(ctx) {
   const op = await flasherOperator(ctx);
-  const settings = await ctx.settings();
+  const own = await accountSummary(ctx.env, op.id);
   return json({
     username: op.username,
     role: op.role,
     console_url: installBaseUrl(ctx.env, ctx.url).base,
-    timezone: settings.timezone,
-    wyze_configured: await secrets.wyzeConfigured(ctx.env),
-    groups: await db.all(ctx.env, "SELECT id, name FROM device_groups ORDER BY name"),
-    playlists: await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name"),
+    timezone: own.timezone,
+    wyze_configured: own.wyze_configured,
+    groups: own.groups,
+    playlists: own.playlists,
   });
 }
 
@@ -461,32 +489,33 @@ async function operatorEnrollment(ctx) {
   if (await auth.touchApiToken(ctx.env, op.token_id)) {
     await audit.log(ctx, "api_token_used", "api_token", op.token_id, { name: op.token_name }, { id: op.id, username: op.username });
   }
-  const settings = await ctx.settings();
+  const own = await accountSummary(ctx.env, op.id);
   return json({
     console_url: installBaseUrl(ctx.env, ctx.url).base,
-    enrollment_key: settings.enrollment_key,
-    groups: await db.all(ctx.env, "SELECT id, name FROM device_groups ORDER BY name"),
-    playlists: await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name"),
-    timezone: settings.timezone,
-    wyze_configured: await secrets.wyzeConfigured(ctx.env),
+    enrollment_key: await db.enrollmentKey(ctx.env),
+    groups: own.groups,
+    playlists: own.playlists,
+    timezone: own.timezone,
+    wyze_configured: own.wyze_configured,
   });
 }
 
 // Camera zero-config (device bearer): what the player's camera capture and the wyze-bridge
-// need, resolved from the device's override (Devices page) over the site default (Settings):
-// {source: "none"} | {source: "rtsp", rtsp_url} | {source: "wyze", wyze: {email, password,
-// api_id, api_key, camera}}, plus the camera_config_version it corresponds to. The Wyze
-// credentials travel only here, only to the device's own token. Audited as
-// camera_config_fetched at most once a day per device (the player fetches on every start).
+// need, resolved from the device's override (Devices page) over its account's default
+// (Settings): {source: "none"} | {source: "rtsp", rtsp_url} | {source: "wyze", wyze: {email,
+// password, api_id, api_key, camera}}, plus the camera_config_version it corresponds to. The Wyze
+// credentials are the projector's own account's (its owner's, the site admin's for an ownerless
+// one) and travel only here, only to the device's own token. Audited as camera_config_fetched at
+// most once a day per device (the player fetches on every start).
 async function getCameraConfig(ctx) {
   const device = await ownDevice(ctx);
   const row = await db.first(ctx.env, "SELECT camera_source, camera_rtsp_url, camera_wyze_name, camera_supported FROM devices WHERE id = ?", device.id);
-  const settings = await ctx.settings();
+  const settings = await db.loadSettings(ctx.env, device.content_owner);
   const body = await cameraConfig(ctx.env, { ...device, ...row }, settings);
   const r = await db.run(ctx.env,
     `UPDATE devices SET camera_config_audited_at = datetime('now')
       WHERE id = ? AND (camera_config_audited_at IS NULL OR camera_config_audited_at <= datetime('now', '-1 day'))`, device.id);
-  if (r.changes > 0) await audit.log(ctx, "camera_config_fetched", "device", device.id, { device_id: device.device_id, source: body.source }, null);
+  if (r.changes > 0) await audit.log(ctx, "camera_config_fetched", "device", device.id, { device_id: device.device_id, source: body.source }, null, device.owner_id);
   return json(body);
 }
 

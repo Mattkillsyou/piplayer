@@ -2,6 +2,11 @@
 // before any byte moves, R2 createMultipartUpload), PUTs fixed 8 MiB parts, then completes.
 // Port of the validation / naming / dedupe rules of web.library_upload + _final_media_name;
 // the metadata ffprobe used to produce now comes from the browser (no ffprobe in Workers).
+// Every library is its own account's (migration 0016): an upload belongs to its uploader
+// (uploads.user_id) and becomes a media row of theirs, a duplicate is one already in THEIR
+// library (the same file in two accounts is two rows and two R2 objects, so deleting one leaves
+// the other), the file name carries the account so two libraries never contend for one R2 key,
+// and another account's upload id answers exactly like an unknown one.
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
 import * as db from "./db.js";
@@ -50,12 +55,18 @@ export function sanitizeFilename(name) {
 const stripDots = (s) => s.replace(/^[._]+/, "").replace(/[._]+$/, "");
 
 // web._final_media_name: '<sha16>_<sanitized original><ext>', whole name <= MAX_FILENAME_LEN.
-export function finalMediaName(sha, original, ext) {
+// With `ownerId` (every upload since migration 0016) the account goes after the hash,
+// '<sha16>_u<id>_<stem><ext>': media.filename (and the R2 key) is unique site-wide, so two accounts
+// uploading the same file need two names, and a name that differed only when another account had
+// the file would tell the second uploader so. The name still starts with the sha256 prefix, so the
+// bytes behind it never change (media.js caches on that).
+export function finalMediaName(sha, original, ext, ownerId = null) {
+  const prefix = `${sha.slice(0, 16)}_${ownerId === null || ownerId === undefined ? "" : `u${ownerId}_`}`;
   const safe = sanitizeFilename(original || "asset");
   let stem = ext && safe.toLowerCase().endsWith(ext) ? safe.slice(0, -ext.length) : safe;
-  const budget = MAX_FILENAME_LEN - 17 - ext.length;
+  const budget = MAX_FILENAME_LEN - prefix.length - ext.length;
   stem = stripDots(stem.slice(0, Math.max(budget, 0))) || "asset";
-  return `${sha.slice(0, 16)}_${stem}${ext}`;
+  return `${prefix}${stem}${ext}`;
 }
 
 export const totalParts = (size) => Math.ceil(size / PART_SIZE);
@@ -119,8 +130,9 @@ function validateInit(body, env) {
 // Routes
 // ---------------------------------------------------------------------------
 
-async function duplicateOf(env, sha256) {
-  const existing = await db.first(env, "SELECT id, original_name FROM media WHERE sha256 = ?", sha256);
+// A file already in this account's library (another account's copy is none of its business).
+async function duplicateOf(env, sha256, ownerId) {
+  const existing = await db.first(env, "SELECT id, original_name FROM media WHERE sha256 = ? AND owner_id = ?", sha256, ownerId);
   if (existing) fail(409, `Already in the library as '${existing.original_name}'.`);
 }
 
@@ -128,7 +140,7 @@ async function uploadInit(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const body = await jsonObject(ctx.request);
   const v = validateInit(body, ctx.env);
-  await duplicateOf(ctx.env, v.sha256);
+  await duplicateOf(ctx.env, v.sha256, user.id);
 
   // Same content already in flight (page reload mid-upload): hand back that upload so the
   // browser can skip the parts it already sent (GET status), instead of starting over.
@@ -136,10 +148,11 @@ async function uploadInit(ctx) {
     "SELECT id, received FROM uploads WHERE sha256 = ? AND size = ? AND user_id = ?", v.sha256, v.size, user.id);
   if (inflight) return json({ upload_id: inflight.id, part_size: PART_SIZE, received: inflight.received });
 
-  const key = "media/" + finalMediaName(v.sha256, v.name, v.ext);
+  const key = "media/" + finalMediaName(v.sha256, v.name, v.ext, user.id);
   // The key comes from the browser's sha256 prefix and name only: a different file whose
   // sha256 shares the first 16 hex chars must not open a second multipart at a key the
   // library (or another in-flight upload) already holds, or complete would replace those bytes.
+  // The key carries this account's id, so only its own rows can ever match here.
   if (await db.first(ctx.env, "SELECT 1 FROM media WHERE filename = ? UNION ALL SELECT 1 FROM uploads WHERE key = ?", key.slice("media/".length), key)) {
     fail(409, "A file with this name is already in the library or being uploaded");
   }
@@ -155,11 +168,12 @@ async function uploadInit(ctx) {
   return json({ upload_id: id, part_size: PART_SIZE, received: 0 });
 }
 
+// The caller's own upload, or the 404 an unknown id gets (for an admin too: an upload becomes a
+// file in its uploader's library, nobody else's).
 async function loadUpload(ctx) {
   const user = auth.requireRole(ctx, "editor");
-  const row = await db.first(ctx.env, "SELECT * FROM uploads WHERE id = ?", ctx.params.id);
+  const row = await db.first(ctx.env, "SELECT * FROM uploads WHERE id = ? AND user_id = ?", ctx.params.id, user.id);
   if (!row) fail(404, "Upload not found");
-  if (row.user_id !== user.id && user.role !== "admin") fail(403, "You can only continue or cancel your own uploads");
   row.parts = JSON.parse(row.parts);
   return row;
 }
@@ -244,31 +258,32 @@ async function uploadComplete(ctx) {
   if (parts.length !== total || row.received !== row.size) {
     fail(400, `upload incomplete: ${row.received} of ${row.size} bytes (${parts.length}/${total} parts)`);
   }
-  // Re-check the duplicate rule: another upload of the same bytes may have won meanwhile
-  // (the fast path with the friendly name; the UNIQUE index on sha256 catches the same-instant race).
-  const existing = await db.first(ctx.env, "SELECT id, original_name FROM media WHERE sha256 = ?", row.sha256);
+  // Re-check the duplicate rule: another upload of the same bytes to this library may have won
+  // meanwhile (the fast path with the friendly name; the UNIQUE index on (owner_id, sha256)
+  // catches the same-instant race).
+  const existing = await db.first(ctx.env, "SELECT id, original_name FROM media WHERE sha256 = ? AND owner_id = ?", row.sha256, row.user_id);
   if (existing) {
     await abortMultipart(ctx.env, row);
     await db.run(ctx.env, "DELETE FROM uploads WHERE id = ?", row.id);
     fail(409, `Already in the library as '${existing.original_name}'.`);
   }
   const filename = row.key.slice("media/".length);
-  // Every upload joins the site default playlist (migration 0010) at the end, in the same
-  // transaction as the media row: the new file is found by its sha256 (UNIQUE), so the item
-  // and the media row land or fail together.
+  // Every upload joins the uploader's own Default playlist (their default_playlist_id, one of their
+  // own playlists: db.loadSettings) at the end, in the same transaction as the media row: the new
+  // file is found by (owner, sha256), UNIQUE, so the item and the media row land or fail together.
   const defaultPlaylist = (await ctx.settings()).default_playlist_id;
   let mediaId;
   try {
     // The media row is inserted before R2 completes the object, so a name or sha256 clash
     // fails here while the multipart can still be aborted without touching the library object.
     const [ins] = await db.batch(ctx.env, [
-      [`INSERT INTO media (filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256)
-        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-      filename, row.name, row.media_type, row.size, row.duration_seconds, row.width, row.height, row.sha256],
+      [`INSERT INTO media (filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256, owner_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      filename, row.name, row.media_type, row.size, row.duration_seconds, row.width, row.height, row.sha256, row.user_id],
       ...(defaultPlaylist ? [
         [`INSERT INTO playlist_items (playlist_id, media_id, position)
-          SELECT ?1, (SELECT id FROM media WHERE sha256 = ?2), COALESCE(MAX(position), -1) + 1 FROM playlist_items WHERE playlist_id = ?1`,
-        defaultPlaylist, row.sha256],
+          SELECT ?1, (SELECT id FROM media WHERE sha256 = ?2 AND owner_id = ?3), COALESCE(MAX(position), -1) + 1 FROM playlist_items WHERE playlist_id = ?1`,
+        defaultPlaylist, row.sha256, row.user_id],
         ["UPDATE playlists SET updated_at = datetime('now') WHERE id = ?", defaultPlaylist],
       ] : []),
       ["DELETE FROM uploads WHERE id = ?", row.id],

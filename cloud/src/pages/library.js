@@ -1,5 +1,7 @@
 // Port of web.library_page / library_delete + templates/library.html. The upload panel is
 // driven by /static/upload.js (chunked protocol in ../uploads.js) instead of a multipart form.
+// Each account has its own library (media.owner_id, migration 0016): the page lists the user's
+// own files and a delete of another account's file id answers like a missing one.
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
@@ -62,7 +64,7 @@ async function libraryPage(ctx) {
   const tz = (await ctx.settings()).timezone;
   const items = await db.all(ctx.env,
     `SELECT id, original_name, filename, media_type, size_bytes, duration_seconds, width, height, codec, uploaded_at
-     FROM media ORDER BY uploaded_at DESC, id DESC`);
+     FROM media WHERE owner_id = ? ORDER BY uploaded_at DESC, id DESC`, user.id);
   const maxBytes = envInt(ctx.env, "PIPLAYER_MAX_UPLOAD_BYTES", 5 * 1024 * 1024 * 1024);
   const totalBytes = items.reduce((n, v) => n + (v.size_bytes || 0), 0);
   const table = items.length ? `<div class="table-wrap">
@@ -89,9 +91,9 @@ ${table}`;
 }
 
 async function libraryDelete(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const mediaId = idParam(ctx.params.media_id, "media_id");
-  const row = await db.first(ctx.env, "SELECT filename, original_name FROM media WHERE id = ?", mediaId);
+  const row = await db.first(ctx.env, "SELECT filename, original_name FROM media WHERE id = ? AND owner_id = ?", mediaId, user.id);
   if (!row) fail(404, "Not Found");
   const affected = (await db.all(ctx.env,
     "SELECT DISTINCT playlist_id FROM playlist_items WHERE media_id = ?", mediaId)).map((r) => r.playlist_id);

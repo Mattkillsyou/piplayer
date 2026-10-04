@@ -42,9 +42,12 @@ async function issue(dev, command = "force-sync") {
 
 beforeAll(async () => {
   admin = await setupAdmin("admin", "test1234");
-  ids.pl = await ins("INSERT INTO playlists (name) VALUES ('A')");
-  ids.media = await ins(`INSERT INTO media (filename, original_name, media_type, size_bytes, sha256)
-                         VALUES ('i.png', 'i.png', 'image', 50, ?)`, SHA("2"));
+  // The devices below have no owner (enrolled with the site key), so they play the site admin's
+  // content (accounts.js): the playlist and its file are the admin's.
+  ids.admin = (await one("SELECT id FROM users WHERE username = 'admin'")).id;
+  ids.pl = await ins("INSERT INTO playlists (owner_id, name, legacy_name) VALUES (?, 'A', 'A')", ids.admin);
+  ids.media = await ins(`INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id)
+                         VALUES ('i.png', 'i.png', 'image', 50, ?, ?)`, SHA("2"), ids.admin);
   await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0)", ids.pl, ids.media);
   ids.dev = { id: await ins("INSERT INTO devices (device_id, name, token, playlist_id) VALUES ('dev-1', 'Dev 1', 'tok-1', ?)", ids.pl), device_id: "dev-1", token: "tok-1" };
   ids.other = { id: await ins("INSERT INTO devices (device_id, name, token) VALUES ('dev-2', 'Dev 2', 'tok-2')"), device_id: "dev-2", token: "tok-2" };
@@ -188,7 +191,7 @@ describe("sync", () => {
     }
   });
 
-  it("device with nothing assigned plays the site default playlist", async () => {
+  it("an ownerless device with nothing assigned plays the site admin's Default playlist", async () => {
     const m = await (await sync(ids.other)).json();
     expect(m.playlist.source).toBe("site-default");
     expect(m.playlist.name).toBe("Default");

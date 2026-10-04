@@ -18,9 +18,12 @@ async function loginAs(username, password) {
   return c;
 }
 
-// The editor's user id once roles() has run: device() makes it the owner of every fixture
-// device, so the editor client sees and may act on what a test creates (ownership, migration 0009).
+// The editor's user id once roles() has run: device(), media(), playlist() and group() make it
+// the owner of every fixture row, so the editor client sees and may act on what a test creates
+// (projectors per account since migration 0009, everything else since 0016). Pass an owner to
+// put a row in another account (the admin's, for the Settings tests).
 let editorId = null;
+export const editor = () => editorId;
 
 // {admin, editor, viewer, ids: {admin, editor, viewer}}: the first admin via /setup, the others created on /users.
 export async function roles() {
@@ -40,13 +43,15 @@ export const post = (c, path, fields = {}) => c.post(path, fields, { "X-CSRF-Tok
 export const postJson = (c, path, data) => c.postJson(path, data, { "X-CSRF-Token": c.token });
 
 let mediaSeq = 0;
-// The sequence also feeds the sha256, which is UNIQUE since migration 0006: bump it for every row.
+// The sequence also feeds the sha256, unique per account since migration 0016 (0006: site-wide):
+// bump it for every row. extra.owner: the account (default the roles() editor; null = none).
 export const media = (name, type = "image", extra = {}) => (mediaSeq++, ins(
-  `INSERT INTO media (filename, original_name, media_type, size_bytes, duration_seconds, sha256)
-   VALUES (?, ?, ?, ?, ?, ?)`,
+  `INSERT INTO media (filename, original_name, media_type, size_bytes, duration_seconds, sha256, owner_id)
+   VALUES (?, ?, ?, ?, ?, ?, ?)`,
   extra.filename || `${mediaSeq}_${name}`, name, type, extra.size ?? 1000, extra.duration ?? null,
-  SHA("a").slice(0, 56) + String(mediaSeq).padStart(8, "0")));
-export const playlist = (name) => ins("INSERT INTO playlists (name) VALUES (?)", name);
+  extra.sha256 || SHA("a").slice(0, 56) + String(mediaSeq).padStart(8, "0"), extra.owner === undefined ? editorId : extra.owner));
+// legacy_name: the old site-wide unique name column (migration 0016); any unique value does.
+export const playlist = (name, owner = editorId) => ins("INSERT INTO playlists (owner_id, name, legacy_name) VALUES (?, ?, lower(hex(randomblob(16))))", owner, name);
 // Device row; `cols` adds columns ({playlist_id, group_id, last_seen_at, ...}). Owned by the
 // roles() editor unless cols.owner_id says otherwise (null = no owner, admin-only).
 export async function device(deviceId, name = deviceId, cols = {}) {
@@ -58,7 +63,12 @@ export async function device(deviceId, name = deviceId, cols = {}) {
     deviceId, name, `tok-${deviceId}`, ...keys.map((k) => cols[k]));
   return { id, device_id: deviceId, name, token: `tok-${deviceId}` };
 }
-export const group = (name) => ins("INSERT INTO device_groups (name) VALUES (?)", name);
+export const group = (name, owner = editorId) => ins("INSERT INTO device_groups (owner_id, name, legacy_name) VALUES (?, ?, lower(hex(randomblob(16))))", owner, name);
+// An account's own settings row (account_settings, migration 0016), e.g. its timezone.
+export const setting = (owner, key, value) => ins(
+  "INSERT INTO account_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value", owner, key, String(value));
+// The account's Default playlist id (default_playlist_id).
+export const defaultPlaylistOf = async (owner) => Number((await one("SELECT value FROM account_settings WHERE user_id = ? AND key = 'default_playlist_id'", owner)).value);
 
 // Status + JSON detail for an error response.
 export async function detail(res, status) {

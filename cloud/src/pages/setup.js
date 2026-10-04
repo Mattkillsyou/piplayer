@@ -1,5 +1,8 @@
 // /setup: one-time first-admin creation. While `users` is empty every other page redirects
 // here (index.js); the form is only shown with ?token=<SETUP_TOKEN>. Once a user exists -> 404.
+// The first admin becomes the site admin and owns whatever exists from before any user did
+// (accounts.adoptOrphans: the Default playlist of migration 0010, settings, uploads).
+import * as accounts from "../accounts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
@@ -75,6 +78,7 @@ async function setupSubmit(ctx) {
     if (db.isConstraintError(e)) fail(404, "Not Found");
     throw e;
   }
+  await accounts.adoptOrphans(ctx.env, id);
   await auth.rotateSession(ctx, id);
   await audit.log(ctx, "user_create", "user", id, { username, role: "admin", setup: true });
   return redirect("/dashboard");

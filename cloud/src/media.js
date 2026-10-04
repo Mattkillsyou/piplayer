@@ -159,13 +159,15 @@ export async function serveObject(request, bucket, key, extraHeaders = {}) {
 // /api/media/{filename}
 // ---------------------------------------------------------------------------
 
-// A device token only unlocks the files in that device's currently served playlist.
-async function deviceMayFetch(env, device, filename, timezone) {
-  const [pid] = await manifest.resolve_active_playlist_id(env, device, wallClock(timezone));
+// A device token only unlocks the files in that device's currently served playlist, resolved in
+// its content account (its owner's, or the site admin's for an ownerless one) like the manifest.
+async function deviceMayFetch(env, device, filename) {
+  const settings = await db.loadSettings(env, device.content_owner);
+  const [pid] = await manifest.resolve_active_playlist_id(env, device, wallClock(settings.timezone), settings.default_playlist_id);
   if (!pid) return false;
   const row = await db.first(env,
     `SELECT 1 AS one FROM playlist_items pi JOIN media m ON m.id = pi.media_id
-      WHERE pi.playlist_id = ? AND m.filename = ? LIMIT 1`, pid, filename);
+      WHERE pi.playlist_id = ? AND m.filename = ? AND m.owner_id = ? LIMIT 1`, pid, filename, device.content_owner);
   return row !== null;
 }
 
@@ -183,8 +185,12 @@ async function getMedia(ctx) {
     }
   }
   if (!isUser && !device) fail(401, "Authentication required");
-  if (!isUser && !(await deviceMayFetch(ctx.env, device, filename, (await ctx.settings()).timezone))) {
-    fail(403, "file is not in this device's playlist");
+  // A signed-in user reads their own library only (admins too): another account's file answers
+  // exactly like a missing one. A device reads what its playlist serves right now.
+  const mine = isUser && await db.first(ctx.env, "SELECT 1 AS one FROM media WHERE filename = ? AND owner_id = ?", filename, ctx.user.id);
+  if (!mine) {
+    if (!device) fail(404, "Not Found");
+    if (!(await deviceMayFetch(ctx.env, device, filename))) fail(403, "file is not in this device's playlist");
   }
   // A media filename starts with 16 hex chars of the object's sha256 (uploads.js), so the bytes
   // behind a name never change: a year of immutable caching, and the edge cache in front of R2

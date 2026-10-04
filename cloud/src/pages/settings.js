@@ -1,15 +1,17 @@
-// /settings (admin only, cloud-only page): site timezone, screenshot and camera intervals,
-// default image duration, the site default playlist (every upload joins it; projectors with
-// nothing of their own play it), the group/playlist new devices get on first enrollment and the remote
-// update policy (player release, nightly auto-update + window), stored in the settings table
-// (db.loadSettings / saveSetting), plus the device enrollment key (shown
-// masked, rotatable; POST /api/enroll checks it) and the admin's personal API tokens
-// (api_tokens; the flasher presents one on GET /api/operator/enrollment to fetch that key),
-// and the Wyze account for camera zero-config (encrypted in `secrets`, shown only as set /
-// not set; every player fetches it through GET /api/camera-config), and the alert channels
-// (offline / repeat minutes, email addresses, webhook URL, Twilio SMS in `secrets`; each with
-// a Send test button; alerts.js), and the automatic camera tunnel status (cloudflare.js: the
-// three worker secrets are set or not; read-only, `wrangler secret put` sets them).
+// /settings (editors and admins, cloud-only page): each account's OWN settings (account_settings,
+// migration 0016; db.loadSettings / settingStatement): timezone, screenshot and camera
+// intervals, default image duration, the account's Default playlist (every upload joins it; its
+// projectors with nothing of their own play it), the group/playlist its new projectors get on
+// first registration and the remote update policy (player release, nightly auto-update +
+// window), plus the user's personal API tokens (api_tokens; the flasher signs in with one), the
+// account's Wyze login for camera zero-config (encrypted in account_secrets, shown only as set /
+// not set; its players fetch it through GET /api/camera-config), its alert channels (offline /
+// repeat minutes, email addresses, webhook URL, Twilio SMS in account_secrets; each with a Send
+// test button; alerts.js), and the automatic camera tunnel status (cloudflare.js: the three
+// worker secrets are set or not; read-only, `wrangler secret put` sets them). Admins also get
+// the site-wide device enrollment key (shown masked, rotatable; POST /api/enroll checks it). No
+// account reads or changes another's settings, an admin's included.
+import * as accounts from "../accounts.js";
 import * as alerts from "../alerts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
@@ -104,7 +106,7 @@ export function tokenTable(ctx, tokens, tz, revokePath) {
   </div>`;
 }
 
-// The admin's own tokens (never the hash) and the create form; `newToken` is the plaintext
+// The user's own tokens (never the hash) and the create form; `newToken` is the plaintext
 // of a token created by this very request, shown once and never again.
 async function tokensPanel(ctx, me, newToken, tz) {
   const tokens = await userTokens(ctx.env, me.id);
@@ -122,7 +124,7 @@ const WYZE_FIELDS = [["wyze_email", "Wyze account email"], ["wyze_password", "Wy
   ["wyze_api_id", "API key id"], ["wyze_api_key", "API key"]];
 
 async function wyzePanel(ctx, s) {
-  const have = await secrets.names(ctx.env);
+  const have = await secrets.names(ctx.env, ctx.user.id);
   const badge = (n) => (have.has(n) ? '<span class="badge badge-active">set</span>' : '<span class="badge badge-muted">not set</span>');
   const configured = have.has("wyze_email") && have.has("wyze_password");
   return `<div class="panel">
@@ -155,8 +157,8 @@ const TWILIO_FIELDS = [["twilio_account_sid", "Twilio account SID"], ["twilio_au
   ["twilio_from", "Text messages from (phone number with country code, e.g. +15551234567)"], ["twilio_to", "Text messages to (phone number with country code, e.g. +15551234567)"]];
 
 async function alertsPanel(ctx, s) {
-  const have = await secrets.names(ctx.env);
-  const c = await alerts.configured(ctx.env, s);
+  const have = await secrets.names(ctx.env, ctx.user.id);
+  const c = await alerts.configured(ctx.env, s, ctx.user.id);
   const badge = (on, text = on ? "configured" : "not configured") => `<span class="badge ${on ? "badge-active" : "badge-muted"}">${text}</span>`;
   const setBadge = (n) => `<span class="badge ${have.has(n) ? "badge-active" : "badge-muted"}" title="Twilio credential">${have.has(n) ? "set" : "not set"}</span>`;
   const testForm = (channel, enabled) => `<form method="post" action="/settings/alerts/test" class="inline">
@@ -203,36 +205,54 @@ async function alertsPanel(ctx, s) {
 }
 
 // Automatic camera tunnels (G): configured when CF_API_TOKEN, CF_ACCOUNT_ID and CF_ZONE_ID are
-// set as worker secrets (never entered here), which of the three are missing otherwise, the
-// zone the hostnames go under and the operator emails the Access policy will allow.
+// set as worker secrets (never entered here; an admin sees which are missing), the operator
+// emails this account's tunnels' Access policy allows, and how many of its projectors have one.
 async function tunnelPanel(ctx, s) {
   const on = cloudflare.configured(ctx.env);
-  const emails = await cloudflare.operatorEmails(ctx.env, s);
+  const emails = await cloudflare.operatorEmails(ctx.env, s, ctx.user.id);
   const badge = (ok, text) => `<span class="badge ${ok ? "badge-active" : "badge-muted"}">${text}</span>`;
-  const n = (await db.first(ctx.env, "SELECT COUNT(*) AS n FROM devices WHERE tunnel_id IS NOT NULL")).n;
+  const n = (await db.first(ctx.env,
+    `SELECT COUNT(*) AS n FROM devices d WHERE d.tunnel_id IS NOT NULL AND ${accounts.contentOwnerSql("d")} = ?`, ctx.user.id)).n;
   return `<div class="panel">
   <h2>Camera tunnels (Cloudflare) ${badge(on, on ? "configured" : "not configured")}</h2>
-  ${on ? "" : `<p class="muted small">Missing: ${cloudflare.missing(ctx.env).map((k) => `<code>${k}</code>`).join(", ")} (worker secrets).</p>`}
+  ${on || ctx.user.role !== "admin" ? "" : `<p class="muted small">Missing: ${cloudflare.missing(ctx.env).map((k) => `<code>${k}</code>`).join(", ")} (worker secrets).</p>`}
   <p class="muted small">Operators: ${emails ? emails.map((e) => `<code>${esc(e)}</code>`).join(", ") : '<span class="badge badge-stale">none</span> (set the alert email addresses above)'}. Devices with a tunnel: ${n}.</p>
 </div>`;
 }
 
+// The site-wide device enrollment key (admins only: it can enroll any device id).
+async function enrollmentPanel(ctx) {
+  if (ctx.user.role !== "admin") return "";
+  return `<div class="panel">
+  <h2>Device enrollment</h2>
+  <div class="enrollment-key">
+    <label for="enrollment-key" class="small">Enrollment key</label>
+    <input type="password" id="enrollment-key" value="${esc(await db.enrollmentKey(ctx.env))}" readonly spellcheck="false" autocomplete="off">
+    <button type="button" class="small" data-reveal="enrollment-key">Show</button>
+  </div>
+  <form method="post" action="/settings/enrollment/rotate" class="inline" data-confirm="Make a new enrollment key? Cards flashed with the old key that have not booted yet will fail to enroll.">
+    ${csrfInput(ctx)}
+    <button type="submit" class="danger">New key</button>
+  </form>
+</div>`;
+}
+
 async function settingsPage(ctx, newToken = "") {
-  const me = auth.requireRole(ctx, "admin");
+  const me = auth.requireRole(ctx, "editor");
   const s = await ctx.settings();
-  const groups = await db.all(ctx.env, "SELECT id, name FROM device_groups ORDER BY name");
-  const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name");
+  const groups = await db.all(ctx.env, "SELECT id, name FROM device_groups WHERE owner_id = ? ORDER BY name", me.id);
+  const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name", me.id);
   const content = `<div class="page-head">
   <h1>Settings</h1>
-  <span class="page-meta"><strong>site time ${esc(localTime(nowUtc(), s.timezone))}</strong><br>schedules, the audit log and every timestamp on these pages use this zone</span>
+  <span class="page-meta"><strong>your time ${esc(localTime(nowUtc(), s.timezone))}</strong><br>your schedules, the audit log and every timestamp on these pages use this zone</span>
 </div>
 <div class="panel">
-  <h2>Site settings</h2>
+  <h2>Account settings</h2>
   ${s.timezone_problem ? alertBox(`The saved timezone "${s.timezone_problem}" is no longer accepted, so times are shown in UTC. Pick a timezone from the list and save.`, "warn") : ""}
   <form method="post" action="/settings">
     ${csrfInput(ctx)}
     <div class="form-grid">
-      <label>Site timezone
+      <label>Timezone
         ${timeZoneSelect(s.timezone)}
       </label>
       <label>Screenshot interval (seconds, at least ${MIN_SCREENSHOT_INTERVAL})
@@ -291,18 +311,7 @@ async function settingsPage(ctx, newToken = "") {
   </form>
 </div>
 
-<div class="panel">
-  <h2>Device enrollment</h2>
-  <div class="enrollment-key">
-    <label for="enrollment-key" class="small">Enrollment key</label>
-    <input type="password" id="enrollment-key" value="${esc(s.enrollment_key)}" readonly spellcheck="false" autocomplete="off">
-    <button type="button" class="small" data-reveal="enrollment-key">Show</button>
-  </div>
-  <form method="post" action="/settings/enrollment/rotate" class="inline" data-confirm="Make a new enrollment key? Cards flashed with the old key that have not booted yet will fail to enroll.">
-    ${csrfInput(ctx)}
-    <button type="submit" class="danger">New key</button>
-  </form>
-</div>
+${await enrollmentPanel(ctx)}
 
 ${await wyzePanel(ctx, s)}
 
@@ -315,7 +324,7 @@ ${await tokensPanel(ctx, me, newToken, s.timezone)}`;
 }
 
 async function settingsSave(ctx) {
-  auth.requireRole(ctx, "admin");
+  const me = auth.requireRole(ctx, "editor");
   const form = await ctx.form();
   const timezone = str(form, "timezone").trim();
   if (!isValidTimeZone(timezone)) fail(400, "Pick a timezone from the list, for example America/New_York (short names like EST are not accepted)");
@@ -327,15 +336,17 @@ async function settingsSave(ctx) {
   const durationMsg = "Default image duration must be between 0.5 and 86400 seconds";
   const duration = floatField(str(form, "default_image_duration"), "Default image duration", durationMsg);
   if (duration === null || duration < 0.5 || duration > 86400) fail(400, durationMsg);
+  // The choices are the account's own groups and playlists; another account's id is refused like
+  // a missing one.
   const enrollGroup = intField(str(form, "enroll_group_id"), "New devices join group");
-  if (enrollGroup !== null && !(await db.first(ctx.env, "SELECT id FROM device_groups WHERE id = ?", enrollGroup))) fail(400, "Pick a group from the list");
+  if (enrollGroup !== null && !(await accounts.ownRow(ctx.env, "device_groups", enrollGroup, me.id))) fail(400, "Pick a group from the list");
   const enrollPlaylist = intField(str(form, "enroll_playlist_id"), "New devices get playlist");
-  if (enrollPlaylist !== null && !(await db.first(ctx.env, "SELECT id FROM playlists WHERE id = ?", enrollPlaylist))) fail(400, "Pick a playlist from the list");
+  if (enrollPlaylist !== null && !(await accounts.ownRow(ctx.env, "playlists", enrollPlaylist, me.id))) fail(400, "Pick a playlist from the list");
   // Update policy: an omitted (empty) field keeps its current value, so older callers that
   // only post the four site fields never lose it.
   const current = await ctx.settings();
   const defaultPlaylist = intField(str(form, "default_playlist_id"), "Default playlist") ?? current.default_playlist_id;
-  if (defaultPlaylist !== null && !(await db.first(ctx.env, "SELECT id FROM playlists WHERE id = ?", defaultPlaylist))) fail(400, "Default playlist: pick a playlist from the list");
+  if (defaultPlaylist !== null && !(await accounts.ownRow(ctx.env, "playlists", defaultPlaylist, me.id))) fail(400, "Default playlist: pick a playlist from the list");
   const release = str(form, "player_release").trim() || current.player_release;
   if (!db.isGitRef(release)) fail(400, "Player software version may only contain letters, digits, dots, slashes, hyphens and underscores (at most 100)");
   const autoUpdate = str(form, "auto_update").trim() || current.auto_update;
@@ -352,17 +363,16 @@ async function settingsSave(ctx) {
     if (!db.isProjectorMinutes(v)) fail(400, `${label} must be a whole number of minutes, 0-${db.MAX_PROJECTOR_MINUTES}`);
     values[key] = v;
   }
-  // null (none) deletes the row so the settings table only holds what is set
-  await db.batch(ctx.env, Object.entries(values).map(([k, v]) => (v === null
-    ? ["DELETE FROM settings WHERE key = ?", k]
-    : ["INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", k, String(v)])));
+  // null (none) deletes the row so account_settings only holds what is set
+  await db.batch(ctx.env, Object.entries(values).map(([k, v]) => db.settingStatement(me.id, k, v)));
   await audit.log(ctx, "settings_update", "settings", null, values);
   return auth.flashRedirect(ctx, "/settings", "Settings saved.");
 }
 
-// Filled fields replace, empty keep; the audit row says which changed, never a value.
+// The account's own Wyze login. Filled fields replace, empty keep; the audit row says which
+// changed, never a value. A change makes the account's players refetch their camera config.
 async function wyzeSave(ctx) {
-  auth.requireRole(ctx, "admin");
+  const me = auth.requireRole(ctx, "editor");
   const form = await ctx.form();
   const current = await ctx.settings();
   const pattern = str(form, "wyze_camera_pattern").trim() || current.wyze_camera_pattern;
@@ -374,13 +384,13 @@ async function wyzeSave(ctx) {
     if (v.length > 500 || /[\x00-\x1f\x7f]/.test(v)) fail(400, `${label} must be at most 500 printable characters`);
     changed[name] = v;
   }
-  for (const [name, v] of Object.entries(changed)) await secrets.set(ctx.env, name, v);
+  for (const [name, v] of Object.entries(changed)) await secrets.set(ctx.env, me.id, name, v);
   if (pattern !== current.wyze_camera_pattern) {
-    await db.saveSetting(ctx.env, "wyze_camera_pattern", pattern);
+    await db.saveSetting(ctx.env, me.id, "wyze_camera_pattern", pattern);
     changed.wyze_camera_pattern = pattern;
   }
   if (Object.keys(changed).length) {
-    await db.bumpCameraConfigVersion(ctx.env);
+    await db.bumpCameraConfigVersion(ctx.env, me.id);
     await audit.log(ctx, "wyze_settings_update", "settings", "wyze",
       Object.fromEntries(Object.keys(changed).map((k) => [k, k === "wyze_camera_pattern" ? pattern : "set"])));
   }
@@ -388,18 +398,18 @@ async function wyzeSave(ctx) {
 }
 
 async function wyzeClear(ctx) {
-  auth.requireRole(ctx, "admin");
-  for (const name of secrets.WYZE_NAMES) await secrets.set(ctx.env, name, "");
-  await db.bumpCameraConfigVersion(ctx.env);
+  const me = auth.requireRole(ctx, "editor");
+  for (const name of secrets.WYZE_NAMES) await secrets.set(ctx.env, me.id, name, "");
+  await db.bumpCameraConfigVersion(ctx.env, me.id);
   await audit.log(ctx, "wyze_settings_cleared", "settings", "wyze");
   return auth.flashRedirect(ctx, "/settings", "Settings saved.");
 }
 
-// Thresholds, addresses and webhook go to `settings` (an empty address / URL turns that
-// channel off); filled Twilio fields replace the secret, empty keep it. The audit row never
-// carries a credential.
+// The account's own alert channels. Thresholds, addresses and webhook go to its settings (an
+// empty address / URL turns that channel off); filled Twilio fields replace the secret, empty
+// keep it. The audit row never carries a credential.
 async function alertsSave(ctx) {
-  auth.requireRole(ctx, "admin");
+  const me = auth.requireRole(ctx, "editor");
   const before = (await ctx.settings()).alert_email;
   const form = await ctx.form();
   const offline = intField(str(form, "alert_offline_minutes"), "Offline after");
@@ -418,41 +428,42 @@ async function alertsSave(ctx) {
     twilio[name] = v;
   }
   const values = { alert_offline_minutes: offline, alert_repeat_minutes: repeat, alert_email: email, alert_webhook_url: webhook };
-  await db.batch(ctx.env, Object.entries(values).map(([k, v]) => (v === ""
-    ? ["DELETE FROM settings WHERE key = ?", k]
-    : ["INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", k, String(v)])));
-  // Audit rows are readable by every role; a webhook URL is a write credential for its channel.
+  await db.batch(ctx.env, Object.entries(values).map(([k, v]) => db.settingStatement(me.id, k, v === "" ? null : v)));
+  // Audit rows are readable by the account's people; a webhook URL is a write credential for its channel.
   const details = { ...values, alert_webhook_url: webhook ? "set" : "" };
   for (const [name, v] of Object.entries(twilio)) {
-    await secrets.set(ctx.env, name, v);
+    await secrets.set(ctx.env, me.id, name, v);
     details[name] = "set";
   }
   await audit.log(ctx, "alert_settings_update", "settings", "alerts", details);
-  // The addresses double as the camera Access policy: push a changed list to every tunnel now,
-  // so a removed operator does not keep the live camera pages until each tunnel is recreated.
-  const accessError = email !== before ? await cloudflare.syncAccess(ctx) : null;
+  // The addresses double as the camera Access policy of this account's projectors: push a changed
+  // list to their tunnels now, so a removed operator does not keep the live camera pages until
+  // each tunnel is recreated.
+  const accessError = email !== before ? await cloudflare.syncAccess(ctx, me.id) : null;
   if (accessError) return auth.flashRedirect(ctx, "/settings", `Saved, but the camera access list could not be updated on every device: ${accessError}. Click Recreate tunnel on each device on the Devices page.`, "error");
   return auth.flashRedirect(ctx, "/settings", "Settings saved.");
 }
 
 async function twilioClear(ctx) {
-  auth.requireRole(ctx, "admin");
-  for (const name of alerts.TWILIO_NAMES) await secrets.set(ctx.env, name, "");
+  const me = auth.requireRole(ctx, "editor");
+  for (const name of alerts.TWILIO_NAMES) await secrets.set(ctx.env, me.id, name, "");
   await audit.log(ctx, "alert_settings_update", "settings", "alerts", { twilio: "cleared" });
   return auth.flashRedirect(ctx, "/settings", "Settings saved.");
 }
 
-// One test message through one channel; the outcome comes back as a banner (never a 500).
+// One test message through one of the account's channels; the outcome comes back as a banner
+// (never a 500).
 async function alertsTest(ctx) {
-  const me = auth.requireRole(ctx, "admin");
+  const me = auth.requireRole(ctx, "editor");
   const channel = str(await ctx.form(), "channel").trim();
   if (!alerts.CHANNELS.includes(channel)) fail(400, "Pick a channel to test");
-  const error = await alerts.sendTest(ctx.env, await ctx.settings(), channel, me.username);
+  const error = await alerts.sendTest(ctx.env, await ctx.settings(), channel, me.username, me.id);
   await audit.log(ctx, "alert_test_sent", "settings", channel, error ? { error: error.slice(0, 200) } : null);
   if (error) return auth.flashRedirect(ctx, "/settings", `Test alert failed: ${channel}: ${error.slice(0, 200)}`, "error");
   return auth.flashRedirect(ctx, "/settings", `Test ${channel} alert sent.`);
 }
 
+// The site-wide key: admins only.
 async function enrollmentRotate(ctx) {
   auth.requireRole(ctx, "admin");
   await db.generateEnrollmentKey(ctx.env);
@@ -462,15 +473,16 @@ async function enrollmentRotate(ctx) {
 
 // Create a token and render the page with the plaintext once (no redirect: the secret must
 // not travel in a URL). Only the hash is stored; the audit row carries the name, never the token.
+// Editors and admins hold their own (the flasher signs in with one); viewers cannot use them.
 async function tokenCreate(ctx) {
-  const me = auth.requireRole(ctx, "admin");
+  const me = auth.requireRole(ctx, "editor");
   const name = tokenName(await ctx.form());
   const { token } = await auth.issueApiToken(ctx, me.id, name);
   return settingsPage(ctx, token);
 }
 
 async function tokenRevoke(ctx) {
-  const me = auth.requireRole(ctx, "admin");
+  const me = auth.requireRole(ctx, "editor");
   const tokenId = idParam(ctx.params.token_id, "token_id");
   const row = await db.first(ctx.env, "SELECT id, name FROM api_tokens WHERE id = ? AND user_id = ?", tokenId, me.id);
   if (!row) fail(404, "token not found");

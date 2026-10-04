@@ -8,7 +8,10 @@
 // Needs the worker secrets CF_API_TOKEN (permissions: Account > Cloudflare Tunnel: Edit,
 // Zone > DNS: Edit, Account > Access: Apps and Policies: Edit), CF_ACCOUNT_ID and CF_ZONE_ID;
 // without all three configured() is false, nothing here is called, the Settings panel says
-// "not configured" and the manual live URL field keeps working.
+// "not configured" and the manual live URL field keeps working. The tunnels stay per device; who
+// may open one is the projector's own account's business (operatorEmails of its content account:
+// the owner, or the site admin for an ownerless projector).
+import * as accounts from "./accounts.js";
 import * as audit from "./audit.js";
 import * as db from "./db.js";
 
@@ -113,50 +116,68 @@ export async function provision(env, deviceId, emails) {
 // The connector token `cloudflared tunnel run --token` takes (a string).
 export const tunnelToken = (env, tunnelId) => call(env, "GET", `${acct(env)}/cfd_tunnel/${tunnelId}/token`);
 
-// Who may open the camera pages: the Settings alert email addresses, else the admin usernames
-// that are email addresses; null when neither yields one (provisionDevice refuses: an Access
-// app with no allowed email would lock everyone out).
-export async function operatorEmails(env, settings) {
+// Who may open the camera pages of an account's projectors: its Settings alert email addresses,
+// else its own email address (users.email), else its username when that is an address; null
+// when none yields one (provisionDevice refuses: an Access app with no allowed email would lock
+// everyone out). `settings` are that account's.
+export async function operatorEmails(env, settings, ownerId) {
   const fromSettings = db.parseEmails(settings.alert_email);
   if (fromSettings) return fromSettings;
-  const admins = await db.all(env, "SELECT username FROM users WHERE role = 'admin' ORDER BY id");
-  const list = admins.map((u) => u.username).filter((u) => db.parseEmails(u));
+  const user = ownerId === null || ownerId === undefined ? null : await db.first(env, "SELECT username, email FROM users WHERE id = ?", ownerId);
+  const list = user ? [user.email, user.username].filter((v) => v && db.parseEmails(v)).slice(0, 1) : [];
   return list.length ? list : null;
 }
 
-// Provision for one devices row ({id, device_id}), store tunnel_id / tunnel_hostname, point
-// camera_live_url at the hostname (the Live embed works once the operator is logged in to
-// Access) and audit device_tunnel_created. Throws with the reason when not configured, when no
-// operator email is known or when the API refuses; the callers decide whether that is fatal
-// (never for an enrollment, a banner for the button).
+// Provision for one devices row ({id, device_id, owner_id or content_owner}), store tunnel_id /
+// tunnel_hostname, point camera_live_url at the hostname (the Live embed works once the operator
+// is logged in to Access) and audit device_tunnel_created. Throws with the reason when not
+// configured, when no operator email is known or when the API refuses; the callers decide whether
+// that is fatal (never for an enrollment, a banner for the button).
 export async function provisionDevice(ctx, device) {
   if (!configured(ctx.env)) throw new Error(`${missing(ctx.env).join(", ")} not set`);
-  const emails = await operatorEmails(ctx.env, await ctx.settings());
-  if (!emails) throw new Error("no operator email known: set the alert email addresses in Settings (or make an admin username an email address)");
+  const owner = await accounts.contentOwnerOf(ctx.env, device);
+  const emails = await operatorEmails(ctx.env, await db.loadSettings(ctx.env, owner), owner);
+  if (!emails) throw new Error("no operator email known: set the alert email addresses in Settings (or give the account an email address)");
   const { tunnel_id, hostname } = await provision(ctx.env, device.device_id, emails);
   await db.run(ctx.env, "UPDATE devices SET tunnel_id = ?, tunnel_hostname = ?, camera_live_url = ? WHERE id = ?",
     tunnel_id, hostname, `https://${hostname}/`, device.id);
-  await audit.log(ctx, "device_tunnel_created", "device", device.id, { device_id: device.device_id, tunnel_id, hostname, emails: emails.length });
+  await audit.log(ctx, "device_tunnel_created", "device", device.id, { device_id: device.device_id, tunnel_id, hostname, emails: emails.length }, undefined, device.owner_id ?? null);
   return { tunnel_id, hostname };
 }
 
-// The operator list changed (alert email addresses, an admin added or removed): rewrite the
-// Access policy of every device that has a tunnel so the change reaches them now, not on their
-// next provision. null on success or when there is nothing to do (not configured, no email
-// known, no tunnels), else the reason for the caller's banner; audits camera_access_updated.
+// The operator list changed (an account's alert email addresses, a user added, removed or
+// re-roled, a projector handed to another account): rewrite the Access policy of every tunnelled
+// projector concerned so the change reaches them now, not on their next provision. `ownerId`
+// limits it to the projectors of that content account; omitted, every tunnelled projector gets its
+// own account's list (a user change can move who the site admin is). `deviceId` limits it to one
+// projector. null on success or when there is nothing to do (not configured, no email known, no
+// tunnels), else the reason for the caller's banner; audits camera_access_updated per account.
 // Settings are re-read: the caller has just saved them and ctx.settings() is memoised.
-export async function syncAccess(ctx) {
+export async function syncAccess(ctx, ownerId = undefined, deviceId = undefined) {
   if (!configured(ctx.env)) return null;
-  const emails = await operatorEmails(ctx.env, await db.loadSettings(ctx.env));
-  if (!emails) return null;
-  const devices = await db.all(ctx.env, "SELECT id, device_id FROM devices WHERE tunnel_id IS NOT NULL");
-  if (!devices.length) return null;
-  try {
-    for (const d of devices) await ensureAccess(ctx.env, d.device_id, hostnameFor(ctx.env, d.device_id), emails);
-  } catch (e) {
-    return String(e && e.message || e).slice(0, 200);
+  const where = ["d.tunnel_id IS NOT NULL"];
+  const params = [];
+  if (ownerId !== undefined) { where.push(`${accounts.contentOwnerSql("d")} = ?`); params.push(ownerId); }
+  if (deviceId !== undefined) { where.push("d.id = ?"); params.push(deviceId); }
+  const devices = await db.all(ctx.env,
+    `SELECT d.id, d.device_id, ${accounts.contentOwnerSql("d")} AS content_owner FROM devices d WHERE ${where.join(" AND ")}`, ...params);
+  const byOwner = new Map();
+  for (const d of devices) {
+    if (!byOwner.has(d.content_owner)) byOwner.set(d.content_owner, []);
+    byOwner.get(d.content_owner).push(d);
   }
-  await audit.log(ctx, "camera_access_updated", "settings", "operators", { devices: devices.length, emails: emails.length });
+  const settings = await db.loadSettingsFor(ctx.env, [...byOwner.keys()]);
+  for (const [owner, list] of byOwner) {
+    if (owner === null) continue;
+    const emails = await operatorEmails(ctx.env, settings.get(owner), owner);
+    if (!emails) continue;
+    try {
+      for (const d of list) await ensureAccess(ctx.env, d.device_id, hostnameFor(ctx.env, d.device_id), emails);
+    } catch (e) {
+      return String(e && e.message || e).slice(0, 200);
+    }
+    await audit.log(ctx, "camera_access_updated", "settings", "operators", { devices: list.length, emails: emails.length }, undefined, owner);
+  }
   return null;
 }
 
@@ -184,7 +205,7 @@ export async function tryProvisionDevice(ctx, device) {
   } catch (e) {
     const error = String(e && e.message || e).slice(0, 200);
     console.error(`tunnel for ${device.device_id} failed: ${error}`);
-    await audit.log(ctx, "device_tunnel_failed", "device", device.id, { device_id: device.device_id, error });
+    await audit.log(ctx, "device_tunnel_failed", "device", device.id, { device_id: device.device_id, error }, undefined, device.owner_id ?? null);
     return { error };
   }
 }

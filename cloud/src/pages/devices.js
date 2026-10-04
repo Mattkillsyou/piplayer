@@ -1,6 +1,11 @@
 // Port of web.devices_* + devices.html: register / assign / group / regen-token / delete /
 // command / screenshot / camera snapshot + live URL, plus decorateDevices() which the
-// dashboard shares.
+// dashboard shares. A user sees the projectors they own; an admin sees every projector and may
+// hand one to another account (Owner select), and keeps the per-device controls on all of them.
+// What a projector plays (its playlist, group and schedule) and its device token are its content
+// account's alone (accounts.js: the owner, or the site admin for an ownerless one): another
+// admin sees them read-only.
+import * as accounts from "../accounts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as cloudflare from "../cloudflare.js";
@@ -53,28 +58,47 @@ const decodeBadge = (d) => {
 // A failed remote update (last_update_ok = 0, api.storeUpdateStatus) is a fault until the next report.
 export const isFault = (d) => d.lamp === "mpv-down" || d.lamp === "offline" || d.last_update_ok === 0;
 
-// Fill in the served playlist (schedule/device/group/site default), screenshot age + stale flag and
-// last-seen age for a list of device rows (web._decorate_device), with the fleet's
-// schedules, group defaults and playlist names fetched in three statements rather than
-// a few per device (D1 statements count against the per-invocation subrequest budget).
-export async function decorateDevices(env, rows, settings, now = new Date()) {
+// Fill in the served playlist (schedule/device/group/account Default), screenshot age + stale
+// flag and last-seen age for a list of device rows (web._decorate_device), with the fleet's
+// schedules, group defaults and playlist names fetched in three statements rather than a few per
+// device (D1 statements count against the per-invocation subrequest budget). Each row carries
+// `content_owner` (accounts.contentOwnerSql) and is judged as its manifest is: only its content
+// account's rules, playlist and group count, in that account's zone (`settingsFor`: Map of
+// account id -> settings, db.loadSettingsFor), falling back to that account's Default playlist.
+export async function decorateDevices(env, rows, settingsFor, now = new Date()) {
   if (!rows.length) return rows;
-  const wall = wallClock(settings.timezone, now);
-  // Both callers pass every device, so read all schedules in one unbound statement and
-  // bucket in JS: an IN (...) list would hit D1's bound-parameter limit on a large fleet.
+  // One account (anyone but an admin): only its rows. Several (an admin sees every projector): the
+  // whole table in one unbound statement each, bucketed in JS (an IN (...) list would hit D1's
+  // bound-parameter limit on a large fleet).
+  const owners = [...new Set(rows.map((d) => d.content_owner))];
+  const one = owners.length === 1 && owners[0] !== null;
+  const scope = (col) => (one ? `WHERE ${col} = ?` : "");
+  const scopeArgs = one ? [owners[0]] : [];
   const byDevice = new Map(rows.map((d) => [d.id, []]));
   for (const s of await db.all(env,
-    `SELECT id, device_id, playlist_id, name, priority, start_time, end_time,
-            days_of_week, start_date, end_date
-       FROM device_schedules`)) {
+    `SELECT s.id, s.device_id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time,
+            s.days_of_week, s.start_date, s.end_date, p.owner_id AS playlist_owner
+       FROM device_schedules s JOIN playlists p ON p.id = s.playlist_id ${scope("p.owner_id")}`, ...scopeArgs)) {
     const bucket = byDevice.get(s.device_id);
     if (bucket) bucket.push(s);
   }
-  const groupPl = new Map((await db.all(env, "SELECT id, playlist_id FROM device_groups")).map((g) => [g.id, g.playlist_id]));
-  const pl = new Map((await db.all(env, "SELECT p.id, p.name, (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) AS item_count FROM playlists p")).map((p) => [p.id, p]));
+  const groups = new Map((await db.all(env,
+    `SELECT g.id, g.owner_id, g.playlist_id, p.owner_id AS playlist_owner
+       FROM device_groups g LEFT JOIN playlists p ON p.id = g.playlist_id ${scope("g.owner_id")}`, ...scopeArgs)).map((g) => [g.id, g]));
+  const pl = new Map((await db.all(env,
+    `SELECT p.id, p.name, p.owner_id, (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) AS item_count
+       FROM playlists p ${scope("p.owner_id")}`, ...scopeArgs)).map((p) => [p.id, p]));
   for (const dd of rows) {
-    const [pid, source] = manifest.pick_playlist(dd, byDevice.get(dd.id), groupPl.get(dd.group_id) ?? null, wall, settings.default_playlist_id);
-    dd.projector_want = manifest.projector_want(dd, byDevice.get(dd.id), groupPl.get(dd.group_id) ?? null, wall, settings);
+    const owner = dd.content_owner;
+    const settings = settingsFor.get(owner) || db.defaultSettings(env);
+    const wall = wallClock(settings.timezone, now);
+    // What the manifest would use: only the content account's rules, playlist and group.
+    const rules = (byDevice.get(dd.id) || []).filter((s) => s.playlist_owner === owner);
+    const g = groups.get(dd.group_id);
+    const groupPlaylist = g && g.owner_id === owner && g.playlist_owner === owner ? g.playlist_id : null;
+    const own = { ...dd, playlist_id: pl.get(dd.playlist_id)?.owner_id === owner ? dd.playlist_id : null };
+    const [pid, source] = manifest.pick_playlist(own, rules, groupPlaylist, wall, settings.default_playlist_id);
+    dd.projector_want = manifest.projector_want(own, rules, groupPlaylist, wall, settings);
     dd.active_playlist_id = pid;
     dd.active_playlist_name = null;
     dd.active_source = null;
@@ -104,10 +128,12 @@ export async function decorateDevices(env, rows, settings, now = new Date()) {
   return rows;
 }
 
-// 404 when an optional foreign-key target does not exist (null is allowed) (web._require_row).
-export async function requireRow(env, table, rowId, label) {
+// 404 when an optional foreign-key target is not one of account `ownerId`'s rows (null is
+// allowed) (web._require_row): another account's playlist or group answers exactly like a missing
+// one. `table` is a trusted literal.
+export async function requireRow(env, table, rowId, ownerId, label) {
   if (rowId === null || rowId === undefined) return;
-  if (!(await db.first(env, `SELECT id FROM ${table} WHERE id = ?`, rowId))) fail(404, `${label} not found`);
+  if (!(await accounts.ownRow(env, table, rowId, ownerId))) fail(404, `${label} not found`);
 }
 
 // Ownership (migration 0009): editors and viewers see and act on the projectors they own
@@ -118,13 +144,24 @@ export function ownedClause(user) {
   return user.role === "admin" ? { sql: "1", params: [] } : { sql: "d.owner_id = ?", params: [user.id] };
 }
 
-// The devices row (the `cols` asked for) when the signed-in user may see it, else the same 404
-// as an unknown id, so another account's projector does not even show as existing.
+// The devices row (the `cols` asked for, plus owner_id and content_owner) when the signed-in user
+// may see it, else the same 404 as an unknown id, so another account's projector does not even
+// show as existing.
 export async function requireDevice(ctx, deviceId, cols = "d.id") {
   const own = ownedClause(ctx.user);
-  const row = await db.first(ctx.env, `SELECT ${cols} FROM devices d WHERE d.id = ? AND ${own.sql}`, deviceId, ...own.params);
+  const row = await db.first(ctx.env,
+    `SELECT ${cols}, d.owner_id, ${accounts.contentOwnerSql("d")} AS content_owner FROM devices d WHERE d.id = ? AND ${own.sql}`,
+    deviceId, ...own.params);
   if (!row) fail(404, "Device not found");
   return row;
+}
+
+// What a projector plays and its device token are its content account's business only: an admin
+// who sees another account's projector gets this 403 (a non-admin never sees one: requireDevice
+// already answered 404).
+export const OTHER_ACCOUNT_DEVICE = "This projector belongs to another account: only that account can change what it plays or see its token. Hand it over with the Owner select first if it should be yours.";
+export function requireContentOwner(ctx, row) {
+  if (row.content_owner !== ctx.user.id) fail(403, OTHER_ACCOUNT_DEVICE);
 }
 
 const screenshotHref = (d) => `/devices/${d.id}/screenshot?t=${esc(encodeURIComponent(d.last_screenshot_at))}`;
@@ -217,16 +254,19 @@ export function wyzeCameraName(device, settings) {
 }
 
 // The GET /api/camera-config body for a devices row (camera_source, camera_rtsp_url,
-// camera_wyze_name, name, device_id): {source: "none"} | {source: "rtsp", rtsp_url} |
-// {source: "wyze", wyze: {email, password, api_id, api_key, camera}}, each with the
-// camera_config_version it was built from. wyze falls back to none when the account is unset;
-// camera_supported = 0 (a board that cannot run the bridge) always yields none, so the Wyze
-// login never reaches it. The RTSP URL is stored encrypted like the Wyze values (it carries
-// the camera's password); a plaintext row from before that is served as is until re-saved.
+// camera_wyze_name, name, device_id, owner_id / content_owner): {source: "none"} | {source:
+// "rtsp", rtsp_url} | {source: "wyze", wyze: {email, password, api_id, api_key, camera}}, each with
+// the camera_config_version it was built from. `settings` and the Wyze login are the projector's
+// content account's (its owner's; the site admin's for an ownerless one). wyze falls back to none
+// when that account has no Wyze login; camera_supported = 0 (a board that cannot run the bridge)
+// always yields none, so the Wyze login never reaches it. The RTSP URL is stored encrypted like
+// the Wyze values (it carries the camera's password); a plaintext row from before that is served
+// as is until re-saved.
 export async function cameraConfig(env, device, settings) {
   const version = settings.camera_config_version || 0;
   if (device.camera_supported === 0) return { source: "none", version };
-  let source = device.camera_source || (await secrets.wyzeConfigured(env) ? "wyze" : "none");
+  const owner = await accounts.contentOwnerOf(env, device);
+  let source = device.camera_source || (await secrets.wyzeConfigured(env, owner) ? "wyze" : "none");
   if (source === "rtsp") {
     const stored = device.camera_rtsp_url || "";
     const url = stored.startsWith("v1:") ? await secrets.decrypt(env, `rtsp:${device.device_id}`, stored) : stored;
@@ -234,7 +274,7 @@ export async function cameraConfig(env, device, settings) {
     source = "none";
   }
   if (source === "wyze") {
-    const w = await secrets.getMany(env, secrets.WYZE_NAMES);
+    const w = await secrets.getMany(env, owner, secrets.WYZE_NAMES);
     if (w.wyze_email && w.wyze_password) {
       return { source, version, wyze: { email: w.wyze_email, password: w.wyze_password, api_id: w.wyze_api_id || "",
         api_key: w.wyze_api_key || "", camera: wyzeCameraName(device, settings) } };
@@ -345,9 +385,9 @@ export function projectorState(d) {
   return `<span class="status status-${cls} projector-state" title="Reported by the player on its last sync"><span class="lamp"></span>projector ${state}</span>`;
 }
 
-// Only admins can open /settings (schedule.js does the same), so the help mentions the page by
-// name for everyone else.
-const settingsRef = (ctx) => (ctx.user.role === "admin" ? '<a href="/settings">Settings</a>' : "Settings");
+// Editors and admins open their own /settings (schedule.js does the same); a viewer cannot, so
+// the help names the page without a link.
+const settingsRef = (ctx) => (auth.roleRank(ctx.user.role) >= auth.roleRank("editor") ? '<a href="/settings">Settings</a>' : "Settings");
 
 function projectorBlock(ctx, d, canEdit, dis) {
   const control = d.projector_control || "none";
@@ -424,28 +464,14 @@ function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
         </form>`;
 }
 
-// `isAdmin` shows the Token / install block (the token is admin-only, like the operator token
-// and /authorize); `openToken` opens it, right after New token.
-function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken, tz, install, settings, wyzeOn, tunnelOn) {
-  const dis = canEdit ? "" : " disabled";
-  const live = liveUrl(d.camera_live_url);
-  return `<div class="device-row${isFault(d) ? " is-fault" : ""}">
-    <div class="device-ident">
-      ${deviceScreen(d, { link: true, staleTitle: "No new screenshot for more than 3 capture intervals" })}
-      ${cameraScreen(d, { link: true, staleTitle: "No new camera snapshot for more than 3 camera intervals" })}
-      <span class="device-name">${esc(d.name)}</span>
-      <span class="device-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}${d.pi_model ? ` · ${esc(d.pi_model)}` : ""}${isAdmin ? ` · ${d.owner_name ? esc(d.owner_name) : "no owner"}` : ""}</span>
-      ${statusLamp(d)}
-      ${canEdit ? `<form method="post" action="/devices/${d.id}/rename" class="inline">
-        ${csrfInput(ctx)}
-        <input type="text" name="name" value="${esc(d.name)}" maxlength="${MAX_DEVICE_NAME}" required aria-label="Device name">
-        <button type="submit" class="small">Rename</button>
-      </form>` : ""}
-    </div>
-
-    <div class="device-detail">
-      <div class="assign">
-        <form method="post" action="/devices/${d.id}/group">
+// The group and playlist selects (the viewer's own groups and playlists) for a projector of the
+// viewer's own account; for another account's (an admin sees every projector) what it uses, as
+// text: those are its account's to choose.
+function assignForms(ctx, d, playlists, groups, dis) {
+  if (d.content_owner !== ctx.user.id) {
+    return `<p class="help small assign-other" title="Only the projector's own account picks what it plays">Plays what ${esc(d.content_owner_name || "its account")} picks: group ${d.group_name ? esc(d.group_name) : "none"}, default playlist ${d.playlist_name ? esc(d.playlist_name) : "Default"}.</p>`;
+  }
+  return `<form method="post" action="/devices/${d.id}/group">
           ${csrfInput(ctx)}
           <label>group
             <select name="group_id" data-autosubmit${dis}>
@@ -462,12 +488,39 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
               ${optionList(playlists, d.playlist_id)}
             </select>
           </label>
-        </form>
+        </form>`;
+}
+
+// `isAdmin` adds the owner name and the Owner select (admins see every projector). The Token /
+// install block is shown for the viewer's own account's projectors only, to editors and admins
+// (a device token reads that account's Wyze login through /api/camera-config); `openToken` opens
+// it, right after New token. `settings` and `wyzeOn` are the projector's account's.
+function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken, tz, install, settings, wyzeOn, tunnelOn) {
+  const dis = canEdit ? "" : " disabled";
+  const live = liveUrl(d.camera_live_url);
+  const ownContent = d.content_owner === ctx.user.id;
+  return `<div class="device-row${isFault(d) ? " is-fault" : ""}">
+    <div class="device-ident">
+      ${deviceScreen(d, { link: true, staleTitle: "No new screenshot for more than 3 capture intervals" })}
+      ${cameraScreen(d, { link: true, staleTitle: "No new camera snapshot for more than 3 camera intervals" })}
+      <span class="device-name">${esc(d.name)}</span>
+      <span class="device-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}${d.pi_model ? ` · ${esc(d.pi_model)}` : ""}${isAdmin ? ` · ${d.owner_name ? esc(d.owner_name) : "no owner"}` : ""}</span>
+      ${statusLamp(d)}
+      ${canEdit ? `<form method="post" action="/devices/${d.id}/rename" class="inline">
+        ${csrfInput(ctx)}
+        <input type="text" name="name" value="${esc(d.name)}" maxlength="${MAX_DEVICE_NAME}" required aria-label="Device name">
+        <button type="submit" class="small">Rename</button>
+      </form>` : ""}
+    </div>
+
+    <div class="device-detail">
+      <div class="assign">
+        ${assignForms(ctx, d, playlists, groups, dis)}
         <a href="/devices/${d.id}/schedule" class="button">Schedule (${d.schedule_count})</a>
         ${isAdmin ? `<form method="post" action="/devices/${d.id}/owner">
           ${csrfInput(ctx)}
           <label>owner
-            <select name="owner_id" data-autosubmit title="The account that sees this projector; admins see every projector">
+            <select name="owner_id" data-autosubmit title="The account this projector belongs to: it plays that account's playlists and follows its settings. Admins see every projector.">
               <option value="">no owner</option>
               ${users.map((u) => `<option value="${u.id}"${u.id === d.owner_id ? " selected" : ""}>${esc(u.username)}</option>`).join("\n              ")}
             </select>
@@ -513,7 +566,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
             ${csrfInput(ctx)}
             <label>Camera source
               <select name="camera_source"${dis}>
-                <option value=""${d.camera_source ? "" : " selected"}>site default (${wyzeOn ? "wyze" : "none"})</option>
+                <option value=""${d.camera_source ? "" : " selected"}>account default (${wyzeOn ? "wyze" : "none"})</option>
                 ${CAMERA_SOURCES.map((v) => `<option value="${v}"${v === d.camera_source ? " selected" : ""}>${v}</option>`).join("\n                ")}
               </select>
             </label>
@@ -525,7 +578,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
             </label>
             <button type="submit" class="small"${dis}>Save</button>
           </form>
-          ${wyzeOn ? "" : `<p class="help small">No Wyze account set (${settingsRef(ctx)}).</p>`}
+          ${wyzeOn ? "" : ownContent ? `<p class="help small">No Wyze account set (${settingsRef(ctx)}).</p>` : '<p class="help small">Its account has no Wyze login set.</p>'}
           <form method="post" action="/devices/${d.id}/camera-url" class="row">
             ${csrfInput(ctx)}
             <label>Camera live URL
@@ -565,7 +618,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
         ${commandForm(ctx, d, "update-os", "Update OS", "small", "Update the Pi's operating system packages; it may reboot", ` data-confirm="Update OS packages on ${esc(d.name)}? The Pi may reboot."`)}
         ${commandForm(ctx, d, "update-all", "Update all", "small", "Player software, then OS packages", ` data-confirm="Update player and OS on ${esc(d.name)}? The Pi may reboot."`)}
       </div>
-      ${isAdmin ? `<details${openToken ? " open" : ""}>
+      ${ownContent ? `<details${openToken ? " open" : ""}>
         <summary>Token / install</summary>
         <div class="token-block">
           <code class="token">${esc(d.token)}</code>
@@ -597,6 +650,35 @@ sudo -E bash deploy/install-player.sh</pre>
 // through the SD Flasher (the /flasher page), not the Add device form.
 export const noProjectors = () => emptyState("NO PROJECTORS", 'No projectors yet. Flash a card with the <a href="/flasher">SD Flasher</a> and it appears here.');
 
+// The device rows a page shows (the viewer's own; every one for an admin) with the columns the
+// Devices page and the Dashboard need, content_owner and its username, and the playlist / group
+// names only when they are the projector's own account's (another account's reads as none).
+export function visibleDevices(env, user, cols) {
+  const own = ownedClause(user);
+  const co = accounts.contentOwnerSql("d");
+  return db.all(env,
+    `SELECT ${cols}, d.owner_id, ${co} AS content_owner,
+            p.id AS playlist_id, p.name AS playlist_name, g.id AS group_id, g.name AS group_name,
+            u.username AS owner_name, cu.username AS content_owner_name
+       FROM devices d
+       LEFT JOIN playlists p ON p.id = d.playlist_id AND p.owner_id = ${co}
+       LEFT JOIN device_groups g ON g.id = d.group_id AND g.owner_id = ${co}
+       LEFT JOIN users u ON u.id = d.owner_id
+       LEFT JOIN users cu ON cu.id = ${co}
+      WHERE ${own.sql}
+      ORDER BY d.name`, ...own.params);
+}
+
+// Settings of every content account among `rows` (Map id -> settings), the viewer's own taken from
+// ctx so a page of one's own projectors costs no extra statement.
+export async function settingsForRows(ctx, rows) {
+  const mine = await ctx.settings();
+  const others = [...new Set(rows.map((d) => d.content_owner))].filter((id) => id !== ctx.user.id);
+  const map = others.length ? await db.loadSettingsFor(ctx.env, others) : new Map();
+  map.set(ctx.user.id, mine);
+  return map;
+}
+
 async function devicesPage(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = auth.roleRank(user.role) >= auth.roleRank("editor");
@@ -605,8 +687,8 @@ async function devicesPage(ctx) {
   const tz = settings.timezone;
   const env = ctx.env;
   const own = ownedClause(user);
-  const rows = await db.all(env,
-    `SELECT d.id, d.device_id, d.name, d.last_seen_at, d.last_ip,
+  const rows = await visibleDevices(env, user,
+    `d.id, d.device_id, d.name, d.last_seen_at, d.last_ip,
             d.player_version, d.current_position, d.current_filename, d.player_status,
             d.last_screenshot_at, d.last_error,
             d.last_camera_at, d.camera_error, d.camera_live_url,
@@ -614,32 +696,29 @@ async function devicesPage(ctx) {
             d.projector_control, d.projector_ir_codes, d.broadlink_host, d.projector_power_mode,
             d.projector_power_state, d.projector_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
-            d.tunnel_id, d.tunnel_hostname, d.pi_model, d.camera_supported, d.owner_id,
-            d.decode_mode, d.play_rate, d.display_fps, d.video_fps, d.dropped_frames, d.drop_rate,
-            p.id AS playlist_id, p.name AS playlist_name,
-            g.id AS group_id, g.name AS group_name, u.username AS owner_name
-       FROM devices d
-       LEFT JOIN playlists p ON p.id = d.playlist_id
-       LEFT JOIN device_groups g ON g.id = d.group_id
-       LEFT JOIN users u ON u.id = d.owner_id
-      WHERE ${own.sql}
-      ORDER BY d.name`, ...own.params);
-  const playlists = await db.all(env, "SELECT id, name FROM playlists ORDER BY name");
-  const groups = await db.all(env, "SELECT id, name FROM device_groups ORDER BY name");
+            d.tunnel_id, d.tunnel_hostname, d.pi_model, d.camera_supported,
+            d.decode_mode, d.play_rate, d.display_fps, d.video_fps, d.dropped_frames, d.drop_rate`);
+  // The selects offer the viewer's own playlists and groups only (shown on their own projectors).
+  const playlists = await db.all(env, "SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name", user.id);
+  const groups = await db.all(env, "SELECT id, name FROM device_groups WHERE owner_id = ? ORDER BY name", user.id);
   // The Owner select (admins only): every account, so a projector can be handed to anyone.
   const users = isAdmin ? await db.all(env, "SELECT id, username FROM users ORDER BY username") : [];
-  const devices = await decorateDevices(env, rows, settings);
-  // Schedule counts, tokens and the last 5 commands for the whole fleet in one statement
-  // each (SQLite window function for the per-device LIMIT) rather than three per device.
-  const counts = new Map((await db.all(env, "SELECT device_id, COUNT(*) AS n FROM device_schedules GROUP BY device_id"))
+  const settingsFor = await settingsForRows(ctx, rows);
+  const devices = await decorateDevices(env, rows, settingsFor);
+  // Schedule counts, tokens and the last 5 commands of the visible fleet in one statement each
+  // (SQLite window function for the per-device LIMIT) rather than three per device.
+  const counts = new Map((await db.all(env,
+    `SELECT s.device_id, COUNT(*) AS n FROM device_schedules s JOIN devices d ON d.id = s.device_id WHERE ${own.sql} GROUP BY s.device_id`, ...own.params))
     .map((r) => [r.device_id, r.n]));
-  // Tokens are admin-only: a device token reads the Wyze login through /api/camera-config,
-  // which editors cannot see on Settings (same rule as the operator token).
-  const tokens = isAdmin ? new Map((await db.all(env, "SELECT id, token FROM devices")).map((r) => [r.id, r.token])) : null;
+  // Device tokens of the viewer's own account's projectors only (editors and admins): a device
+  // token reads that account's Wyze login through /api/camera-config.
+  const tokens = canEdit ? new Map((await db.all(env,
+    `SELECT d.id, d.token FROM devices d WHERE ${accounts.contentOwnerSql("d")} = ?`, user.id)).map((r) => [r.id, r.token])) : null;
   const recent = await db.all(env,
     `SELECT id, device_id, command, issued_at, delivered_at, completed_at, result, delivery_count, undeliverable
-       FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY id DESC) AS rn FROM device_commands)
-      WHERE rn <= 5 ORDER BY device_id, id DESC`);
+       FROM (SELECT c.*, ROW_NUMBER() OVER (PARTITION BY c.device_id ORDER BY c.id DESC) AS rn
+               FROM device_commands c JOIN devices d ON d.id = c.device_id WHERE ${own.sql})
+      WHERE rn <= 5 ORDER BY device_id, id DESC`, ...own.params);
   const byId = new Map(devices.map((d) => [d.id, d]));
   for (const dd of devices) {
     dd.schedule_count = counts.get(dd.id) || 0;
@@ -650,7 +729,8 @@ async function devicesPage(ctx) {
   const install = installBaseUrl(env, ctx.url);
   // ?open=<row id>: New token lands here with that device's Token / install block open.
   const open = /^\d+$/.test(ctx.url.searchParams.get("open") || "") ? Number(ctx.url.searchParams.get("open")) : null;
-  const wyzeOn = await secrets.wyzeConfigured(env);
+  // Whether each projector's account has a Wyze login (its camera's "account default").
+  const wyzeOn = await secrets.wyzeConfiguredFor(env, [...settingsFor.keys()]);
   const tunnelOn = cloudflare.configured(env);
 
   const content = `<div class="page-head">
@@ -665,7 +745,9 @@ async function devicesPage(ctx) {
     </label>
     <button type="submit" class="primary">Add device</button>
   </form>
-  ${devices.length ? `<form method="post" action="/devices/update-all" class="head-actions" data-confirm="Update the player software (release ${esc(settings.player_release)}) on every device? Playback restarts on each Pi.">
+  ${devices.length ? `<form method="post" action="/devices/update-all" class="head-actions" data-confirm="${isAdmin
+    ? "Update the player software on every device (each to the release its own account set on Settings)? Playback restarts on each Pi."
+    : `Update the player software (release ${esc(settings.player_release)}) on every device? Playback restarts on each Pi.`}">
     ${csrfInput(ctx)}
     <input type="hidden" name="command" value="update-player">
     <button type="submit" title="Update the player software on every device that is not already waiting for an update">Update all players</button>
@@ -675,13 +757,14 @@ async function devicesPage(ctx) {
 ${!devices.length
     ? (isAdmin ? emptyState("NO DEVICES", "No devices yet. Add one above.") : noProjectors())
     : `<div class="device-rows">
-  ${devices.map((d) => deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, d.id === open, tz, install, settings, wyzeOn, tunnelOn)).join("\n  ")}
+  ${devices.map((d) => deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, d.id === open, tz, install,
+    settingsFor.get(d.content_owner) || settings, wyzeOn.get(d.content_owner) || false, tunnelOn)).join("\n  ")}
 </div>`}`;
   return layout(ctx, { title: "Devices", content });
 }
 
-// An editor's manual addition is theirs (they could not see it otherwise); an admin's has no
-// owner until the Owner select says so.
+// A manual addition belongs to whoever adds it (an admin's too: an ownerless projector would
+// play the site admin's content and settings, not the adder's).
 async function devicesCreate(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const form = await ctx.form();
@@ -693,8 +776,10 @@ async function devicesCreate(ctx) {
   let id;
   try {
     id = (await db.run(ctx.env, "INSERT INTO devices (device_id, name, token, owner_id) VALUES (?, ?, ?, ?)",
-      deviceId, name, token, user.role === "admin" ? null : user.id)).last_row_id;
+      deviceId, name, token, user.id)).last_row_id;
   } catch (e) {
+    // A device id is one site-wide name (the sync URL, the tunnel hostname): the refusal says
+    // only that this id is taken, never whose it is.
     if (db.isConstraintError(e)) fail(409, "A device with that ID already exists");
     throw e;
   }
@@ -703,7 +788,8 @@ async function devicesCreate(ctx) {
 }
 
 // Rename in place (the flasher's name is otherwise only changed by re-flashing the card). The
-// Wyze camera name may derive from {device_name}, so the players refetch their camera config.
+// Wyze camera name may derive from {device_name}, so the account's players refetch their camera
+// config. An admin may rename any projector they see; the audit row is about its owner's account.
 async function devicesRename(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
@@ -712,42 +798,47 @@ async function devicesRename(ctx) {
   const row = await requireDevice(ctx, deviceId, "d.name");
   if (row.name !== name) {
     await db.run(ctx.env, "UPDATE devices SET name = ? WHERE id = ?", name, deviceId);
-    await db.bumpCameraConfigVersion(ctx.env);
+    await db.bumpCameraConfigVersion(ctx.env, row.content_owner);
   }
-  await audit.log(ctx, "device_rename", "device", deviceId, { name });
+  await audit.log(ctx, "device_rename", "device", deviceId, { name }, undefined, row.owner_id);
   return auth.flashRedirect(ctx, "/devices", `Renamed to ${name}.`);
 }
 
+// What a projector plays is its own account's choice, from its own playlists and groups.
 async function devicesAssign(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const pid = intField(str(await ctx.form(), "playlist_id"), "playlist_id");
-  await requireDevice(ctx, deviceId);
-  await requireRow(ctx.env, "playlists", pid, "Playlist");
+  const row = await requireDevice(ctx, deviceId);
+  requireContentOwner(ctx, row);
+  await requireRow(ctx.env, "playlists", pid, user.id, "Playlist");
   await db.run(ctx.env, "UPDATE devices SET playlist_id = ? WHERE id = ?", pid, deviceId);
-  await audit.log(ctx, "device_assign_playlist", "device", deviceId, { playlist_id: pid });
+  await audit.log(ctx, "device_assign_playlist", "device", deviceId, { playlist_id: pid }, undefined, row.owner_id);
   return redirect("/devices");
 }
 
 async function devicesSetGroup(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const gid = intField(str(await ctx.form(), "group_id"), "group_id");
-  await requireDevice(ctx, deviceId);
-  await requireRow(ctx.env, "device_groups", gid, "Group");
+  const row = await requireDevice(ctx, deviceId);
+  requireContentOwner(ctx, row);
+  await requireRow(ctx.env, "device_groups", gid, user.id, "Group");
   await db.run(ctx.env, "UPDATE devices SET group_id = ? WHERE id = ?", gid, deviceId);
-  await audit.log(ctx, "device_set_group", "device", deviceId, { group_id: gid });
+  await audit.log(ctx, "device_set_group", "device", deviceId, { group_id: gid }, undefined, row.owner_id);
   return redirect("/devices");
 }
 
 // The tunnel token travels in every sync response, so a leaked device token means a leaked
-// tunnel key: a device with a tunnel gets a fresh one too (the old key stops working).
+// tunnel key: a device with a tunnel gets a fresh one too (the old key stops working). Only the
+// projector's own account handles its token (it unlocks that account's camera config).
 async function devicesRegenToken(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const row = await requireDevice(ctx, deviceId, "d.id, d.device_id, d.name, d.tunnel_id");
+  requireContentOwner(ctx, row);
   await db.run(ctx.env, "UPDATE devices SET token = ? WHERE id = ?", randomToken(32), deviceId);
-  await audit.log(ctx, "device_regen_token", "device", deviceId);
+  await audit.log(ctx, "device_regen_token", "device", deviceId, null, undefined, row.owner_id);
   let message = `New token made for ${row.name}: open Token / install and run the install command on the Pi again.`;
   if (row.tunnel_id && cloudflare.configured(ctx.env)) {
     const tunnel = await rotateTunnelBanner(ctx, row);
@@ -769,7 +860,7 @@ async function devicesDelete(ctx) {
   } catch (e) {
     console.error(`snapshots of deleted device ${row.device_id} not removed: ${e && e.message || e}`);
   }
-  await audit.log(ctx, "device_delete", "device", deviceId, { device_id: row.device_id, name: row.name });
+  await audit.log(ctx, "device_delete", "device", deviceId, { device_id: row.device_id, name: row.name }, undefined, row.owner_id);
   return auth.flashRedirect(ctx, "/devices", `Device ${row.name} deleted.`);
 }
 
@@ -794,7 +885,7 @@ async function devicesSendCommand(ctx) {
     : seen === null ? ", but it has never checked in: nothing happens until it is on and connected."
       : `, but it last checked in ${ageText(seen)}: nothing happens until it is back on and connected.`;
   if (!changes) return auth.flashRedirect(ctx, "/devices", `${commandText(command)} is already waiting for ${row.name}${tail}`, "warn");
-  await audit.log(ctx, "device_send_command", "device", deviceId, { command, command_id: id });
+  await audit.log(ctx, "device_send_command", "device", deviceId, { command, command_id: id }, undefined, row.owner_id);
   return auth.flashRedirect(ctx, "/devices", `${commandText(command)} queued for ${row.name}${tail}`, late ? "warn" : "ok");
 }
 
@@ -807,7 +898,7 @@ async function devicesCancelCommands(ctx) {
   const { changes } = await db.run(ctx.env,
     "DELETE FROM device_commands WHERE device_id = ? AND delivered_at IS NULL AND completed_at IS NULL", deviceId);
   if (!changes) return auth.flashRedirect(ctx, "/devices", `Nothing was waiting for ${row.name}.`, "warn");
-  await audit.log(ctx, "device_cancel_commands", "device", deviceId, { cancelled: changes });
+  await audit.log(ctx, "device_cancel_commands", "device", deviceId, { cancelled: changes }, undefined, row.owner_id);
   return auth.flashRedirect(ctx, "/devices", `Cancelled ${changes} waiting command${changes === 1 ? "" : "s"} for ${row.name}.`);
 }
 
@@ -868,22 +959,23 @@ async function devicesSetCameraUrl(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const url = validateLiveUrl(str(await ctx.form(), "camera_live_url"));
-  await requireDevice(ctx, deviceId);
+  const row = await requireDevice(ctx, deviceId);
   await db.run(ctx.env, "UPDATE devices SET camera_live_url = ? WHERE id = ?", url, deviceId);
-  await audit.log(ctx, "device_set_camera_url", "device", deviceId, { camera_live_url: url });
+  await audit.log(ctx, "device_set_camera_url", "device", deviceId, { camera_live_url: url }, undefined, row.owner_id);
   return redirect("/devices");
 }
 
-// Per-device camera source: '' = site default (row NULL), else none | wyze | rtsp. rtsp needs
-// an rtsp:// URL (never rendered back; an empty field keeps it); the Wyze name is optional (Settings pattern). Any change bumps
-// camera_config_version so the player refetches; the audit row carries the source and name,
-// never the RTSP URL's credentials.
+// Per-device camera source: '' = the account default (row NULL: wyze when the projector's account
+// has a Wyze login), else none | wyze | rtsp. rtsp needs an rtsp:// URL (never rendered back; an
+// empty field keeps it); the Wyze name is optional (the account's Settings pattern). Any change
+// bumps the account's camera_config_version so the player refetches; the audit row carries the
+// source and name, never the RTSP URL's credentials.
 async function devicesSetCameraSource(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const form = await ctx.form();
   const source = str(form, "camera_source").trim() || null;
-  if (source !== null && !CAMERA_SOURCES.includes(source)) fail(400, `camera_source must be one of ${CAMERA_SOURCES.join(", ")} or empty for the site default`);
+  if (source !== null && !CAMERA_SOURCES.includes(source)) fail(400, `camera_source must be one of ${CAMERA_SOURCES.join(", ")} or empty for the account default`);
   const row = await requireDevice(ctx, deviceId, "d.device_id, d.camera_source, d.camera_rtsp_url, d.camera_wyze_name");
   // The RTSP URL carries credentials: stored encrypted (secrets.js, keyed to the device_id) and
   // never rendered back; an empty field keeps the stored one while the source stays rtsp
@@ -896,24 +988,24 @@ async function devicesSetCameraSource(ctx) {
   if (wyzeName !== null && ([...wyzeName].length > MAX_WYZE_NAME || /[\x00-\x1f\x7f]/.test(wyzeName))) fail(400, `Camera name may be at most ${MAX_WYZE_NAME} printable characters`);
   if (row.camera_source === source && row.camera_rtsp_url === rtsp && row.camera_wyze_name === wyzeName) return redirect("/devices");
   await db.run(ctx.env, "UPDATE devices SET camera_source = ?, camera_rtsp_url = ?, camera_wyze_name = ? WHERE id = ?", source, rtsp, wyzeName, deviceId);
-  await db.bumpCameraConfigVersion(ctx.env);
+  await db.bumpCameraConfigVersion(ctx.env, row.content_owner);
   await audit.log(ctx, "device_set_camera_source", "device", deviceId,
-    { camera_source: source ?? "default", camera_wyze_name: wyzeName ?? undefined, camera_rtsp_url: rtsp ? "set" : undefined });
+    { camera_source: source ?? "default", camera_wyze_name: wyzeName ?? undefined, camera_rtsp_url: rtsp ? "set" : undefined }, undefined, row.owner_id);
   return redirect("/devices");
 }
 
-// cloudflare.rotateTunnel for a devices row ({id, device_id, tunnel_id}) that never throws:
+// cloudflare.rotateTunnel for a devices row ({id, device_id, tunnel_id, owner_id}) that never throws:
 // {hostname} with audit device_tunnel_rotated, or {error} in plain English with audit
 // device_tunnel_failed (as tryProvisionDevice does for a first-time tunnel).
 async function rotateTunnelBanner(ctx, row) {
   try {
     const { tunnel_id, hostname } = await cloudflare.rotateTunnel(ctx, row);
-    await audit.log(ctx, "device_tunnel_rotated", "device", row.id, { device_id: row.device_id, old_tunnel_id: row.tunnel_id, tunnel_id, hostname });
+    await audit.log(ctx, "device_tunnel_rotated", "device", row.id, { device_id: row.device_id, old_tunnel_id: row.tunnel_id, tunnel_id, hostname }, undefined, row.owner_id);
     return { hostname };
   } catch (e) {
     const error = String(e && e.message || e).slice(0, 200);
     console.error(`tunnel rotation for ${row.device_id} failed: ${error}`);
-    await audit.log(ctx, "device_tunnel_failed", "device", row.id, { device_id: row.device_id, error });
+    await audit.log(ctx, "device_tunnel_failed", "device", row.id, { device_id: row.device_id, error }, undefined, row.owner_id);
     return { error: `The camera tunnel could not be recreated: ${error}. Click Recreate tunnel on the Devices page to try again.` };
   }
 }
@@ -945,14 +1037,17 @@ async function devicesSetProjector(ctx) {
   if (!manifest.PROJECTOR_MODES.includes(mode)) fail(400, `projector_power_mode must be one of ${manifest.PROJECTOR_MODES.join(", ")}`);
   const host = str(form, "broadlink_host").trim() || null;
   if (host !== null && !BROADLINK_HOST_RE.test(host)) fail(400, "Broadlink address must be a hostname or IP address");
-  await requireDevice(ctx, deviceId);
+  const row = await requireDevice(ctx, deviceId);
   await db.run(ctx.env, "UPDATE devices SET projector_control = ?, projector_power_mode = ?, broadlink_host = ? WHERE id = ?",
     control, mode, host, deviceId);
-  await audit.log(ctx, "device_set_projector", "device", deviceId, { projector_control: control, projector_power_mode: mode, broadlink_host: host ?? undefined });
+  await audit.log(ctx, "device_set_projector", "device", deviceId, { projector_control: control, projector_power_mode: mode, broadlink_host: host ?? undefined }, undefined, row.owner_id);
   return redirect("/devices");
 }
 
-// Owner select (admin only): hand a projector to an account, or to nobody (only admins see it then).
+// Owner select (admin only): hand a projector to an account, or to nobody (only admins see it
+// then, and it plays the site admin's content). What it pointed at that is not the new account's
+// goes (accounts.reassignDevice: playlist and group cleared, schedule rules deleted), so it never
+// plays the old account's content; its tunnel's Access list becomes the new account's operators.
 async function devicesSetOwner(ctx) {
   auth.requireRole(ctx, "admin");
   const deviceId = idParam(ctx.params.device_id, "device_id");
@@ -960,8 +1055,14 @@ async function devicesSetOwner(ctx) {
   await requireDevice(ctx, deviceId);
   const owner = ownerId === null ? null : await db.first(ctx.env, "SELECT username FROM users WHERE id = ?", ownerId);
   if (ownerId !== null && !owner) fail(404, "User not found");
-  await db.run(ctx.env, "UPDATE devices SET owner_id = ? WHERE id = ?", ownerId, deviceId);
-  await audit.log(ctx, "device_set_owner", "device", deviceId, { owner_id: ownerId, owner: owner ? owner.username : null });
+  const moved = await accounts.reassignDevice(ctx, deviceId, ownerId);
+  await audit.log(ctx, "device_set_owner", "device", deviceId, {
+    owner_id: ownerId, owner: owner ? owner.username : null,
+    playlist_cleared: moved.playlist_cleared || undefined, group_cleared: moved.group_cleared || undefined,
+    schedules_deleted: moved.schedules_deleted || undefined,
+  }, undefined, ownerId);
+  const accessError = await cloudflare.syncAccess(ctx, undefined, deviceId);
+  if (accessError) return auth.flashRedirect(ctx, "/devices", `Owner changed, but the camera access list could not be updated: ${accessError}. Click Recreate tunnel to try again.`, "error");
   return redirect("/devices");
 }
 

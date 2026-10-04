@@ -1,13 +1,20 @@
 // Port of web.audit_page + audit.html: newest first (created_at DESC, id DESC), ?limit= 1..1000,
 // plus ?action= (one action name) and ?before= (an id cursor for the "older" link) so a human
 // row stays reachable once the machine rows (device_update_reported, login_failed) outnumber
-// the tail.
+// the tail. Every user sees the rows about their own account (audit_log.owner_id, migration
+// 0016: what they did, and what happened to their projectors and their account); an admin sees
+// the whole site's log, like the Users page.
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, localTime, zoneName } from "../util.js";
 import { layout } from "./layout.js";
 
 const DEFAULT_LIMIT = 200;
+
+// The WHERE fragment for the audit rows a user may read (here and the Dashboard tail).
+export function auditScope(user) {
+  return user.role === "admin" ? { sql: "1", params: [] } : { sql: "owner_id = ?", params: [user.id] };
+}
 
 // FastAPI's Query(200, ge=1, le=1000) -> 422 there; a 400 {detail} here (contract 10).
 function limitParam(url) {
@@ -30,18 +37,19 @@ function filterParams(url) {
 }
 
 async function auditPage(ctx) {
-  auth.requireUser(ctx);
+  const user = auth.requireUser(ctx);
   const limit = limitParam(ctx.url);
   const { before, action } = filterParams(ctx.url);
   const tz = (await ctx.settings()).timezone;
-  const where = [], params = [];
+  const scope = auditScope(user);
+  const where = [scope.sql], params = [...scope.params];
   if (before) { where.push("id < ?"); params.push(parseInt(before, 10)); }
   if (action) { where.push("action = ?"); params.push(action); }
   const entries = await db.all(ctx.env,
     `SELECT id, user_id, username, action, target_type, target_id, details, ip, created_at
-       FROM audit_log ${where.length ? "WHERE " + where.join(" AND ") : ""}
+       FROM audit_log WHERE ${where.join(" AND ")}
        ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, limit);
-  const actions = await db.all(ctx.env, "SELECT DISTINCT action FROM audit_log ORDER BY action");
+  const actions = await db.all(ctx.env, `SELECT DISTINCT action FROM audit_log WHERE ${scope.sql} ORDER BY action`, ...scope.params);
   const query = `limit=${limit}${action ? "&action=" + encodeURIComponent(action) : ""}`;
   const older = entries.length === limit
     ? ` · <a href="/audit?${query}&before=${entries[entries.length - 1].id}">older</a>` : "";

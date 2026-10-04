@@ -1,5 +1,7 @@
 // /alerts (any role, read-only): the open alerts (alerts.evaluate, the */5 cron) and the most
-// recently closed ones, with the device, kind, when it opened / closed and the last notification.
+// recently closed ones, with the device, kind, when it opened / closed and the last notification,
+// for the projectors the user sees (their own; every one for an admin). The channels are each
+// account's own, on its Settings page.
 import * as alerts from "../alerts.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
@@ -37,7 +39,7 @@ async function alertsPage(ctx) {
   const recent = await db.all(ctx.env, `${select} AND a.closed_at IS NOT NULL ORDER BY a.closed_at DESC, a.id DESC LIMIT ?`, ...own.params, RECENT_LIMIT);
   const content = `<div class="page-head">
   <h1>Alerts</h1>
-  <span class="page-meta"><strong>${open.length} open</strong><br>checked every 5 minutes${user.role === "admin" ? ' · channels on the <a href="/settings">Settings</a> page' : ""}</span>
+  <span class="page-meta"><strong>${open.length} open</strong><br>checked every 5 minutes${auth.roleRank(user.role) >= auth.roleRank("editor") ? ' · channels on the <a href="/settings">Settings</a> page' : ""}</span>
 </div>
 
 <div class="panel">

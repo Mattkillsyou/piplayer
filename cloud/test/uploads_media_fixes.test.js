@@ -1,10 +1,13 @@
 // Audit fixes for uploads / library (package uploads-media): a forged sha256 prefix cannot
 // overwrite a library object (M9), complete verifies the browser's sha256 (M10), a failing R2
-// delete does not lose the audit row (L10), media.sha256 is UNIQUE (L11) and one open alert
-// per (device, kind) is enforced by the schema (L13, index only; alerts.js is another package).
+// delete does not lose the audit row (L10), media.sha256 is UNIQUE per account (L11; migration
+// 0016 made it per account: the key carries the account, so two libraries never share an object)
+// and one open alert per (device, kind) is enforced by the schema (L13, index only; alerts.js is
+// another package). ed and ed2 are two accounts.
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import * as accounts from "../src/accounts.js";
 import * as auth from "../src/auth.js";
 import { SCHEMA_VERSION } from "../src/db.js";
 import worker from "../src/index.js";
@@ -20,15 +23,19 @@ function fakeFile(size, seed = 1) {
   return data;
 }
 
-let admin, editor, editorCsrf, other, otherCsrf;
+let admin, editor, editorCsrf, other, otherCsrf, edId;
 
 async function makeUser(username, role, password = "test1234") {
   const hash = await auth.hashPassword(password);
-  await env.DB.prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)").bind(username, hash, role).run();
+  const id = (await env.DB.prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)").bind(username, hash, role).run()).meta.last_row_id;
+  await accounts.ensureDefaultPlaylist(env, id); // what /signup and the Users page do
   const c = new Client();
   expect((await c.login(username, password)).status).toBe(303);
   return c;
 }
+
+const defaultOf = async (username) => (await query(
+  "SELECT s.value FROM account_settings s JOIN users u ON u.id = s.user_id WHERE u.username = ? AND s.key = 'default_playlist_id'", username))[0].value;
 
 beforeAll(async () => {
   admin = await setupAdmin("admin", "test1234");
@@ -36,6 +43,7 @@ beforeAll(async () => {
   editorCsrf = await editor.csrf("/library");
   other = await makeUser("ed2", "editor");
   otherCsrf = await other.csrf("/library");
+  edId = (await query("SELECT id FROM users WHERE username = 'ed'"))[0].id;
 });
 
 const initBody = (over = {}) => ({ name: "clip.mp4", size: 3000, sha256: "0".repeat(64), media_type: "video", ...over });
@@ -69,12 +77,12 @@ describe("M9: a forged sha256 prefix cannot reuse a library object's key", () =>
     const r = await complete(editor, editorCsrf, await stage(editor, editorCsrf, "clip.mp4", honest));
     expect(r.status, await r.clone().text()).toBe(200);
     filename = (await query("SELECT filename FROM media WHERE sha256 = ?", sha))[0].filename;
-    expect(filename).toBe(`${sha.slice(0, 16)}_clip.mp4`);
+    expect(filename).toBe(`${sha.slice(0, 16)}_u${edId}_clip.mp4`); // the account is in the name (migration 0016)
   });
 
   it("init refuses a different sha256 that shares the first 16 hex chars of a library file", async () => {
     const forged = sha.slice(0, 16) + "f".repeat(48);
-    const r = await init(other, otherCsrf, initBody({ name: "clip.mp4", size: 5000, sha256: forged }));
+    const r = await init(editor, editorCsrf, initBody({ name: "clip.mp4", size: 5000, sha256: forged }));
     expect(r.status).toBe(409);
     expect(await r.json()).toEqual({ detail: "A file with this name is already in the library or being uploaded" });
     expect(await query("SELECT id FROM uploads")).toEqual([]);
@@ -82,12 +90,24 @@ describe("M9: a forged sha256 prefix cannot reuse a library object's key", () =>
     expect(await query("SELECT username, action FROM audit_log WHERE action = 'upload_media'")).toEqual([{ username: "ed", action: "upload_media" }]);
   });
 
+  it("another account forging the same prefix and name gets its own key and never touches the first file", async () => {
+    const forged = sha.slice(0, 16) + "f".repeat(48);
+    const r = await init(other, otherCsrf, initBody({ name: "clip.mp4", size: 5000, sha256: forged }));
+    expect(r.status, await r.clone().text()).toBe(200);
+    const { upload_id } = await r.json();
+    const key = (await query("SELECT key FROM uploads WHERE id = ?", upload_id))[0].key;
+    expect(key).not.toBe("media/" + filename);
+    expect(key).toMatch(new RegExp(`^media/${sha.slice(0, 16)}_u\\d+_clip\\.mp4$`));
+    expect((await env.MEDIA.head("media/" + filename)).size).toBe(3000);
+    await other.postJson(`/library/upload/${upload_id}/abort`, {}, { "X-CSRF-Token": otherCsrf });
+  });
+
   it("init refuses the key of another in-flight upload; the owner's own re-init still resumes", async () => {
     const mine = fakeFile(2000, 2);
     const mySha = await digest(mine);
     let r = await init(editor, editorCsrf, initBody({ name: "flight.mp4", size: 2000, sha256: mySha }));
     const { upload_id } = await r.json();
-    r = await init(other, otherCsrf, initBody({ name: "flight.mp4", size: 4000, sha256: mySha.slice(0, 16) + "e".repeat(48) }));
+    r = await init(editor, editorCsrf, initBody({ name: "flight.mp4", size: 4000, sha256: mySha.slice(0, 16) + "e".repeat(48) }));
     expect(r.status).toBe(409);
     expect((await r.json()).detail).toBe("A file with this name is already in the library or being uploaded");
     r = await init(editor, editorCsrf, initBody({ name: "flight.mp4", size: 2000, sha256: mySha }));
@@ -143,7 +163,7 @@ describe("M10: complete verifies the browser-supplied sha256", () => {
     const { media_id } = await r.json();
     expect((await query("SELECT sha256 FROM media WHERE id = ?", media_id))[0].sha256).toBe(claimed);
     const a = (await query("SELECT details FROM audit_log WHERE action = 'upload_media' AND target_id = ?", String(media_id)))[0];
-    const dflt = (await query("SELECT value FROM settings WHERE key = 'default_playlist_id'"))[0].value;
+    const dflt = await defaultOf("ed");
     expect(a.details).toBe(`{"filename": "big.mp4", "type": "video", "playlist": ${dflt}, "sha_verified": false}`);
     // an honest upload under the cap audits without the flag
     const ok = fakeFile(650, 7);
@@ -167,8 +187,8 @@ describe("L10: library delete survives an R2 delete failure", () => {
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/library");
     expect(await query("SELECT id FROM media WHERE id = ?", media_id)).toEqual([]);
-    const dflt = (await query("SELECT value FROM settings WHERE key = 'default_playlist_id'"))[0].value;
-    expect(await query("SELECT details FROM audit_log WHERE action = 'delete_media'")).toEqual([{ details: `{"filename": "orphan.png", "playlists": [${dflt}]}` }]); // the upload put it in the site default
+    const dflt = await defaultOf("ed");
+    expect(await query("SELECT details FROM audit_log WHERE action = 'delete_media'")).toEqual([{ details: `{"filename": "orphan.png", "playlists": [${dflt}]}` }]); // the upload put it in the editor's Default
     expect(await env.MEDIA.head("media/" + filename)).not.toBeNull();
     expect(errors).toHaveBeenCalledWith(`R2 delete failed for media/${filename}:`, expect.stringContaining("R2 is down"));
     errors.mockRestore();
@@ -176,12 +196,15 @@ describe("L10: library delete survives an R2 delete failure", () => {
   });
 });
 
-describe("L11 / L13: schema-level dedupe (migration 0006)", () => {
-  it("media.sha256 is UNIQUE, one open alert per (device, kind), schema_version matches db.js", async () => {
+describe("L11 / L13: schema-level dedupe (migrations 0006, 0016)", () => {
+  it("media.sha256 is UNIQUE per account, one open alert per (device, kind), schema_version matches db.js", async () => {
     expect(await query("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual([{ value: String(SCHEMA_VERSION) }]);
-    await env.DB.prepare("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('u1.mp4', 'u1', 'video', 1, ?)").bind("c".repeat(64)).run();
-    await expect(env.DB.prepare("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('u2.mp4', 'u2', 'video', 1, ?)").bind("c".repeat(64)).run())
-      .rejects.toThrow(/UNIQUE constraint failed: media.sha256/);
+    const ed2 = (await query("SELECT id FROM users WHERE username = 'ed2'"))[0].id;
+    await env.DB.prepare("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('u1.mp4', 'u1', 'video', 1, ?, ?)").bind("c".repeat(64), edId).run();
+    await expect(env.DB.prepare("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('u2.mp4', 'u2', 'video', 1, ?, ?)").bind("c".repeat(64), edId).run())
+      .rejects.toThrow(/UNIQUE constraint failed: media.owner_id, media.sha256/);
+    // the same bytes in another account's library: its own row
+    await env.DB.prepare("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('u3.mp4', 'u3', 'video', 1, ?, ?)").bind("c".repeat(64), ed2).run();
     const dev = (await env.DB.prepare("INSERT INTO devices (device_id, name, token) VALUES ('d-idx', 'D', 'tok-idx')").run()).meta.last_row_id;
     await env.DB.prepare("INSERT INTO alerts (device_id, kind, closed_at) VALUES (?, 'offline', '2026-01-01 00:00:00')").bind(dev).run();
     await env.DB.prepare("INSERT INTO alerts (device_id, kind) VALUES (?, 'offline')").bind(dev).run();
@@ -190,20 +213,39 @@ describe("L11 / L13: schema-level dedupe (migration 0006)", () => {
     await env.DB.prepare("INSERT INTO alerts (device_id, kind) VALUES (?, 'mpv-down')").bind(dev).run();
   });
 
-  it("two completes of the same bytes under different names at the same instant leave one media row", async () => {
+  it("the same bytes completing in one library behind another of its uploads: one media row, the loser's multipart aborted", async () => {
+    // The in-flight dedupe hands a second init of the same bytes the first upload, so the race
+    // within one account is a row that lands between init and complete (another tab finishing).
     const same = fakeFile(1200, 9);
     const sha = await digest(same);
     const a = await stage(editor, editorCsrf, "one.mp4", same);
-    const b = await stage(other, otherCsrf, "two.mp4", same);
-    const keyB = (await query("SELECT key FROM uploads WHERE id = ?", b))[0].key;
+    const keyA = (await query("SELECT key FROM uploads WHERE id = ?", a))[0].key;
+    await env.DB.prepare("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('won.mp4', 'won.mp4', 'video', 1200, ?, ?)").bind(sha, edId).run();
+    const r = await complete(editor, editorCsrf, a);
+    expect([r.status, await r.json()]).toEqual([409, { detail: "Already in the library as 'won.mp4'." }]);
+    expect((await query("SELECT COUNT(*) AS n FROM media WHERE sha256 = ? AND owner_id = ?", sha, edId))[0].n).toBe(1);
+    expect(await query("SELECT id FROM uploads WHERE sha256 = ?", sha)).toEqual([]);
+    expect(await env.MEDIA.head(keyA)).toBeNull();
+  });
+
+  it("two accounts completing the same bytes at the same instant: two media rows and two objects; deleting one leaves the other", async () => {
+    const same = fakeFile(1300, 10);
+    const sha = await digest(same);
+    const a = await stage(editor, editorCsrf, "mine.mp4", same);
+    const b = await stage(other, otherCsrf, "theirs.mp4", same);
     const racer = (c, token, id) => direct(c, `/library/upload/${id}/complete`,
       { method: "POST", body: "{}", headers: { "X-CSRF-Token": token, "content-type": "application/json" } });
     const results = await Promise.all([racer(editor, editorCsrf, a), racer(other, otherCsrf, b)]);
-    expect(results.map((x) => x.status).sort()).toEqual([200, 409]);
-    expect((await query("SELECT COUNT(*) AS n FROM media WHERE sha256 = ?", sha))[0].n).toBe(1);
-    expect(await query("SELECT id FROM uploads WHERE sha256 = ?", sha)).toEqual([]);
-    const filename = (await query("SELECT filename FROM media WHERE sha256 = ?", sha))[0].filename;
-    expect(await digest(new Uint8Array(await (await env.MEDIA.get("media/" + filename)).arrayBuffer()))).toBe(sha);
-    if (filename !== keyB.slice("media/".length)) expect(await env.MEDIA.head(keyB)).toBeNull();
+    expect(results.map((x) => x.status)).toEqual([200, 200]);
+    const rows = await query("SELECT id, filename, owner_id FROM media WHERE sha256 = ? ORDER BY id", sha);
+    expect(rows.length).toBe(2);
+    expect(new Set(rows.map((x) => x.filename)).size).toBe(2);
+    for (const row of rows) expect(await digest(new Uint8Array(await (await env.MEDIA.get("media/" + row.filename)).arrayBuffer()))).toBe(sha);
+    const mine = rows.find((x) => x.owner_id === edId);
+    const theirs = rows.find((x) => x.owner_id !== edId);
+    expect((await editor.post(`/library/${mine.id}/delete`, { csrf_token: editorCsrf })).status).toBe(303);
+    expect(await env.MEDIA.head("media/" + mine.filename)).toBeNull();
+    expect(await query("SELECT id FROM media WHERE id = ?", theirs.id)).toEqual([{ id: theirs.id }]);
+    expect((await env.MEDIA.head("media/" + theirs.filename)).size).toBe(1300);
   });
 });

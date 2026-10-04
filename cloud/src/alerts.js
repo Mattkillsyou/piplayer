@@ -2,11 +2,15 @@
 // scheduled): every device is checked against the conditions below, an alert row is opened
 // once per (device, kind), closed when the condition clears, and the configured channels
 // (email via the ALERT_MAIL send_email binding, a JSON webhook, Twilio SMS) get one digest per
-// run: what opened, what recovered and what is still open past alert_repeat_minutes.
+// run: what opened, what recovered and what is still open past alert_repeat_minutes. Thresholds
+// and channels are per account: each projector is judged by its content account's settings (its
+// owner's, or the site admin's for an ownerless one) and reported only through that account's
+// channels, in one digest per account, so no account hears of another's projectors.
 // ponytail: a failed send is logged + audited, never retried (notified_at is stamped once the
 // digest has been sent, whether or not a channel failed), so a dead webhook cannot make the
 // working channels repeat every 5 minutes. A run that throws before the digest leaves its rows
 // unstamped and the next run announces them.
+import * as accounts from "./accounts.js";
 import * as audit from "./audit.js";
 import * as db from "./db.js";
 import * as secrets from "./secrets.js";
@@ -54,19 +58,26 @@ export function conditions(d, settings, now) {
 
 const cronCtx = (env) => ({ env, user: null });
 
-// One pass: returns {opened, closed, repeated, sent: [channel...], errors: [text...]}.
+// One pass: returns {opened, closed, repeated, sent: [channel...], errors: [text...]} summed over
+// every account (`sent` lists a channel once per account whose digest went out through it).
 export async function evaluate(env, now = new Date()) {
-  const settings = await db.loadSettings(env);
   const ts = nowUtc(now);
   const devices = await db.all(env,
-    `SELECT id, device_id, name, last_seen_at, player_status, last_screenshot_at, last_error,
-            last_update_ok, camera_error, projector_error FROM devices`);
+    `SELECT d.id, d.device_id, d.name, d.owner_id, d.last_seen_at, d.player_status, d.last_screenshot_at, d.last_error,
+            d.last_update_ok, d.camera_error, d.projector_error, ${accounts.contentOwnerSql("d")} AS content_owner FROM devices d`);
+  const settingsBy = await db.loadSettingsFor(env, devices.map((d) => d.content_owner));
   const open = await db.all(env, "SELECT id, device_id, kind, opened_at, notified_at FROM alerts WHERE closed_at IS NULL");
   const openBy = new Map(open.map((a) => [`${a.device_id}:${a.kind}`, a]));
-  const events = { opened: [], closed: [], repeated: [] };
+  const byAccount = new Map(); // content account -> {opened, closed, repeated}
+  const eventsOf = (owner) => {
+    if (!byAccount.has(owner)) byAccount.set(owner, { opened: [], closed: [], repeated: [] });
+    return byAccount.get(owner);
+  };
   const ctx = cronCtx(env);
-  const repeatAfter = settings.alert_repeat_minutes * 60;
   for (const d of devices) {
+    const settings = settingsBy.get(d.content_owner) || db.defaultSettings(env);
+    const repeatAfter = settings.alert_repeat_minutes * 60;
+    const events = eventsOf(d.content_owner);
     const active = conditions(d, settings, now);
     const offline = active.has("offline");
     for (const kind of KINDS) {
@@ -78,7 +89,7 @@ export async function evaluate(env, now = new Date()) {
           const ins = await db.run(env, "INSERT OR IGNORE INTO alerts (device_id, kind, opened_at) VALUES (?, ?, ?)", d.id, kind, ts);
           if (!ins.changes) continue;
           events.opened.push({ id: ins.last_row_id, device: d, kind, opened_at: ts });
-          await audit.log(ctx, "alert_opened", "device", d.device_id, { kind });
+          await audit.log(ctx, "alert_opened", "device", d.device_id, { kind }, undefined, d.owner_id);
         } else if (cur.notified_at === null) {
           // opened by a run that threw before its digest went out
           events.opened.push({ id: cur.id, device: d, kind, opened_at: cur.opened_at });
@@ -88,23 +99,34 @@ export async function evaluate(env, now = new Date()) {
       } else if (cur && !(offline && kind !== "offline")) {
         await db.run(env, "UPDATE alerts SET closed_at = ? WHERE id = ?", ts, cur.id);
         events.closed.push({ id: cur.id, device: d, kind, opened_at: cur.opened_at });
-        await audit.log(ctx, "alert_closed", "device", d.device_id, { kind });
+        await audit.log(ctx, "alert_closed", "device", d.device_id, { kind }, undefined, d.owner_id);
       }
     }
   }
-  const result = { opened: events.opened.length, closed: events.closed.length, repeated: events.repeated.length, sent: [], errors: [] };
-  if (result.opened + result.closed + result.repeated === 0) return result;
-  const msg = digest(events, settings.timezone);
-  for (const [channel, error] of await sendAll(env, settings, msg)) {
-    if (error === null) result.sent.push(channel);
-    else {
-      result.errors.push(`${channel}: ${error}`);
-      console.error(`alert ${channel} failed: ${error}`);
-      await audit.log(ctx, "alert_notify_failed", "settings", channel, { error: error.slice(0, 200) });
+  const result = { opened: 0, closed: 0, repeated: 0, sent: [], errors: [] };
+  const ids = [];
+  for (const [owner, events] of byAccount) {
+    const n = events.opened.length + events.closed.length + events.repeated.length;
+    if (!n) continue;
+    result.opened += events.opened.length;
+    result.closed += events.closed.length;
+    result.repeated += events.repeated.length;
+    ids.push(...[...events.opened, ...events.closed, ...events.repeated].map((e) => e.id));
+    // No account at all (projectors from before the first admin): nobody to tell.
+    if (owner === null) continue;
+    const settings = settingsBy.get(owner);
+    const msg = digest(events, settings.timezone);
+    for (const [channel, error] of await sendAll(env, settings, msg, owner)) {
+      if (error === null) result.sent.push(channel);
+      else {
+        result.errors.push(`${channel}: ${error}`);
+        console.error(`alert ${channel} failed for account ${owner}: ${error}`);
+        await audit.log(ctx, "alert_notify_failed", "settings", channel, { error: error.slice(0, 200) }, undefined, owner);
+      }
     }
   }
-  // Everything in the digest is stamped in one round trip (send never throws, so this runs).
-  const ids = [...events.opened, ...events.closed, ...events.repeated].map((e) => e.id);
+  if (!ids.length) return result;
+  // Everything in the digests is stamped in one round trip (send never throws, so this runs).
   await db.batch(env, ids.map((id) => ["UPDATE alerts SET notified_at = ? WHERE id = ?", ts, id]));
   return result;
 }
@@ -122,10 +144,11 @@ export function digest({ opened = [], closed = [], repeated = [] }, timeZone = "
   return { subject: `${SITE}: ${summary}`, text: parts.join("\n") };
 }
 
-// Which channels are set up: email needs addresses and the binding, webhook a URL, sms the
-// four Twilio secrets. The Settings page shows this and the cron sends to each.
-export async function configured(env, settings) {
-  const have = await secrets.names(env);
+// Which of an account's channels are set up: email needs addresses and the binding, webhook a
+// URL, sms the account's four Twilio secrets. The Settings page shows this and the cron sends to
+// each. `settings` are that account's.
+export async function configured(env, settings, ownerId) {
+  const have = await secrets.names(env, ownerId);
   return {
     email: !!db.parseEmails(settings.alert_email),
     email_binding: !!(env.ALERT_MAIL && typeof env.ALERT_MAIL.send === "function"),
@@ -134,23 +157,23 @@ export async function configured(env, settings) {
   };
 }
 
-// [[channel, null | error text]] for every configured channel.
-async function sendAll(env, settings, msg) {
-  const c = await configured(env, settings);
+// [[channel, null | error text]] for every channel the account has configured.
+async function sendAll(env, settings, msg, ownerId) {
+  const c = await configured(env, settings, ownerId);
   const out = [];
   for (const channel of CHANNELS) {
     if (!c[channel]) continue;
-    out.push([channel, await send(env, settings, channel, msg)]);
+    out.push([channel, await send(env, settings, channel, msg, ownerId)]);
   }
   return out;
 }
 
-// One channel; null on success, else the error text (never throws).
-export async function send(env, settings, channel, msg) {
+// One channel of one account; null on success, else the error text (never throws).
+export async function send(env, settings, channel, msg, ownerId) {
   try {
     if (channel === "email") return await sendEmail(env, settings, msg);
     if (channel === "webhook") return await sendWebhook(settings, msg);
-    if (channel === "sms") return await sendSms(env, msg);
+    if (channel === "sms") return await sendSms(env, msg, ownerId);
     return `unknown channel ${channel}`;
   } catch (e) {
     return String(e && e.message || e).slice(0, 500);
@@ -209,10 +232,11 @@ export const webhookPayload = (msg) => ({
   site: SITE, title: msg.subject, text: `${msg.subject}\n${msg.text}`, content: `${msg.subject}\n${msg.text}`, message: msg.text,
 });
 
-// Twilio REST: POST /2010-04-01/Accounts/{sid}/Messages.json, HTTP basic sid:token. SMS is
-// short: subject + the first lines, cut at 600 chars (4 segments).
-async function sendSms(env, msg) {
-  const t = await secrets.getMany(env, TWILIO_NAMES);
+// Twilio REST: POST /2010-04-01/Accounts/{sid}/Messages.json, HTTP basic sid:token, with the
+// account's own Twilio credentials. SMS is short: subject + the first lines, cut at 600 chars
+// (4 segments).
+async function sendSms(env, msg, ownerId) {
+  const t = await secrets.getMany(env, ownerId, TWILIO_NAMES);
   if (TWILIO_NAMES.some((n) => !t[n])) return "Twilio account sid, auth token, from and to must all be set";
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(t.twilio_account_sid)}/Messages.json`, {
     method: "POST",
@@ -230,16 +254,14 @@ async function sendSms(env, msg) {
 
 export const smsBody = (msg) => `${msg.subject}\n${msg.text}`.slice(0, 600);
 
-// "Send test" on the Settings page: one message through one channel; null or the error text.
-export function sendTest(env, settings, channel, user) {
+// "Send test" on the Settings page: one message through one of the account's channels; null or
+// the error text.
+export function sendTest(env, settings, channel, user, ownerId) {
   return send(env, settings, channel, {
     subject: `${SITE}: test alert`,
     text: `Test message from ${SITE} alert settings (${channel}), requested by ${user}. If you can read this, the channel works.`,
-  });
+  }, ownerId);
 }
-
-// Open alerts count for the dashboard badge.
-export const openCount = (env) => db.first(env, "SELECT COUNT(*) AS n FROM alerts WHERE closed_at IS NULL").then((r) => r.n);
 
 export const kindBadge = (kind) => `<span class="badge badge-stale">${esc(KIND_TEXT[kind] || kind)}</span>`;
 

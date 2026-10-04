@@ -321,16 +321,19 @@ export function clearLoginFailures(env, ip, username) {
 // Devices and setup
 // ---------------------------------------------------------------------------
 
-// Device row for `Authorization: Bearer <token>` or 401 JSON (auth.authenticate_device).
+// Device row for `Authorization: Bearer <token>` or 401 JSON (auth.authenticate_device), with
+// owner_id and content_owner: the account whose content and settings the projector follows (its
+// owner, or the site admin for an ownerless one; accounts.contentOwnerSql).
 export async function deviceFromHeader(ctx) {
   const authorization = ctx.request.headers.get("authorization") || "";
   if (!authorization.toLowerCase().startsWith("bearer ")) fail(401, "Missing bearer token");
   const token = authorization.slice(7).trim();
   const row = token && await db.first(ctx.env,
-    `SELECT id, device_id, name, playlist_id, group_id,
-            projector_control, projector_power_mode, projector_ir_codes, broadlink_host,
-            tunnel_id, tunnel_hostname, mpv_hwdec, mpv_profile
-       FROM devices WHERE token = ?`, token);
+    `SELECT d.id, d.device_id, d.name, d.playlist_id, d.group_id,
+            d.projector_control, d.projector_power_mode, d.projector_ir_codes, d.broadlink_host,
+            d.tunnel_id, d.tunnel_hostname, d.mpv_hwdec, d.mpv_profile, d.owner_id,
+            COALESCE(d.owner_id, (SELECT MIN(id) FROM users WHERE role = 'admin')) AS content_owner
+       FROM devices d WHERE d.token = ?`, token);
   if (!row) fail(401, "Invalid device token");
   return row;
 }
@@ -350,13 +353,14 @@ export function newApiToken() {
 export const apiTokenHash = (token) => sha256Hex(token);
 
 // Mint a token for `userId`, store only its hash and audit api_token_created (the name plus
-// `details`, never the token). Returns {id, token}; the caller shows the plaintext once.
-// Shared by the Settings and Users pages and the device-code sign-in (device_codes.js).
+// `details`, never the token) as a row about that user's account. Returns {id, token}; the caller
+// shows the plaintext once. Shared by the Settings and Users pages and the device-code sign-in
+// (device_codes.js).
 export async function issueApiToken(ctx, userId, name, details = {}) {
   const token = newApiToken();
   const id = (await db.run(ctx.env, "INSERT INTO api_tokens (user_id, name, token_hash) VALUES (?, ?, ?)",
     userId, name, await apiTokenHash(token))).last_row_id;
-  await audit.log(ctx, "api_token_created", "api_token", id, { name, ...details });
+  await audit.log(ctx, "api_token_created", "api_token", id, { name, ...details }, undefined, userId);
   return { id, token };
 }
 

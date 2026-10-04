@@ -1,6 +1,7 @@
 // Worker entry: builds the router from every module, resolves the session + CSRF for web
 // requests, dispatches, and turns thrown HttpError / Response / constraint errors into the
 // contract-10 status codes. Any other exception is a JSON 500 (logged), never a stack trace.
+import * as accounts from "./accounts.js";
 import * as alerts from "./alerts.js";
 import * as api from "./api.js";
 import * as audit from "./audit.js";
@@ -10,6 +11,7 @@ import * as deviceCodes from "./device_codes.js";
 import * as manifest from "./manifest.js";
 import * as media from "./media.js";
 import * as schedules from "./schedules.js";
+import * as secrets from "./secrets.js";
 import * as uploads from "./uploads.js";
 import * as alertsPage from "./pages/alerts.js";
 import * as auditPage from "./pages/audit.js";
@@ -32,7 +34,7 @@ import { esc, fail, HttpError, json, redirect } from "./util.js";
 
 const MODULES = [
   login, setup, signup, forgot, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings, flasher,
-  api, media, manifest, schedules, uploads, auth, audit, alerts, deviceCodes,
+  api, media, manifest, schedules, uploads, auth, audit, alerts, deviceCodes, accounts, secrets,
 ];
 
 const router = new Router();
@@ -61,7 +63,7 @@ function withSecurityHeaders(res) {
 function makeCtx(request, env, exec, url, params) {
   let formPromise = null;
   let settingsPromise = null;
-  return {
+  const ctx = {
     request, env, exec, url, params,
     user: null, session: null, csrf: null,
     ip: audit.clientIp({ request }),
@@ -73,12 +75,15 @@ function makeCtx(request, env, exec, url, params) {
       }
       return formPromise;
     },
-    // Site settings {timezone, screenshot_interval, default_image_duration} (memoised).
+    // The signed-in account's own settings (db.loadSettings; memoised, so first read after the
+    // session is loaded); the defaults when nobody is signed in. Device API routes load their
+    // projector's account's settings themselves (api.js), never these.
     settings() {
-      if (!settingsPromise) settingsPromise = db.loadSettings(env);
+      if (!settingsPromise) settingsPromise = db.loadSettings(env, ctx.user ? ctx.user.id : null);
       return settingsPromise;
     },
   };
+  return ctx;
 }
 
 function withCookies(res, ctx) {

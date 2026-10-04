@@ -1,7 +1,10 @@
 // Port of web.users_* + users.html (admin only), plus each admin/editor's operator API tokens
 // (api_tokens; feature B): an admin issues or revokes a token for any user here, the Settings
-// page holds the admin's own. A viewer's token would only ever get 401 on the operator
-// endpoint, so viewers get no create form (and the route answers 400).
+// page holds each user's own. A viewer's token would only ever get 401 on the operator
+// endpoint, so viewers get no create form (and the route answers 400). Every account is its own
+// private space (accounts.js): a new user gets an empty library and their own Default playlist,
+// and deleting a user deletes their library, playlists, groups and settings with them.
+import * as accounts from "../accounts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as cloudflare from "../cloudflare.js";
@@ -12,9 +15,10 @@ import { newTokenBlock, tokenCreateForm, tokenName, tokenTable, userTokens } fro
 
 const ROLE_OK = (role) => auth.ROLES.includes(role);
 
-// Back to the list with the acknowledgement. Admin usernames stand in for the camera operator
-// list while no alert email is set (cloudflare.operatorEmails), so a created, deleted or
-// re-roled user may change who can open the live camera pages: push that to every tunnel now.
+// Back to the list with the acknowledgement. An account's own address (or email-like username)
+// stands in for its camera operator list while it has no alert email set, and ownerless
+// projectors follow the site admin (cloudflare.operatorEmails), so a created, deleted or re-roled
+// user may change who can open live camera pages: push that to every tunnel now.
 async function done(ctx, message) {
   const accessError = await cloudflare.syncAccess(ctx);
   if (accessError) return auth.flashRedirect(ctx, "/users", `${message}, but the camera access list could not be updated on every device: ${accessError}. Click Recreate tunnel on each device on the Devices page.`, "error");
@@ -74,7 +78,7 @@ async function usersPage(ctx, created = null) {
         </form>
       </td>
       <td>
-        ${u.id !== me.id ? `<form method="post" action="/users/${u.id}/delete" class="inline" data-confirm="Delete ${esc(u.username)}? Their API tokens stop working and any flasher using them will fail. Their projectors keep playing but have no owner until you pick one on the Devices page.">
+        ${u.id !== me.id ? `<form method="post" action="/users/${u.id}/delete" class="inline" data-confirm="Delete ${esc(u.username)}? Their library, playlists, groups and settings are deleted with the account, and their API tokens stop working. Their projectors stay, with no owner, until you pick one on the Devices page.">
           ${csrfInput(ctx)}
           <button type="submit" class="danger small">Delete</button>
         </form>` : ""}
@@ -99,9 +103,9 @@ async function usersPage(ctx, created = null) {
       </label>
       <label>Role
         <select name="role">
-          <option value="editor">editor (can upload, edit playlists, manage devices)</option>
-          <option value="admin">admin (everything + user management)</option>
-          <option value="viewer">viewer (read-only)</option>
+          <option value="editor">editor (full control of their own account, like a sign-up)</option>
+          <option value="admin">admin (their own account, plus every projector and user management)</option>
+          <option value="viewer">viewer (their own account, read-only)</option>
         </select>
       </label>
     </div>
@@ -144,7 +148,8 @@ async function usersCreate(ctx) {
     if (db.isConstraintError(e)) fail(409, "A user with that username already exists");
     throw e;
   }
-  await audit.log(ctx, "user_create", "user", id, { username, role });
+  await accounts.ensureDefaultPlaylist(ctx.env, id);
+  await audit.log(ctx, "user_create", "user", id, { username, role }, undefined, id);
   return done(ctx, "User created");
 }
 
@@ -162,7 +167,7 @@ async function usersSetRole(ctx) {
     if (!(await db.first(ctx.env, "SELECT 1 AS one FROM users WHERE id = ?", userId))) fail(404, "User not found");
     fail(400, "The last admin cannot be given another role");
   }
-  await audit.log(ctx, "user_set_role", "user", userId, { role });
+  await audit.log(ctx, "user_set_role", "user", userId, { role }, undefined, userId);
   return done(ctx, "Role updated");
 }
 
@@ -182,7 +187,7 @@ async function usersSetPassword(ctx) {
     ["UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL", userId],
   ]);
   if (!r.meta.changes) fail(404, "User not found");
-  await audit.log(ctx, "user_set_password", "user", userId);
+  await audit.log(ctx, "user_set_password", "user", userId, null, undefined, userId);
   return auth.flashRedirect(ctx, "/users", "Password changed.");
 }
 
@@ -204,14 +209,20 @@ async function usersSetEmail(ctx) {
   if (!r.changes) fail(404, "User not found");
   // A reset link mailed to the old address must not change the password after this.
   await db.run(ctx.env, "UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL", userId);
-  await audit.log(ctx, "user_set_email", "user", userId, { email });
-  return auth.flashRedirect(ctx, "/users", "Email address saved.");
+  await audit.log(ctx, "user_set_email", "user", userId, { email }, undefined, userId);
+  // The address may be the account's camera operator (cloudflare.operatorEmails).
+  return done(ctx, "Email address saved");
 }
 
+// The account goes with everything in it: its media rows, playlists, groups, settings and
+// secrets cascade (migration 0016), its projectors stay without an owner (and then play the site
+// admin's content), and the media files are removed from R2 once the rows are gone (an R2 error is
+// logged, never undoes the delete).
 async function usersDelete(ctx) {
   const me = auth.requireRole(ctx, "admin");
   const userId = idParam(ctx.params.user_id, "user_id");
   if (userId === me.id) fail(400, "You cannot delete your own account");
+  const keys = await accounts.mediaKeys(ctx.env, userId);
   // One guarded statement (see usersSetRole); `changes` counts the cascaded session rows too.
   const r = await db.run(ctx.env,
     "DELETE FROM users WHERE id = ? AND (role != 'admin' OR (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1)", userId);
@@ -219,7 +230,11 @@ async function usersDelete(ctx) {
     if (!(await db.first(ctx.env, "SELECT 1 AS one FROM users WHERE id = ?", userId))) fail(404, "User not found");
     fail(400, "The last admin cannot be deleted");
   }
-  await audit.log(ctx, "user_delete", "user", userId);
+  for (const key of keys) {
+    try { await ctx.env.MEDIA.delete(key); }
+    catch (e) { console.error(`R2 delete failed for ${key} of deleted user ${userId}:`, e && e.stack || e); }
+  }
+  await audit.log(ctx, "user_delete", "user", userId, keys.length ? { media_deleted: keys.length } : null, undefined, null);
   return done(ctx, "User deleted");
 }
 
@@ -244,7 +259,7 @@ async function userTokenRevoke(ctx) {
     "SELECT t.id, t.name, u.username FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.id = ? AND t.user_id = ?", tokenId, userId);
   if (!row) fail(404, "token not found");
   await db.run(ctx.env, "DELETE FROM api_tokens WHERE id = ?", tokenId);
-  await audit.log(ctx, "api_token_revoked", "api_token", tokenId, { name: row.name, username: row.username });
+  await audit.log(ctx, "api_token_revoked", "api_token", tokenId, { name: row.name, username: row.username }, undefined, userId);
   return auth.flashRedirect(ctx, "/users", "API token revoked.");
 }
 

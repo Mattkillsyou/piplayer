@@ -1,24 +1,27 @@
-// Port of web.groups_* + groups.html.
+// Port of web.groups_* + groups.html. Each account has its own groups (device_groups.owner_id,
+// migration 0016; names unique per account), each with one of its own playlists as default:
+// another account's group or playlist id answers exactly like a missing one.
+import * as accounts from "../accounts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, idParam, intField, redirect, str } from "../util.js";
-import { ownedClause, requireRow } from "./devices.js";
+import { requireRow } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 
 async function groupsPage(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = user.role !== "viewer";
-  // Groups are shared; the device count is only what this user may see.
-  const own = ownedClause(user);
+  // The device count is the account's own projectors in the group (only those may join it).
   const groups = await db.all(ctx.env,
     `SELECT g.id, g.name,
             g.playlist_id, p.name AS playlist_name,
-            (SELECT COUNT(*) FROM devices d WHERE d.group_id = g.id AND ${own.sql}) AS device_count
+            (SELECT COUNT(*) FROM devices d WHERE d.group_id = g.id AND ${accounts.contentOwnerSql("d")} = ?1) AS device_count
        FROM device_groups g
-       LEFT JOIN playlists p ON p.id = g.playlist_id
-       ORDER BY g.name`, ...own.params);
-  const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name");
+       LEFT JOIN playlists p ON p.id = g.playlist_id AND p.owner_id = ?1
+      WHERE g.owner_id = ?1
+      ORDER BY g.name`, user.id);
+  const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name", user.id);
   const row = (g) => `<tr>
       <td class="name">${esc(g.name)}</td>
       <td>${g.device_count}</td>
@@ -63,13 +66,15 @@ ${!groups.length ? emptyState("NO GROUPS", `No groups yet.${canEdit ? " Create o
   return layout(ctx, { title: "Groups", content });
 }
 
+// Names are unique within the account (idx_device_groups_owner_name): the 409 is only ever about
+// one's own group.
 async function groupsCreate(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const name = str(await ctx.form(), "name").trim();
   if (!name) fail(400, "Enter a name");
   let id;
   try {
-    id = (await db.run(ctx.env, "INSERT INTO device_groups (name) VALUES (?)", name)).last_row_id;
+    id = (await db.run(ctx.env, "INSERT INTO device_groups (owner_id, name, legacy_name) VALUES (?, ?, ?)", user.id, name, accounts.uniqueKey())).last_row_id;
   } catch (e) {
     if (db.isConstraintError(e)) fail(409, "A group with that name already exists");
     throw e;
@@ -79,20 +84,20 @@ async function groupsCreate(ctx) {
 }
 
 async function groupsAssign(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const groupId = idParam(ctx.params.group_id, "group_id");
   const pid = intField(str(await ctx.form(), "playlist_id"), "playlist_id");
-  await requireRow(ctx.env, "device_groups", groupId, "Group");
-  await requireRow(ctx.env, "playlists", pid, "Playlist");
+  await requireRow(ctx.env, "device_groups", groupId, user.id, "Group");
+  await requireRow(ctx.env, "playlists", pid, user.id, "Playlist");
   await db.run(ctx.env, "UPDATE device_groups SET playlist_id = ? WHERE id = ?", pid, groupId);
   await audit.log(ctx, "group_assign_playlist", "group", groupId, { playlist_id: pid });
   return redirect("/groups");
 }
 
 async function groupsDelete(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const groupId = idParam(ctx.params.group_id, "group_id");
-  const r = await db.run(ctx.env, "DELETE FROM device_groups WHERE id = ?", groupId);
+  const r = await db.run(ctx.env, "DELETE FROM device_groups WHERE id = ? AND owner_id = ?", groupId, user.id);
   if (!r.changes) fail(404, "Group not found");
   await audit.log(ctx, "group_delete", "group", groupId);
   return redirect("/groups");

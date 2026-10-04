@@ -1,6 +1,12 @@
 // Port of api.resolve_active_playlist_id / _manifest_for_device / the playlist hash.
 // Library module, no routes: api.js (sync), media.js (device scoping) and the dashboard /
 // devices pages all resolve the active playlist through the same function so they agree.
+// A projector plays only its content account's content (accounts.js: its owner, or the site
+// admin for an ownerless one): schedule rules, the device's playlist and its group's count only
+// when they belong to that account, and the fallback is that account's Default playlist. The
+// pages keep references consistent when they write; this check is here too so that no row,
+// whatever its history, can put another account's file on a projector.
+import * as accounts from "./accounts.js";
 import * as db from "./db.js";
 import * as schedules from "./schedules.js";
 import { serverTimeIso, sha256Hex, wallClock, zoneOffsetMinutes } from "./util.js";
@@ -49,30 +55,42 @@ export async function playlist_hash(playlistId, items) {
   return "sha256:" + await sha256Hex(s);
 }
 
-// [playlist_id, source]: matching schedule (highest priority, then highest id) ->
-// device default -> group default -> site default -> [null, null]. `device` needs id,
-// playlist_id, group_id; `now` is a util.wallClock() in the site timezone; `defaultPlaylistId`
-// is settings.default_playlist_id (loaded here when the caller has no settings in hand).
-export async function resolve_active_playlist_id(env, device, now, defaultPlaylistId = undefined) {
-  if (defaultPlaylistId === undefined) defaultPlaylistId = (await db.loadSettings(env)).default_playlist_id;
+// What the playlist decision reads for one device, restricted to account `ownerId`: its schedule
+// rules whose playlist is that account's (with the playlist name, for next_rule), the device's own
+// playlist when it is that account's (else null), and its group's playlist when the group and the
+// playlist both are. Two statements.
+export async function device_content(env, device, ownerId) {
   const rows = await db.all(env,
-    `SELECT id, playlist_id, name, priority, start_time, end_time,
-            days_of_week, start_date, end_date
-       FROM device_schedules WHERE device_id = ?`, device.id);
-  let groupPlaylistId = null;
-  if (device.group_id) {
-    const grow = await db.first(env, "SELECT playlist_id FROM device_groups WHERE id = ?", device.group_id);
-    groupPlaylistId = grow ? grow.playlist_id : null;
-  }
-  return pick_playlist(device, rows, groupPlaylistId, now, defaultPlaylistId);
+    `SELECT s.id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time,
+            s.days_of_week, s.start_date, s.end_date, p.name AS playlist_name
+       FROM device_schedules s JOIN playlists p ON p.id = s.playlist_id AND p.owner_id = ?
+      WHERE s.device_id = ?`, ownerId, device.id);
+  const refs = await db.first(env,
+    `SELECT (SELECT id FROM playlists WHERE id = ?1 AND owner_id = ?3) AS playlist_id,
+            (SELECT g.playlist_id FROM device_groups g JOIN playlists p ON p.id = g.playlist_id AND p.owner_id = ?3
+              WHERE g.id = ?2 AND g.owner_id = ?3) AS group_playlist_id`,
+    device.playlist_id ?? null, device.group_id ?? null, ownerId);
+  return { rows, playlistId: refs.playlist_id, groupPlaylistId: refs.group_playlist_id };
 }
 
-// The decision half of resolve_active_playlist_id, on rows the caller already has: the
-// device's schedules, its group's default playlist_id (null when it has no group) and the
-// site default playlist (settings.default_playlist_id, migration 0010: the last fallback, so
-// a projector with nothing of its own still plays). The /devices and /dashboard pages fetch
-// those for the whole fleet in a few statements and call this per device instead of issuing
-// per-device queries.
+// [playlist_id, source]: matching schedule (highest priority, then highest id) ->
+// device default -> group default -> the account's Default playlist -> [null, null], all from the
+// device's content account. `device` needs id, playlist_id, group_id and owner_id (or
+// content_owner); `now` is a util.wallClock() in that account's timezone; `defaultPlaylistId` is
+// its settings.default_playlist_id (loaded here when the caller has no settings in hand).
+export async function resolve_active_playlist_id(env, device, now, defaultPlaylistId = undefined) {
+  const owner = await accounts.contentOwnerOf(env, device);
+  if (defaultPlaylistId === undefined) defaultPlaylistId = (await db.loadSettings(env, owner)).default_playlist_id;
+  const c = await device_content(env, device, owner);
+  return pick_playlist({ ...device, playlist_id: c.playlistId }, c.rows, c.groupPlaylistId, now, defaultPlaylistId);
+}
+
+// The decision half of resolve_active_playlist_id, on rows the caller already has (already
+// restricted to the device's content account): the device's schedules, its group's default
+// playlist_id (null when it has no group) and the account's Default playlist
+// (settings.default_playlist_id, migration 0016: the last fallback, so a projector with nothing
+// of its own still plays). The /devices and /dashboard pages fetch those for the whole fleet in a
+// few statements and call this per device instead of issuing per-device queries.
 export function pick_playlist(device, scheduleRows, groupPlaylistId, now, defaultPlaylistId = null) {
   const active = schedules.pick_active(scheduleRows, now);
   if (active) return [active.playlist_id, `schedule:${active.name}`];
@@ -185,32 +203,31 @@ function wallIsoMinutes(timeZone, w) {
     `${off < 0 ? "-" : "+"}${pad2(Math.floor(a / 60))}:${pad2(a % 60)}`;
 }
 
-// The /api/sync body. `device` is the devices row (id, device_id, name, playlist_id, group_id);
-// `baseUrl` is the request origin (https://host) the media URLs are built on.
+// The /api/sync body. `device` is the devices row (id, device_id, name, playlist_id, group_id,
+// owner_id / content_owner, the projector and mpv columns); `settings` its content account's;
+// `baseUrl` is the request origin (https://host) the media URLs are built on. The shape is the
+// Python CMS's, byte for byte, plus the cloud-only keys.
 export async function manifest_for_device(env, device, baseUrl, settings, now = new Date()) {
+  const owner = await accounts.contentOwnerOf(env, device);
   const wall = wallClock(settings.timezone, now);
-  const rows = await db.all(env,
-    `SELECT s.id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time,
-            s.days_of_week, s.start_date, s.end_date, p.name AS playlist_name
-       FROM device_schedules s LEFT JOIN playlists p ON p.id = s.playlist_id
-      WHERE s.device_id = ?`, device.id);
-  let groupPlaylistId = null;
-  if (device.group_id) {
-    const grow = await db.first(env, "SELECT playlist_id FROM device_groups WHERE id = ?", device.group_id);
-    groupPlaylistId = grow ? grow.playlist_id : null;
-  }
-  const [activePlaylistId, source] = pick_playlist(device, rows, groupPlaylistId, wall, settings.default_playlist_id);
+  const content = await device_content(env, device, owner);
+  const rows = content.rows;
+  const groupPlaylistId = content.groupPlaylistId;
+  const own = { ...device, playlist_id: content.playlistId }; // another account's playlist reads as none
+  const [activePlaylistId, source] = pick_playlist(own, rows, groupPlaylistId, wall, settings.default_playlist_id);
 
   let playlistBlock = null;
   if (activePlaylistId) {
-    const playlistRow = await db.first(env, "SELECT id, name, updated_at FROM playlists WHERE id = ?", activePlaylistId);
+    const playlistRow = await db.first(env, "SELECT id, name, updated_at FROM playlists WHERE id = ? AND owner_id = ?", activePlaylistId, owner);
+    // Only the account's own files: an item can never point anywhere else (playlistAddItem), and
+    // this join makes sure no row ever could.
     const items = await db.all(env,
       `SELECT pi.position, pi.duration_override_seconds,
               m.filename, m.sha256, m.size_bytes, m.duration_seconds, m.media_type
          FROM playlist_items pi
-         JOIN media m ON m.id = pi.media_id
+         JOIN media m ON m.id = pi.media_id AND m.owner_id = ?
         WHERE pi.playlist_id = ?
-        ORDER BY pi.position ASC, pi.id ASC`, activePlaylistId);
+        ORDER BY pi.position ASC, pi.id ASC`, owner, activePlaylistId);
     if (playlistRow) {
       const itemList = items.map((it) => ({
         position: it.position,
@@ -267,7 +284,7 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
     camera_config_version: settings.camera_config_version || 0,
     // Projector power: null when the device has no projector control; otherwise {control, mode,
     // want, codes, broadlink_host} (auto mode follows `want`, see projector_want).
-    projector: projector_block(device, projector_want(device, rows, groupPlaylistId, wall, settings)),
+    projector: projector_block(device, projector_want(own, rows, groupPlaylistId, wall, settings)),
     // Playback options set per device (migration 0014): only present when one is set, so an older
     // player and a device on the defaults see the manifest they always did.
     ...(device.mpv_hwdec || device.mpv_profile ? {
@@ -280,6 +297,7 @@ export async function manifest_for_device(env, device, baseUrl, settings, now = 
 }
 
 // camelCase aliases.
+export const deviceContent = device_content;
 export const resolveActivePlaylistId = resolve_active_playlist_id;
 export const manifestForDevice = manifest_for_device;
 export const playlistHash = playlist_hash;

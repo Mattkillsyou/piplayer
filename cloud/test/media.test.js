@@ -1,17 +1,18 @@
 // /api/media: filename validation, session-or-device auth, device scoping through the
-// schedule resolver (contract 15), R2 range serving (contract 6), HEAD, headers.
+// schedule resolver (contract 15), R2 range serving (contract 6), HEAD, headers. A signed-in user
+// reads their own library only; a device what its own account's playlist serves (accounts.js).
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { MEDIA_CACHE_CONTROL, parseRange } from "../src/media.js";
-import { BASE, query, setupAdmin } from "./helpers.js";
+import { BASE, Client, query, setupAdmin } from "./helpers.js";
 
 const SHA = (c) => c.repeat(64);
 const ins = async (sql, ...p) => (await env.DB.prepare(sql).bind(...p).run()).meta.last_row_id;
 const bearer = (token) => ({ authorization: `Bearer ${token}` });
 const FULL = new Uint8Array(1000).map((_, i) => i % 251);
 
-let admin;
+let admin, other;
 const ids = {};
 
 const get = (path, headers = {}, method = "GET") => SELF.fetch(BASE + path, { headers, method });
@@ -19,13 +20,21 @@ const bytes = async (r) => new Uint8Array(await r.arrayBuffer());
 
 beforeAll(async () => {
   admin = await setupAdmin("admin", "test1234");
+  // Another account, signed in, to show it cannot read the admin's library.
+  expect((await admin.post("/users", { username: "other", password: "other-pass", role: "editor", csrf_token: await admin.csrf("/dashboard") })).status).toBe(303);
+  other = new Client();
+  expect((await other.login("other", "other-pass")).status).toBe(303);
+  // The files and playlists are the admin's; the devices have no owner, so they play the site
+  // admin's content (the admin is the only admin here).
+  ids.admin = (await query("SELECT id FROM users WHERE username = 'admin'"))[0].id;
   await env.MEDIA.put("media/a.mp4", FULL, { httpMetadata: { contentType: "video/mp4" } });
   await env.MEDIA.put("media/b.png", FULL.slice(0, 10), { httpMetadata: { contentType: "image/png" } });
-  ids.mA = await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('a.mp4', 'a.mp4', 'video', 1000, ?)", SHA("a"));
-  ids.mB = await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('b.png', 'b.png', 'image', 10, ?)", SHA("b"));
-  ids.mGhost = await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256) VALUES ('ghost.png', 'ghost.png', 'image', 10, ?)", SHA("c"));
-  ids.plA = await ins("INSERT INTO playlists (name) VALUES ('scope-a')");
-  ids.plB = await ins("INSERT INTO playlists (name) VALUES ('scope-b')");
+  ids.mA = await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('a.mp4', 'a.mp4', 'video', 1000, ?, ?)", SHA("a"), ids.admin);
+  ids.mB = await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('b.png', 'b.png', 'image', 10, ?, ?)", SHA("b"), ids.admin);
+  ids.mGhost = await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('ghost.png', 'ghost.png', 'image', 10, ?, ?)", SHA("c"), ids.admin);
+  ids.mC = await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('c.mp4', 'c.mp4', 'video', 500, ?, ?)", SHA("d"), ids.admin);
+  ids.plA = await ins("INSERT INTO playlists (owner_id, name, legacy_name) VALUES (?, 'scope-a', 'scope-a')", ids.admin);
+  ids.plB = await ins("INSERT INTO playlists (owner_id, name, legacy_name) VALUES (?, 'scope-b', 'scope-b')", ids.admin);
   await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0)", ids.plA, ids.mA);
   await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 1)", ids.plA, ids.mGhost);
   await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0)", ids.plB, ids.mB);
@@ -98,12 +107,21 @@ describe("auth and scoping", () => {
     expect(await r.json()).toEqual({ detail: "file is not in this device's playlist" });
     expect((await get("/api/media/a.mp4", bearer("tok-b"))).status).toBe(403);
     expect((await get("/api/media/a.mp4", bearer("tok-none"))).status).toBe(403);
-    // logged-in users fetch anything
+    // a signed-in user fetches anything in their own library
     for (const f of ["a.mp4", "b.png"]) {
       r = await admin.get(`/api/media/${f}`);
       expect(r.status).toBe(200);
       expect(r.headers.get("x-content-type-options")).toBe("nosniff");
     }
+  });
+
+  it("another account's session gets the 404 of a missing file, for every method and range", async () => {
+    for (const f of ["a.mp4", "b.png", "does-not-exist.mp4"]) {
+      const r = await other.get(`/api/media/${f}`);
+      expect([r.status, await r.json()], f).toEqual([404, { detail: "Not Found" }]);
+    }
+    expect((await other.fetch("/api/media/a.mp4", { method: "HEAD" })).status).toBe(404);
+    expect((await other.fetch("/api/media/a.mp4", { headers: { range: "bytes=0-9" } })).status).toBe(404);
   });
 
   it("follows the schedule resolver", async () => {

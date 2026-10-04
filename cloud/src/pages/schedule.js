@@ -1,30 +1,36 @@
 // Port of web.device_schedule_* + device_schedule.html. Rule evaluation (matches_now,
-// describe) comes from src/schedules.js (P1); validation is contract 10.
+// describe) comes from src/schedules.js (P1); validation is contract 10. A projector's rules
+// play its own account's playlists in its account's zone: the page shows the rules of a
+// projector the user sees (an admin sees every projector, read-only unless it is their own
+// account's), and only its own account adds or deletes rules, with its own playlists.
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import * as schedules from "../schedules.js";
 import { esc, fail, idParam, intField, isoDateField, normalizeHhmm, redirect, str, wallClock } from "../util.js";
-import { requireDevice, requireRow } from "./devices.js";
+import { requireContentOwner, requireDevice, requireRow } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 
 const pad2 = (n) => String(n).padStart(2, "0");
 
 async function schedulePage(ctx) {
   const user = auth.requireUser(ctx);
-  const canEdit = user.role !== "viewer";
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const device = await requireDevice(ctx, deviceId, "d.id, d.device_id, d.name, d.playlist_id");
+  const ownContent = device.content_owner === user.id;
+  const canEdit = user.role !== "viewer" && ownContent;
+  // Only the rules for the projector's own account's playlists count (manifest.device_content).
   const rules = await db.all(ctx.env,
     `SELECT s.id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time,
             s.days_of_week, s.start_date, s.end_date,
             p.name AS playlist_name
        FROM device_schedules s
-       LEFT JOIN playlists p ON p.id = s.playlist_id
+       JOIN playlists p ON p.id = s.playlist_id AND p.owner_id IS ?
       WHERE s.device_id = ?
-      ORDER BY s.priority DESC, s.id`, deviceId);
-  const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists ORDER BY name");
-  const tz = (await ctx.settings()).timezone;
+      ORDER BY s.priority DESC, s.id`, device.content_owner, deviceId);
+  const playlists = canEdit ? await db.all(ctx.env, "SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name", user.id) : [];
+  // The rules run in the projector's account's zone (the viewer's own for their own projector).
+  const tz = ownContent ? (await ctx.settings()).timezone : (await db.loadSettings(ctx.env, device.content_owner)).timezone;
   const now = wallClock(tz);
   // Several rules can match at once; only the one the player picks (manifest.pick_playlist) is
   // "active now", the rest say they are being overridden instead of claiming to play.
@@ -50,9 +56,12 @@ async function schedulePage(ctx) {
       </td>
     </tr>`;
   const dayBox = (name, i) => `<label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="${i}">${name}</label>`;
-  const zoneHelp = user.role === "admin"
-    ? 'change the timezone on the <a href="/settings">Settings</a> page.'
-    : "ask an administrator to change the site timezone on the Settings page.";
+  // Each account sets its own zone on its own Settings page (a viewer cannot open it).
+  const zoneHelp = !ownContent
+    ? "its own account changes the timezone on its Settings page."
+    : user.role === "viewer"
+      ? "this account can only view: an admin can make it an editor, which can change the timezone on the Settings page."
+      : 'change the timezone on the <a href="/settings">Settings</a> page.';
 
   const content = `<a href="/devices" class="back">← Devices</a>
 <div class="page-head">
@@ -60,7 +69,7 @@ async function schedulePage(ctx) {
     <span class="eyebrow">Schedule · ${esc(device.device_id)}</span>
     <h1>${esc(device.name)}</h1>
   </div>
-  <span class="page-meta"><strong>site time ${esc(nowText)}</strong><br>rules use the site's wall-clock time (zone ${esc(now.zone)})</span>
+  <span class="page-meta"><strong>local time ${esc(nowText)}</strong><br>rules use the account's wall-clock time (zone ${esc(now.zone)})</span>
 </div>
 <p class="zone-note">If this is not your venue's time, ${zoneHelp}</p>
 
@@ -125,7 +134,7 @@ ${canEdit ? `<div class="panel">
 }
 
 async function scheduleCreate(ctx) {
-  auth.requireRole(ctx, "editor");
+  const user = auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const form = await ctx.form();
   const name = str(form, "name").trim() || "Rule";
@@ -152,14 +161,15 @@ async function scheduleCreate(ctx) {
   const startDate = isoDateField(str(form, "start_date"), "Start date");
   const endDate = isoDateField(str(form, "end_date"), "End date");
   if (startDate && endDate && startDate > endDate) fail(400, "The start date must be on or before the end date");
-  await requireDevice(ctx, deviceId);
-  await requireRow(ctx.env, "playlists", pid, "Playlist");
+  const device = await requireDevice(ctx, deviceId);
+  requireContentOwner(ctx, device);
+  await requireRow(ctx.env, "playlists", pid, user.id, "Playlist");
   const id = (await db.run(ctx.env,
     `INSERT INTO device_schedules
         (device_id, playlist_id, name, priority, start_time, end_time, days_of_week, start_date, end_date)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     deviceId, pid, name, prio, startTime, endTime, days, startDate, endDate)).last_row_id;
-  await audit.log(ctx, "device_schedule_create", "device_schedule", id, { device_id: deviceId, name, playlist_id: pid });
+  await audit.log(ctx, "device_schedule_create", "device_schedule", id, { device_id: deviceId, name, playlist_id: pid }, undefined, device.owner_id);
   return redirect(`/devices/${deviceId}/schedule`);
 }
 
@@ -167,10 +177,11 @@ async function scheduleDelete(ctx) {
   auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
   const scheduleId = idParam(ctx.params.schedule_id, "schedule_id");
-  await requireDevice(ctx, deviceId);
+  const device = await requireDevice(ctx, deviceId);
+  requireContentOwner(ctx, device);
   const r = await db.run(ctx.env, "DELETE FROM device_schedules WHERE id = ? AND device_id = ?", scheduleId, deviceId);
   if (!r.changes) fail(404, "Schedule rule not found");
-  await audit.log(ctx, "device_schedule_delete", "device_schedule", scheduleId, { device_id: deviceId });
+  await audit.log(ctx, "device_schedule_delete", "device_schedule", scheduleId, { device_id: deviceId }, undefined, device.owner_id);
   return redirect(`/devices/${deviceId}/schedule`);
 }
 

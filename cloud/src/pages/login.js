@@ -99,7 +99,8 @@ async function loginSubmit(ctx) {
     // outside printable ASCII so a username cannot plant a fake "ip=" token; the real ip= stays last.
     const who = row ? row.username : "(no such user)";
     console.warn(`login failed for user=${who.replace(/[^!-~]+/g, "_").slice(0, 64)} ip=${ip}`);
-    await audit.log(ctx, "login_failed", "user", row ? row.id : null, { username: who }, null);
+    // About the account that was tried: its owner sees the attempt on /audit.
+    await audit.log(ctx, "login_failed", "user", row ? row.id : null, { username: who }, null, row ? row.id : null);
     await auth.recordLoginFailure(ctx.env, ip, username);
     return loginPage(ctx, "Invalid username or password", 200, false, next);
   }

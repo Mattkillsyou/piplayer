@@ -1,10 +1,14 @@
-// /signup: anyone can create an account from the login page; it starts as an editor (the
-// owner's choice: no invite code, no approval step). Same card as /login and /setup; the form
-// is re-rendered with the message on a mistake so nothing typed is lost. At most
+// /signup: anyone can create an account from the login page (the owner's choice: no invite code,
+// no approval step). The account is its own private space (accounts.js): it starts as an editor,
+// which since migration 0016 means full control of everything in its own account (its projectors,
+// library, playlists with its own Default playlist created here, groups, schedules, settings,
+// alerts, camera) and nothing of anyone else's; no Users page. Same card as /login and /setup;
+// the form is re-rendered with the message on a mistake so nothing typed is lost. At most
 // SIGNUPS_PER_IP attempts per address per SIGNUP_WINDOW_SECONDS (10 minutes, the window
 // login_failures rows live), counted under auth.SIGNUP_KEY like the enroll throttle; every
 // complete attempt counts, taken names and addresses are refused before the password is hashed.
 // The email address is where /forgot sends the reset link (pages/forgot.js).
+import * as accounts from "../accounts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
@@ -12,6 +16,8 @@ import { esc, redirect, str } from "../util.js";
 import { csrfInput } from "./layout.js";
 import { authBrand, authPage } from "./login.js";
 
+// Not a new role: users.role has a CHECK constraint (admin, editor, viewer) that SQLite cannot
+// change without rebuilding the table, which D1 cannot do to a table others point at.
 export const SIGNUP_ROLE = "editor";
 export const SIGNUPS_PER_IP = 5;
 export const SIGNUP_WINDOW_SECONDS = auth.LOGIN_USER_WINDOW_SECONDS;
@@ -37,7 +43,7 @@ function signupPage(ctx, error, username = "", email = "", status = 200, kind = 
       </label>
       <button type="submit" class="primary">Create account</button>
     </form>
-    <span class="auth-foot">projection5000 · new accounts can edit playlists, schedules and projectors · <a href="/login">back to sign in</a></span>
+    <span class="auth-foot">projection5000 · your account is your own: your projectors, library, playlists and settings, private to you · <a href="/login">back to sign in</a></span>
   </div>`;
   return authPage(ctx, { title: "Create an account", card, status });
 }
@@ -79,9 +85,11 @@ async function signupSubmit(ctx) {
     }
     throw e;
   }
+  // Its own Default playlist: every upload joins it, its projectors play it until given more.
+  await accounts.ensureDefaultPlaylist(ctx.env, id);
   await auth.rotateSession(ctx, id);
   await audit.log(ctx, "user_signup", "user", id, { username, email, role: SIGNUP_ROLE }, { id, username });
-  return auth.flashRedirect(ctx, "/dashboard", `Welcome, ${username}. Your account can edit playlists, schedules and projectors.`);
+  return auth.flashRedirect(ctx, "/dashboard", `Welcome, ${username}. This account is yours alone: your projectors, library, playlists, schedules and settings.`);
 }
 
 export function register(router) {

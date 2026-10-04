@@ -1,5 +1,6 @@
 // D1 query helpers. Thin wrappers over env.DB.prepare(...).bind(...) so routes read like
-// the Python cursor code: all()/first()/run()/batch(). Plus the site settings.
+// the Python cursor code: all()/first()/run()/batch(). Plus the settings: every account's own
+// (account_settings, migration 0016) and the one site-wide key (settings.enrollment_key).
 import { envFloat, envInt, HttpError, isValidTimeZone, randomToken } from "./util.js";
 
 // Rows for a SELECT.
@@ -33,7 +34,7 @@ export function isConstraintError(e) {
 
 // The meta.schema_version the code expects: bump with each new migrations/000N file (the last
 // statement of every migration writes it).
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 // Fail loudly (once per isolate) when migrations were never applied or stopped short of this
 // release: a worker deployed before `npm run migrate:remote` must say so on every request
@@ -55,10 +56,12 @@ export async function assertMigrated(env) {
 }
 
 // ---------------------------------------------------------------------------
-// Settings (/settings page). Stored as strings in `settings`; env vars are the defaults.
+// Settings (/settings page). Each account has its own, stored as strings in account_settings
+// (user_id, key, value); env vars are the defaults. The only site-wide value is the device
+// enrollment key (settings.enrollment_key, enrollmentKey()).
 // ---------------------------------------------------------------------------
 
-export const SETTING_KEYS = ["timezone", "screenshot_interval", "camera_interval", "default_image_duration", "enrollment_key",
+export const SETTING_KEYS = ["timezone", "screenshot_interval", "camera_interval", "default_image_duration",
   "enroll_group_id", "enroll_playlist_id", "player_release", "auto_update", "auto_update_window",
   "wyze_camera_pattern", "camera_config_version", "projector_lead_minutes", "projector_idle_minutes",
   "alert_offline_minutes", "alert_repeat_minutes", "alert_email", "alert_webhook_url", "default_playlist_id"];
@@ -112,9 +115,8 @@ export function defaultSettings(env) {
     screenshot_interval: envInt(env, "PIPLAYER_SCREENSHOT_INTERVAL", 60),
     camera_interval: envInt(env, "PIPLAYER_CAMERA_INTERVAL", 10),
     default_image_duration: envFloat(env, "PIPLAYER_DEFAULT_IMAGE_DURATION", 10),
-    enrollment_key: "", // generated on first read (loadSettings), never from env
-    enroll_group_id: null, // group / playlist applied to a device on its FIRST enrollment (api.enroll);
-    enroll_playlist_id: null, // null = none; a deleted row is treated as none at enrollment time
+    enroll_group_id: null, // group / playlist applied to a device on its FIRST registration (api.registerDevice);
+    enroll_playlist_id: null, // null = none; a deleted row or another account's is treated as none then
     player_release: env.PIPLAYER_PLAYER_RELEASE && isGitRef(env.PIPLAYER_PLAYER_RELEASE) ? env.PIPLAYER_PLAYER_RELEASE : "main",
     auto_update: AUTO_UPDATE_MODES.includes(env.PIPLAYER_AUTO_UPDATE) ? env.PIPLAYER_AUTO_UPDATE : "off",
     auto_update_window: UPDATE_WINDOW_RE.test(env.PIPLAYER_AUTO_UPDATE_WINDOW || "") ? env.PIPLAYER_AUTO_UPDATE_WINDOW : "03:00-05:00",
@@ -126,44 +128,71 @@ export function defaultSettings(env) {
     alert_repeat_minutes: ALERT_REPEAT_MINUTES,
     alert_email: "", // comma-separated destination addresses; "" = email channel off
     alert_webhook_url: "", // "" = webhook channel off
-    default_playlist_id: null, // the site default playlist (migration 0010; Settings page); null only when its row is gone
+    default_playlist_id: null, // the account's Default playlist (migration 0016; Settings page); null only when its row is gone
   };
 }
 
-// {timezone, screenshot_interval (int seconds), camera_interval (int seconds), default_image_duration
-// (float seconds), enrollment_key (secret shared with the flasher; POST /api/enroll), enroll_group_id /
-// enroll_playlist_id (int or null), player_release (git ref), auto_update ('off' | 'nightly'),
-// auto_update_window ('HH:MM-HH:MM'), wyze_camera_pattern, camera_config_version (int),
-// projector_lead_minutes / projector_idle_minutes (int, 0-1440), alert_offline_minutes (int, 1-1440),
-// alert_repeat_minutes (int, 0-10080), alert_email (comma-separated addresses or ''),
-// alert_webhook_url (https URL or ''), default_playlist_id (int, or null when the playlist row no
-// longer exists)}. timezone_problem (string, at most 64 chars) is only
-// present when the stored timezone is no longer accepted: timezone is UTC then and the Settings
-// page shows the offending value so the admin can pick a real one.
-export async function loadSettings(env) {
-  const s = defaultSettings(env);
-  // A default_playlist_id whose playlist was deleted underneath it (D1 console) is left out, so it reads as null.
-  for (const row of await all(env, "SELECT key, value FROM settings WHERE key != 'default_playlist_id' OR value IN (SELECT CAST(id AS TEXT) FROM playlists)")) {
-    if (row.key === "timezone" && isValidTimeZone(row.value)) s.timezone = row.value;
-    else if (row.key === "timezone") s.timezone_problem = String(row.value).slice(0, 64); // a bad zone (D1 edit, restore) falls back to UTC like any other malformed row, but visibly
-    else if (row.key === "screenshot_interval" && Number.isFinite(+row.value)) s.screenshot_interval = parseInt(row.value, 10);
-    else if (row.key === "camera_interval" && Number.isFinite(+row.value)) s.camera_interval = parseInt(row.value, 10);
-    else if (row.key === "default_image_duration" && Number.isFinite(+row.value)) s.default_image_duration = parseFloat(row.value);
-    else if (row.key === "enrollment_key" && row.value) s.enrollment_key = row.value;
-    else if ((row.key === "enroll_group_id" || row.key === "enroll_playlist_id" || row.key === "default_playlist_id") && /^\d+$/.test(row.value)) s[row.key] = parseInt(row.value, 10);
-    else if (row.key === "player_release" && isGitRef(row.value)) s.player_release = row.value;
-    else if (row.key === "auto_update" && AUTO_UPDATE_MODES.includes(row.value)) s.auto_update = row.value;
-    else if (row.key === "auto_update_window" && UPDATE_WINDOW_RE.test(row.value)) s.auto_update_window = row.value;
-    else if (row.key === "wyze_camera_pattern" && isCameraPattern(row.value)) s.wyze_camera_pattern = row.value;
-    else if (row.key === "camera_config_version" && /^\d+$/.test(row.value)) s.camera_config_version = parseInt(row.value, 10);
-    else if ((row.key === "projector_lead_minutes" || row.key === "projector_idle_minutes") && isProjectorMinutes(+row.value)) s[row.key] = +row.value;
-    else if (row.key === "alert_offline_minutes" && isAlertOfflineMinutes(+row.value)) s.alert_offline_minutes = +row.value;
-    else if (row.key === "alert_repeat_minutes" && isAlertRepeatMinutes(+row.value)) s.alert_repeat_minutes = +row.value;
-    else if (row.key === "alert_email" && parseEmails(row.value)) s.alert_email = row.value;
-    else if (row.key === "alert_webhook_url" && isWebhookUrl(row.value)) s.alert_webhook_url = row.value;
+// One account's settings: {timezone, screenshot_interval (int seconds), camera_interval (int
+// seconds), default_image_duration (float seconds), enroll_group_id / enroll_playlist_id (int or
+// null), player_release (git ref), auto_update ('off' | 'nightly'), auto_update_window
+// ('HH:MM-HH:MM'), wyze_camera_pattern, camera_config_version (int), projector_lead_minutes /
+// projector_idle_minutes (int, 0-1440), alert_offline_minutes (int, 1-1440), alert_repeat_minutes
+// (int, 0-10080), alert_email (comma-separated addresses or ''), alert_webhook_url (https URL or
+// ''), default_playlist_id (int, or null when no playlist of this account has that id)}.
+// timezone_problem (string, at most 64 chars) is only present when the stored timezone is no
+// longer accepted: timezone is UTC then and the Settings page shows the offending value so the
+// owner can pick a real one. ownerId null (no account: an anonymous request) gives the defaults.
+// The device enrollment key is site-wide: enrollmentKey().
+export async function loadSettings(env, ownerId) {
+  return (await loadSettingsFor(env, [ownerId])).get(ownerId) || defaultSettings(env);
+}
+
+// Map(ownerId -> settings) for several accounts in one statement: the Devices and Dashboard
+// pages of an admin (every projector, each by its own account's zone and default playlist) and
+// the alert cron. A default_playlist_id must name one of the account's own playlists, else it
+// reads as null (a deleted row, a D1 edit).
+export async function loadSettingsFor(env, ownerIds) {
+  const ids = [...new Set(ownerIds.filter((id) => id !== null && id !== undefined))];
+  const out = new Map(ids.map((id) => [id, defaultSettings(env)]));
+  if (!ids.length) return out;
+  const valid = "(a.key != 'default_playlist_id' OR a.value IN (SELECT CAST(p.id AS TEXT) FROM playlists p WHERE p.owner_id = a.user_id))";
+  // One account: only its rows. Several: every account's rows in one unbound statement (an IN
+  // list would hit D1's bound-parameter limit), kept for the accounts asked about.
+  const rows = ids.length === 1
+    ? await all(env, `SELECT a.user_id, a.key, a.value FROM account_settings a WHERE a.user_id = ? AND ${valid}`, ids[0])
+    : await all(env, `SELECT a.user_id, a.key, a.value FROM account_settings a WHERE ${valid}`);
+  for (const row of rows) {
+    const s = out.get(row.user_id);
+    if (s) applySetting(s, row);
   }
-  if (!s.enrollment_key) s.enrollment_key = await generateEnrollmentKey(env, false);
-  return s;
+  return out;
+}
+
+// One stored row onto a settings object; a malformed value keeps the default.
+function applySetting(s, row) {
+  if (row.key === "timezone" && isValidTimeZone(row.value)) s.timezone = row.value;
+  else if (row.key === "timezone") s.timezone_problem = String(row.value).slice(0, 64); // a bad zone (D1 edit, restore) falls back to UTC like any other malformed row, but visibly
+  else if (row.key === "screenshot_interval" && Number.isFinite(+row.value)) s.screenshot_interval = parseInt(row.value, 10);
+  else if (row.key === "camera_interval" && Number.isFinite(+row.value)) s.camera_interval = parseInt(row.value, 10);
+  else if (row.key === "default_image_duration" && Number.isFinite(+row.value)) s.default_image_duration = parseFloat(row.value);
+  else if ((row.key === "enroll_group_id" || row.key === "enroll_playlist_id" || row.key === "default_playlist_id") && /^\d+$/.test(row.value)) s[row.key] = parseInt(row.value, 10);
+  else if (row.key === "player_release" && isGitRef(row.value)) s.player_release = row.value;
+  else if (row.key === "auto_update" && AUTO_UPDATE_MODES.includes(row.value)) s.auto_update = row.value;
+  else if (row.key === "auto_update_window" && UPDATE_WINDOW_RE.test(row.value)) s.auto_update_window = row.value;
+  else if (row.key === "wyze_camera_pattern" && isCameraPattern(row.value)) s.wyze_camera_pattern = row.value;
+  else if (row.key === "camera_config_version" && /^\d+$/.test(row.value)) s.camera_config_version = parseInt(row.value, 10);
+  else if ((row.key === "projector_lead_minutes" || row.key === "projector_idle_minutes") && isProjectorMinutes(+row.value)) s[row.key] = +row.value;
+  else if (row.key === "alert_offline_minutes" && isAlertOfflineMinutes(+row.value)) s.alert_offline_minutes = +row.value;
+  else if (row.key === "alert_repeat_minutes" && isAlertRepeatMinutes(+row.value)) s.alert_repeat_minutes = +row.value;
+  else if (row.key === "alert_email" && parseEmails(row.value)) s.alert_email = row.value;
+  else if (row.key === "alert_webhook_url" && isWebhookUrl(row.value)) s.alert_webhook_url = row.value;
+}
+
+// The site's device enrollment key (POST /api/enroll; the Settings page shows it to admins):
+// a random 32-byte urlsafe token generated on the first read, never from env.
+export async function enrollmentKey(env) {
+  const row = await first(env, "SELECT value FROM settings WHERE key = 'enrollment_key'");
+  return row && row.value ? row.value : generateEnrollmentKey(env, false);
 }
 
 // Random 32-byte urlsafe key. With replace=false a concurrent first request may win the
@@ -175,16 +204,32 @@ export async function generateEnrollmentKey(env, replace = true) {
   return (await first(env, "SELECT value FROM settings WHERE key = 'enrollment_key'")).value;
 }
 
-export function saveSetting(env, key, value) {
-  return run(env, "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    key, String(value));
+// [sql, ...params] writing one account setting: for db.batch(); null deletes the row so
+// account_settings only holds what is set.
+export function settingStatement(ownerId, key, value) {
+  return value === null
+    ? ["DELETE FROM account_settings WHERE user_id = ? AND key = ?", ownerId, key]
+    : ["INSERT INTO account_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value", ownerId, key, String(value)];
 }
 
-// Any change to the Wyze account, the camera pattern or a device's camera source bumps this
-// so every player refetches GET /api/camera-config on its next sync.
-export function bumpCameraConfigVersion(env) {
-  return run(env, `INSERT INTO settings (key, value) VALUES ('camera_config_version', '1')
-      ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`);
+export function saveSetting(env, ownerId, key, value) {
+  return run(env, ...settingStatement(ownerId, key, value));
+}
+
+// The account's camera_config_version as a statement for db.batch(): +1, and above `atLeast`
+// (a projector moving in from another account last saw that account's number; the player refetches
+// GET /api/camera-config when the manifest's number differs from the one it applied, so the new
+// one must differ from anything it saw: past every value of its old account).
+export function cameraConfigBump(ownerId, atLeast = 0) {
+  return [`INSERT INTO account_settings (user_id, key, value) VALUES (?1, 'camera_config_version', CAST(?2 + 1 AS TEXT))
+      ON CONFLICT(user_id, key) DO UPDATE SET value = CAST(MAX(CAST(value AS INTEGER), ?2) + 1 AS TEXT)`, ownerId, atLeast];
+}
+
+// Any change to an account's Wyze login or camera pattern, or to the camera source or name of one
+// of its projectors, bumps this so its players refetch GET /api/camera-config on their next sync.
+export function bumpCameraConfigVersion(env, ownerId) {
+  if (ownerId === null || ownerId === undefined) return Promise.resolve({ changes: 0 });
+  return run(env, ...cameraConfigBump(ownerId));
 }
 
 export function pruneAuditLog(env, retentionDays) {
