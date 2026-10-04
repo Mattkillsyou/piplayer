@@ -109,11 +109,12 @@ export async function wyzeConfiguredFor(env, ownerIds) {
   const ids = new Set(ownerIds.filter((id) => id !== null && id !== undefined));
   const have = new Map([...ids].map((id) => [id, new Set()]));
   if (!ids.size) return new Map();
-  const rows = ids.size === 1
-    ? await db.all(env, "SELECT user_id, name, value FROM account_secrets WHERE user_id = ? AND name IN ('wyze_email', 'wyze_password')", [...ids][0])
-    : await db.all(env, "SELECT user_id, name, value FROM account_secrets WHERE name IN ('wyze_email', 'wyze_password')");
+  // One JSON parameter for the ids (db.loadSettingsFor: D1's bound-parameter limit).
+  const rows = await db.all(env,
+    "SELECT user_id, name, value FROM account_secrets WHERE user_id IN (SELECT value FROM json_each(?)) AND name IN ('wyze_email', 'wyze_password')",
+    JSON.stringify([...ids]));
   for (const r of rows) {
-    if (have.has(r.user_id) && await openAccount(env, r.user_id, r.name, r.value) !== null) have.get(r.user_id).add(r.name);
+    if (await openAccount(env, r.user_id, r.name, r.value) !== null) have.get(r.user_id).add(r.name);
   }
   return new Map([...have].map(([id, set]) => [id, set.has("wyze_email") && set.has("wyze_password")]));
 }

@@ -1,5 +1,6 @@
 // /dashboard: stat tiles, monitor wall (screen chips, lamp, active source, last_error, tile
-// actions for editor+), wall filters and the audit tail.
+// actions for editor+), wall filters and the audit tail, all of the reader's own account (an
+// admin's too: only the Devices page shows an admin every projector).
 import { beforeAll, describe, expect, it } from "vitest";
 import { query } from "./helpers.js";
 import { device, group, ins, media, playlist, roleMatrix, roles, setting, XSS } from "./pages_common.js";
@@ -85,23 +86,30 @@ describe("dashboard", () => {
     void b;
   });
 
-  it("editor and admin get Resync / Reboot tile actions; a fresh sync lights the playing lamp", async () => {
-    const live = await device("live-dev", "Live <dev>", { last_seen_at: new Date().toISOString().slice(0, 19).replace("T", " "), player_status: "playing" });
-    for (const c of [r.editor, r.admin]) {
+  it("editor and admin get Resync / Reboot tile actions on their own wall; a fresh sync lights the playing lamp", async () => {
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    const live = await device("live-dev", "Live <dev>", { last_seen_at: now, player_status: "playing" });
+    const mine = await device("admin-dev", "Admin <dev>", { last_seen_at: now, player_status: "playing", owner_id: r.ids.admin });
+    for (const [c, d, label, counts] of [[r.editor, live, "Live &lt;dev&gt;", "1 playing · 3 faults"], [r.admin, mine, "Admin &lt;dev&gt;", "1 playing · 0 faults"]]) {
       const page = await (await c.get("/dashboard")).text();
       expect(page).toContain('<div class="tile-actions">');
-      expect(page).toContain(`<form method="post" action="/devices/${live.id}/command" class="inline" data-confirm="Reboot Live &lt;dev&gt;?">`);
+      expect(page).toContain(`<form method="post" action="/devices/${d.id}/command" class="inline" data-confirm="Reboot ${label}?">`);
       expect(page).toContain('<input type="hidden" name="command" value="force-sync">');
       expect(page).toContain('<button type="submit" class="small">Resync</button>');
       expect(page).toContain('<button type="submit" class="small danger">Reboot</button>');
       expect(page).not.toContain("onsubmit");
       expect(page).toContain('<div class="device-card">');
       expect(page).toContain('<span class="status status-playing"><span class="lamp"></span>playing</span>');
-      expect(page).toContain("1 playing · 3 faults");
-      expect(page).toContain('<span class="now-playlist">Default</span>');
+      expect(page).toContain(counts);
+      expect(page).toContain('<span class="now-playlist">Default</span>'); // each account's own Default
       expect(page).toContain('<span class="now-via">via default playlist</span>');
     }
-    await query("DELETE FROM devices WHERE id = ?", live.id);
+    // the wall is the account's own, an admin's too
+    expect(await (await r.editor.get("/dashboard")).text()).not.toContain(`/devices/${mine.id}/`);
+    const ad = await (await r.admin.get("/dashboard")).text();
+    expect(ad).not.toContain(`/devices/${live.id}/`);
+    expect(ad).toContain("Monitor wall · 1 device</h2>");
+    await query("DELETE FROM devices WHERE id IN (?, ?)", live.id, mine.id);
   });
 
   it("a failed remote update makes the card a fault with the error box; ok is a muted line and no fault", async () => {

@@ -1,5 +1,6 @@
 // Projector ownership (migration 0009, devices.owner_id; accounts since 0016): editors and viewers
-// see only the projectors they own, admins every one. Per page visibility, the 404 on another
+// see only the projectors they own; the Devices page shows admins every one, while their Dashboard
+// and Alerts are their own projectors' like anyone's. Per page visibility, the 404 on another
 // account's device for every per-device route, what an admin may do to another account's
 // projector (device controls yes; what it plays and its token no: 403), the Owner select with the
 // cleanup it does (a projector never keeps another account's playlist, group or schedule rules),
@@ -32,22 +33,25 @@ beforeAll(async () => {
 });
 
 describe("visibility", () => {
-  it("Devices and Dashboard: the editor sees only its own projector, the admin all three with the owner", async () => {
+  it("Devices: the editor sees only its own projector, the admin all three with the owner; Dashboards are each account's own", async () => {
     for (const path of ["/devices", "/dashboard"]) {
       const ed = await (await r.editor.get(path)).text();
       expect(ed).toContain("Mine One");
       expect(ed).not.toContain("Theirs One");
       expect(ed).not.toContain("Nobody One");
       expect(ed).not.toContain("no owner");
-      const ad = await (await r.admin.get(path)).text();
-      for (const name of ["Mine One", "Theirs One", "Nobody One"]) expect(ad).toContain(name);
     }
+    const all = await (await r.admin.get("/devices")).text();
+    for (const name of ["Mine One", "Theirs One", "Nobody One"]) expect(all).toContain(name);
     const ed = await (await r.editor.get("/dashboard")).text();
     expect(ed).toContain("Monitor wall · 1 device</h2>");
     expect(ed).toContain('<span class="card-value">1</span>'); // devices card and the open alerts card
+    // the site admin's wall: the ownerless projector plays its content; the others' never show
     const ad = await (await r.admin.get("/dashboard")).text();
-    expect(ad).toContain("Monitor wall · 3 devices</h2>");
-    expect(ad).toContain('<span class="badge badge-stale">3 open</span>');
+    expect(ad).toContain("Nobody One");
+    for (const name of ["Mine One", "Theirs One"]) expect(ad).not.toContain(name);
+    expect(ad).toContain("Monitor wall · 1 device</h2>");
+    expect(ad).toContain('<span class="badge badge-stale">1 open</span>');
     const devs = await (await r.admin.get("/devices")).text();
     expect(devs).toContain('<span class="device-id"><code>mine-1</code> · Mine group · ed</span>');
     expect(devs).toContain('<span class="device-id"><code>theirs-1</code> · Their group · vw</span>');
@@ -57,13 +61,15 @@ describe("visibility", () => {
     expect(vw).not.toContain("Mine One");
   });
 
-  it("Alerts are the projectors one sees; Playlists and Groups are one's own, counting one's own projectors", async () => {
+  it("Alerts, Playlists and Groups are one's own, counting one's own projectors", async () => {
     let page = await (await r.editor.get("/alerts")).text();
     expect(page).toContain("<strong>1 open</strong>");
     expect(page).toContain("Mine One");
     expect(page).not.toContain("Theirs One");
     page = await (await r.admin.get("/alerts")).text();
-    expect(page).toContain("<strong>3 open</strong>");
+    expect(page).toContain("<strong>1 open</strong>"); // the ownerless projector, the site admin's
+    expect(page).toContain("Nobody One");
+    for (const name of ["Mine One", "Theirs One"]) expect(page).not.toContain(name);
     page = await (await r.editor.get("/playlists")).text();
     expect(page).toContain("Mine PL");
     expect(page).not.toContain("Their PL");

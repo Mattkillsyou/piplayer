@@ -1,11 +1,12 @@
-// Port of web.dashboard + dashboard.html: stat tiles, the monitor wall and the audit tail. The
-// media and playlist tiles count the user's own library; the wall, the device count and the
-// alert count are the projectors they see (every one for an admin, like the Devices page); the
-// audit tail is their own account's people rows (every one for an admin, like /audit).
+// Port of web.dashboard + dashboard.html: stat tiles, the monitor wall and the audit tail, all of
+// the user's own account (migration 0016), admins included: the media and playlist tiles count
+// its library, the wall, the device count and the alert count are its projectors
+// (devices.contentClause: the site admin's include the ownerless ones), the audit tail its people
+// rows (audit.auditScope). Only the Devices page shows an admin every projector.
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, localTime, nowUtc, zoneName } from "../util.js";
-import { cameraScreen, decorateDevices, deviceScreen, isFault, noProjectors, ownedClause, projectorState, settingsForRows, statusLamp, updateStatus, visibleDevices } from "./devices.js";
+import { cameraScreen, contentClause, decorateDevices, deviceScreen, isFault, noProjectors, projectorState, settingsForRows, statusLamp, updateStatus, visibleDevices } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 import { auditScope } from "./audit.js";
 
@@ -62,13 +63,13 @@ async function dashboard(ctx) {
   const tz = settings.timezone;
   const media = await db.first(env, "SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS bytes FROM media WHERE owner_id = ?", user.id);
   const playlistCount = (await db.first(env, "SELECT COUNT(*) AS n FROM playlists WHERE owner_id = ?", user.id)).n;
-  const own = ownedClause(user);
+  const own = contentClause(user);
   const rows = await visibleDevices(env, user,
     `d.id, d.device_id, d.name, d.last_seen_at, d.last_ip,
             d.current_position, d.current_filename, d.player_status,
             d.last_screenshot_at, d.last_error, d.last_camera_at, d.camera_error,
             d.last_update_at, d.last_update_ok, d.last_update_message, d.last_update_ref,
-            d.projector_control, d.projector_power_state, d.projector_error, d.pi_model`);
+            d.projector_control, d.projector_power_state, d.projector_error, d.pi_model`, own);
   const devices = await decorateDevices(env, rows, await settingsForRows(ctx, rows));
   const scope = auditScope(user);
   const auditTail = await db.all(env,

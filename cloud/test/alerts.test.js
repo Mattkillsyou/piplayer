@@ -454,7 +454,11 @@ describe("/alerts page + dashboard badge", () => {
     expect(await (await r.viewer.get("/alerts")).text()).not.toContain('href="/settings"'); // a viewer has no Settings
     await query("INSERT INTO alerts (device_id, kind, opened_at, closed_at, notified_at) VALUES (?, 'offline', '2026-09-16 09:00:00', NULL, '2026-09-16 09:00:00')", lobby.id);
     await query("INSERT INTO alerts (device_id, kind, opened_at, closed_at, notified_at) VALUES (?, 'camera-error', '2026-09-15 09:00:00', '2026-09-15 10:30:00', '2026-09-15 10:30:00')", hall.id);
-    page = await (await r.admin.get("/alerts")).text();
+    // the projectors are the editor's: an admin's page is its own projectors' alerts only
+    const ad = await (await r.admin.get("/alerts")).text();
+    expect(ad).toContain("<strong>0 open</strong>");
+    expect(ad).not.toContain("Lobby");
+    page = await (await r.editor.get("/alerts")).text();
     expect(page).toContain("<strong>1 open</strong>");
     expect(page).toContain("Open · 1");
     expect(page).toContain("Recently recovered · 1");

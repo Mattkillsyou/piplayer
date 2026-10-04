@@ -127,12 +127,13 @@ UPDATE device_groups SET playlist_id = NULL
  WHERE playlist_id IS NOT NULL AND (SELECT owner_id FROM playlists WHERE id = device_groups.playlist_id) IS NOT device_groups.owner_id;
 
 -- 7. Uniqueness per account: the same file may sit in two libraries (each its own row and R2
--- object, so deleting one leaves the other), names repeat across accounts. Plus the per-account
--- audit page's index.
+-- object, so deleting one leaves the other), names repeat across accounts. Plus the indexes of
+-- the per-account audit page (the rows about an account, and a person's own actions).
 DROP INDEX IF EXISTS idx_media_sha256;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_media_owner_sha256 ON media(owner_id, sha256);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_owner_name ON playlists(owner_id, name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_device_groups_owner_name ON device_groups(owner_id, name);
 CREATE INDEX IF NOT EXISTS idx_audit_log_owner ON audit_log(owner_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at DESC, id DESC);
 
 INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '16');

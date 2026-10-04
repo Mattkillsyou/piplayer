@@ -1,9 +1,10 @@
 // Port of web.audit_page + audit.html: newest first (created_at DESC, id DESC), ?limit= 1..1000,
 // plus ?action= (one action name) and ?before= (an id cursor for the "older" link) so a human
 // row stays reachable once the machine rows (device_update_reported, login_failed) outnumber
-// the tail. Every user sees the rows about their own account (audit_log.owner_id, migration
-// 0016: what they did, and what happened to their projectors and their account); an admin sees
-// the whole site's log, like the Users page.
+// the tail. Every user reads the rows about their own account (audit_log.owner_id, migration
+// 0016: what happened to their projectors, library and settings) and their own actions; an admin
+// also reads the rows about no account (the cron, ownerless projectors, sign-in attempts for
+// unknown names, accounts since deleted), never another account's.
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, localTime, zoneName } from "../util.js";
@@ -11,9 +12,13 @@ import { layout } from "./layout.js";
 
 const DEFAULT_LIMIT = 200;
 
-// The WHERE fragment for the audit rows a user may read (here and the Dashboard tail).
+// The WHERE fragment for the audit rows a user may read (here and the Dashboard tail). An
+// admin's own actions on another account's projector (Devices page) are about that account, so
+// `user_id` keeps them in the admin's log too.
 export function auditScope(user) {
-  return user.role === "admin" ? { sql: "1", params: [] } : { sql: "owner_id = ?", params: [user.id] };
+  return user.role === "admin"
+    ? { sql: "(owner_id = ? OR user_id = ? OR owner_id IS NULL)", params: [user.id, user.id] }
+    : { sql: "(owner_id = ? OR user_id = ?)", params: [user.id, user.id] };
 }
 
 // FastAPI's Query(200, ge=1, le=1000) -> 422 there; a 400 {detail} here (contract 10).

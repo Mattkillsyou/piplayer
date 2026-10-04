@@ -1,12 +1,13 @@
 // /alerts (any role, read-only): the open alerts (alerts.evaluate, the */5 cron) and the most
 // recently closed ones, with the device, kind, when it opened / closed and the last notification,
-// for the projectors the user sees (their own; every one for an admin). The channels are each
+// for the user's own projectors (devices.contentClause; admins too: the alerts of another
+// account's projector are that account's, sent through its channels). The channels are each
 // account's own, on its Settings page.
 import * as alerts from "../alerts.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { ageSeconds, ageText, esc, localTime } from "../util.js";
-import { ownedClause } from "./devices.js";
+import { contentClause } from "./devices.js";
 import { emptyState, layout } from "./layout.js";
 
 const RECENT_LIMIT = 100;
@@ -32,7 +33,7 @@ function table(rows, tz, closed) {
 async function alertsPage(ctx) {
   const user = auth.requireUser(ctx);
   const tz = (await ctx.settings()).timezone;
-  const own = ownedClause(user);
+  const own = contentClause(user);
   const select = `SELECT a.id, a.kind, a.opened_at, a.closed_at, a.notified_at, d.name, d.device_id
        FROM alerts a JOIN devices d ON d.id = a.device_id WHERE ${own.sql}`;
   const open = await db.all(ctx.env, `${select} AND a.closed_at IS NULL ORDER BY a.opened_at DESC, a.id DESC`, ...own.params);

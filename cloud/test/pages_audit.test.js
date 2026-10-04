@@ -1,9 +1,9 @@
 // /audit: ?limit validated 1..1000 (default 200), ORDER BY created_at DESC, id DESC, the reader's
-// zone. Each account reads the rows about itself (audit_log.owner_id, migration 0016); an admin
-// reads the whole log.
+// zone. Each account reads the rows about itself (audit_log.owner_id, migration 0016) and its own
+// actions; an admin also the rows about no account, never another account's.
 import { beforeAll, describe, expect, it } from "vitest";
 import { query } from "./helpers.js";
-import { detail, ins, post, roleMatrix, roles, setting, XSS } from "./pages_common.js";
+import { detail, device, ins, post, roleMatrix, roles, setting, XSS } from "./pages_common.js";
 
 let r;
 
@@ -61,11 +61,10 @@ describe("audit page", () => {
     const page = await (await r.editor.get("/audit")).text();
     expect(page).toContain("<code>2030-01-01 09:00 GMT+9</code>");
     expect(page).toContain("times in GMT+9");
-    expect(await (await r.admin.get("/audit")).text()).toContain("<code>2030-01-01 00:00 UTC</code>"); // the admin's zone
     await query("DELETE FROM account_settings WHERE key = 'timezone'");
   });
 
-  it("each account reads only the rows about itself; an admin the whole log; the action list is scoped the same way", async () => {
+  it("each account reads only the rows about itself and its own actions; an admin also the site's rows; the action list is scoped the same way", async () => {
     await ins("INSERT INTO audit_log (username, action, details, owner_id) VALUES ('vw', 'viewer_thing', 'viewer-row', ?)", r.ids.viewer);
     await ins("INSERT INTO audit_log (username, action, details, owner_id) VALUES (NULL, 'site_thing', 'site-row', NULL)");
     const vw = await (await r.viewer.get("/audit?limit=1000")).text();
@@ -78,7 +77,16 @@ describe("audit page", () => {
     expect(ed).not.toContain('<option value="viewer_thing"');
     // a filter or a cursor cannot widen it
     expect(await (await r.editor.get("/audit?action=viewer_thing")).text()).not.toContain("viewer-row");
-    const ad = await (await r.admin.get("/audit?limit=1000")).text();
-    for (const row of ["viewer-row", "site-row", "tie-0", "audit-0"]) expect(ad).toContain(row);
+    // an admin: its own rows and the rows about no account, never another account's
+    let ad = await (await r.admin.get("/audit?limit=1000")).text();
+    expect(ad).toContain("site-row");
+    for (const other of ["viewer-row", "tie-0", "audit-0"]) expect(ad).not.toContain(other);
+    expect(ad).toContain('<option value="site_thing"');
+    expect(ad).not.toContain('<option value="viewer_thing"');
+    // an admin's own action on another account's projector is about that account, and the admin's own
+    const dev = await device("audit-dev", "Audit dev");
+    expect((await post(r.admin, `/devices/${dev.id}/rename`, { name: "Renamed by admin" })).status).toBe(303);
+    for (const c of [r.editor, r.admin]) expect(await (await c.get("/audit?action=device_rename")).text()).toContain(`<span class="muted small">device</span> ${dev.id}`);
+    expect(await (await r.viewer.get("/audit?action=device_rename")).text()).toContain("no entries yet");
   });
 });

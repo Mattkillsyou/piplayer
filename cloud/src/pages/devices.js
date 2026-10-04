@@ -144,6 +144,13 @@ export function ownedClause(user) {
   return user.role === "admin" ? { sql: "1", params: [] } : { sql: "d.owner_id = ?", params: [user.id] };
 }
 
+// The projectors whose content account is the user's (accounts.contentOwnerSql): their own, plus
+// for the site admin the ownerless ones, which play the site admin's content. The Dashboard wall
+// and the Alerts page show these; only the Devices page shows an admin every projector.
+export function contentClause(user) {
+  return { sql: `${accounts.contentOwnerSql("d")} = ?`, params: [user.id] };
+}
+
 // The devices row (the `cols` asked for, plus owner_id and content_owner) when the signed-in user
 // may see it, else the same 404 as an unknown id, so another account's projector does not even
 // show as existing.
@@ -650,11 +657,11 @@ sudo -E bash deploy/install-player.sh</pre>
 // through the SD Flasher (the /flasher page), not the Add device form.
 export const noProjectors = () => emptyState("NO PROJECTORS", 'No projectors yet. Flash a card with the <a href="/flasher">SD Flasher</a> and it appears here.');
 
-// The device rows a page shows (the viewer's own; every one for an admin) with the columns the
-// Devices page and the Dashboard need, content_owner and its username, and the playlist / group
-// names only when they are the projector's own account's (another account's reads as none).
-export function visibleDevices(env, user, cols) {
-  const own = ownedClause(user);
+// The device rows a page shows (`own`: by default ownedClause, the viewer's own and every one for
+// an admin) with the columns the Devices page and the Dashboard need, content_owner and its
+// username, and the playlist / group names only when they are the projector's own account's
+// (another account's reads as none).
+export function visibleDevices(env, user, cols, own = ownedClause(user)) {
   const co = accounts.contentOwnerSql("d");
   return db.all(env,
     `SELECT ${cols}, d.owner_id, ${co} AS content_owner,
