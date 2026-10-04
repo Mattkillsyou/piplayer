@@ -55,7 +55,8 @@ describe("one Default playlist per account", () => {
     expect(ADMIN_DEFAULT).toBe((await one("SELECT MIN(id) AS id FROM playlists")).id);
     expect((await db.loadSettings(env, r.ids.editor)).default_playlist_id).toBe(DEFAULT);
     expect(db.SETTING_KEYS).toContain("default_playlist_id");
-    expect(await query("SELECT key FROM settings WHERE key != 'enrollment_key'")).toEqual([]); // nothing per-account left in the site table
+    // nothing per-account left in the site table; /setup recorded the first admin as the site admin
+    expect(await query("SELECT key, value FROM settings WHERE key != 'enrollment_key'")).toEqual([{ key: "site_admin_id", value: String(r.ids.admin) }]);
   });
 
   it("loadSettings reads the id as null once the playlist row is gone, or when it is another account's", async () => {

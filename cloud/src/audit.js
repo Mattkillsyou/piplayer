@@ -21,7 +21,7 @@ export function pyJson(v) {
     return `{${Object.entries(v).filter(([, x]) => x !== undefined).map(([k, x]) => `${pyJson(k)}: ${pyJson(x)}`).join(", ")}}`;
   }
   if (typeof v === "string") {
-    return JSON.stringify(v).replace(/[\u0080-￿]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+    return JSON.stringify(v).replace(/[\u0080-\uffff]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
   }
   return JSON.stringify(v);
 }

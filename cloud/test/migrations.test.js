@@ -4,8 +4,10 @@
 // everything shared becomes the site admin's (the lowest-id admin), the settings and secrets move
 // to that account (the enrollment key stays site-wide), every other account gets its own Default
 // playlist, a projector of another account loses only what now belongs to someone else (audited),
-// nothing else is deleted, and the code reads the result as intended. The fresh-install path is
-// /setup's accounts.adoptOrphans.
+// nothing else is deleted (the old settings and secrets rows stay for the worker from before the
+// migration, which keeps serving until the new one is deployed), the site admin is recorded rather
+// than recomputed, and the code reads the result as intended. The fresh-install path is /setup's
+// accounts.adoptOrphans.
 import { beforeAll, describe, expect, it } from "vitest";
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -90,7 +92,31 @@ describe("migration 0016 on a live database", () => {
     });
   });
 
-  it("everything shared is the site admin's (the lowest-id admin); names stay, the old column keeps them", async () => {
+  it("the worker from before 0016 keeps working until the new one is deployed", async () => {
+    // Between `migrations apply` and `wrangler deploy` the old worker still serves every request.
+    // Its own statements (db.loadSettings, manifest.manifest_for_device and secrets.get as they were
+    // before this migration) must still find the Default playlist and the Wyze login: a projector
+    // on the Default that got `playlist: null` would drop its cached media (player/sync.py), and
+    // the camera config would turn off.
+    const old = Object.fromEntries((await all(
+      "SELECT key, value FROM settings WHERE key != 'default_playlist_id' OR value IN (SELECT CAST(id AS TEXT) FROM playlists)")).map((r) => [r.key, r.value]));
+    expect(old).toMatchObject({ default_playlist_id: String(id.siteDefault), timezone: "Europe/London", alert_email: "ops@example.net", enrollment_key: "ek-123" });
+    const device = await one("SELECT id, device_id, name, playlist_id, group_id FROM devices WHERE id = ?", id.dEd); // nothing of its own any more
+    const rules = await all(
+      `SELECT s.id, s.playlist_id, s.name, s.priority, s.start_time, s.end_time, s.days_of_week, s.start_date, s.end_date, p.name AS playlist_name
+         FROM device_schedules s LEFT JOIN playlists p ON p.id = s.playlist_id WHERE s.device_id = ?`, device.id);
+    const [pid, source] = manifest.pick_playlist(device, rules, null, wallClock(old.timezone), Number(old.default_playlist_id));
+    expect([pid, source]).toEqual([id.siteDefault, "site-default"]);
+    expect(await one("SELECT id, name FROM playlists WHERE id = ?", pid)).toEqual({ id: id.siteDefault, name: "Default" });
+    const items = await all(
+      `SELECT m.filename FROM playlist_items pi JOIN media m ON m.id = pi.media_id WHERE pi.playlist_id = ? ORDER BY pi.position ASC, pi.id ASC`, pid);
+    expect(items).toEqual([{ filename: "orphan.png" }]);
+    const wyze = await one("SELECT value FROM secrets WHERE name = 'wyze_email'");
+    expect(await secrets.decrypt(env, "wyze_email", wyze.value)).toBe("cam@example.net");
+  });
+
+  it("everything shared is the site admin's (the lowest-id admin, recorded); names stay, the old column keeps them", async () => {
+    expect(await one("SELECT value FROM settings WHERE key = 'site_admin_id'")).toEqual({ value: String(id.boss) });
     expect(await all("SELECT DISTINCT owner_id FROM media")).toEqual([{ owner_id: id.boss }]);
     expect(await all("SELECT DISTINCT owner_id FROM device_groups")).toEqual([{ owner_id: id.boss }]);
     expect(await all("SELECT name, legacy_name, owner_id FROM playlists WHERE id IN (?, ?, ?) ORDER BY id", id.lobby, id.night, id.siteDefault)).toEqual([
@@ -106,15 +132,19 @@ describe("migration 0016 on a live database", () => {
       .toEqual([{ playlist_id: id.lobby, media_id: id.m1, position: 0 }, { playlist_id: id.lobby, media_id: id.m2, position: 1 }, { playlist_id: id.night, media_id: id.m2, position: 0 }]);
   });
 
-  it("settings and secrets move to the site admin; the enrollment key stays site-wide", async () => {
-    expect(await all("SELECT key, value FROM settings")).toEqual([{ key: "enrollment_key", value: "ek-123" }]);
+  it("settings and secrets are copied to the site admin (the old rows stay); the enrollment key stays site-wide", async () => {
+    expect(await all("SELECT key, value FROM settings ORDER BY key")).toEqual([
+      { key: "alert_email", value: "ops@example.net" }, { key: "camera_config_version", value: "3" },
+      { key: "default_playlist_id", value: String(id.siteDefault) }, { key: "enrollment_key", value: "ek-123" },
+      { key: "site_admin_id", value: String(id.boss) }, { key: "timezone", value: "Europe/London" },
+    ]);
     expect(await all("SELECT user_id, key, value FROM account_settings WHERE user_id = ? ORDER BY key", id.boss)).toEqual([
       { user_id: id.boss, key: "alert_email", value: "ops@example.net" },
       { user_id: id.boss, key: "camera_config_version", value: "3" },
       { user_id: id.boss, key: "default_playlist_id", value: String(id.siteDefault) },
       { user_id: id.boss, key: "timezone", value: "Europe/London" },
     ]);
-    expect(await all("SELECT name FROM secrets")).toEqual([]);
+    expect(await all("SELECT name FROM secrets ORDER BY name")).toEqual([{ name: "wyze_email" }, { name: "wyze_password" }]);
     expect((await all("SELECT user_id, name FROM account_secrets ORDER BY name"))).toEqual([{ user_id: id.boss, name: "wyze_email" }, { user_id: id.boss, name: "wyze_password" }]);
     // the code reads them: the old ciphertext still opens for its new account only, and the
     // nightly housekeeping binds it to the account
@@ -123,6 +153,7 @@ describe("migration 0016 on a live database", () => {
     expect(await secrets.get(envM, id.ed, "wyze_email")).toBeNull();
     expect(await secrets.housekeeping(envM)).toBe(2);
     expect((await one("SELECT value FROM account_secrets WHERE name = 'wyze_email'")).value).toMatch(/^v2:/);
+    expect((await one("SELECT value FROM secrets WHERE name = 'wyze_email'")).value).toMatch(/^v1:/); // the old worker's copy, untouched
     expect(await secrets.get(envM, id.boss, "wyze_email")).toBe("cam@example.net");
     const s = await db.loadSettings(envM, id.boss);
     expect([s.timezone, s.alert_email, s.camera_config_version, s.default_playlist_id]).toEqual(["Europe/London", "ops@example.net", 3, id.siteDefault]);
@@ -176,6 +207,15 @@ describe("migration 0016 on a live database", () => {
     expect(await manifest.resolve_active_playlist_id(envM, await row(id.dAdmin2), noon)).toEqual([id[`default_${id.admin2}`], "site-default"]);
   });
 
+  it("the site admin is recorded, not recomputed: promoting a lower-id user moves nothing", async () => {
+    await m.prepare("UPDATE users SET role = 'admin' WHERE id = ?").bind(id.ed).run(); // now the lowest-id admin
+    expect(await accounts.siteAdminId(envM)).toBe(id.boss);
+    const none = await one("SELECT * FROM devices WHERE id = ?", id.dNone);
+    expect(await accounts.contentOwnerOf(envM, none)).toBe(id.boss);
+    expect(await manifest.resolve_active_playlist_id(envM, none, wallClock("UTC", new Date(Date.UTC(2026, 9, 5, 12, 0))))).toEqual([id.night, "device-default"]);
+    await m.prepare("UPDATE users SET role = 'editor' WHERE id = ?").bind(id.ed).run();
+  });
+
   it("uniqueness is per account from here on", async () => {
     // the same file in another account's library, and the same names, are fine
     await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('a-ed.png', 'a.png', 'image', 10, ?, ?)", SHA("a"), id.ed);
@@ -209,13 +249,14 @@ describe("migration 0016 on an empty database (fresh install)", () => {
     await applyD1Migrations(f, env.TEST_MIGRATIONS);
     expect(await all("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual([{ value: "16" }]);
     expect(await all("SELECT id, name, owner_id FROM playlists")).toEqual([{ id: 1, name: "Default", owner_id: null }]);
-    expect(await all("SELECT key, value FROM settings")).toEqual([{ key: "default_playlist_id", value: "1" }]);
+    expect(await all("SELECT key, value FROM settings")).toEqual([{ key: "default_playlist_id", value: "1" }]); // no site admin recorded yet
     expect(await all("SELECT * FROM account_settings")).toEqual([]);
     const admin = (await f.prepare("INSERT INTO users (username, password_hash, role) VALUES ('first', 'x', 'admin')").run()).meta.last_row_id;
     expect(await accounts.adoptOrphans(envF, admin)).toBe(1);
     expect(await all("SELECT id, owner_id FROM playlists")).toEqual([{ id: 1, owner_id: admin }]);
     expect(await all("SELECT user_id, key, value FROM account_settings")).toEqual([{ user_id: admin, key: "default_playlist_id", value: "1" }]);
-    expect(await all("SELECT key FROM settings")).toEqual([]);
+    expect(await all("SELECT key, value FROM settings")).toEqual([{ key: "site_admin_id", value: String(admin) }]); // /setup records it
+    expect(await accounts.siteAdminId(envF)).toBe(admin);
     // the next account gets a Default of its own
     const next = (await f.prepare("INSERT INTO users (username, password_hash, role) VALUES ('next', 'x', 'editor')").run()).meta.last_row_id;
     const pid = await accounts.ensureDefaultPlaylist(envF, next);

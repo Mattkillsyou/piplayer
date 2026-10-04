@@ -1,6 +1,8 @@
 // /users (admin only): create (validation, 409), role (self-demote guard), password
-// (min 6 / max 1024), email (validation, 409), delete (self + last-admin guards), escaping.
+// (min 6 / max 1024), email (validation, 409), delete (self + site admin guards), escaping. The
+// site admin (settings.site_admin_id, the first admin here) can be neither deleted nor demoted.
 import { beforeAll, describe, expect, it } from "vitest";
+import * as accounts from "../src/accounts.js";
 import * as auth from "../src/auth.js";
 import { Client } from "./helpers.js";
 import { audits, detail, ins, NOPE, one, post, roleMatrix, roles, XSS } from "./pages_common.js";
@@ -33,7 +35,7 @@ describe("users", () => {
     expect(page).toContain('admin <span class="muted small">(you)</span>');
     expect(page).toContain('name="role" data-autosubmit aria-label="Role for admin" disabled');
     expect(page).not.toContain(XSS);
-    expect(page).toContain('data-confirm="Delete x&#39;);alert(1);//u? Their library, playlists, groups and settings are deleted with the account, and their API tokens stop working. Their projectors stay, with no owner, until you pick one on the Devices page."');
+    expect(page).toContain('data-confirm="Delete x&#39;);alert(1);//u? Their library, playlists, groups and settings are deleted with the account, and their API tokens stop working. Their projectors stay on the Devices page with no owner, signed out until each gets a new token there."');
     expect(page).toContain('name="password" placeholder="new password" minlength="6" required');
     expect(page).toContain('<span class="badge badge-editor">editor</span>');
     expect(page).not.toContain("onchange");
@@ -124,13 +126,12 @@ describe("users", () => {
     expect((await audits("user_set_email"))[0]).toMatchObject({ username: "admin", target_id: String(vw.id), details: '{"email": "<vw>@example.com"}' });
   });
 
-  it("delete: self 400, last admin 400, 404 unknown, otherwise deletes + audits", async () => {
+  it("delete: self 400, the site admin 400, 404 unknown, otherwise deletes + audits", async () => {
     const me = await uid("admin");
     expect(await detail(await post(r.admin, `/users/${me.id}/delete`), 400)).toBe("You cannot delete your own account");
     expect(await detail(await post(r.admin, `/users/${NOPE}/delete`), 404)).toBe("User not found");
     await post(r.admin, "/users", { username: "admin2", password: "pw123456", role: "admin" });
     const a2 = await uid("admin2");
-    // two admins: admin2 may go; then admin is the last one and admin2 (re-created) cannot delete it
     expect((await post(r.admin, `/users/${a2.id}/delete`)).status).toBe(303);
     expect(await uid("admin2")).toBeNull();
     await post(r.admin, "/users", { username: "admin3", password: "pw123456", role: "admin" });
@@ -138,23 +139,31 @@ describe("users", () => {
     await c3.login("admin3", "pw123456");
     c3.token = await c3.csrf("/users");
     const a3 = await uid("admin3");
-    expect((await post(c3, `/users/${me.id}/delete`)).status).toBe(303);   // 2 admins, fine
-    expect(await uid("admin")).toBeNull();
-    expect(await detail(await post(c3, `/users/${a3.id}/delete`), 400)).toBe("You cannot delete your own account");
-    // the deleted admin's session is gone
-    expect((await r.admin.get("/users")).status).toBe(303);
-    expect((await audits("user_delete"))[0]).toMatchObject({ username: "admin3", target_id: String(me.id) });
-    // last-admin guard from a second admin's point of view
-    await post(c3, "/users", { username: "admin4", password: "pw123456", role: "admin" });
-    const c4 = new Client();
-    await c4.login("admin4", "pw123456");
-    c4.token = await c4.csrf("/users");
-    expect((await post(c4, `/users/${a3.id}/delete`)).status).toBe(303);
-    const a4 = await uid("admin4");
-    expect(await detail(await post(c4, `/users/${a4.id}/delete`), 400)).toBe("You cannot delete your own account");
+    // the site admin (recorded at /setup) can be neither deleted nor demoted by another admin:
+    // projectors without an owner play its content
+    expect(await one("SELECT value FROM settings WHERE key = 'site_admin_id'")).toEqual({ value: String(me.id) });
+    expect(await detail(await post(c3, `/users/${me.id}/delete`), 400)).toBe(accounts.SITE_ADMIN_KEPT);
+    expect(await detail(await post(c3, `/users/${me.id}/role`, { role: "editor" }), 400)).toBe(accounts.SITE_ADMIN_KEPT);
+    expect((await uid("admin")).role).toBe("admin");
+    expect((await post(c3, `/users/${me.id}/role`, { role: "admin" })).status).toBe(303); // no change is fine
+    let page = await (await c3.get("/users")).text();
+    expect(page).toContain('<span class="badge badge-muted" title="Projectors without an owner play this account\'s content: it cannot be deleted or given another role">site admin</span>');
+    expect(page).toContain('aria-label="Role for admin" disabled');
+    expect(page).not.toContain(`action="/users/${me.id}/delete"`);
+    expect(page).toContain(`action="/users/${a3.id}/role"`);
+    // promoting and demoting others never moves it
     const ed = await uid("ed");
-    await post(c4, `/users/${ed.id}/role`, { role: "admin" });
-    await post(c4, `/users/${a4.id}/role`, { role: "viewer" }); // self-demote refused
-    expect((await uid("admin4")).role).toBe("admin");
+    expect((await post(c3, `/users/${ed.id}/role`, { role: "admin" })).status).toBe(303);
+    expect((await post(c3, `/users/${ed.id}/role`, { role: "editor" })).status).toBe(303);
+    expect(await one("SELECT value FROM settings WHERE key = 'site_admin_id'")).toEqual({ value: String(me.id) });
+    // the site admin deletes admin3; admin3's session is gone with it
+    expect(await detail(await post(c3, `/users/${a3.id}/delete`), 400)).toBe("You cannot delete your own account");
+    expect((await post(r.admin, `/users/${a3.id}/delete`)).status).toBe(303);
+    expect((await c3.get("/users")).status).toBe(303);
+    expect((await audits("user_delete"))[0]).toMatchObject({ username: "admin", target_id: String(a3.id) });
+    page = await (await r.admin.get("/users")).text();
+    expect(page).not.toContain("admin3");
+    await post(r.admin, `/users/${me.id}/role`, { role: "viewer" }); // self-demote refused
+    expect((await uid("admin")).role).toBe("admin");
   });
 });

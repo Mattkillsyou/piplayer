@@ -1,9 +1,9 @@
 // The SD flasher's sign-in and per-account projectors (v0.7.0): POST /api/operator/login
 // (username + password -> p5k_ token named after the PC; viewers refused; /login's throttle and
 // audit), GET /api/operator/me, and POST /api/operator/devices (create with owner_id and the
-// account's own Settings defaults, re-register with a NEW token, 409 for another account's id,
-// admin takeover of an ownerless id, the per-hour cap on new ids). Every list and default is the
-// signed-in account's own (migration 0016).
+// account's own Settings defaults, re-register with a NEW token, 409 for another account's id
+// (an admin's token included), admin takeover of an ownerless id, the per-hour cap on new ids).
+// Every list and default is the signed-in account's own (migration 0016).
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -181,7 +181,7 @@ describe("POST /api/operator/devices", () => {
     expect((await audits("device_registered")).length).toBe(1);
   });
 
-  it("another account's id: 409 and nothing changes; an admin re-registers anyone's", async () => {
+  it("another account's id: 409 and nothing changes, for an admin's token too; an admin re-flashes its own", async () => {
     const ed = await signIn("ed", "editor-pass");
     const admin = await signIn("admin", "test1234");
     const mine = await (await register(ed, { device_id: "mine-1", name: "Mine" })).json();
@@ -191,11 +191,20 @@ describe("POST /api/operator/devices", () => {
     const other = "p5k_" + "e".repeat(32);
     expect(await detail(await register(other, { device_id: "mine-1", name: "Stolen" }), 409)).toBe("A projector with that ID belongs to another account; pick another name");
     expect(await dev("mine-1")).toMatchObject({ name: "Mine", token: mine.token, owner_id: await userId("ed") });
-    // an admin may re-register it; the owner stays ed
-    const res = await register(admin, { device_id: "mine-1", name: "Mine (admin card)" });
-    expect(res.status).toBe(200);
-    expect(await dev("mine-1")).toMatchObject({ name: "Mine (admin card)", owner_id: await userId("ed") });
-    expect((await dev("mine-1")).token).not.toBe(mine.token);
+    // an admin's flasher gets the same 409: a new token would lock the real Pi out and hand its
+    // account's manifest, media, tunnel token and Wyze login to whoever holds the new one
+    expect(await detail(await register(admin, { device_id: "mine-1", name: "Mine (admin card)" }), 409)).toBe("A projector with that ID belongs to another account; pick another name");
+    expect(await dev("mine-1")).toMatchObject({ name: "Mine", token: mine.token, owner_id: await userId("ed") });
+    expect((await sync("mine-1", mine.token)).status).toBe(200);
+    // re-flashing one's own projector still works, an admin's (the site owner's cards) included
+    const own = await (await register(admin, { device_id: "admins-1", name: "Admin's" })).json();
+    const again = await register(admin, { device_id: "ADMINS-1", name: "Admin's (new card)" });
+    expect(again.status).toBe(200);
+    const body = await again.json();
+    expect(body).toMatchObject({ device_id: "admins-1", owner: "admin", created: false });
+    expect(body.token).not.toBe(own.token);
+    expect((await sync("admins-1", body.token)).status).toBe(200);
+    expect((await sync("admins-1", own.token)).status).toBe(401);
   });
 
   it("an ownerless id (pre-migration, Add device form, /api/enroll): an admin takes it over, an editor gets 409", async () => {

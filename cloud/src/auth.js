@@ -1,5 +1,6 @@
 // Passwords (PBKDF2-SHA256 via WebCrypto), sessions (D1 row + HMAC-signed cookie), CSRF,
 // roles, the failed-login throttle and device bearer auth. Port of cms/app/auth.py.
+import { contentOwnerSql } from "./accounts.js";
 import * as audit from "./audit.js";
 import * as db from "./db.js";
 import { b64url, fail, fromB64url, HttpError, ipBucket, randomToken, redirect, sha256Hex, utf8Len } from "./util.js";
@@ -332,7 +333,7 @@ export async function deviceFromHeader(ctx) {
     `SELECT d.id, d.device_id, d.name, d.playlist_id, d.group_id,
             d.projector_control, d.projector_power_mode, d.projector_ir_codes, d.broadlink_host,
             d.tunnel_id, d.tunnel_hostname, d.mpv_hwdec, d.mpv_profile, d.owner_id,
-            COALESCE(d.owner_id, (SELECT MIN(id) FROM users WHERE role = 'admin')) AS content_owner
+            ${contentOwnerSql("d")} AS content_owner
        FROM devices d WHERE d.token = ?`, token);
   if (!row) fail(401, "Invalid device token");
   return row;

@@ -17,8 +17,9 @@ const ROLE_OK = (role) => auth.ROLES.includes(role);
 
 // Back to the list with the acknowledgement. An account's own address (or email-like username)
 // stands in for its camera operator list while it has no alert email set, and ownerless
-// projectors follow the site admin (cloudflare.operatorEmails), so a created, deleted or re-roled
-// user may change who can open live camera pages: push that to every tunnel now.
+// projectors follow the site admin's (cloudflare.operatorEmails), so a changed address or a
+// deleted user (whose projectors become ownerless) may change who can open live camera pages:
+// push that to every tunnel now.
 async function done(ctx, message) {
   const accessError = await cloudflare.syncAccess(ctx);
   if (accessError) return auth.flashRedirect(ctx, "/users", `${message}, but the camera access list could not be updated on every device: ${accessError}. Click Recreate tunnel on each device on the Devices page.`, "error");
@@ -46,11 +47,12 @@ async function tokensRow(ctx, u, tz, newToken) {
 async function usersPage(ctx, created = null) {
   const me = auth.requireRole(ctx, "admin");
   const tz = (await ctx.settings()).timezone;
+  const site = await accounts.siteAdminId(ctx.env);
   const users = await db.all(ctx.env,
     `SELECT u.id, u.username, u.email, u.role, u.created_at, (SELECT COUNT(*) FROM devices d WHERE d.owner_id = u.id) AS device_count
        FROM users u ORDER BY u.username`);
   const row = (u) => `<tr>
-      <td class="name">${esc(u.username)}${u.id === me.id ? ' <span class="muted small">(you)</span>' : ""}</td>
+      <td class="name">${esc(u.username)}${u.id === me.id ? ' <span class="muted small">(you)</span>' : ""}${u.id === site ? ' <span class="badge badge-muted" title="Projectors without an owner play this account\'s content: it cannot be deleted or given another role">site admin</span>' : ""}</td>
       <td><span class="badge badge-${esc(u.role)}">${esc(u.role)}</span></td>
       <td>
         ${u.email ? `<div class="small">${esc(u.email)}</div>` : ""}
@@ -65,7 +67,7 @@ async function usersPage(ctx, created = null) {
       <td>
         <form method="post" action="/users/${u.id}/role" class="inline">
           ${csrfInput(ctx)}
-          <select name="role" data-autosubmit aria-label="Role for ${esc(u.username)}"${u.id === me.id ? " disabled" : ""}>
+          <select name="role" data-autosubmit aria-label="Role for ${esc(u.username)}"${u.id === me.id || u.id === site ? " disabled" : ""}>
             ${["admin", "editor", "viewer"].map((r) => `<option value="${r}"${u.role === r ? " selected" : ""}>${r}</option>`).join("\n            ")}
           </select>
         </form>
@@ -78,7 +80,7 @@ async function usersPage(ctx, created = null) {
         </form>
       </td>
       <td>
-        ${u.id !== me.id ? `<form method="post" action="/users/${u.id}/delete" class="inline" data-confirm="Delete ${esc(u.username)}? Their library, playlists, groups and settings are deleted with the account, and their API tokens stop working. Their projectors stay, with no owner, until you pick one on the Devices page.">
+        ${u.id !== me.id && u.id !== site ? `<form method="post" action="/users/${u.id}/delete" class="inline" data-confirm="Delete ${esc(u.username)}? Their library, playlists, groups and settings are deleted with the account, and their API tokens stop working. Their projectors stay on the Devices page with no owner, signed out until each gets a new token there.">
           ${csrfInput(ctx)}
           <button type="submit" class="danger small">Delete</button>
         </form>` : ""}
@@ -159,6 +161,7 @@ async function usersSetRole(ctx) {
   const role = str(await ctx.form(), "role");
   if (!ROLE_OK(role)) fail(400, "Pick a role");
   if (userId === me.id && role !== "admin") fail(400, "You cannot change your own role");
+  if (role !== "admin" && userId === await accounts.siteAdminId(ctx.env)) fail(400, accounts.SITE_ADMIN_KEPT);
   // The last-admin guard sits inside the statement: two admins demoting each other at the same
   // instant serialise in SQLite, so the second one sees the count already at 1 and changes nothing.
   const r = await db.run(ctx.env,
@@ -215,18 +218,28 @@ async function usersSetEmail(ctx) {
 }
 
 // The account goes with everything in it: its media rows, playlists, groups, settings and
-// secrets cascade (migration 0016), its projectors stay without an owner (and then play the site
-// admin's content), and the media files are removed from R2 once the rows are gone (an R2 error is
-// logged, never undoes the delete).
+// secrets cascade (migration 0016), and the media files are removed from R2 once the rows are gone
+// (an R2 error is logged, never undoes the delete). Its projectors stay, without an owner, so an
+// admin can hand them on; but an ownerless projector plays the site admin's content and reads the
+// site admin's Wyze login, so their tokens are replaced in the same transaction as the delete: a
+// card of the deleted account gets 401 from then on (the Pi keeps playing what it has) and comes
+// back only with a token made on the Devices page. Rotated rather than deleted, so the rows, their
+// history and their tunnels stay for whoever gets the hardware next. The site admin is never
+// deleted (SITE_ADMIN_KEPT).
 async function usersDelete(ctx) {
   const me = auth.requireRole(ctx, "admin");
   const userId = idParam(ctx.params.user_id, "user_id");
   if (userId === me.id) fail(400, "You cannot delete your own account");
+  if (userId === await accounts.siteAdminId(ctx.env)) fail(400, accounts.SITE_ADMIN_KEPT);
   const keys = await accounts.mediaKeys(ctx.env, userId);
-  // One guarded statement (see usersSetRole); `changes` counts the cascaded session rows too.
-  const r = await db.run(ctx.env,
-    "DELETE FROM users WHERE id = ? AND (role != 'admin' OR (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1)", userId);
-  if (!r.changes) {
+  // Both statements carry the last-admin guard (see usersSetRole), so a refused delete signs
+  // nothing out; `changes` of the delete counts the cascaded session rows too.
+  const guard = "EXISTS (SELECT 1 FROM users u WHERE u.id = ?1 AND (u.role != 'admin' OR (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1))";
+  const [signedOut, r] = await db.batch(ctx.env, [
+    [`UPDATE devices SET token = lower(hex(randomblob(32))) WHERE owner_id = ?1 AND ${guard}`, userId],
+    [`DELETE FROM users WHERE id = ?1 AND ${guard}`, userId],
+  ]);
+  if (!r.meta.changes) {
     if (!(await db.first(ctx.env, "SELECT 1 AS one FROM users WHERE id = ?", userId))) fail(404, "User not found");
     fail(400, "The last admin cannot be deleted");
   }
@@ -234,7 +247,10 @@ async function usersDelete(ctx) {
     try { await ctx.env.MEDIA.delete(key); }
     catch (e) { console.error(`R2 delete failed for ${key} of deleted user ${userId}:`, e && e.stack || e); }
   }
-  await audit.log(ctx, "user_delete", "user", userId, keys.length ? { media_deleted: keys.length } : null, undefined, null);
+  const details = {};
+  if (keys.length) details.media_deleted = keys.length;
+  if (signedOut.meta.changes) details.projectors_signed_out = signedOut.meta.changes;
+  await audit.log(ctx, "user_delete", "user", userId, details, undefined, null);
   return done(ctx, "User deleted");
 }
 

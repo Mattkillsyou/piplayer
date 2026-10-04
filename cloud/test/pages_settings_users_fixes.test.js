@@ -179,6 +179,10 @@ describe("M16: two admins colliding", () => {
   };
 
   it("mutual deletes, mutual demotes and a delete crossing a demote always leave an admin", async () => {
+    // The site admin can be neither deleted nor demoted (pages_users.test.js), so with one
+    // recorded no race can take the last admin. This race tests the guard inside the statements
+    // on its own: a database whose site admin is not recorded.
+    await query("DELETE FROM settings WHERE key = 'site_admin_id'");
     await query("DELETE FROM users WHERE username NOT IN ('admin', 'ed', 'vw')");
     const a = await admin(r.admin, "racer-a");
     const b = await admin(r.admin, "racer-b");
@@ -186,9 +190,18 @@ describe("M16: two admins colliding", () => {
     const me = await one("SELECT id FROM users WHERE username = 'admin'");
     expect((await post(a.c, `/users/${me.id}/role`, { role: "editor" })).status).toBe(303);
     expect(await admins()).toEqual(["racer-a", "racer-b"]);
+    // each owns a projector: the delete that lands signs its victim's out, the refused one nothing
+    const pa = await device("race-a", "Race A", { owner_id: a.id });
+    const pb = await device("race-b", "Race B", { owner_id: b.id });
     let res = await Promise.all([raw(a.c, `/users/${b.id}/delete`, {}), raw(b.c, `/users/${a.id}/delete`, {})]);
     expect(landed(res)).toBe(1);
     let s = await survivor();
+    const [kept, lost] = s === a ? [pa, pb] : [pb, pa];
+    expect(await one("SELECT owner_id, token FROM devices WHERE id = ?", kept.id)).toEqual({ owner_id: s.id, token: kept.token });
+    const gone = await one("SELECT owner_id, token FROM devices WHERE id = ?", lost.id);
+    expect(gone.owner_id).toBeNull();
+    expect(gone.token).not.toBe(lost.token);
+    await query("DELETE FROM devices WHERE id IN (?, ?)", pa.id, pb.id);
     // two admins again, racing the demotes
     let t = await admin(s.c, "racer-c");
     res = await Promise.all([raw(s.c, `/users/${t.id}/role`, { role: "viewer" }), raw(t.c, `/users/${s.id}/role`, { role: "viewer" })]);
@@ -201,9 +214,10 @@ describe("M16: two admins colliding", () => {
     s = await survivor();
     // the audit row of the surviving write is there; the losing write logged nothing
     expect((await audits("user_delete")).length + (await audits("user_set_role")).length).toBeGreaterThan(0);
-    // give the other tests their admin back
+    // give the other tests their admin back, and the record of their site admin
     expect((await post(s.c, `/users/${me.id}/role`, { role: "admin" })).status).toBe(303);
     await query("DELETE FROM users WHERE username LIKE 'racer-%'");
+    await query("INSERT INTO settings (key, value) VALUES ('site_admin_id', ?)", String(me.id));
   });
 });
 

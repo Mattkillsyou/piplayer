@@ -8,8 +8,9 @@
 // Flasher. Each projector plays its own account's content: mine-1 the editor's, theirs-1 the
 // viewer's, nobody-1 (no owner) the site admin's.
 import { beforeAll, describe, expect, it } from "vitest";
+import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { query } from "./helpers.js";
+import { BASE, query } from "./helpers.js";
 import { audits, defaultPlaylistOf, detail, device, group, ins, NOPE, one, playlist, post, roles } from "./pages_common.js";
 
 let r;
@@ -242,11 +243,11 @@ describe("owner select", () => {
 });
 
 describe("users page", () => {
-  it("shows how many projectors each account owns; deleting the account takes its library with it, leaves its projectors ownerless, and the confirm says so", async () => {
+  it("shows how many projectors each account owns; deleting the account takes its library with it, leaves its projectors ownerless and signed out, and the confirm says so", async () => {
     const page = await (await r.admin.get("/users")).text();
     expect(page).toContain('<th scope="col">Projectors</th>');
     expect(page).toContain('<td title="Projectors this account owns (set on the Devices page)">1</td>');
-    expect(page).toContain('data-confirm="Delete vw? Their library, playlists, groups and settings are deleted with the account, and their API tokens stop working. Their projectors stay, with no owner, until you pick one on the Devices page."');
+    expect(page).toContain('data-confirm="Delete vw? Their library, playlists, groups and settings are deleted with the account, and their API tokens stop working. Their projectors stay on the Devices page with no owner, signed out until each gets a new token there."');
     expect((await post(r.admin, "/users", { username: "gone", password: "gone-pass", role: "editor" })).status).toBe(303);
     const uid = (await one("SELECT id FROM users WHERE username = 'gone'")).id;
     const pl = await playlist("Gone PL", uid);
@@ -255,13 +256,23 @@ describe("users page", () => {
     await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('gone-file.mp4', 'g.mp4', 'video', 10, ?, ?)", "f".repeat(64), uid);
     expect(await (await r.admin.get("/users")).text()).toContain('<td title="Projectors this account owns (set on the Devices page)">1</td>\n      <td class="muted nowrap">');
     expect(await (await r.admin.get("/devices")).text()).toContain(`<option value="${uid}">gone</option>`);
+    // until the delete the card syncs with its account's content
+    const bearer = (path) => SELF.fetch(`${BASE}${path}`, { headers: { authorization: `Bearer ${d.token}` } });
+    expect((await bearer("/api/sync/gone-1")).status).toBe(200);
     expect((await post(r.admin, `/users/${uid}/delete`)).status).toBe(303);
     expect(await one("SELECT owner_id, playlist_id FROM devices WHERE id = ?", d.id)).toEqual({ owner_id: null, playlist_id: null });
+    // an ownerless projector would play the site admin's content and read the site admin's Wyze
+    // login: the deleted account's card is signed out in the same transaction (a new token waits
+    // on the Devices page), so its old token gets neither
+    for (const path of ["/api/sync/gone-1", "/api/camera-config/gone-1", "/api/media/gone-file.mp4"]) {
+      expect((await bearer(path)).status, path).toBe(401);
+    }
+    expect((await one("SELECT token FROM devices WHERE id = ?", d.id)).token).toMatch(/^[0-9a-f]{64}$/);
     expect(await query("SELECT id FROM playlists WHERE owner_id = ? OR id = ?", uid, pl)).toEqual([]);
     expect(await query("SELECT id FROM media WHERE filename = 'gone-file.mp4'")).toEqual([]);
     expect(await env.MEDIA.head("media/gone-file.mp4")).toBeNull();
     expect(await query("SELECT key FROM account_settings WHERE user_id = ?", uid)).toEqual([]);
-    expect((await audits("user_delete"))[0].details).toBe('{"media_deleted": 1}');
+    expect((await audits("user_delete"))[0].details).toBe('{"media_deleted": 1, "projectors_signed_out": 1}');
     await query("DELETE FROM devices WHERE id = ?", d.id);
   });
 });

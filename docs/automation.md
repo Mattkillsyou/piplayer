@@ -79,7 +79,8 @@ around the clock: it still follows schedules and assigned playlists.
   first boot survives a re-flash. The `device_reenrolled` audit entry is
   written as before (with `renamed_from` when the name changed). Rotate the
   key on the Settings page when a card or a flasher PC is lost: the key alone
-  can re-enroll any device id.
+  can re-enroll any device id that has no owner (on the cloud console an id
+  that belongs to an account is a 409 for the key).
 
 **Python console.** `cms/` gains the same `POST /api/enroll` contract as the
 cloud (body `{key, device_id, name}`, 401 on a bad key, returns
@@ -147,10 +148,10 @@ end of this section as legacy.
   with `created: false`, audit `device_reregistered` with `renamed_from`):
   the re-flashed card works and the old card stops syncing. An id that
   belongs to another account is a 409 "A projector with that ID belongs to
-  another account; pick another name". An admin may re-register any id; a
-  projector with no owner (from before this feature, the Devices page "Add
-  device" form or `/api/enroll`) becomes the admin's, while an editor gets
-  the 409 for it. New ids are capped fleet-wide at 20 per hour like
+  another account; pick another name", an admin's token included (on the
+  cloud console since accounts, migration 0016). A projector with no owner
+  (from before this feature or `/api/enroll`) becomes the admin's, while an
+  editor gets the 409 for it. New ids are capped fleet-wide at 20 per hour like
   enrollment (429, `Retry-After: 3600`, audited `device_enroll_capped`).
 - Table `devices.owner_id` (migration `0009_device_owner.sql`, REFERENCES
   users, ON DELETE SET NULL): NULL means no owner; deleting a user leaves

@@ -1376,6 +1376,11 @@ def check_enroll(w):
         tok2 = r2.json().get("token", "")
         S.rec("enroll: re-enroll hands out a new token", len(tok2) > 20 and tok2 != tok)
         S.expect("enroll: the old token stops working", requests.get(base + "/api/sync/" + did, headers=bearer(tok), timeout=30), 401)
+    # an id with an owner (the admin's own projector, from the Add device form) is not the key's
+    if w.dev:
+        r3 = e({"key": key, "device_id": w.dev["device_id"], "name": "Taken " + w.tok})
+        S.expect("enroll: a device id that has an owner is a 409 for the key", r3, 409, "belongs to another account")
+        S.expect("enroll: and that projector's own token still syncs", sync(w.dev, base), 200)
     devices = a.get("/devices").text
     S.rec("enroll: device shows on /devices with the new name", ("Renamed " + w.tok) in devices and ("Enrolled " + w.tok) not in devices)
     html = a.get("/audit?limit=100").text

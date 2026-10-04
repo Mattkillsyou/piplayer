@@ -1,7 +1,8 @@
 // POST /api/enroll: key check (constant-time, throttled per ip), device_id/name validation,
-// create vs re-enroll (a NEW token, the old one stops, name updated), the per-hour cap on new
-// device ids, audit rows, no token in the audit log. The key is site-wide; the row it creates
-// has no owner, so it follows the site admin's settings and plays the site admin's content.
+// create vs re-enroll (a NEW token, the old one stops, name updated; only an ownerless id: one
+// with an owner is a 409), the per-hour cap on new device ids, audit rows, no token in the audit
+// log. The key is site-wide; the row it creates has no owner, so it follows the site admin's
+// settings and plays the site admin's content.
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -83,6 +84,24 @@ describe("POST /api/enroll", () => {
       '{"device_id": "hall-2", "name": "Hall (new card)"}', '{"device_id": "hall-2", "name": "Hall (new card)", "renamed_from": "Hall"}',
     ]);
     expect((await audits("device_enrolled")).length).toBe(1);
+  });
+
+  it("an id with an owner is not the key's: 409, the Pi keeps its token, nothing is audited as re-enrolled", async () => {
+    // The key is on every card a flasher before v0.7.0 wrote; a device id is guessable (the
+    // operator endpoint's 409 even confirms one exists). A new token here would lock the real Pi
+    // out and hand its account's manifest, media, tunnel token and Wyze login to the caller.
+    const edId = (await query("INSERT INTO users (username, password_hash, role) VALUES ('ed-key', 'x', 'editor') RETURNING id"))[0].id;
+    for (const [deviceId, owner] of [["owned-1", edId], ["owned-2", adminId]]) {
+      await query("INSERT INTO devices (device_id, name, token, owner_id) VALUES (?, 'Owned', ?, ?)", deviceId, `tok-${deviceId}`, owner);
+      for (const sent of [deviceId, deviceId.toUpperCase()]) {
+        expect(await detail(await enroll({ key, device_id: sent, name: "Taken" }), 409)).toBe("A projector with that ID belongs to another account; pick another name");
+      }
+      expect(await dev(deviceId)).toMatchObject({ name: "Owned", token: `tok-${deviceId}`, owner_id: owner });
+      expect((await SELF.fetch(`${BASE}/api/sync/${deviceId}`, { headers: { authorization: `Bearer tok-${deviceId}` } })).status).toBe(200);
+    }
+    expect((await query("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'device_reenrolled' AND details LIKE '%owned-%'"))[0].n).toBe(0);
+    await query("DELETE FROM devices WHERE device_id IN ('owned-1', 'owned-2')");
+    await query("DELETE FROM users WHERE id = ?", edId);
   });
 
   it("wrong or missing key is 401 and creates nothing; body must be a JSON object", async () => {

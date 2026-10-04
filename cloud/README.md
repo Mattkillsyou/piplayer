@@ -82,14 +82,20 @@ playlist at all, so nothing that was uploaded before it stays silent.
 `owner_id` to `media`, `playlists`, `device_groups` and `audit_log`, the tables `account_settings`
 and `account_secrets`, and gives everything that existed before (the shared library, playlists,
 groups, uploads in flight with no uploader, every setting but the enrollment key, the Wyze and
-Twilio secrets) to the **site admin**, the lowest-id user with role admin; the site Default
-playlist becomes that admin's Default and every other user gets an empty Default of their own.
+Twilio secrets) to the **site admin**, the lowest-id user with role admin when it runs, recorded as
+`settings.site_admin_id`; the site Default playlist becomes that admin's Default and every other
+user gets an empty Default of their own. Settings and secrets are copied, not moved: the old rows
+stay where they are, because the worker from before the migration keeps serving every request
+until `wrangler deploy` replaces it (`npm run deploy` runs the two back to back) and still reads
+them; without them every projector on the Default playlist would be sent `playlist: null` for
+those seconds and drop its cached media. The new code reads nothing else from them; a later
+migration may remove them.
 A projector owned by another account than the site admin loses the playlist, group and schedule
 rules that now belong to someone else (one audit row each, reason "migration 0016"), so it plays
 its owner's (empty) Default until its owner picks something; the header comment of the file has
 the two SELECTs that list those projectors and rules before you apply it. Nothing else is
-deleted. On a database with no users yet (a fresh install) the rows keep no owner and `/setup`
-hands them to the first admin. Playlist and group names become unique per account: the old
+deleted. On a database with no users yet (a fresh install) the rows keep no owner, and `/setup`
+records the first admin as the site admin and hands them over. Playlist and group names become unique per account: the old
 `name` column cannot lose its site-wide UNIQUE in D1 (a table others point at cannot be rebuilt),
 so it is renamed `legacy_name` and keeps an unseen value (the old name, a random token for new
 rows), and a new `name` column, unique per account, takes its place.
@@ -205,7 +211,14 @@ the old account's content (playlist, group, schedule rules, audited), so a proje
 plays its owner's content. An admin's library, playlists, groups, schedules, settings, dashboard,
 alerts and audit log are its own like anyone's (the audit log also shows admins the rows about no
 account). A projector with no owner (enrolled with the site key, or left without one) plays the
-**site admin's** content (the lowest-id admin) and follows that account's settings. The role names
+**site admin's** content and follows that account's settings. The site admin is recorded
+(`settings.site_admin_id`: the first admin at `/setup`, the lowest-id admin when migration 0016
+ran), never worked out again from the roles, and the Users page refuses to delete it or give it
+another role, so no change to other users moves those projectors, that library or that Wyze login
+to someone else. Deleting any other account replaces the tokens of its projectors in the same
+transaction (they stay on the Devices page with no owner, signed out until a new token is made
+there), so a card of a deleted account never syncs as an ownerless projector with the site
+admin's content and Wyze login. The role names
 stay `admin`, `editor`, `viewer` because `users.role` has a CHECK constraint SQLite cannot change
 without rebuilding the table; `editor` was redefined (it used to mean "may edit the shared
 content") rather than adding a fourth role.
@@ -346,21 +359,25 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   a NEW token (200, `created: false`, the old card stops syncing, a rename is audited as
   `renamed_from` under `device_reregistered`); an id owned by another account is a 409 ("belongs
   to another account; pick another name"; device ids are one namespace for the whole site, so
-  that answer is the one thing an account can learn about another: that an id is taken). Admins
-  may re-register any id, and an ownerless one (from before migration 0009 or `/api/enroll`)
-  becomes theirs, dropping what it pointed at of the site admin's unless that is theirs too
-  (`accounts.reassignDevice`); editors get the 409 for those too. A projector added with the
+  that answer is the one thing an account can learn about another: that an id is taken). An admin's
+  token gets the same 409 for another account's id (a new token would lock the real Pi out and
+  hand its account's manifest, media, tunnel token and Wyze login to the caller); an ownerless id
+  (from before migration 0009 or `/api/enroll`) becomes the admin's, dropping what it pointed at
+  of the site admin's unless that is theirs too (`accounts.reassignDevice`); editors get the 409
+  for those too. A projector added with the
   Devices page form belongs to whoever added it. Editors and viewers see only their own projectors
   on the console, admins see every projector and can change the owner. The new-id cap below
   applies.
 - **Zero-touch enrollment** (legacy: cards written by flashers before v0.7.0): `POST /api/enroll`
   `{"key", "device_id", "name"}` trades the site's enrollment key (the admins' Settings page;
   "Rotate" invalidates cards not yet booted) for the device's token: `{"device_id", "token", "cms_url"}`.
-  The row it creates has no owner, so it plays the site admin's content until an admin gives it one. Re-enrolling a known `device_id` issues a NEW token: the old
-  card (and anything that learned the old token) stops syncing, the console's view of the
-  device (group, playlist, history) is kept and a rename is audited as `renamed_from`. The
-  enrollment key alone can re-enroll any device id, so rotate it whenever a card, a flasher PC
-  or an operator token is lost. Wrong key: 401, throttled per ip (10 failures / 60 s → 429 with
+  The row it creates has no owner, so it plays the site admin's content until an admin gives it
+  one. Re-enrolling a known ownerless `device_id` issues a NEW token: the old card (and anything
+  that learned the old token) stops syncing, the console's view of the device (group, playlist,
+  history) is kept and a rename is audited as `renamed_from`. An id that has an owner is a 409
+  for the key: the key is on every card a flasher before v0.7.0 wrote, so it must not take over
+  an account's projector. The key can still re-enroll any ownerless id, so rotate it whenever a
+  card, a flasher PC or an operator token is lost. Wrong key: 401, throttled per ip (10 failures / 60 s → 429 with
   `Retry-After`); new device ids are capped fleet-wide at 20 per hour whichever endpoint creates
   them (429 with `Retry-After: 3600`, audited as `device_enroll_capped`); re-enrollments are not
   counted. Audit: `device_enrolled`, `device_reenrolled`, `enrollment_key_rotated`.

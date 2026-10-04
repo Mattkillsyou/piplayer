@@ -198,6 +198,7 @@ non-empty by `audit.pyJson()` (Python `json.dumps` text: `{"a": 1, "b": [1, 2]}`
 `device_schedule_create`, `device_schedule_delete`, `group_create`, `group_assign_playlist`,
 `group_delete`, `user_create`, `user_signup` (`{username, email, role}`), `user_set_role`, `user_set_password`, `user_set_email`, `user_delete`,
 `password_reset_requested`, `password_reset_mail_failed`, `password_reset` (target the user; never the token)
+(`user_delete` carries `{media_deleted, projectors_signed_out}` when either is non-zero)
 (+ new: `settings_update`, `enrollment_key_rotated`, `device_enrolled`, `device_reenrolled`
 (`renamed_from` when the name changed), `device_enroll_capped` (a new device id refused by the
 20-per-hour cap), `device_rename` (the Devices-page Rename form, `{name}`), `device_update_all`
@@ -325,8 +326,10 @@ Every account has its own settings (migration 0016: `account_settings(user_id, k
 row only for what was set; `db.loadSettings(env, ownerId)` fills the rest with the defaults). A
 projector follows its content account's (its owner's; the site admin's for an ownerless one), so
 its zone, intervals, update release and window, camera pattern and alert thresholds are its
-account's. `/settings` is editor+ and edits the signed-in account's own rows; the one site-wide
-key, `enrollment_key`, stays in the old `settings` table and its panel is shown to admins only.
+account's. `/settings` is editor+ and edits the signed-in account's own rows. The old
+`settings` table keeps the two site-wide keys, `enrollment_key` (its panel is shown to admins
+only) and `site_admin_id` (accounts.js), plus the rows from before migration 0016, which only the
+worker from before it reads (a later migration may remove them).
 
 | key | default | used by |
 |---|---|---|
@@ -373,10 +376,11 @@ editor: `POST /users/:user_id/tokens` (400 for a viewer) and `POST /users/:user_
 that user's other sessions (their tokens keep working until revoked), the last-admin guard sits
 inside the UPDATE / DELETE statement, and creating, deleting or re-roling a user calls
 `cloudflare.syncAccess` (an account's own address stands in for its camera operator list while
-it has no alert email set, and the site admin, whose list the ownerless projectors use, may
-change), flashing "..., but the camera access list could not be updated" on an error. Deleting a
+it has no alert email set, and a deleted account's projectors move to the site admin's list),
+flashing "..., but the camera access list could not be updated" on an error. Deleting a
 user deletes their library (the R2 objects first, `accounts.mediaKeys`), playlists, groups,
-settings and secrets with the account; their projectors stay, with no owner. `GET /api/operator/enrollment` with
+settings and secrets with the account; their projectors stay, with no owner and new tokens (signed out), and the site admin
+can be neither deleted nor demoted (`accounts.SITE_ADMIN_KEPT`). `GET /api/operator/enrollment` with
 `Authorization: Bearer p5k_...` (token owner must be an admin, else 401: the key it returns can
 enroll any device id; an editor's token exists but gets 401 here) answers
 `{console_url, enrollment_key, groups: [{id, name}], playlists: [{id, name}], timezone,
@@ -403,8 +407,9 @@ owner, created: true}`, audit `device_registered` `{device_id, name, owner, grou
 a known id gets a NEW token, name and `pi_model`, `owner_id` set when it was NULL
 (`accounts.reassignDevice`: what it pointed at of the site admin's goes unless it is the caller's
 too) (200 `created: false`, audit `device_reregistered` with `renamed_from`), but only the caller's
-own or, for an admin, any id: otherwise 409 "A projector with that ID belongs to another account;
-pick another name" (device ids are global: the one thing an account learns about another). The new-id cap and `tryProvisionDevice` apply as for enroll. `GET /api/operator/enrollment`
+own or, for an admin's token or the enrollment key, an ownerless one: otherwise 409 "A projector
+with that ID belongs to another account; pick another name" (device ids are global: the one thing
+an account learns about another). The new-id cap and `tryProvisionDevice` apply as for enroll. `GET /api/operator/enrollment`
 and the device-code flow stay for flashers before v0.7.0.
 
 **Device-code sign-in** (`device_codes.js`, table `device_codes`, migration 0004): how the SD flasher
@@ -507,12 +512,14 @@ the old site-wide UNIQUE on a value nobody sees: D1 cannot rebuild a table other
 a new `name`, UNIQUE per account (`idx_playlists_owner_name`, `idx_device_groups_owner_name`);
 `idx_media_sha256` replaced by `idx_media_owner_sha256` on `media(owner_id, sha256)`;
 `account_settings(user_id, key, value)` and `account_secrets(user_id, name, value, updated_at)`;
-`idx_audit_log_owner` and `idx_audit_log_user`. Its data steps give everything from before to the
-site admin (lowest-id admin; rows keep no owner on a database without users, for `/setup`), move
-every setting but `enrollment_key` and every secret to that account, set `audit_log.owner_id` to
-the acting user, create a Default playlist for every other user, and clear (with an audit row
-each) a projector's playlist, group and schedule rules that belong to another account than its
-content account. Nothing else is deleted. `test/migrations.test.js` runs it on seeded data.
+`idx_audit_log_owner` and `idx_audit_log_user`. Its data steps record the site admin
+(`settings.site_admin_id`, the lowest-id admin; nothing on a database without users, for
+`/setup`), give everything from before to it, copy every setting but `enrollment_key` and every
+secret to that account (the old rows stay for the worker from before the migration, which serves
+until the new one is deployed), set `audit_log.owner_id` to the acting user, create a Default
+playlist for every other user, and clear (with an audit row each) a projector's playlist, group
+and schedule rules that belong to another account than its content account. Nothing else is
+deleted. `test/migrations.test.js` runs it on seeded data, including the old worker's reads.
 
 `db.js` exports `SCHEMA_VERSION` (16) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.
@@ -676,14 +683,14 @@ follows, and the helpers that carry them:
 
 | helper | semantics |
 |---|---|
-| `SITE_ADMIN_SQL` / `siteAdminId(env)` | the site admin: the lowest-id admin (owner of everything from before accounts; ownerless projectors play its content) |
+| `SITE_ADMIN_SQL` / `siteAdminId(env)` / `SITE_ADMIN_KEPT` | the site admin: the account recorded as `settings.site_admin_id` (migration 0016: the lowest-id admin of that moment; `/setup`: the first admin), owner of everything from before accounts; ownerless projectors play its content. Recorded, never recomputed from the roles; the Users page refuses to delete or demote it with `SITE_ADMIN_KEPT` |
 | `contentOwnerSql(alias="d")` / `contentOwnerOf(env, device)` | a projector's content account, `COALESCE(owner_id, site admin)`: whose playlists, groups, schedules, settings, Wyze login and camera operator list it uses. `auth.deviceFromHeader` and `pages/devices.requireDevice` select it as `content_owner` |
 | `ownRow(env, table, id, ownerId, cols="id")` | the row of one account or null, the same answer as a missing row (`media`, `playlists`, `device_groups`) |
 | `uniqueKey()` | the value a new playlist or group gets in `legacy_name` (the renamed old name column; nobody sees it) |
 | `ensureDefaultPlaylist(env, userId)` | the account's Default playlist id (its `default_playlist_id` when that is one of its own playlists, else its playlist called Default, created when missing); sign-up, the Users page and `/setup` call it |
-| `adoptOrphans(env, userId)` | `/setup` only: the first admin owns what the migrations left without an owner (library, playlists, groups, uploads, settings but the enrollment key, secrets) |
+| `adoptOrphans(env, userId)` | `/setup` only: the first admin becomes the site admin (`site_admin_id`) and owns what the migrations left without an owner (library, playlists, groups, uploads, settings but the enrollment key, secrets) |
 | `reassignDevice(ctx, deviceId, newOwnerId)` | the Owner select and an admin's registration of an ownerless id: clears the playlist and group that are not the new content account's, deletes its schedule rules for another account's playlists (audited `device_schedule_delete` with `cascade_from_owner_change`), raises the new account's `camera_config_version` above the old one's; one batch; returns `{old_owner, new_owner, playlist_cleared, group_cleared, schedules_deleted}` |
-| `mediaKeys(env, userId)` | the R2 keys of an account's library, for the Users page delete |
+| `mediaKeys(env, userId)` | the R2 keys of an account's library, for the Users page delete, which also replaces the tokens of the account's projectors in the same batch as the delete (they stay, ownerless and signed out: an ownerless projector would get the site admin's content and Wyze login) |
 
 - A lookup of another account's thing answers exactly like a missing one (same status, same
   `detail`), and a list shows only the reader's own; checks happen before anything changes.
@@ -699,6 +706,9 @@ follows, and the helpers that carry them:
   content account only; an admin acting on another account's projector gets the 403
   `OTHER_ACCOUNT_DEVICE`, and reads what it plays and its schedule but never its token).
 - Audit rows carry the account they are about (`audit.log`'s `owner`).
+- A projector id is re-registered (`api.registerDevice`) only by its own account: an id with an
+  owner is a 409 for anyone else, the enrollment key and admins included; an ownerless id may be
+  taken by an admin's token or re-enrolled by the key, never by an editor.
 
 ## Tests
 

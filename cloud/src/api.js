@@ -309,12 +309,15 @@ function deviceFields(body) {
 // renamed_from). New device ids are capped per hour fleet-wide; the token is never logged or
 // audited. With the Cloudflare secrets set, a device without a tunnel gets one here
 // (cloudflare.tryProvisionDevice: a failure is audited, never fatal). `owner` is null for the
-// enrollment key (it may re-register any device id; the row has no owner, so it plays the site
-// admin's content) or the operator token's user, who becomes the owner of a new row and of an
-// ownerless one, and may only re-register their own unless they are an admin. A device id is
-// one site-wide name (the sync URL, the tunnel hostname), so another account's id is refused with
-// a 409 that names nothing but the id the flasher sent. `actions` names the create / re-register
-// audit rows. Returns {id, token, created}.
+// enrollment key (a new row has no owner, so it plays the site admin's content) or the operator
+// token's user, who becomes the owner of a new row. A known id is re-registered only by its own
+// account: an id with an owner answers 409 to anyone else, the enrollment key and admins
+// included, because a new token would lock the real Pi out and hand its account's manifest,
+// media, tunnel token and Wyze login to the caller. An ownerless id may be taken by the
+// enrollment key (it stays ownerless) or by an admin's token (it becomes theirs), not by an
+// editor's. A device id is one site-wide name (the sync URL, the tunnel hostname), so the 409
+// names nothing but the id that was sent. `actions` names the create / re-register audit rows.
+// Returns {id, token, created}.
 async function registerDevice(ctx, { deviceId, name, piModel = null, owner = null }, [createdAction, againAction]) {
   const existing = () => db.first(ctx.env, "SELECT id, name, tunnel_id, owner_id FROM devices WHERE device_id = ?", deviceId);
   let row = await existing();
@@ -340,7 +343,8 @@ async function registerDevice(ctx, { deviceId, name, piModel = null, owner = nul
       if (!row) throw e;
     }
   }
-  if (owner && owner.role !== "admin" && row.owner_id !== owner.id) {
+  const caller = owner ? owner.id : null;
+  if (row.owner_id !== null ? row.owner_id !== caller : owner && owner.role !== "admin") {
     fail(409, OTHER_ACCOUNT);
   }
   // An ownerless projector registered by an account becomes theirs; what it pointed at (the site
@@ -364,8 +368,9 @@ async function registerDevice(ctx, { deviceId, name, piModel = null, owner = nul
 
 // Zero-touch enrollment (legacy: cards written by flashers before v0.7.0): a freshly flashed
 // Pi trades the site's enrollment key for its device token. The key alone must never hand out a
-// live token, so a known device_id gets a NEW one (registerDevice). Wrong keys are throttled
-// per ip like login. The row it creates has no owner (only admins see it until one is set).
+// live token, so a known ownerless device_id gets a NEW one, and an id with an owner a 409
+// (registerDevice). Wrong keys are throttled per ip like login. The row it creates has no owner
+// (only admins see it until one is set).
 async function enroll(ctx) {
   const wait = await auth.loginLockedFor(ctx.env, ctx.ip, auth.ENROLL_KEY, auth.ENROLL_MAX_FAILURES, auth.ENROLL_LOCK_SECONDS);
   if (wait) throw new HttpError(429, `Too many failed attempts; try again in ${wait} s`, { "Retry-After": String(wait) });

@@ -11,10 +11,15 @@ import * as audit from "./audit.js";
 import * as db from "./db.js";
 import { randomToken } from "./util.js";
 
-// The site admin: the lowest-id admin. Everything that existed before accounts (one shared
-// library) became theirs, and an ownerless projector (enrolled with the site key, or one an admin
-// left without an owner) plays their content and follows their settings, as it did before.
-export const SITE_ADMIN_SQL = "(SELECT MIN(id) FROM users WHERE role = 'admin')";
+// The site admin: the account recorded as settings.site_admin_id (migration 0016 records the
+// lowest-id admin of that moment, /setup the first admin: adoptOrphans). Everything that existed
+// before accounts (one shared library) became theirs, and an ownerless projector (enrolled with
+// the site key, or one an admin left without an owner) plays their content and follows their
+// settings, as it did before. Recorded, never recomputed from the roles: promoting, demoting or
+// deleting other users must not hand those projectors, that library and that Wyze login to
+// someone else, and the Users page refuses to delete or demote the site admin (SITE_ADMIN_KEPT).
+export const SITE_ADMIN_SQL = "(SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'site_admin_id')";
+export const SITE_ADMIN_KEPT = "That is the site admin account: projectors without an owner play its content, so it cannot be deleted or given another role";
 
 export async function siteAdminId(env) {
   return (await db.first(env, `SELECT ${SITE_ADMIN_SQL} AS id`)).id;
@@ -65,17 +70,19 @@ export async function ensureDefaultPlaylist(env, userId) {
 }
 
 // /setup on a database that holds rows from before any user existed (migration 0016 on an empty
-// database, the Default playlist of 0010, a key generated before setup): the first admin owns them.
-// Only ever called while that admin is the only user, so no other account's row can be among them.
+// database, the Default playlist of 0010, a key generated before setup): the first admin becomes
+// the site admin and owns them. Only ever called while that admin is the only user, so no other
+// account's row can be among them (and no worker from before 0016 is still reading the old rows).
 export async function adoptOrphans(env, userId) {
   await db.batch(env, [
     ["UPDATE media SET owner_id = ? WHERE owner_id IS NULL", userId],
     ["UPDATE playlists SET owner_id = ? WHERE owner_id IS NULL", userId],
     ["UPDATE device_groups SET owner_id = ? WHERE owner_id IS NULL", userId],
     ["UPDATE uploads SET user_id = ? WHERE user_id IS NULL", userId],
-    [`INSERT INTO account_settings (user_id, key, value) SELECT ?, key, value FROM settings WHERE key != 'enrollment_key'
+    [`INSERT INTO account_settings (user_id, key, value) SELECT ?, key, value FROM settings WHERE key NOT IN ('enrollment_key', 'site_admin_id')
       ON CONFLICT (user_id, key) DO NOTHING`, userId],
-    ["DELETE FROM settings WHERE key != 'enrollment_key'"],
+    ["DELETE FROM settings WHERE key NOT IN ('enrollment_key', 'site_admin_id')"],
+    ["INSERT INTO settings (key, value) VALUES ('site_admin_id', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", String(userId)],
     [`INSERT INTO account_secrets (user_id, name, value, updated_at) SELECT ?, name, value, updated_at FROM secrets WHERE true
       ON CONFLICT (user_id, name) DO NOTHING`, userId],
     ["DELETE FROM secrets"],
