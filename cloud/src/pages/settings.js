@@ -1,9 +1,11 @@
 // /settings (editors and admins, cloud-only page): each account's OWN settings (account_settings,
 // migration 0016; db.loadSettings / settingStatement): timezone, screenshot and camera
-// intervals, default image duration, the account's Default playlist (every upload joins it; its
+// intervals, default image duration, the account's Default playlist (every Library upload joins it; its
 // projectors with nothing of their own play it), the group/playlist its new projectors get on
 // first registration and the remote update policy (player release, nightly auto-update +
-// window), plus the user's personal API tokens (api_tokens; the flasher signs in with one), the
+// window), plus the user's personal API tokens (api_tokens; the flasher signs in with one), its
+// upload links (upload_links, migration 0017; links.js: an address that puts files on its
+// projectors without signing in, shown once like a token), the
 // account's Wyze login for camera zero-config (encrypted in account_secrets, shown only as set /
 // not set; its players fetch it through GET /api/camera-config), its alert channels (offline /
 // repeat minutes, email addresses, webhook URL, Twilio SMS in account_secrets; each with a Send
@@ -20,6 +22,7 @@ import * as db from "../db.js";
 import * as secrets from "../secrets.js";
 import { esc, fail, floatField, idParam, intField, isValidTimeZone, localTime, nowUtc, str, zoneName } from "../util.js";
 import { alertBox, csrfInput, layout } from "./layout.js";
+import * as links from "./links.js";
 
 export const MIN_SCREENSHOT_INTERVAL = 15;
 export const MIN_CAMERA_INTERVAL = 5;
@@ -63,17 +66,18 @@ function optionList(rows, selected) {
 export const userTokens = (env, userId) => db.all(env,
   "SELECT id, name, created_at, last_used_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC, id DESC", userId);
 
-// Validated name from a create form, or 400.
-export function tokenName(form) {
+// Validated name from a create form, or 400 (`what` names the field: an upload link's too).
+export function tokenName(form, what = "Token name") {
   const name = str(form, "name").trim();
-  if (!name || [...name].length > MAX_TOKEN_NAME) fail(400, `Token name must be 1-${MAX_TOKEN_NAME} characters`);
+  if (!name || [...name].length > MAX_TOKEN_NAME) fail(400, `${what} must be 1-${MAX_TOKEN_NAME} characters`);
   return name;
 }
 
-export const newTokenBlock = (newToken) => (newToken ? `<div class="alert ok" role="alert">New token (copy it now, it is not shown again):</div>
+// The shown-once block of a secret this very request made: a token, or an upload link's address.
+export const newTokenBlock = (newToken, { notice = "New token", label = "Token", id = "new-api-token" } = {}) => (newToken ? `<div class="alert ok" role="alert">${notice} (copy it now, it is not shown again):</div>
   <div class="enrollment-key">
-    <label for="new-api-token" class="small">Token</label>
-    <input type="text" id="new-api-token" value="${esc(newToken)}" readonly spellcheck="false" autocomplete="off">
+    <label for="${id}" class="small">${label}</label>
+    <input type="text" id="${id}" value="${esc(newToken)}" readonly spellcheck="false" autocomplete="off">
   </div>` : "");
 
 export const tokenCreateForm = (ctx, action, label = "Token name") => `<form method="post" action="${action}" class="inline">
@@ -82,14 +86,17 @@ export const tokenCreateForm = (ctx, action, label = "Token name") => `<form met
     <button type="submit" class="primary small">Create token</button>
   </form>`;
 
-export function tokenTable(ctx, tokens, tz, revokePath) {
+// `caption` and `confirm(t)` (the question the Revoke button asks) let the upload links reuse it.
+export function tokenTable(ctx, tokens, tz, revokePath, {
+  caption = "API tokens", confirm = (t) => `Revoke the token ${t.name}? Flashers using it stop working.`,
+} = {}) {
   if (!tokens.length) return "";
   const rows = tokens.map((t) => `<tr>
       <td class="name">${esc(t.name)}</td>
       <td class="muted nowrap">${esc(localTime(t.created_at, tz))}</td>
       <td class="muted nowrap">${t.last_used_at ? esc(localTime(t.last_used_at, tz)) : "never"}</td>
       <td>
-        <form method="post" action="${revokePath(t)}" class="inline" data-confirm="Revoke the token ${esc(t.name)}? Flashers using it stop working.">
+        <form method="post" action="${revokePath(t)}" class="inline" data-confirm="${esc(confirm(t))}">
           ${csrfInput(ctx)}
           <button type="submit" class="danger small">Revoke</button>
         </form>
@@ -97,7 +104,7 @@ export function tokenTable(ctx, tokens, tz, revokePath) {
     </tr>`).join("\n    ");
   return `<div class="table-wrap">
   <table class="data">
-    <caption class="sr-only">API tokens</caption>
+    <caption class="sr-only">${caption}</caption>
     <thead><tr><th scope="col">Name</th><th scope="col">Created</th><th scope="col">Last used</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
     <tbody>
     ${rows}
@@ -115,6 +122,24 @@ async function tokensPanel(ctx, me, newToken, tz) {
   ${newTokenBlock(newToken)}
   ${tokenCreateForm(ctx, "/settings/tokens")}
   ${tokenTable(ctx, tokens, tz, (t) => `/settings/tokens/${t.id}/revoke`)}
+</div>`;
+}
+
+// The account's upload links (links.js): each is an address that puts files on this account's
+// projectors without signing in. `newLink` is the address of a link made by this very request,
+// shown once: only its hash is stored.
+async function linksPanel(ctx, me, newLink, tz) {
+  const rows = await links.linksOf(ctx.env, me.id);
+  return `<div class="panel">
+  <h2>Upload links</h2>
+  ${newTokenBlock(newLink, { notice: "New upload link", label: "Address", id: "new-upload-link" })}
+  <form method="post" action="/settings/links" class="inline">
+    ${csrfInput(ctx)}
+    <input type="text" name="name" placeholder="who it is for (e.g. a roommate)" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="Link name">
+    <button type="submit" class="primary small">Create link</button>
+  </form>
+  ${tokenTable(ctx, rows, tz, (l) => `/settings/links/${l.id}/revoke`,
+    { caption: "Upload links", confirm: (l) => `Revoke the upload link ${l.name}? Its address stops working.` })}
 </div>`;
 }
 
@@ -237,7 +262,8 @@ async function enrollmentPanel(ctx) {
 </div>`;
 }
 
-async function settingsPage(ctx, newToken = "") {
+// `fresh`: {token} or {link}, the secret a create route of this page just made (shown once).
+async function settingsPage(ctx, fresh = {}) {
   const me = auth.requireRole(ctx, "editor");
   const s = await ctx.settings();
   const groups = await db.all(ctx.env, "SELECT id, name FROM device_groups WHERE owner_id = ? ORDER BY name", me.id);
@@ -264,7 +290,7 @@ async function settingsPage(ctx, newToken = "") {
       <label>Default image duration (seconds)
         <input type="number" name="default_image_duration" value="${esc(s.default_image_duration)}" min="0.5" max="86400" step="0.5" required>
       </label>
-      <label>Default playlist (every upload joins it; projectors play it unless they have a playlist of their own)
+      <label>Default playlist (Library uploads join it; projectors play it unless they have a playlist of their own)
         <select name="default_playlist_id">
           ${optionList(playlists, s.default_playlist_id)}
         </select>
@@ -319,7 +345,9 @@ ${await alertsPanel(ctx, s)}
 
 ${await tunnelPanel(ctx, s)}
 
-${await tokensPanel(ctx, me, newToken, s.timezone)}`;
+${await linksPanel(ctx, me, fresh.link, s.timezone)}
+
+${await tokensPanel(ctx, me, fresh.token, s.timezone)}`;
   return layout(ctx, { title: "Settings", content });
 }
 
@@ -478,7 +506,26 @@ async function tokenCreate(ctx) {
   const me = auth.requireRole(ctx, "editor");
   const name = tokenName(await ctx.form());
   const { token } = await auth.issueApiToken(ctx, me.id, name);
-  return settingsPage(ctx, token);
+  return settingsPage(ctx, { token });
+}
+
+// Make an upload link and render the page with its address once, as tokenCreate does: only the
+// hash is stored, so this response is the one place the address appears.
+async function linkCreate(ctx) {
+  const me = auth.requireRole(ctx, "editor");
+  const name = tokenName(await ctx.form(), "Link name");
+  const { token } = await links.issueLink(ctx, me.id, name);
+  return settingsPage(ctx, { link: links.linkUrl(ctx, token) });
+}
+
+async function linkRevoke(ctx) {
+  const me = auth.requireRole(ctx, "editor");
+  const linkId = idParam(ctx.params.link_id, "link_id");
+  const row = await db.first(ctx.env, "SELECT id, name FROM upload_links WHERE id = ? AND user_id = ?", linkId, me.id);
+  if (!row) fail(404, "upload link not found");
+  await db.run(ctx.env, "DELETE FROM upload_links WHERE id = ?", linkId);
+  await audit.log(ctx, "upload_link_revoked", "upload_link", linkId, { name: row.name });
+  return auth.flashRedirect(ctx, "/settings", "Upload link revoked.");
 }
 
 async function tokenRevoke(ctx) {
@@ -494,6 +541,8 @@ async function tokenRevoke(ctx) {
 export function register(router) {
   router.post("/settings/tokens", tokenCreate);
   router.post("/settings/tokens/:token_id/revoke", tokenRevoke);
+  router.post("/settings/links", linkCreate);
+  router.post("/settings/links/:link_id/revoke", linkRevoke);
   router.get("/settings", settingsPage);
   router.post("/settings", settingsSave);
   router.post("/settings/enrollment/rotate", enrollmentRotate);

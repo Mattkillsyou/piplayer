@@ -5,8 +5,9 @@ import * as db from "../db.js";
 import { esc, redirect, str, utf8Len } from "../util.js";
 import { APP_EYEBROW, csrfInput, layout, wordmark } from "./layout.js";
 
-// The auth-stage decoration + centered card shared by /login and /setup (port of login.html).
-export function authPage(ctx, { title, card, status = 200 }) {
+// The auth-stage decoration + centered card shared by /login, /setup and an upload link's page
+// (port of login.html). `scripts`: extra /static scripts, as layout() takes them.
+export function authPage(ctx, { title, card, status = 200, scripts = [] }) {
   const content = `<div class="auth-stage" aria-hidden="true">
   <div class="drift"></div>
   <div class="floor"></div>
@@ -16,7 +17,7 @@ export function authPage(ctx, { title, card, status = 200 }) {
 <div class="auth-wrap">
   ${card}
 </div>`;
-  return layout(ctx, { title, content, status, bodyClass: "login-body" });
+  return layout(ctx, { title, content, status, scripts, bodyClass: "login-body" });
 }
 
 export function authBrand() {

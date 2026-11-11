@@ -7,6 +7,7 @@ import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, envInt, fail, idParam, localTime, redirect } from "../util.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
+import { PLAYLIST_PREFIX } from "./links.js";
 
 // Jinja's `| round(1)`: one decimal, always shown ('5.0').
 const round1 = (n) => (Math.round(n * 10) / 10).toFixed(1);
@@ -108,12 +109,21 @@ async function libraryDelete(ctx) {
            AND (p2.position < playlist_items.position OR (p2.position = playlist_items.position AND p2.id < playlist_items.id)))
        WHERE playlist_id = ?`, pid]);
     stmts.push(["UPDATE playlists SET updated_at = datetime('now') WHERE id = ?", pid]);
+    // A projector pointed at an upload link's playlist (links.js) that this delete just emptied
+    // goes back to its group's playlist or the Default instead of the standby screen: deleting
+    // what was sent is how the owner takes it off the wall.
+    // GLOB: the prefix in its exact case (LIKE would also take an owner's own "upload link · x").
+    stmts.push([`UPDATE devices SET playlist_id = NULL WHERE playlist_id = ?1
+        AND (SELECT name FROM playlists WHERE id = ?1) GLOB ?2
+        AND NOT EXISTS (SELECT 1 FROM playlist_items WHERE playlist_id = ?1) RETURNING id`, pid, PLAYLIST_PREFIX + "*"]);
   }
-  await db.batch(ctx.env, stmts);
+  // Only those UPDATEs return rows: the projectors this delete moved off an upload playlist.
+  const cleared = (await db.batch(ctx.env, stmts)).flatMap((r) => (r.results || []).map((d) => d.id));
   // The row is gone either way; an R2 hiccup must not turn that into a 500 with no audit row.
   try { await ctx.env.MEDIA.delete("media/" + row.filename); }
   catch (e) { console.error(`R2 delete failed for media/${row.filename}:`, e && e.stack || e); }
-  await audit.log(ctx, "delete_media", "media", mediaId, { filename: row.original_name, playlists: affected });
+  await audit.log(ctx, "delete_media", "media", mediaId,
+    { filename: row.original_name, playlists: affected, devices_cleared: cleared.length ? cleared : undefined });
   return redirect("/library");
 }
 

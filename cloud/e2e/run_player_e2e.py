@@ -72,7 +72,10 @@ def make_media(work):
     out = {}
     for name, args, ctype, mtype in FILES:
         path = os.path.join(work, name)
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *args, path], check=True)
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", *args]
+        # videos: H.264 on the GPU (NVENC) where the machine has one, ffmpeg's default encoder where it has none
+        if mtype != "video" or subprocess.run(cmd + ["-c:v", "h264_nvenc", path], capture_output=True).returncode:
+            subprocess.run(cmd + [path], check=True)
         out[name] = {"path": path, "sha256": sha256_of(path), "size": os.path.getsize(path), "ctype": ctype, "mtype": mtype}
     shot = os.path.join(work, "shot.jpg")
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x64", "-frames:v", "1", shot], check=True)

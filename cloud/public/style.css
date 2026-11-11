@@ -1212,6 +1212,12 @@ body.login-body { overflow-x: hidden; }
 .auth-card button.primary:hover { box-shadow: var(--p5k-glow-hover); }
 .auth-card.is-locked { border-style: dashed; }
 .auth-foot { font-size: var(--p5k-text-label); color: var(--p5k-muted); }
+/* An upload link's page (pages/links.js), used on a phone: one projector per row, the whole row a
+   tap target, its on/off lamp at the right edge. */
+.link-projectors { margin: 0; display: flex; flex-direction: column; }
+.link-projectors .inline-check { margin: 0; padding: 9px 0; gap: 10px; font-size: var(--p5k-text-data-lg); letter-spacing: 0; }
+.link-projectors .status { margin-left: auto; }
+.auth-card .upload-queue:empty, .auth-card #upload-status:empty { display: none; }
 html[data-theme="light"] .auth-card .wordmark { animation: none; }
 @media (prefers-color-scheme: light) { html:not([data-theme="dark"]) .auth-card .wordmark { animation: none; } }
 @media (max-width: 720px) {

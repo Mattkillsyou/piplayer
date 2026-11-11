@@ -15,6 +15,11 @@ package that uvicorn[standard] pulls into cms/.venv; no other dependency) logs i
 real form, opens /library, puts three real File objects into the file picker (DataTransfer is
 the only way any automation fills <input type=file>), submits, and records every progress bar
 state upload.js renders: hashing %, upload %, the 409 detail text, the final status line.
+Signed out again, it opens an upload link's page (pages/links.js) the way the roommate would and
+sends a file the library already holds plus a new one to two projectors, with the new file's
+part losing its connection once (Fetch.failRequest): upload.js must send it again, the page
+must name who got it, and each projector must end on its own upload playlist. A pick over the
+link's file cap is refused before anything is sent.
 `--no-browser` skips that half; `PIPLAYER_CHROME` points at another Chromium binary.
 """
 import argparse
@@ -51,7 +56,7 @@ def d1(sql):
     npx = "npx.cmd" if os.name == "nt" else "npx"
     out = subprocess.run([npx, "wrangler", "d1", "execute", "piplayer-cloud-db", "--local", "--json",
                           "--persist-to", PERSIST, "--command", sql],
-                         cwd=CLOUD, check=True, capture_output=True, text=True).stdout
+                         cwd=CLOUD, check=True, capture_output=True, encoding="utf-8").stdout  # wrangler writes UTF-8
     return json.loads(out[out.index("["):])[0]["results"]
 
 
@@ -79,9 +84,12 @@ def r2_multipart(upload_id):
 
 
 def make_mp4(path):
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=duration=7:size=1280x720:rate=30",
-                    "-c:v", "libx264", "-b:v", "16M", "-minrate", "16M", "-maxrate", "16M", "-bufsize", "8M", "-x264-params", "nal-hrd=cbr",
-                    "-pix_fmt", "yuv420p", path], check=True)
+    # 16 Mbit/s constant (padded), so 7 s is just over 12 MiB: two 8 MiB parts. On the GPU
+    # (NVENC) where the machine has one, libx264 where it has none.
+    src = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=duration=7:size=1280x720:rate=30"]
+    rate = ["-b:v", "16M", "-minrate", "16M", "-maxrate", "16M", "-bufsize", "8M", "-pix_fmt", "yuv420p", path]
+    if subprocess.run(src + ["-c:v", "h264_nvenc", "-rc", "cbr", "-cbr_padding", "1"] + rate).returncode:
+        subprocess.run(src + ["-c:v", "libx264", "-x264-params", "nal-hrd=cbr"] + rate, check=True)
     size = os.path.getsize(path)
     assert size >= 12 * MiB, "want a >= 12 MiB clip (two parts), got %d bytes" % size
     probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
@@ -323,8 +331,10 @@ class Cdp:
 def start_chrome(chrome):
     """Headless Chrome with a throwaway profile; returns (proc, websocket url of its page)."""
     profile = tempfile.mkdtemp(prefix="piplayer-chrome-")
+    # Rendered on the GPU (ANGLE on D3D11 on Windows): software rendering pins the CPU.
+    gpu = ["--use-angle=d3d11", "--enable-gpu", "--ignore-gpu-blocklist"] if os.name == "nt" else []
     proc = subprocess.Popen([chrome, "--headless", "--remote-debugging-port=0", "--user-data-dir=" + profile,
-                             "--no-first-run", "--no-default-browser-check", "--disable-gpu", "about:blank"],
+                             "--no-first-run", "--no-default-browser-check", *gpu, "about:blank"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
     active = os.path.join(profile, "DevToolsActivePort")   # "<port>\n<browser ws path>", written once it listens
     deadline = time.time() + 30
@@ -411,6 +421,57 @@ EXPIRED_JS = r"""
 """
 
 
+# Runs inside an upload link's page (/u/<token>), signed out: ticks both projectors, picks a file
+# the library already holds (the PNG under another name) and a new 1 MiB one, submits, and puts
+# the outcome in window.__linkOut once the page has said what happened. Returns each projector's
+# label and whether it came ticked (with two projectors none does).
+LINK_JS = r"""
+(() => {
+  const input = document.getElementById('file-input');
+  const queue = document.getElementById('upload-queue');
+  const status = document.getElementById('upload-status');
+  const button = document.querySelector('#upload-form button');
+  const boxes = Array.from(document.querySelectorAll('input[name=device]'));
+  const labels = boxes.map((b) => [b.parentElement.textContent.replace(/\s+/g, ' ').trim(), b.checked]);
+  boxes.forEach((b) => { b.checked = true; });
+  const png = Uint8Array.from(atob('%(png)s'), (c) => c.charCodeAt(0));
+  const clip = new Uint8Array(1024 * 1024);
+  for (let i = 0; i < clip.length; i += 65536) crypto.getRandomValues(clip.subarray(i, i + 65536));
+  const dt = new DataTransfer();
+  dt.items.add(new File([png], 'phone pic.png', { type: 'image/png' }));
+  dt.items.add(new File([clip], 'phone clip.mp4', { type: 'video/mp4' }));
+  input.files = dt.files;
+  window.__linkOut = null;
+  document.getElementById('upload-form').requestSubmit();
+  const t0 = Date.now();
+  const t = setInterval(() => {
+    if (status.textContent && !button.disabled) {
+      clearInterval(t);
+      window.__linkOut = { status: status.textContent, files: input.files.length,
+                           rows: Array.prototype.map.call(queue.children, (li) => li.lastElementChild.textContent) };
+    } else if (Date.now() - t0 > 90000) { clearInterval(t); window.__linkOut = { status: 'send did not finish' }; }
+  }, 25);
+  return labels;
+})()
+"""
+
+# Same page afterwards: one file more than the link takes. upload.js must refuse the pick in the
+# submit handler, before the queue is cleared or anything is sent.
+LINK_CAP_JS = r"""
+(() => {
+  const form = document.getElementById('upload-form');
+  const input = document.getElementById('file-input');
+  const max = parseInt(form.dataset.maxFiles, 10);
+  const dt = new DataTransfer();
+  for (let i = 0; i <= max; i++) dt.items.add(new File([new Uint8Array(10)], 'many ' + i + '.png', { type: 'image/png' }));
+  input.files = dt.files;
+  form.requestSubmit();
+  return { max: max, status: document.getElementById('upload-status').textContent, files: input.files.length,
+           rows: document.getElementById('upload-queue').children.length, disabled: form.querySelector('button').disabled };
+})()
+"""
+
+
 def check_browser_upload(base, chrome):
     from websockets.sync.client import connect
 
@@ -439,11 +500,44 @@ def check_browser_upload(base, chrome):
             print("browser upload:", out["status"], out["rows"])
             cdp.navigate(base + "/library")
             listing = cdp.evaluate("document.body.innerText")
+            library_count = d1("SELECT COUNT(*) AS n FROM media")[0]["n"]
             # session gone mid-session: the next upload must fail fast with the expiry message
             cdp.send("Network.enable")
             cdp.send("Network.clearBrowserCookies")
             expired = cdp.evaluate(EXPIRED_JS, timeout=60)
             print("browser upload after expiry:", expired)
+            cdp.send("Network.disable")
+
+            # an upload link, still signed out (the roommate's case): two projectors of the admin,
+            # one checked in just now, one never
+            admin_id = d1("SELECT id FROM users WHERE username = 'admin'")[0]["id"]
+            d1("INSERT INTO devices (device_id, name, token, owner_id, last_seen_at) VALUES ('e2e-hall', 'Hall', "
+               "'e2e-token-hall', %d, datetime('now')), ('e2e-den', 'Den', 'e2e-token-den', %d, NULL)" % (admin_id, admin_id))
+            s = login(base)
+            r = s.post(base + "/settings/links", data={"name": "e2e roommate", "csrf_token": s.headers["X-CSRF-Token"]})
+            assert r.status_code == 200, (r.status_code, r.text[:300])
+            # wrangler dev answers as the route host, so the address shown points at production: keep the token
+            token = re.search(r'id="new-upload-link" value="[^"]*/u/([A-Za-z0-9_-]{32})"', r.text).group(1)
+            cdp.navigate(base + "/u/" + token)
+            cdp.send("Fetch.enable", patterns=[{"urlPattern": "*/api/link/*/part/*"}])
+            labels = cdp.evaluate(LINK_JS % {"png": base64.b64encode(png).decode()})
+            puts, link_out = [], None
+            deadline = time.time() + 120
+            while link_out is None and time.time() < deadline:
+                try:
+                    ev = cdp.wait_event("Fetch.requestPaused", timeout=0.5)
+                except TimeoutError:
+                    link_out = cdp.evaluate("window.__linkOut")
+                    continue
+                puts.append(ev["request"]["url"].replace(base, ""))
+                if len(puts) == 1:  # the new file's part loses its connection once
+                    cdp.send("Fetch.failRequest", requestId=ev["requestId"], errorReason="ConnectionReset")
+                else:
+                    cdp.send("Fetch.continueRequest", requestId=ev["requestId"])
+            cdp.send("Fetch.disable")
+            print("browser link upload:", labels, link_out, puts)
+            cap = cdp.evaluate(LINK_CAP_JS)
+            print("browser link over the cap:", cap)
     finally:
         stop(proc)
 
@@ -476,7 +570,7 @@ def check_browser_upload(base, chrome):
     assert [(m["original_name"], m["media_type"], m["size_bytes"], m["width"], m["height"], m["duration_seconds"]) for m in media] == [
         ("browser pic.png", "image", len(png), 64, 64, None),
         ("browser clip.mp4", "video", 12 * MiB, None, None, None)], media
-    assert d1("SELECT COUNT(*) AS n FROM media")[0]["n"] == before + 2
+    assert library_count == before + 2
     assert media[0]["sha256"] == hashlib.sha256(png).hexdigest(), media[0]
     # the 12 MiB object was hashed by the vendored JS in the browser; hashlib on what R2 holds agrees
     s = login(base)
@@ -493,6 +587,24 @@ def check_browser_upload(base, chrome):
     assert expired["rowClass"] == "alert error", expired
     ours = [u for u in expired["requests"] if "/library/upload" in u or "/login" in u]
     assert len(ours) == 1 and not any("/part/" in u for u in expired["requests"]), expired["requests"]
+
+    # the upload link: none pre-ticked, the lamps, one re-send of the dropped part and no more,
+    # who got it, and both files on each projector's own upload playlist in the order picked
+    assert labels == [["Den offline", False], ["Hall online", False]], labels
+    assert link_out == {"status": "Sent to Hall. It starts once the projector has downloaded it. "
+                                  "Den is offline and will play it when back online.",
+                        "files": 0, "rows": ["Done.", "Done."]}, link_out
+    assert len(puts) == 2 and puts[0] == puts[1] and puts[0].endswith("/part/1"), puts
+    got = d1("SELECT d.name, p.name AS playlist, i.position, m.original_name FROM devices d "
+             "JOIN playlists p ON p.id = d.playlist_id JOIN playlist_items i ON i.playlist_id = p.id "
+             "JOIN media m ON m.id = i.media_id ORDER BY d.name, i.position")
+    want = [(dev, "Upload link · " + did, pos, name) for dev, did in (("Den", "e2e-den"), ("Hall", "e2e-hall"))
+            for pos, name in ((0, "browser pic.png"), (1, "phone clip.mp4"))]
+    assert [(g["name"], g["playlist"], g["position"], g["original_name"]) for g in got] == want, got
+    # the new file is in the library and on those two playlists only (a link upload skips the Default)
+    assert d1("SELECT COUNT(*) AS n FROM playlist_items i JOIN media m ON m.id = i.media_id "
+              "WHERE m.original_name = 'phone clip.mp4'")[0]["n"] == 2
+    assert cap == {"max": 50, "status": "Pick at most 50 files at a time.", "files": 51, "rows": 2, "disabled": False}, cap
     assert d1("SELECT COUNT(*) AS n FROM uploads")[0]["n"] == 0
     print("browser upload e2e checks OK")
 

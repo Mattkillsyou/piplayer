@@ -112,6 +112,8 @@ function table() {
     ["POST", "/settings/alerts/test", { channel: "nope" }, "form", E(400)],
     ["POST", "/settings/alerts/twilio/clear", {}, "form", E(303)],
     ["POST", `/settings/tokens/${NOPE}/revoke`, {}, "form", E(404)],
+    ["POST", "/settings/links", { name: " " }, "form", E(400)],
+    ["POST", `/settings/links/${NOPE}/revoke`, {}, "form", E(404)],
     ["POST", "/settings/enrollment/rotate", {}, "form", AD(303)], // the site-wide key
     ["POST", "/settings/wyze", { wyze_camera_pattern: "\u0001" }, "form", E(400)],
     ["POST", "/settings/wyze/clear", {}, "form", E(303)],
@@ -180,12 +182,13 @@ describe("authorization matrix", () => {
   });
 
   // /, /login, /logout, /signup, /forgot and /reset are covered by the root check above, the csrf block below, signup.test.js and forgot.test.js;
-  // /download (a redirect either way) by flasher_page.test.js; /api/* is bearer-authenticated (api.test.js and friends), not a web route.
+  // /download (a redirect either way) by flasher_page.test.js; /api/* is bearer-authenticated (api.test.js and friends), not a web route;
+  // /u/:token is an upload link's page, open to whoever holds the address by design (links.test.js).
   it("table() has a row for every web route the modules register", () => {
     const router = new Router();
     for (const m of modules) if (m.register) m.register(router);
     const registered = router.routes.map((rt) => `${rt.method} ${rt.pattern}`)
-      .filter((k) => !isApiPath(k.split(" ")[1]) && !["GET /", "GET /login", "POST /login", "POST /logout", "GET /signup", "POST /signup", "GET /forgot", "POST /forgot", "GET /reset", "POST /reset", "GET /download"].includes(k));
+      .filter((k) => !isApiPath(k.split(" ")[1]) && !["GET /", "GET /login", "POST /login", "POST /logout", "GET /signup", "POST /signup", "GET /forgot", "POST /forgot", "GET /reset", "POST /reset", "GET /download", "GET /u/:token"].includes(k));
     expect(registered.length).toBeGreaterThan(50);
     const covered = new Set();
     for (const [method, path] of table()) {

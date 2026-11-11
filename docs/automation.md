@@ -50,7 +50,7 @@ cleared on disk; the dangling id is just ignored), so pick a replacement on
 the Settings page when you delete one.
 
 **The default playlist.** Nobody has to assign a playlist for a projector to
-play. Every upload is appended to the uploader's Default playlist (on the
+play. Every Library upload is appended to the uploader's Default playlist (on the
 cloud console each account has its own; the Library says so under the drop
 zone), and a projector plays its account's Default whenever nothing more
 specific applies. The order the player resolves in is unchanged, with the
@@ -715,6 +715,10 @@ Two consequences of the "playlist active" rule to plan around:
   turns off. To have the projector power down, drive that device by
   schedules alone: clear the fallback playlist and add a schedule for the
   hours it should play. The gap in the schedule is what switches it off.
+  A file sent through an upload link (Settings, "Upload links") assigns the
+  projector a playlist of its own, so the same applies until the Playlist
+  select on the Devices page is set back to Default or the sent files are
+  deleted on the Library page.
 - The lead time is measured on the console's clock in the site timezone
   (Settings), like the schedules themselves; the player's poll interval
   (30 s) comes on top. Three minutes covers most projectors' warm-up; raise

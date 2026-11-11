@@ -205,10 +205,12 @@ def make_media(kind, tmpdir, seed=""):
     if kind == "mp4":
         src = "testsrc=duration=2:size=320x240:rate=10"
         cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", src, "-pix_fmt", "yuv420p",
-               "-metadata", "comment=" + seed, path]
+               "-metadata", "comment=" + seed]
     else:
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x64", "-frames:v", "1", path]
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x64", "-frames:v", "1"]
+    # the mp4: H.264 on the GPU (NVENC) where the machine has one, ffmpeg's default encoder where it has none
+    if kind != "mp4" or subprocess.run(cmd + ["-c:v", "h264_nvenc", path], capture_output=True).returncode:
+        subprocess.run(cmd + [path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if kind == "png" and seed:
         # PNG: append a private chunk-free tail? No - keep it a valid PNG: seed goes into a tEXt chunk.
         with open(path, "rb") as f:

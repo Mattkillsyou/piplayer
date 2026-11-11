@@ -21,6 +21,7 @@ import * as flasher from "./pages/flasher.js";
 import * as forgot from "./pages/forgot.js";
 import * as groups from "./pages/groups.js";
 import * as library from "./pages/library.js";
+import * as links from "./pages/links.js";
 import * as login from "./pages/login.js";
 import * as playlists from "./pages/playlists.js";
 import * as schedule from "./pages/schedule.js";
@@ -33,7 +34,7 @@ import { isApiPath, Router } from "./router.js";
 import { esc, fail, HttpError, json, redirect } from "./util.js";
 
 const MODULES = [
-  login, setup, signup, forgot, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings, flasher,
+  login, setup, signup, forgot, dashboard, library, playlists, devices, schedule, groups, alertsPage, auditPage, users, settings, links, flasher,
   api, media, manifest, schedules, uploads, auth, audit, alerts, deviceCodes, accounts, secrets,
 ];
 
@@ -111,6 +112,18 @@ function errorResponse(ctx, status, detail, headers) {
 
 async function handle(request, env, exec) {
   const url = new URL(request.url);
+  // The upload host (PIPLAYER_UPLOAD_HOST, e.g. upload.projection5000.com): an address anyone may
+  // use, with nothing secret in it. Its "/" is the page of the upload link whose token is the
+  // PIPLAYER_UPLOAD_TOKEN secret (revoking that link on Settings switches the address off); the
+  // page's own routes and the static files pass; anything else on that host goes back to "/".
+  if (env.PIPLAYER_UPLOAD_HOST && url.hostname.replace(/\.$/, "") === env.PIPLAYER_UPLOAD_HOST) { // "host." is the same host
+    if (url.pathname === "/") {
+      if (!env.PIPLAYER_UPLOAD_TOKEN) fail(404, "Not Found");
+      url.pathname = `/u/${env.PIPLAYER_UPLOAD_TOKEN}`;
+    } else if (!url.pathname.startsWith("/api/link/") && !url.pathname.startsWith("/static/")) {
+      return new Response(null, { status: 302, headers: { location: "/" } });
+    }
+  }
   const path = url.pathname;
   if (path.startsWith("/static/")) {
     // public/ is the assets root, so /static/style.css is served from public/style.css.
@@ -145,7 +158,8 @@ async function handle(request, env, exec) {
         if (anonForm && path !== "/setup" && !ctx.session) throw redirect(`${path}?expired=1`);
         await auth.requireCsrf(ctx);
       }
-      if (path !== "/setup" && !(await auth.hasUsers(env))) throw new Response(null, { status: 303, headers: { location: "/setup" } });
+      // An upload link's page skips it: with no users findLink finds nothing, and the upload host would loop.
+      if (path !== "/setup" && !path.startsWith("/u/") && !(await auth.hasUsers(env))) throw new Response(null, { status: 303, headers: { location: "/setup" } });
     }
     return withCookies(await m.handler(ctx), ctx);
   } catch (e) {

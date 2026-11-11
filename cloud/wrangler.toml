@@ -7,10 +7,12 @@ compatibility_flags = ["nodejs_compat"]
 # (tools/flasher DEFAULT_CONSOLE_URL) bakes it into every projector it sets up, and those devices keep
 # calling it. Keep it first: wrangler dev and cloud/e2e use routes[0] as the request host. wrangler deploy
 # replaces the worker's whole custom-domain list with this one, so every domain the worker serves is listed.
+# upload.projection5000.com is the upload page anyone may use (PIPLAYER_UPLOAD_HOST below).
 routes = [
   { pattern = "projectors.photogen5000.com", custom_domain = true },
   { pattern = "projection5000.com", custom_domain = true },
-  { pattern = "www.projection5000.com", custom_domain = true }
+  { pattern = "www.projection5000.com", custom_domain = true },
+  { pattern = "upload.projection5000.com", custom_domain = true }
 ]
 
 [assets]
@@ -34,6 +36,9 @@ PIPLAYER_MAX_UPLOAD_BYTES = "5368709120"
 PIPLAYER_MAX_SCREENSHOT_BYTES = "5242880"
 PIPLAYER_DEFAULT_IMAGE_DURATION = "10"
 PIPLAYER_AUDIT_RETENTION_DAYS = "365"
+# The host whose "/" is an upload link's page, open to anyone (src/index.js handle). Which link:
+# the PIPLAYER_UPLOAD_TOKEN secret holds its token; revoking that link switches the host off.
+PIPLAYER_UPLOAD_HOST = "upload.projection5000.com"
 # Optional: PIPLAYER_PUBLIC_BASE_URL = "https://cms.example.com" fixes the CMS_URL printed in the
 # Devices install snippet (default: the origin the browser is using).
 

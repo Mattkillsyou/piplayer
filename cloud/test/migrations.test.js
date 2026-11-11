@@ -81,9 +81,10 @@ describe("migration 0016 on a live database", () => {
     expect(await all("SELECT media_id FROM playlist_items WHERE playlist_id = ?", id.siteDefault)).toEqual([{ media_id: id.m3 }]);
   });
 
-  it("reaches schema 16 and deletes nothing but the cross-account schedule rule", async () => {
+  it("reaches the current schema and deletes nothing but the cross-account schedule rule", async () => {
+    // every later migration ran too (0017 only adds the upload_links table)
     expect((await one("SELECT value FROM meta WHERE key = 'schema_version'")).value).toBe(String(db.SCHEMA_VERSION));
-    expect(db.SCHEMA_VERSION).toBe(16);
+    expect(db.SCHEMA_VERSION).toBe(17);
     expect(counts.after).toEqual({
       ...counts.before,
       playlists: counts.before.playlists + 3, // a Default each for ed, admin2 and vw
@@ -247,7 +248,7 @@ describe("migration 0016 on an empty database (fresh install)", () => {
 
   it("applies cleanly; what the migrations seed keeps no owner until /setup adopts it", async () => {
     await applyD1Migrations(f, env.TEST_MIGRATIONS);
-    expect(await all("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual([{ value: "16" }]);
+    expect(await all("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual([{ value: String(db.SCHEMA_VERSION) }]);
     expect(await all("SELECT id, name, owner_id FROM playlists")).toEqual([{ id: 1, name: "Default", owner_id: null }]);
     expect(await all("SELECT key, value FROM settings")).toEqual([{ key: "default_playlist_id", value: "1" }]); // no site admin recorded yet
     expect(await all("SELECT * FROM account_settings")).toEqual([]);

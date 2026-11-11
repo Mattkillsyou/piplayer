@@ -47,7 +47,7 @@ async function playlistsPage(ctx) {
     if (p.group_count) parts.push(`${p.group_count} group(s) will lose it as their default playlist`);
     const confirm = `Delete playlist ${p.name}?` + (parts.length ? ` ${parts.join("; ")}.` : "");
     return `<tr>
-      <td class="name"><a href="/playlists/${p.id}">${esc(p.name)}</a>${p.id === defaultId ? ' <span class="badge" title="Every upload joins this playlist; projectors with no playlist of their own play it">default</span>' : ""}</td>
+      <td class="name"><a href="/playlists/${p.id}">${esc(p.name)}</a>${p.id === defaultId ? ' <span class="badge" title="Library uploads join this playlist; projectors with no playlist of their own play it">default</span>' : ""}</td>
       <td>${p.item_count}</td>
       <td class="muted">
         <span title="devices with this as their default playlist">${plural(p.device_count, "device")}</span>

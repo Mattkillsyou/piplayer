@@ -47,7 +47,8 @@ safe: only unapplied migrations run. Until the database is at the version the co
 included, with a plain-English 500 naming `npm run migrate:remote`; `npm run deploy` runs it
 first for that reason. `0006_indexes.sql` heals duplicate media rows and duplicate open alerts
 itself before adding its unique indexes (its header comment has the SELECTs that show what it
-will touch); `0008` adds the login_failures username index; the code expects `schema_version` 8.
+will touch); `0008` adds the login_failures username index. The code expects the version in
+`db.SCHEMA_VERSION` (17 with `0017_upload_links.sql`, which only adds a table).
 
 ## 3. Secrets (generated, never chosen by hand)
 
@@ -65,6 +66,11 @@ Optional: the automatic camera tunnels need three more secrets, `CF_API_TOKEN`,
 `CF_ACCOUNT_ID`, `CF_ZONE_ID`; see `../docs/automation.md` (section G, Worker secrets) for
 their values and permissions. Without them the Settings page just shows the feature as not
 configured.
+
+Optional: the upload page anyone may use at `PIPLAYER_UPLOAD_HOST` (wrangler.toml, README
+"Upload links"). Make an upload link on Settings and pipe its token (the part of the address
+after `/u/`) into `npx wrangler secret put PIPLAYER_UPLOAD_TOKEN`. Until then that host's `/`
+answers 404.
 
 You will need the SETUP_TOKEN value once, in step 5, so print it to the terminal instead of
 piping if you prefer (`node -e ...` alone, then paste it at the `wrangler secret put` prompt).

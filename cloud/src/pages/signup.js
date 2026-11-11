@@ -85,7 +85,7 @@ async function signupSubmit(ctx) {
     }
     throw e;
   }
-  // Its own Default playlist: every upload joins it, its projectors play it until given more.
+  // Its own Default playlist: every Library upload joins it, its projectors play it until given more.
   await accounts.ensureDefaultPlaylist(ctx.env, id);
   await auth.rotateSession(ctx, id);
   await audit.log(ctx, "user_signup", "user", id, { username, email, role: SIGNUP_ROLE }, { id, username });

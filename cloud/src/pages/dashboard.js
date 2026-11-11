@@ -95,7 +95,7 @@ async function dashboard(ctx) {
   <div class="card">
     <span class="card-label">playlists</span>
     <span class="card-value">${playlistCount}</span>
-    <span class="card-sub">new uploads join the default playlist</span>
+    <span class="card-sub">Library uploads join the default playlist</span>
   </div>
   <div class="card">
     <span class="card-label">devices</span>

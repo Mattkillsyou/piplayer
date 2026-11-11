@@ -71,8 +71,8 @@ real request origin.
 `0004_device_codes`, `0005_pi_model`, `0006_indexes`, `0007_command_undeliverable`,
 `0008_login_failures_index`, `0009_device_owner`, `0010_default_playlist`, `0011_password_reset`,
 `0012_device_decode_mode`, `0013_device_frame_pacing`, `0014_device_decoder`,
-`0015_device_render_profile` and `0016_accounts` add to it (see the Schema section of MODULES.md
-for what each one adds; the database is at `schema_version` 16).
+`0015_device_render_profile`, `0016_accounts` and `0017_upload_links` add to it (see the Schema
+section of MODULES.md for what each one adds; the database is at `schema_version` 17).
 `0006` heals duplicate media rows and duplicate open alerts itself before its unique indexes go
 on, so no manual step precedes it. `0010` creates the "Default" playlist (unless one of that name
 exists), points `settings.default_playlist_id` at it and appends every media file that is in no
@@ -189,6 +189,26 @@ While the `users` table is empty every page redirects to `/setup`; `GET /setup?t
 shows the form (username, password twice), `POST /setup` creates the admin and logs in. Wrong
 or missing token → 403; once a user exists `/setup` → 404 (the first admin also adopts whatever
 the migrations seeded before any user existed, `accounts.adoptOrphans`).
+
+**Upload links** (migration 0017, `src/pages/links.js`). The "Upload links" panel on `/settings`
+makes an address, `/u/<token>`, that needs no account and no password: whoever opens it sees the
+names of that account's projectors and whether each is online, ticks the ones to send to, picks files and uploads. The files
+go to the account's library and replace what each ticked projector was playing; the account's own
+playlists are left as they were (each projector gets a playlist "Upload link · <device id>" and
+is pointed at it; the Playlist select on the Devices page moves it to another playlist, and deleting
+all the sent files on the Library page takes it off its upload playlist, back to its group's
+playlist or the account's Default, not to a playlist it had before). A schedule rule running on a projector keeps its playlist up
+until it ends, and the page tells the sender so. A projector in auto power mode stays switched on
+while it is pointed at its upload playlist, as with any assigned playlist. The address is shown
+once, when the link is made (only its hash is stored), and Revoke stops it at once. A link shows
+nothing else of the account and cannot delete or change anything. Hand one only to people trusted
+with the projectors: its holder can fill the library. The page is made for a phone: it keeps the
+screen on while files are in flight and sends a part again when the connection dropped.
+One link can also have a plain address with nothing secret in it, for anyone: on
+`PIPLAYER_UPLOAD_HOST` (wrangler.toml; upload.projection5000.com, one of the worker's custom
+domains) `/` is the page of the link whose token is the `PIPLAYER_UPLOAD_TOKEN` secret, and every
+other path on that host goes back to `/`. Whoever finds that address can fill the library and
+change what the projectors play; revoking that link on Settings switches the address off.
 
 **Accounts** (migration 0016, `src/accounts.js`). Every account is its own private space: its
 projectors (`devices.owner_id`), media library and uploads, playlists (with its own Default
@@ -334,7 +354,8 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   (`media.sha256` site-wide from 0006), so a same-instant race cannot slip a duplicate in either. The size is checked against `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB) at init too. Upload
   error messages are plain English ("That file type (.exe) is not supported...", "This file is
   X GB; the limit is Y GB.", "Already in the library as ...").
-- **Every upload joins the uploader's Default playlist**: `complete` appends the new media row
+- **Every Library upload joins the uploader's Default playlist** (one made through an upload link
+  joins none: it goes to the projectors its sender ticks): `complete` appends the new media row
   to the uploading account's Default (`default_playlist_id` in its `account_settings`, created at
   sign-up, on the Users page, at `/setup` and by migration 0016; its Settings page can point it at
   another of its playlists) in the same transaction as the media row, after its last item, and

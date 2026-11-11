@@ -6,7 +6,9 @@
 // (uploads.user_id) and becomes a media row of theirs, a duplicate is one already in THEIR
 // library (the same file in two accounts is two rows and two R2 objects, so deleting one leaves
 // the other), the file name carries the account so two libraries never contend for one R2 key,
-// and another account's upload id answers exactly like an unknown one.
+// and another account's upload id answers exactly like an unknown one. An upload link
+// (pages/links.js, migration 0017) drives the same handlers for the account that made it: the
+// token in its path stands in for the session (ctx.link, uploader()).
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
 import * as db from "./db.js";
@@ -130,17 +132,22 @@ function validateInit(body, env) {
 // Routes
 // ---------------------------------------------------------------------------
 
-// A file already in this account's library (another account's copy is none of its business).
-async function duplicateOf(env, sha256, ownerId) {
-  const existing = await db.first(env, "SELECT id, original_name FROM media WHERE sha256 = ? AND owner_id = ?", sha256, ownerId);
-  if (existing) fail(409, `Already in the library as '${existing.original_name}'.`);
-}
+// Whose upload this is: the signed-in editor's, or on an upload link's routes (pages/links.js
+// sets ctx.link from the token in the path) the account's that made the link.
+const uploader = (ctx) => (ctx.link ? { id: ctx.link.user_id } : auth.requireRole(ctx, "editor"));
 
-async function uploadInit(ctx) {
-  const user = auth.requireRole(ctx, "editor");
+// A file already in this account's library (another account's copy is none of its business).
+const duplicateOf = (env, sha256, ownerId) => db.first(env, "SELECT id, original_name FROM media WHERE sha256 = ? AND owner_id = ?", sha256, ownerId);
+const alreadyHere = (existing) => fail(409, `Already in the library as '${existing.original_name}'.`);
+
+export async function uploadInit(ctx) {
+  const user = uploader(ctx);
   const body = await jsonObject(ctx.request);
   const v = validateInit(body, ctx.env);
-  await duplicateOf(ctx.env, v.sha256, user.id);
+  const existing = await duplicateOf(ctx.env, v.sha256, user.id);
+  // An upload link sends the file to a projector, and a file the library already holds can go
+  // there as it is: nothing to upload, where the Library page has nothing to add.
+  if (existing) return ctx.link ? json({ existing: true }) : alreadyHere(existing);
 
   // Same content already in flight (page reload mid-upload): hand back that upload so the
   // browser can skip the parts it already sent (GET status), instead of starting over.
@@ -171,7 +178,7 @@ async function uploadInit(ctx) {
 // The caller's own upload, or the 404 an unknown id gets (for an admin too: an upload becomes a
 // file in its uploader's library, nobody else's).
 async function loadUpload(ctx) {
-  const user = auth.requireRole(ctx, "editor");
+  const user = uploader(ctx);
   const row = await db.first(ctx.env, "SELECT * FROM uploads WHERE id = ? AND user_id = ?", ctx.params.id, user.id);
   if (!row) fail(404, "Upload not found");
   row.parts = JSON.parse(row.parts);
@@ -207,7 +214,7 @@ function releaseClaim(env, row, n, claim) {
     n, row.id, claim.claim);
 }
 
-async function uploadPart(ctx) {
+export async function uploadPart(ctx) {
   const row = await loadUpload(ctx);
   const n = idParam(ctx.params.n, "n");
   if (n < 1 || n > totalParts(row.size)) fail(400, `part number ${n} out of range (1..${totalParts(row.size)})`);
@@ -233,7 +240,7 @@ async function uploadPart(ctx) {
   } catch (e) {
     await releaseClaim(ctx.env, row, n, claim);
     console.warn(`uploadPart ${row.id} part ${n}:`, e && e.message ? e.message : e);
-    fail(409, "This upload is no longer open. Drop the file again to start over.");
+    fail(409, `This upload is no longer open. ${ctx.link ? "Choose" : "Drop"} the file again to start over.`);
   }
   // Record the etag R2 holds for this part, guarded on our claim: if it went stale and was
   // taken over meanwhile, the other request's etag is the one on file.
@@ -246,12 +253,12 @@ async function uploadPart(ctx) {
   return json({ received: fresh ? fresh.received : row.received + expected });
 }
 
-async function uploadStatus(ctx) {
+export async function uploadStatus(ctx) {
   const row = await loadUpload(ctx);
   return json({ received: row.received, size: row.size, part_size: PART_SIZE, parts: partNumbers(row) });
 }
 
-async function uploadComplete(ctx) {
+export async function uploadComplete(ctx) {
   const row = await loadUpload(ctx);
   const total = totalParts(row.size);
   const parts = donePartsOf(row);
@@ -261,17 +268,19 @@ async function uploadComplete(ctx) {
   // Re-check the duplicate rule: another upload of the same bytes to this library may have won
   // meanwhile (the fast path with the friendly name; the UNIQUE index on (owner_id, sha256)
   // catches the same-instant race).
-  const existing = await db.first(ctx.env, "SELECT id, original_name FROM media WHERE sha256 = ? AND owner_id = ?", row.sha256, row.user_id);
+  const existing = await duplicateOf(ctx.env, row.sha256, row.user_id);
   if (existing) {
     await abortMultipart(ctx.env, row);
     await db.run(ctx.env, "DELETE FROM uploads WHERE id = ?", row.id);
-    fail(409, `Already in the library as '${existing.original_name}'.`);
+    return ctx.link ? json({ media_id: existing.id }) : alreadyHere(existing);
   }
   const filename = row.key.slice("media/".length);
   // Every upload joins the uploader's own Default playlist (their default_playlist_id, one of their
   // own playlists: db.loadSettings) at the end, in the same transaction as the media row: the new
   // file is found by (owner, sha256), UNIQUE, so the item and the media row land or fail together.
-  const defaultPlaylist = (await ctx.settings()).default_playlist_id;
+  // Not through an upload link: its files go on the projectors the sender picks (links.linkPlay),
+  // and joining Default would put them on every other projector as well.
+  const defaultPlaylist = ctx.link ? null : (await ctx.settings()).default_playlist_id;
   let mediaId;
   try {
     // The media row is inserted before R2 completes the object, so a name or sha256 clash
@@ -304,7 +313,7 @@ async function uploadComplete(ctx) {
   } catch (e) {
     await db.run(ctx.env, "DELETE FROM media WHERE id = ?", mediaId);
     console.warn(`uploadComplete ${row.id}:`, e && e.message ? e.message : e);
-    fail(409, "This upload could not be finished. Drop the file again to start over.");
+    fail(409, `This upload could not be finished. ${ctx.link ? "Choose" : "Drop"} the file again to start over.`);
   }
   if (obj.size !== row.size) {
     // Never leave an object of the wrong size under a name a media row could point at.
@@ -327,8 +336,12 @@ async function uploadComplete(ctx) {
       fail(400, "The file did not arrive intact; please upload it again.");
     }
   }
+  // About the uploader's account either way. Through a link the row names the link and no user:
+  // the browser may happen to be signed in to the console (/api/ paths still read the session),
+  // but it is the link that uploaded, not that person.
   await audit.log(ctx, "upload_media", "media", mediaId,
-    { filename: row.name, type: row.media_type, playlist: defaultPlaylist ?? undefined, sha_verified: shaVerified ? undefined : false });
+    { filename: row.name, type: row.media_type, playlist: defaultPlaylist ?? undefined, sha_verified: shaVerified ? undefined : false, link: ctx.link ? ctx.link.name : undefined },
+    ctx.link ? null : undefined, row.user_id);
   return json({ media_id: mediaId });
 }
 

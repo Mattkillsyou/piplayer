@@ -47,7 +47,8 @@ vitest-pool-workers 0.22 accepts (a later date makes `npm test` fail to boot).
    `{"detail":"CSRF token missing or invalid"}`). Then the first-run gate: while `users` is
    empty every path except `/setup` → 303 `/setup`.
    `/api/` paths: the session is only *read* (`loadSession(ctx, {create:false})`) so
-   `/api/media` can accept a logged-in browser; bearer auth is the handler's job.
+   `/api/media` can accept a logged-in browser; bearer auth is the handler's job (for
+   `/api/link/:token/...` the token in the path is the key: Upload links below).
 6. `await handler(ctx)` → Response. Cookies queued in `ctx.cookies` are appended.
 7. Errors: a thrown `Response` is returned as-is (that is how `requireUser` redirects);
    `HttpError` → `{"detail"}` with its status; a D1 constraint error nobody mapped → 409
@@ -339,7 +340,7 @@ worker from before it reads (a later migration may remove them).
 | `default_image_duration` | `PIPLAYER_DEFAULT_IMAGE_DURATION` (10) | effective duration of images |
 | `enrollment_key` (site-wide, `settings` table) | random 32-byte urlsafe token, generated on first use by `db.enrollmentKey` (never from env) | `POST /api/enroll` (the flasher fetches it live through `GET /api/operator/enrollment`, admin tokens only, and writes it to each card); the admins' `/settings` shows it and `POST /settings/enrollment/rotate` (admin) replaces it (`db.generateEnrollmentKey`) |
 | `enroll_group_id` / `enroll_playlist_id` | none (int or null; a deleted row or another account's reads as none) | applied to the account's device on its first `POST /api/operator/devices` (the site admin's for `POST /api/enroll`, whose devices have no owner) only |
-| `default_playlist_id` | the account's own "Default" playlist (created at sign-up, on the Users page, at `/setup` and by migration 0016: `accounts.ensureDefaultPlaylist`; int; null only once its row is gone: `loadSettings` reads a value that is not one of the account's own playlists as null) | the account's Default playlist: `uploads.uploadComplete` appends every new media row of the uploader to it (same transaction, `upload_media` audit row carries `playlist`); `manifest.pick_playlist` serves it as the last fallback for the account's projectors (source `site-default`, the manifest string kept for the players, shown as "via default playlist") after schedule → device default → group default; `projector_want` ignores it (auto mode follows schedules and assigned playlists only, or every projector would stay on); `/playlists` badges it and `POST /playlists/:id/delete` refuses it with 400; `/settings` moves it (must name one of the account's playlists; an omitted field keeps it) |
+| `default_playlist_id` | the account's own "Default" playlist (created at sign-up, on the Users page, at `/setup` and by migration 0016: `accounts.ensureDefaultPlaylist`; int; null only once its row is gone: `loadSettings` reads a value that is not one of the account's own playlists as null) | the account's Default playlist: `uploads.uploadComplete` appends every new media row of a Library upload to it (a link upload joins none: Upload links below; same transaction, `upload_media` audit row carries `playlist`); `manifest.pick_playlist` serves it as the last fallback for the account's projectors (source `site-default`, the manifest string kept for the players, shown as "via default playlist") after schedule → device default → group default; `projector_want` ignores it (auto mode follows schedules and assigned playlists only, or every projector would stay on); `/playlists` badges it and `POST /playlists/:id/delete` refuses it with 400; `/settings` moves it (must name one of the account's playlists; an omitted field keeps it) |
 | `player_release` | `PIPLAYER_PLAYER_RELEASE` (`main`); git tag/branch/sha, `db.isGitRef` (alphanumeric first char, `[A-Za-z0-9._/-]`, no `..`, <= 100) | manifest `update.release`: what `update-player` checks out on the Pi |
 | `auto_update` | `PIPLAYER_AUTO_UPDATE` (`off`); `off` or `nightly` (`db.AUTO_UPDATE_MODES`) | manifest `update.auto` |
 | `auto_update_window` | `PIPLAYER_AUTO_UPDATE_WINDOW` (`03:00-05:00`); `HH:MM-HH:MM` Pi time (the Pi evaluates it on its own clock, set to the site zone at flash time), may wrap midnight (`db.UPDATE_WINDOW_RE`) | manifest `update.window` |
@@ -521,7 +522,12 @@ playlist for every other user, and clear (with an audit row each) a projector's 
 and schedule rules that belong to another account than its content account. Nothing else is
 deleted. `test/migrations.test.js` runs it on seeded data, including the old worker's reads.
 
-`db.js` exports `SCHEMA_VERSION` (16) and `assertMigrated` compares `meta.schema_version`
+`migrations/0017_upload_links.sql` (schema_version 17) adds
+`upload_links(id, user_id → users ON DELETE CASCADE, name, token_hash UNIQUE, created_at, last_used_at)`
+and `idx_upload_links_user` (Upload links below). Nothing else changes, so the worker from before
+it keeps serving between `migrations apply` and `wrangler deploy`.
+
+`db.js` exports `SCHEMA_VERSION` (17) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
@@ -709,6 +715,67 @@ follows, and the helpers that carry them:
 - A projector id is re-registered (`api.registerDevice`) only by its own account: an id with an
   owner is a 409 for anyone else, the enrollment key and admins included; an ownerless id may be
   taken by an admin's token or re-enrolled by the key, never by an editor.
+
+## Upload links (`pages/links.js`, migration 0017)
+
+An address that puts files on an account's projectors without signing in (README "Upload links").
+
+- Settings page, "Upload links" panel (editors and admins, each their own): `POST /settings/links`
+  (`name`, 1-60 chars) calls `links.issueLink(ctx, userId, name)`: a 32-character urlsafe token,
+  only its SHA-256 hex stored, audited `upload_link_created` with the name. The page is rendered
+  with the address once (`links.linkUrl`: `PIPLAYER_PUBLIC_BASE_URL` or the origin in use, plus
+  `/u/<token>`), as a new API token is. `POST /settings/links/:link_id/revoke` deletes the
+  caller's own link (404 for anyone else's), audited `upload_link_revoked`.
+- `GET /u/:token` is the holder's page: it needs no session and starts none (a visitor who
+  happens to be signed in to the console gets the top bar above it, nothing else changes), the
+  auth card (`login.authPage`) with a checkbox per projector of the link's account
+  (`accounts.contentOwnerSql`: its own, plus the ownerless ones for the site admin; `online` /
+  `offline` by `devices.OFFLINE_AFTER_SECONDS`, so a projector busy fetching a large file reads
+  offline too), the file picker and `public/upload.js`. The form has no `method` or `action`:
+  without the script a submit loads the page again. An unknown or revoked token, or one whose
+  account is now a viewer, is a 404 card saying `LINK_GONE`. It is the one web page besides the
+  public ones that needs no sign-in (`test/roles_csrf.test.js` lists it with them).
+- `/api/link/:token/upload/init`, `.../upload/:id/part/:n`, `.../upload/:id` and
+  `.../upload/:id/complete` are `uploads.js`'s own handlers behind `withLink`, which sets
+  `ctx.link` (`{id, name, user_id}`) from the token or answers 404 `LINK_GONE`.
+  `uploader(ctx)` in `uploads.js` then acts for the link's account instead of a signed-in editor.
+  Three differences from the Library page: a file the library already holds is no error (`init`
+  answers `{existing: true}` and nothing is uploaded), the new file joins no playlist (not
+  Default: that would put it on every other projector), and the `upload_media` audit row names
+  the link and no user, also when the browser carries a console session (`/api/` paths read it).
+- The upload host (`index.js` `handle`, ahead of routing): on `PIPLAYER_UPLOAD_HOST` (wrangler.toml
+  var) `/` is handled as `/u/<PIPLAYER_UPLOAD_TOKEN>` (a secret holding one link's ordinary token,
+  which the page then shows in its data- attributes; 404 when the secret is unset), `/api/link/...`
+  and `/static/...` pass, and any other path answers 302 to `/`. Revoking that link makes `/` the
+  404 card. Other hosts are unchanged.
+- `POST /api/link/:token/play` with `{media: [sha256, ...], devices: [device row id, ...]}` (1-50
+  files of the account's library, in play order: `MAX_LINK_FILES`; projectors of the account)
+  makes those files the whole playlist of each projector: per projector one playlist named
+  `playlistNameFor(device)` (`PLAYLIST_PREFIX` + device id: "Upload link · <device id>"), created
+  when missing, its items replaced, and `devices.playlist_id` pointed at it, all in one batch with
+  the link's `last_used_at`. Another account's file or projector is a 404 and nothing is sent.
+  Audited `upload_link_play` (`{link, devices, files}`, no user, about the link's account).
+  Answers `{devices: [{id, name, on, scheduled}], message}`; `message` is what the page shows
+  (`sentMessage`): an online projector starts once it has the files, one with a schedule rule
+  running now (`scheduled`: the account's own rules on its own clock, `schedules.pick_active`,
+  unless that rule plays one of the upload playlists this send fills) plays them when the rule
+  ends (`manifest.pick_playlist`), an offline one when it is back (and once the rule has ended, if
+  one is running there).
+- Two consequences of pointing a projector at a playlist of its own. In auto power mode it stays
+  switched on while it points there, as with any assigned playlist (`manifest.projector_want`);
+  setting the Playlist select back to Default (no playlist of its own), or deleting the sent files
+  on the Library page (below), lets it follow the schedules again, unless its group has a playlist.
+  And deleting the sent files on the Library page takes them off the wall: when
+  `pages/library.libraryDelete` empties an upload link's playlist, the projectors pointing at it
+  get `playlist_id` NULL in the same batch and fall back to their group's playlist or the
+  Default (a playlist the owner made keeps its projector when emptied, as before).
+- `public/upload.js` serves both pages: `data-base` on the form is where the chunk routes live
+  (default `/library/upload`), `data-play` (the link page only) the route it posts the uploaded
+  files' hashes and the ticked projectors to once the queue is done, `data-max-files` (the link
+  page only) the most files one send takes, said before anything is uploaded. On both pages a
+  part whose connection dropped is sent again up to three times, three seconds apart, before
+  the file is given up (a refusal from the server is final), and a screen wake lock is held
+  while files are in flight where the browser has one: a phone that locks suspends the page.
 
 ## Tests
 

@@ -21,6 +21,8 @@ export default defineConfig(async () => {
             SETUP_TOKEN: "test-setup-token",
             // workerd here has no CPU budget: verify every test upload (production defaults to 8 MiB).
             PIPLAYER_VERIFY_SHA_MAX_BYTES: "5368709120",
+            // The upload host's link (test/links.test.js "the upload host"); the host is wrangler.toml's.
+            PIPLAYER_UPLOAD_TOKEN: "upload-host-test-token-012345678",
           },
         },
       }),
