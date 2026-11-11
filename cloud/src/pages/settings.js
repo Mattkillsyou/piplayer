@@ -130,6 +130,8 @@ async function tokensPanel(ctx, me, newToken, tz) {
 // shown once: only its hash is stored.
 async function linksPanel(ctx, me, newLink, tz) {
   const rows = await links.linksOf(ctx.env, me.id);
+  const projectors = await db.all(ctx.env,
+    `SELECT d.id, d.name, d.in_upload_links FROM devices d WHERE ${accounts.contentOwnerSql("d")} = ? ORDER BY d.name COLLATE NOCASE, d.id`, me.id);
   return `<div class="panel">
   <h2>Upload links</h2>
   ${newTokenBlock(newLink, { notice: "New upload link", label: "Address", id: "new-upload-link" })}
@@ -140,6 +142,14 @@ async function linksPanel(ctx, me, newLink, tz) {
   </form>
   ${tokenTable(ctx, rows, tz, (l) => `/settings/links/${l.id}/revoke`,
     { caption: "Upload links", confirm: (l) => `Revoke the upload link ${l.name}? Its address stops working.` })}
+  ${projectors.length ? `<form method="post" action="/settings/links/projectors">
+    ${csrfInput(ctx)}
+    <fieldset class="days-fieldset link-projectors">
+      <legend>Projectors on upload links</legend>
+      ${projectors.map((d) => `<label class="inline-check"><input type="hidden" name="listed" value="${d.id}"><input type="checkbox" name="device" value="${d.id}"${d.in_upload_links ? " checked" : ""}>${esc(d.name)}</label>`).join("\n      ")}
+    </fieldset>
+    <button type="submit" class="small">Save</button>
+  </form>` : ""}
 </div>`;
 }
 
@@ -518,6 +528,23 @@ async function linkCreate(ctx) {
   return settingsPage(ctx, { link: links.linkUrl(ctx, token) });
 }
 
+// Which of the account's projectors its upload links list and may send to (links.projectorsOf):
+// the ticked ones. Leaving one off changes nothing else about it. Only the projectors the form
+// listed change: one that joined the account after the page was loaded keeps its value.
+async function linkProjectors(ctx) {
+  const me = auth.requireRole(ctx, "editor");
+  const form = await ctx.form();
+  const ticked = new Set(form.getAll("device").map(Number));
+  const listed = new Set(form.getAll("listed").map(Number));
+  const own = (await db.all(ctx.env, `SELECT d.id, d.device_id, d.in_upload_links FROM devices d WHERE ${accounts.contentOwnerSql("d")} = ?`, me.id))
+    .filter((d) => listed.has(d.id));
+  const changed = own.filter((d) => !!d.in_upload_links !== ticked.has(d.id));
+  if (changed.length) await db.batch(ctx.env, changed.map((d) => ["UPDATE devices SET in_upload_links = ? WHERE id = ?", ticked.has(d.id) ? 1 : 0, d.id]));
+  await audit.log(ctx, "upload_link_projectors", "settings", "upload_links",
+    { shown: own.filter((d) => ticked.has(d.id)).map((d) => d.device_id), left_off: own.filter((d) => !ticked.has(d.id)).map((d) => d.device_id) });
+  return auth.flashRedirect(ctx, "/settings", "Saved which projectors are on upload links.");
+}
+
 async function linkRevoke(ctx) {
   const me = auth.requireRole(ctx, "editor");
   const linkId = idParam(ctx.params.link_id, "link_id");
@@ -542,6 +569,7 @@ export function register(router) {
   router.post("/settings/tokens", tokenCreate);
   router.post("/settings/tokens/:token_id/revoke", tokenRevoke);
   router.post("/settings/links", linkCreate);
+  router.post("/settings/links/projectors", linkProjectors);
   router.post("/settings/links/:link_id/revoke", linkRevoke);
   router.get("/settings", settingsPage);
   router.post("/settings", settingsSave);

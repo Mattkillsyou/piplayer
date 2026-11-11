@@ -130,7 +130,7 @@ export async function reassignDevice(ctx, deviceId, newOwnerId) {
     changes.schedules_deleted = rules.length;
     stmts.push([`UPDATE devices SET camera_source = NULL, camera_rtsp_url = NULL, camera_wyze_name = NULL, camera_live_url = NULL,
         camera_error = NULL, last_screenshot_at = NULL, last_camera_at = NULL, current_filename = NULL, current_position = NULL,
-        last_error = NULL, token = lower(hex(randomblob(32))) WHERE id = ?`, deviceId]);
+        last_error = NULL, in_upload_links = 1, token = lower(hex(randomblob(32))) WHERE id = ?`, deviceId]);
     if (newContent !== null) {
       const old = oldContent === null ? 0 : (await db.loadSettings(env, oldContent)).camera_config_version;
       stmts.push(db.cameraConfigBump(newContent, old));

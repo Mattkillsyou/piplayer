@@ -113,6 +113,7 @@ function table() {
     ["POST", "/settings/alerts/twilio/clear", {}, "form", E(303)],
     ["POST", `/settings/tokens/${NOPE}/revoke`, {}, "form", E(404)],
     ["POST", "/settings/links", { name: " " }, "form", E(400)],
+    ["POST", "/settings/links/projectors", { device: String(NOPE) }, "form", E(303)],
     ["POST", `/settings/links/${NOPE}/revoke`, {}, "form", E(404)],
     ["POST", "/settings/enrollment/rotate", {}, "form", AD(303)], // the site-wide key
     ["POST", "/settings/wyze", { wyze_camera_pattern: "\u0001" }, "form", E(400)],

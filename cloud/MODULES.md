@@ -527,7 +527,11 @@ deleted. `test/migrations.test.js` runs it on seeded data, including the old wor
 and `idx_upload_links_user` (Upload links below). Nothing else changes, so the worker from before
 it keeps serving between `migrations apply` and `wrangler deploy`.
 
-`db.js` exports `SCHEMA_VERSION` (17) and `assertMigrated` compares `meta.schema_version`
+`migrations/0018_upload_link_projectors.sql` (schema_version 18) adds
+`devices.in_upload_links` (INTEGER NOT NULL DEFAULT 1, 0 or 1): whether the account's upload links
+list the projector (Upload links below). Every existing projector stays on.
+
+`db.js` exports `SCHEMA_VERSION` (18) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
@@ -695,7 +699,7 @@ follows, and the helpers that carry them:
 | `uniqueKey()` | the value a new playlist or group gets in `legacy_name` (the renamed old name column; nobody sees it) |
 | `ensureDefaultPlaylist(env, userId)` | the account's Default playlist id (its `default_playlist_id` when that is one of its own playlists, else its playlist called Default, created when missing); sign-up, the Users page and `/setup` call it |
 | `adoptOrphans(env, userId)` | `/setup` only: the first admin becomes the site admin (`site_admin_id`) and owns what the migrations left without an owner (library, playlists, groups, uploads, settings but the enrollment key, secrets) |
-| `reassignDevice(ctx, deviceId, newOwnerId)` | the Owner select and an admin's registration of an ownerless id: when the content account changes, clears the playlist and group that are not the new content account's, deletes its schedule rules for another account's playlists (audited `device_schedule_delete` with `cascade_from_owner_change`), clears the old account's camera settings, live URL, screenshot / snapshot stamps, current file and error texts, replaces the token, and raises the new account's `camera_config_version` above the old one's; one batch; returns `{id, device_id, tunnel_id, old_owner, new_owner, content_changed, playlist_cleared, group_cleared, schedules_deleted}`. The caller then runs `pages/devices.finishHandover` (deletes the R2 screenshot and snapshot, replaces the tunnel with `cloudflare.rotateTunnel`) |
+| `reassignDevice(ctx, deviceId, newOwnerId)` | the Owner select and an admin's registration of an ownerless id: when the content account changes, clears the playlist and group that are not the new content account's, deletes its schedule rules for another account's playlists (audited `device_schedule_delete` with `cascade_from_owner_change`), clears the old account's camera settings, live URL, screenshot / snapshot stamps, current file and error texts, puts it back on upload links (`in_upload_links = 1`), replaces the token, and raises the new account's `camera_config_version` above the old one's; one batch; returns `{id, device_id, tunnel_id, old_owner, new_owner, content_changed, playlist_cleared, group_cleared, schedules_deleted}`. The caller then runs `pages/devices.finishHandover` (deletes the R2 screenshot and snapshot, replaces the tunnel with `cloudflare.rotateTunnel`) |
 | `mediaKeys(env, userId)` | the R2 keys of an account's library, for the Users page delete, which also replaces the tokens of the account's projectors in the same batch as the delete (they stay, ownerless and signed out: an ownerless projector would get the site admin's content and Wyze login) |
 
 - A lookup of another account's thing answers exactly like a missing one (same status, same
@@ -726,6 +730,12 @@ An address that puts files on an account's projectors without signing in (README
   with the address once (`links.linkUrl`: `PIPLAYER_PUBLIC_BASE_URL` or the origin in use, plus
   `/u/<token>`), as a new API token is. `POST /settings/links/:link_id/revoke` deletes the
   caller's own link (404 for anyone else's), audited `upload_link_revoked`.
+- Same panel, "Projectors on upload links": `POST /settings/links/projectors` (`device` repeated:
+  the ticked device row ids) sets `devices.in_upload_links` (migration 0018) on each of the
+  caller's projectors (`accounts.contentOwnerSql`), 1 when ticked and 0 when not; ids of anyone
+  else's are ignored. Audited `upload_link_projectors` with `{shown, left_off}` (device ids).
+  `projectorsOf` takes only projectors at 1, so one left off is on no link page and a send to it
+  answers 404 "Projector not found"; nothing else reads the column.
 - `GET /u/:token` is the holder's page: it needs no session and starts none (a visitor who
   happens to be signed in to the console gets the top bar above it, nothing else changes), the
   auth card (`login.authPage`) with a checkbox per projector of the link's account

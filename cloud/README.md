@@ -71,8 +71,9 @@ real request origin.
 `0004_device_codes`, `0005_pi_model`, `0006_indexes`, `0007_command_undeliverable`,
 `0008_login_failures_index`, `0009_device_owner`, `0010_default_playlist`, `0011_password_reset`,
 `0012_device_decode_mode`, `0013_device_frame_pacing`, `0014_device_decoder`,
-`0015_device_render_profile`, `0016_accounts` and `0017_upload_links` add to it (see the Schema
-section of MODULES.md for what each one adds; the database is at `schema_version` 17).
+`0015_device_render_profile`, `0016_accounts`, `0017_upload_links` and `0018_upload_link_projectors`
+add to it (see the Schema section of MODULES.md for what each one adds; the database is at
+`schema_version` 18).
 `0006` heals duplicate media rows and duplicate open alerts itself before its unique indexes go
 on, so no manual step precedes it. `0010` creates the "Default" playlist (unless one of that name
 exists), points `settings.default_playlist_id` at it and appends every media file that is in no
@@ -209,6 +210,9 @@ One link can also have a plain address with nothing secret in it, for anyone: on
 domains) `/` is the page of the link whose token is the `PIPLAYER_UPLOAD_TOKEN` secret, and every
 other path on that host goes back to `/`. Whoever finds that address can fill the library and
 change what the projectors play; revoking that link on Settings switches the address off.
+The same panel lists the account's projectors under "Projectors on upload links": one left
+unticked is on no upload link's page and cannot be sent to; nothing else about it changes
+(migration 0018, `devices.in_upload_links`).
 
 **Accounts** (migration 0016, `src/accounts.js`). Every account is its own private space: its
 projectors (`devices.owner_id`), media library and uploads, playlists (with its own Default
@@ -230,7 +234,7 @@ first. Handing a projector to another account (`accounts.reassignDevice`) clears
 the old account's content (playlist, group, schedule rules, audited), so a projector only ever
 plays its owner's content, and what it saw for the old account (camera source, RTSP address,
 Wyze camera name, live URL, the last screenshot and camera snapshot, the file it played, its
-error texts). It also replaces the device token and, when there is one, the camera tunnel: the
+error texts), and it arrives on the new account's upload links as a new projector does. It also replaces the device token and, when there is one, the camera tunnel: the
 card that holds the old token sits at the old account's site and would otherwise sync as the new
 account's projector, and its connector would keep streaming the old room into the new account's
 live view. The new account installs the new token from its Token / install block or flashes a

@@ -48,7 +48,7 @@ included, with a plain-English 500 naming `npm run migrate:remote`; `npm run dep
 first for that reason. `0006_indexes.sql` heals duplicate media rows and duplicate open alerts
 itself before adding its unique indexes (its header comment has the SELECTs that show what it
 will touch); `0008` adds the login_failures username index. The code expects the version in
-`db.SCHEMA_VERSION` (17 with `0017_upload_links.sql`, which only adds a table).
+`db.SCHEMA_VERSION` (18 with `0018_upload_link_projectors.sql`, which only adds a devices column with a default).
 
 ## 3. Secrets (generated, never chosen by hand)
 

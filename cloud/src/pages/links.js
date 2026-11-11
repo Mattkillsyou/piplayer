@@ -81,9 +81,11 @@ async function requireLink(ctx) {
 }
 
 // The projectors a link can send to: the ones playing its account's content (its own, plus the
-// ownerless ones for the site admin: accounts.contentOwnerSql), as that account's Dashboard has them.
+// ownerless ones for the site admin: accounts.contentOwnerSql), as that account's Dashboard has them,
+// less the ones the account left off its upload links (devices.in_upload_links, Settings page).
 const projectorsOf = (env, userId) => db.all(env,
-  `SELECT d.id, d.device_id, d.name, d.last_seen_at FROM devices d WHERE ${accounts.contentOwnerSql("d")} = ? ORDER BY d.name COLLATE NOCASE, d.id`, userId);
+  `SELECT d.id, d.device_id, d.name, d.last_seen_at FROM devices d
+    WHERE ${accounts.contentOwnerSql("d")} = ? AND d.in_upload_links = 1 ORDER BY d.name COLLATE NOCASE, d.id`, userId);
 
 // Checked in within the Devices page's offline limit. The page says "online" / "offline", not on /
 // off: a projector that is busy fetching a large file does not check in either.

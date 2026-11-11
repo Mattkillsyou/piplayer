@@ -466,6 +466,47 @@ describe("the upload host (PIPLAYER_UPLOAD_HOST)", () => {
   });
 });
 
+describe("projectors left off upload links (Settings page)", () => {
+  const save = (ids, listed = [hall.id, den.id, ...ids]) => r.editor.post("/settings/links/projectors",
+    [...listed.map((id) => ["listed", String(id)]), ...ids.map((id) => ["device", String(id)])], { "X-CSRF-Token": r.editor.token });
+
+  it("leaves an unticked projector off every link page and refuses a send to it; ticking it again brings it back", async () => {
+    const before = await (await r.editor.get("/settings")).text();
+    expect(before).toMatch(/action="\/settings\/links\/projectors">\s*<input type="hidden" name="csrf_token" value="[^"]+">/);
+    expect(before).toMatch(new RegExp(`name="device" value="${den.id}" checked>Den`));
+    await query("UPDATE devices SET in_upload_links = 0 WHERE id = ?", adminDev.id);
+    const res = await save([hall.id, adminDev.id]);
+    expect([res.status, res.headers.get("location")]).toEqual([303, "/settings"]);
+    expect(await query("SELECT name, in_upload_links FROM devices WHERE id IN (?, ?) ORDER BY name", hall.id, den.id))
+      .toEqual([{ name: "Den", in_upload_links: 0 }, { name: "Hall", in_upload_links: 1 }]);
+    expect(JSON.parse((await audits("upload_link_projectors"))[0].details)).toEqual({ shown: ["hall"], left_off: ["den"] });
+    // another account's projector is out of reach: ticked and listed by the editor, it stays off
+    expect((await one("SELECT in_upload_links FROM devices WHERE id = ?", adminDev.id)).in_upload_links).toBe(0);
+    await query("UPDATE devices SET in_upload_links = 1 WHERE id = ?", adminDev.id);
+    expect(await (await r.editor.get("/settings")).text()).toMatch(new RegExp(`name="device" value="${den.id}">Den`));
+    const page = await (await anon.get(`/u/${token}`)).text();
+    expect(page).toContain(`value="${hall.id}" checked>Hall`); // the only one left, so it comes ticked
+    expect(page).not.toContain(">Den");
+    const known = await one("SELECT sha256 FROM media WHERE owner_id = ? ORDER BY id LIMIT 1", r.ids.editor);
+    expect(await detail(await anon.postJson(`${api}/play`, { media: [known.sha256], devices: [den.id] }), 404)).toBe("Projector not found");
+    // a projector that joined after the page was loaded is not on the form, so a save keeps it as it is
+    const late = await device("late", "Late");
+    expect((await save([hall.id, den.id])).status).toBe(303);
+    expect((await one("SELECT in_upload_links FROM devices WHERE id = ?", late.id)).in_upload_links).toBe(1);
+    await query("DELETE FROM devices WHERE id = ?", late.id);
+    expect(await query("SELECT name FROM devices WHERE id IN (?, ?) AND in_upload_links = 1 ORDER BY name", hall.id, den.id))
+      .toEqual([{ name: "Den" }, { name: "Hall" }]);
+    expect(await (await anon.get(`/u/${token}`)).text()).toContain(">Den");
+  });
+
+  it("a projector handed to another account arrives on that account's upload links", async () => {
+    const moving = await device("moving", "Moving", { in_upload_links: 0 });
+    expect((await post(r.admin, `/devices/${moving.id}/owner`, { owner_id: String(r.ids.admin) })).status).toBe(303);
+    expect(await one("SELECT owner_id, in_upload_links FROM devices WHERE id = ?", moving.id)).toEqual({ owner_id: r.ids.admin, in_upload_links: 1 });
+    await query("DELETE FROM devices WHERE id = ?", moving.id);
+  });
+});
+
 describe("sentMessage", () => {
   const d = (name, on, scheduled = false) => ({ name, on, scheduled });
   it("names the projectors that will play it now, the ones a schedule holds and the ones that are offline", () => {
@@ -485,9 +526,11 @@ describe("sentMessage", () => {
 });
 
 describe("schema", () => {
-  it("migration 0017 made upload_links and the version matches db.js", async () => {
-    expect(db.SCHEMA_VERSION).toBe(17);
-    expect(await one("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual({ value: "17" });
+  it("migrations 0017 and 0018 made upload_links and devices.in_upload_links, and the version matches db.js", async () => {
+    expect(db.SCHEMA_VERSION).toBe(18);
+    expect(await one("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual({ value: "18" });
+    const dev = (await query("PRAGMA table_info(devices)")).find((c) => c.name === "in_upload_links");
+    expect([dev.notnull, dev.dflt_value]).toEqual([1, "1"]);
     const cols = (await query("PRAGMA table_info(upload_links)")).map((c) => c.name);
     expect(cols).toEqual(["id", "user_id", "name", "token_hash", "created_at", "last_used_at"]);
   });
