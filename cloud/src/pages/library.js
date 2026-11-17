@@ -9,12 +9,13 @@
 // so the browser of an editor makes it the first time a page shows a file that has none
 // (media.js, PUT /library/<id>/thumb); until then GET /library/<id>/thumb sends the picture
 // itself for an image and 404 for a video (the tile then says so).
+import * as accounts from "../accounts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
 import * as media from "../media.js";
 import { IMAGE_EXTENSIONS, extOf } from "../uploads.js";
-import { esc, envInt, fail, fileSize, HttpError, idParam, json, localTime, runTime, str } from "../util.js";
+import { esc, envInt, fail, fileSize, HttpError, idParam, intField, json, localTime, runTime, str } from "../util.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 import { PLAYLIST_PREFIX } from "./links.js";
 
@@ -264,9 +265,121 @@ async function thumbPut(ctx) {
   return json({ ok: true });
 }
 
+// Put the account's own files `mediaIds` at the end of its own playlist `playlistId`, in the
+// order given (a repeat counts once), skipping the ones already in it: a file has one place per
+// playlist, as the editor's Add has always kept it. One batch whatever the count (the ids go in as
+// one JSON parameter: an IN (?, ...) list would hit D1's bound-parameter limit). No BEGIN
+// IMMEDIATE on D1: the positions are worked out by the statement that writes them, so two
+// overlapping adds cannot put one file in twice or two files on one position. Returns {added,
+// already}: the files put in, and the account's own files that were in it before (an id that is
+// not one of its files, or no longer is, counts as neither).
+export async function appendToPlaylist(env, playlistId, mediaIds, ownerId) {
+  const own = `FROM json_each(?2) j JOIN media m ON m.id = j.value AND m.owner_id = ?3
+    JOIN playlists p ON p.id = ?1 AND p.owner_id = ?3`;
+  // NOT IN, not a correlated NOT EXISTS: the playlist's items are read once, not once per file.
+  const fresh = `${own} WHERE m.id NOT IN (SELECT media_id FROM playlist_items WHERE playlist_id = ?1)`;
+  const args = [playlistId, JSON.stringify(mediaIds), ownerId];
+  const results = await db.batch(env, [
+    [`SELECT COUNT(DISTINCT m.id) AS n ${own}`, ...args],
+    // Before the insert, while the new files are still new: updated_at moves only when one lands.
+    [`UPDATE playlists SET updated_at = datetime('now') WHERE id = ?1 AND EXISTS (SELECT 1 ${fresh})`, ...args],
+    [`INSERT INTO playlist_items (playlist_id, media_id, position)
+      SELECT ?1, m.id, (SELECT COALESCE(MAX(position), -1) FROM playlist_items WHERE playlist_id = ?1) + ROW_NUMBER() OVER (ORDER BY MIN(j.key))
+      ${fresh} GROUP BY m.id`, ...args],
+  ]);
+  const added = results[2].meta.changes;
+  return { added, already: results[0].results[0].n - added };
+}
+
+// The upload rule (uploads.validateInit): what a file may be called.
+const MAX_NAME = 1024;
+
+// The Library's "Add to playlist" (a formaction on the grid's form): every ticked file, in the
+// order the page shows them, at the end of one of the caller's own playlists.
+async function libraryAddToPlaylist(ctx) {
+  const user = auth.requireRole(ctx, "editor");
+  const form = await ctx.form();
+  const playlistId = intField(str(form, "playlist_id"), "Playlist");
+  if (playlistId === null) return auth.flashRedirect(ctx, "/library", "Pick a playlist.", "warn");
+  const playlist = await accounts.ownRow(ctx.env, "playlists", playlistId, user.id, "id, name");
+  if (!playlist) fail(404, "Playlist not found");
+  const picked = form.getAll("media_id").filter((v) => typeof v === "string");
+  if (!picked.length) return auth.flashRedirect(ctx, "/library", "Nothing was ticked.", "warn");
+  if (picked.length > MAX_DELETE) fail(400, `Add at most ${MAX_DELETE} files at a time`);
+  const ids = [...new Set(picked.map((v) => idParam(v, "media_id")))];
+  const { added, already } = await appendToPlaylist(ctx.env, playlist.id, ids, user.id);
+  if (!added && !already) fail(404, "Media not found");
+  if (!added) return auth.flashRedirect(ctx, "/library", `${already === 1 ? "That file is" : "Those files are"} already in ${playlist.name}.`, "warn");
+  await audit.log(ctx, "playlist_add_items", "playlist", playlist.id, { added, media_ids: ids });
+  const skipped = already ? `; ${already} ${already === 1 ? "was" : "were"} already in it` : "";
+  return auth.flashRedirect(ctx, "/library", `Added ${added} file${added === 1 ? "" : "s"} to ${playlist.name}${skipped}.`);
+}
+
+// A file's own page (the Library card's name links here): its name (a rename form for an
+// editor), the preview, the facts, Download under its own name, every playlist it is in, and
+// Delete. Any role, the caller's own file only (another account's id answers like a missing one).
+async function filePage(ctx) {
+  const user = auth.requireUser(ctx);
+  const editor = user.role !== "viewer";
+  const m = await ownMedia(ctx, user, "id, original_name, filename, media_type, size_bytes, duration_seconds, width, height, uploaded_at");
+  const tz = (await ctx.settings()).timezone;
+  const playlists = await db.all(ctx.env,
+    `SELECT DISTINCT p.id, p.name FROM playlist_items pi JOIN playlists p ON p.id = pi.playlist_id AND p.owner_id = ?
+      WHERE pi.media_id = ? ORDER BY p.name COLLATE NOCASE, p.id`, user.id, m.id);
+  const video = m.media_type === "video";
+  const meta = [video ? "Video" : "Image", video ? runTime(m.duration_seconds) : "", m.width ? `${m.width}×${m.height}` : "",
+    fileSize(m.size_bytes), `uploaded ${localTime(m.uploaded_at, tz)}`].filter(Boolean).join(" · ");
+  // Saved under its own name (the file is on this origin, so the browser honours download=),
+  // with the stored file's extension when a rename left it off: the bytes are still that type.
+  const ext = extOf(m.filename);
+  const saveAs = extOf(m.original_name) === ext ? m.original_name : m.original_name + ext;
+  const list = playlists.map((p) => `<li><a href="/playlists/${p.id}">${esc(p.name)}</a></li>`).join("\n  ");
+  const content = `<a href="/library" class="back">← Library</a>
+<div class="file-page"${editor ? " data-thumb-put" : ""}>
+<div class="page-head">
+  ${editor ? `<form method="post" action="/library/${m.id}/rename" class="row">
+    ${csrfInput(ctx)}
+    <label>file name
+      <input type="text" name="name" value="${esc(m.original_name)}" maxlength="${MAX_NAME}" required>
+    </label>
+    <button type="submit">Rename</button>
+  </form>` : `<h1>${esc(m.original_name)}</h1>`}
+  <span class="page-meta">${esc(meta)}</span>
+</div>
+${thumbCell(m, meta)}
+<div class="action-buttons">
+  <a class="button small" href="/api/media/${esc(m.filename)}" download="${esc(saveAs)}">Download</a>
+  ${editor ? `<form method="post" action="/library/${m.id}/delete" class="inline" data-confirm="Delete ${esc(m.original_name)}? It is removed from every playlist that uses it.">
+    ${csrfInput(ctx)}
+    <button type="submit" class="danger small">Delete</button>
+  </form>` : ""}
+</div>
+<h2>Playlists (${playlists.length})</h2>
+${list ? `<ul>\n  ${list}\n</ul>` : '<p class="muted">Not in any playlist</p>'}
+</div>`;
+  return layout(ctx, { title: m.original_name, content, scripts: ["/static/media.js"] });
+}
+
+// Rename a file: only what the pages show (original_name). The stored name, the R2 key and the
+// sha256 stay, so no projector fetches it again and every playlist keeps it in its place.
+async function libraryRename(ctx) {
+  const user = auth.requireRole(ctx, "editor");
+  const name = str(await ctx.form(), "name").trim();
+  if (!name || name.length > MAX_NAME || /[\x00-\x1f\x7f]/.test(name)) fail(400, `File name must be 1-${MAX_NAME} printable characters`);
+  const row = await ownMedia(ctx, user, "id, original_name");
+  await db.run(ctx.env, "UPDATE media SET original_name = ? WHERE id = ? AND owner_id = ?", name, row.id, user.id);
+  await audit.log(ctx, "media_rename", "media", row.id, { from: row.original_name, to: name });
+  return auth.flashRedirect(ctx, `/library/${row.id}`, `Renamed to ${name}.`);
+}
+
 export function register(router) {
   router.get("/library", libraryPage);
   router.post("/library/delete", libraryDeleteMany);
+  router.post("/library/add-to-playlist", libraryAddToPlaylist);
+  // A file's page is one segment deep: the uploads (uploads.js, /library/upload/<id>...) and a
+  // file's own routes below are deeper, so neither reaches the other.
+  router.get("/library/:media_id", filePage);
+  router.post("/library/:media_id/rename", libraryRename);
   router.post("/library/:media_id/delete", libraryDelete);
   router.get("/library/:media_id/thumb", thumbGet);
   router.put("/library/:media_id/thumb", thumbPut);

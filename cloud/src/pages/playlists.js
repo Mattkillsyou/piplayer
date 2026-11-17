@@ -7,7 +7,7 @@ import * as auth from "../auth.js";
 import * as db from "../db.js";
 import { esc, fail, fileSize, idParam, intField, json, jsonObject, localTime, redirect, runTime, str } from "../util.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
-import { RENUMBER_SQL, thumbCell } from "./library.js";
+import { appendToPlaylist, RENUMBER_SQL, thumbCell } from "./library.js";
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const round1 = (n) => Number(n).toFixed(1);
@@ -191,34 +191,25 @@ ${!available.length
       ${available.map(option).join("\n      ")}
     </select>
     <button type="submit" class="primary">Add</button>
+    <a class="button small" href="/library?to=${playlist.id}">Add from Library</a>
   </form>
 </div>`}
 ${items.length ? '<div class="drop-hint"><span>⣿</span><span class="sans">Drag a row by its handle and drop it where it should play. The new order is saved at once; devices pick it up on their next poll.</span></div>' : ""}` : ""}`;
   return layout(ctx, { title: playlist.name, content, scripts: ["/static/sortable.min.js", "/static/media.js"] });
 }
 
+// The Add media select sends one file; a post with several media_id adds them all, in that order.
 async function playlistAddItem(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
-  const mid = intField(str(await ctx.form(), "media_id"), "Media to add");
-  if (mid === null) fail(400, "Pick a file to add");
-  const env = ctx.env;
+  const ids = (await ctx.form()).getAll("media_id")
+    .map((v) => intField(typeof v === "string" ? v : "", "Media to add")).filter((v) => v !== null);
+  if (!ids.length) fail(400, "Pick a file to add");
   await ownPlaylist(ctx, playlistId);
   // A playlist holds its own account's files only (the manifest serves nothing else either).
-  if (!(await accounts.ownRow(env, "media", mid, user.id))) fail(404, "Media not found");
-  if (await db.first(env, "SELECT id FROM playlist_items WHERE playlist_id = ? AND media_id = ?", playlistId, mid)) {
-    fail(409, "That file is already in this playlist");
-  }
-  // No BEGIN IMMEDIATE on D1: the next position is computed inside the same batch as the
-  // insert, and the HAVING re-checks the duplicate so two overlapping adds cannot both land.
-  const results = await db.batch(env, [
-    [`INSERT INTO playlist_items (playlist_id, media_id, position)
-      SELECT ?1, ?2, COALESCE(MAX(position), -1) + 1 FROM playlist_items WHERE playlist_id = ?1
-      HAVING NOT EXISTS (SELECT 1 FROM playlist_items WHERE playlist_id = ?1 AND media_id = ?2)`, playlistId, mid],
-    [TOUCH_SQL, playlistId],
-  ]);
-  if (!results[0].meta.changes) fail(409, "That file is already in this playlist");
-  await audit.log(ctx, "playlist_add_item", "playlist", playlistId, { media_id: mid });
+  const { added, already } = await appendToPlaylist(ctx.env, playlistId, ids, user.id);
+  if (!added) fail(already ? 409 : 404, already ? "That file is already in this playlist" : "Media not found");
+  await audit.log(ctx, "playlist_add_item", "playlist", playlistId, ids.length === 1 ? { media_id: ids[0] } : { media_ids: ids, added });
   return redirect(`/playlists/${playlistId}`);
 }
 

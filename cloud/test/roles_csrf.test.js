@@ -71,6 +71,9 @@ function table() {
     ["PUT", `/library/upload/${NOPE}/part/1`, "x", "raw", E(404)],
     ["POST", `/library/upload/${NOPE}/complete`, {}, "json", E(404)],
     ["POST", `/library/upload/${NOPE}/abort`, {}, "json", E(404)],
+    ["GET", `/library/${NOPE}`, null, null, ALL(404)],
+    ["POST", `/library/${NOPE}/rename`, { name: "x" }, "form", E(404)],
+    ["POST", "/library/add-to-playlist", {}, "form", E(303)], // no playlist picked: back to the Library with a warning
     ["POST", `/library/${NOPE}/delete`, {}, "form", E(404)],
     ["POST", "/library/delete", {}, "form", E(303)], // nothing ticked: back to the Library with a warning
     ["GET", `/library/${NOPE}/thumb`, null, null, ALL(404)],

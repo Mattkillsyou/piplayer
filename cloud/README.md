@@ -358,16 +358,17 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   (`media.sha256` site-wide from 0006), so a same-instant race cannot slip a duplicate in either. The size is checked against `PIPLAYER_MAX_UPLOAD_BYTES` (5 GiB) at init too. Upload
   error messages are plain English ("That file type (.exe) is not supported...", "This file is
   X GB; the limit is Y GB.", "Already in the library as ...").
-- **Every Library upload joins the uploader's Default playlist** (one made through an upload link
-  joins none: it goes to the projectors its sender ticks): `complete` appends the new media row
-  to the uploading account's Default (`default_playlist_id` in its `account_settings`, created at
+- **A Library upload joins the uploader's Default playlist** unless the upload picks another of
+  their playlists or none (the complete body's `playlist`: `""`, an id or `"none"`; one made
+  through an upload link joins none: it goes to the projectors its sender ticks): `complete`
+  appends the new media row to that playlist, by default the account's Default (`default_playlist_id` in its `account_settings`, created at
   sign-up, on the Users page, at `/setup` and by migration 0016; its Settings page can point it at
   another of its playlists) in the same transaction as the media row, after its last item, and
   bumps that playlist's `updated_at`; the `upload_media` audit row carries `playlist: <id>`. A
   projector plays its account's Default whenever no schedule rule matches and neither the device
   nor its group has a playlist of its own (`manifest.pick_playlist`: schedule → device default →
-  group default → the account's Default, every step from the projector's own account only), so a
-  fresh upload plays on every one of that account's projectors that nobody has assigned anything
+  group default → the account's Default, every step from the projector's own account only), so an
+  upload into the Default plays on every one of that account's projectors that nobody has assigned anything
   to. The Playlists page marks it with a `default`
   badge and refuses to delete it until another playlist is made the default on Settings.
 - **Complete verifies the hash**: `POST /library/upload/{id}/complete` re-hashes the stored
