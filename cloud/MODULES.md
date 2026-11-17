@@ -193,10 +193,12 @@ those); `details` is JSON-encoded when
 non-empty by `audit.pyJson()` (Python `json.dumps` text: `{"a": 1, "b": [1, 2]}`, non-ASCII as
 `\uXXXX`, so the Details column matches the CMS); `ip` = `CF-Connecting-IP`. Never throws. Action/target names are exactly web.py's:
 `login`, `login_failed`, `logout`, `upload_media`, `delete_media`, `restore_media`, `empty_trash` (`{files}`), `create_playlist`,
-`playlist_add_item`, `playlist_set_duration`, `playlist_reorder`, `playlist_remove_item`,
+`playlist_add_item`, `playlist_add_items` (`{added, media_ids}`), `playlist_set_duration`,
+`playlist_set_picture_duration` (`{duration, items}`), `playlist_duplicate` (`{from, name}`),
+`playlist_reorder`, `playlist_remove_item`, `media_rename` (`{from, to}`),
 `playlist_rename`, `playlist_delete`, `register_device`, `device_assign_playlist`,
 `device_set_group`, `device_regen_token`, `device_delete`, `device_send_command`,
-`device_schedule_create`, `device_schedule_delete`, `group_create`, `group_assign_playlist`,
+`device_schedule_create`, `device_schedule_update`, `device_schedule_delete`, `group_create`, `group_assign_playlist`,
 `group_delete`, `user_create`, `user_signup` (`{username, email, role}`), `user_set_role`, `user_set_password`, `user_set_email`, `user_delete`,
 `password_reset_requested`, `password_reset_mail_failed`, `password_reset` (target the user; never the token)
 (`user_delete` carries `{media_deleted, projectors_signed_out}` when either is non-zero)

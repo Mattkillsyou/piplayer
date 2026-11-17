@@ -184,9 +184,9 @@ describe("style.css", () => {
   });
 
   it("gives every phone button and disclosure row 44px and fades a disabled button", () => {
-    const phone = block("@media (max-width: 720px) {\n  button.small");
+    const phone = block("@media (max-width: 720px), (pointer: coarse) {");
     expect(phone).toContain("button, .button, details summary { min-height: var(--p5k-touch); }");
-    expect(rule("button[disabled], .button[disabled], button[disabled]:hover")).toContain("opacity: .4;");
+    expect(rule("button[disabled], .button[disabled], button[disabled]:hover, button.small[disabled]")).toContain("opacity: .4;");
   });
 
   it("hides an unticked box's × by visibility, which contrast themes keep, and frames a ticked card there", () => {

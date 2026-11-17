@@ -657,7 +657,7 @@ button[disabled], .button[disabled], button[disabled]:hover, button.small[disabl
   border-color: var(--p5k-rule-2);
   box-shadow: none;
   cursor: not-allowed;
-  opacity: .4; /* the grey alone matched a live small button, and loses to button.small.danger */
+  opacity: .4; /* the grey alone matched a live small button */
 }
 button.link {
   padding: 6px 10px;
@@ -1260,7 +1260,7 @@ html:has(.media-bar) { scroll-padding-top: 96px; }
 .file-page li + li { border-top: 1px solid var(--p5k-rule-2); }
 .file-page li a { display: flex; align-items: center; min-height: var(--p5k-touch); padding: 0 12px; overflow-wrap: anywhere; }
 @media (max-width: 720px) {
-  .file-page .page-head input, .file-page .page-head button { min-height: var(--p5k-touch); }
+  .file-page .page-head input { min-height: var(--p5k-touch); }
 }
 
 /* Recently deleted (pages/library.js trashSection), below the grid: a file per row, its name the
@@ -1273,7 +1273,6 @@ html:has(.media-bar) { scroll-padding-top: 96px; }
 .trash-list .media-meta { white-space: nowrap; }
 /* a phone: the time under the name in every row (beside it, a long name pushed some times onto a line of their own) */
 @media (max-width: 720px) {
-  .trash summary { min-height: var(--p5k-touch); }
   .trash-list li { flex-direction: column; align-items: flex-start; gap: 0; padding: 0 0 6px; }
   .trash-list .media-meta { padding-left: 28px; } /* under the name: the box (22px) and its gap */
   .trash-list .inline-check { min-height: var(--p5k-touch); }
@@ -1313,7 +1312,7 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
 @media (max-width: 720px) {
   .playlist-head .row > label { flex-basis: 100%; }
   .playlist-head .row > button { flex: 1 1 0; }
-  .playlist-head .row > button, .playlist-head input[type=text] { min-height: var(--p5k-touch); }
+  .playlist-head input[type=text] { min-height: var(--p5k-touch); }
   /* 16px: iPhone Safari zooms into a box with smaller text */
   .section-head .duration-form input[type=number], .sortable-table .duration-form input[type=number] { min-height: var(--p5k-touch); font-size: 16px; }
 }
