@@ -438,11 +438,11 @@ describe("library page", () => {
     expect(html).toContain('<span class="badge badge-video">VIDEO</span>');
     expect(html).toContain('<span class="badge badge-image">IMAGE</span>');
     // the card: a preview that links to the file (the viewer opens it), then the name and the facts
-    const id = (await query("SELECT id FROM media WHERE original_name = 'My Clip (1).mp4'"))[0].id;
-    expect(html).toContain(`<img src="/library/${id}/thumb" alt="" loading="lazy" decoding="async" data-thumb="${id}">`);
-    expect(html).toMatch(/<a class="media-thumb" href="\/api\/media\/[0-9a-f]{16}_u\d+_My_Clip_1\.mp4" target="_blank" rel="noopener" data-view data-kind="video" data-name="My Clip \(1\)\.mp4" data-meta="12 MB · 320×240 · 2\.0 s · uploaded \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC" aria-label="Open My Clip \(1\)\.mp4">/);
+    const { id, filename } = (await query("SELECT id, filename FROM media WHERE original_name = 'My Clip (1).mp4'"))[0];
+    expect(html).toContain(`<img src="/library/${id}/thumb?v=${filename.slice(0, 16)}" alt="" loading="lazy" decoding="async" data-thumb="${id}">`);
+    expect(html).toMatch(/<a class="media-thumb" href="\/api\/media\/[0-9a-f]{16}_u\d+_My_Clip_1\.mp4" target="_blank" rel="noopener" data-view data-kind="video" data-name="My Clip \(1\)\.mp4" data-meta="12 MB · 320×240 · 2\.0 s · uploaded \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC" data-page="\/library\/\d+" aria-label="Open My Clip \(1\)\.mp4, video, 2\.0 s">/);
     expect(html).toContain('<span class="media-length">2.0 s</span>');
-    expect(html).toContain('<span class="media-name" title="My Clip (1).mp4">My Clip (1).mp4</span>');
+    expect(html).toContain(`<a class="media-name" href="/library/${id}">My Clip (1).mp4</a>`);
     expect(html).toContain('<span class="media-meta">12 MB · 320×240</span>');
     expect(html).toMatch(/<span class="media-meta">\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC<\/span>/);
     expect(html).toContain('<span class="media-used" title="Default">In Default</span>'); // an upload goes into the account's Default
@@ -591,7 +591,7 @@ describe("library previews and Delete selected", () => {
 
     let r = await editor.post("/library/delete", { csrf_token: editorCsrf });
     expect([r.status, r.headers.get("location")]).toEqual([303, "/library"]);
-    expect(await flash(editor)).toBe("Nothing was ticked. Tick the files to delete, then press Delete selected.");
+    expect(await flash(editor)).toBe("Nothing was ticked.");
     expect((await viewer.post("/library/delete", form(viewerCsrf, [["media_id", String(ids[0])]]))).status).toBe(403);
     expect((await editor.post("/library/delete", form(editorCsrf, [["media_id", "abc"]]))).status).toBe(400);
     const tooMany = Array.from({ length: MAX_DELETE + 1 }, (_, i) => ["media_id", String(i + 1)]);

@@ -4,7 +4,9 @@
 // own files and a delete of another account's file id answers like a missing one.
 // The files are shown as a grid of previews (thumbCell(), also used by the playlist editor):
 // each has a small picture, opens large in a viewer (/static/media.js) and carries its own
-// Delete; ticking several deletes them in one go (POST /library/delete).
+// Delete; ticking several deletes them in one go (POST /library/delete) or adds them to a
+// playlist (POST /library/add-to-playlist). Find / Show / Sort narrow and order the grid in the
+// browser (media.js).
 // A preview is a JPEG beside the file in R2 (media.thumbKey). The Worker cannot decode a video,
 // so the browser of an editor makes it the first time a page shows a file that has none
 // (media.js, PUT /library/<id>/thumb); until then GET /library/<id>/thumb sends the picture
@@ -22,7 +24,8 @@ import { PLAYLIST_PREFIX } from "./links.js";
 const round1 = (n) => (Math.round(n * 10) / 10).toFixed(1);
 
 export const MAX_THUMB_BYTES = 400 * 1024;
-// A week, not for ever: a preview can be made again (media.js stores a better frame over a dark one).
+// A week: nothing replaces a stored preview, so this only bounds how long a browser keeps one
+// (thumbCell's ?v= keeps that copy from anyone who guesses at ids on a shared browser).
 const THUMB_CACHE = "private, max-age=604800";
 // Most files one POST /library/delete takes (a page holds no more than a library does; the cap
 // keeps one request's statements and R2 calls bounded).
@@ -45,24 +48,38 @@ const isPicture = (filename) => IMAGE_EXTENSIONS.has(extOf(filename));
 // The preview of one file ({id, filename, original_name, media_type, duration_seconds} of a media
 // row): a link to the file itself that media.js opens in the viewer (without the script it is
 // just the file in a new tab), holding the small picture and, on it, the type and running time.
-// `meta` is the line the viewer shows under the file. Shared with the playlist editor.
+// `meta` is the line the viewer shows under the file, data-page the file's own page (the
+// viewer's Details). The picture's ?v= is the stored name's sha256 prefix: the route ignores it,
+// but a cached preview cannot be asked for by its id alone, by whoever uses the browser next.
+// Shared with the playlist editor.
 export function thumbCell(m, meta = "") {
   const length = m.media_type === "video" ? runTime(m.duration_seconds) : "";
-  return `<a class="media-thumb" href="/api/media/${esc(m.filename)}" target="_blank" rel="noopener" data-view data-kind="${isPicture(m.filename) ? "img" : "video"}" data-name="${esc(m.original_name)}" data-meta="${esc(meta)}" aria-label="Open ${esc(m.original_name)}">
-        <img src="/library/${m.id}/thumb" alt="" loading="lazy" decoding="async" data-thumb="${m.id}">
+  // The label is the link's whole accessible name: the badge and the running time on the
+  // picture are not read out unless it says them too.
+  const label = [`Open ${m.original_name}`, m.media_type === "video" ? "video" : "image", length].filter(Boolean).join(", ");
+  return `<a class="media-thumb" href="/api/media/${esc(m.filename)}" target="_blank" rel="noopener" data-view data-kind="${isPicture(m.filename) ? "img" : "video"}" data-name="${esc(m.original_name)}" data-meta="${esc(meta)}" data-page="/library/${m.id}" aria-label="${esc(label)}">
+        <img src="/library/${m.id}/thumb?v=${esc(m.filename.slice(0, 16))}" alt="" loading="lazy" decoding="async" data-thumb="${m.id}">
         ${m.media_type === "video" ? '<span class="badge badge-video">VIDEO</span>' : '<span class="badge badge-image">IMAGE</span>'}
         ${length ? `<span class="media-length">${esc(length)}</span>` : ""}
       </a>`;
 }
 
-function uploadGrid(maxBytes, ctx) {
+// The upload box. "Add to" is where the files go (uploads.js uploadComplete): "" the account's
+// Default playlist as before, an id one of its other playlists, "none" no playlist.
+function uploadGrid(ctx, maxBytes, playlists, dflt) {
+  const to = [
+    dflt ? `<option value="">${esc(dflt.name)}</option>` : "",
+    ...playlists.filter((p) => p !== dflt).map((p) => `<option value="${p.id}">${esc(p.name)}</option>`),
+    `<option value="none"${dflt ? "" : " selected"}>No playlist</option>`,
+  ].join("");
   return `<div class="library-grid">
   <div class="dropzone brackets">
     <span class="dropzone-title">DROP MEDIA</span>
-    <p>Max ${round1(maxBytes / 1024 / 1024 / 1024)} GB per file. Videos: mp4 · mov · m4v · mkv · webm (1080p H.264 recommended). Images: jpg · png · gif · webp · bmp.</p>
+    <p>Max ${round1(maxBytes / 1024 / 1024 / 1024)} GB per file. Videos: mp4 · mov · m4v · mkv · webm · animated gif (1080p H.264 recommended). Images: jpg · png · gif · webp · bmp.</p>
     <form id="upload-form" method="post" action="/library/upload/init" data-init="/library/upload/init">
       ${csrfInput(ctx)}
       <input type="file" name="file" id="file-input" accept="video/*,image/*" multiple required aria-label="Choose files">
+      <label>Add to <select name="playlist" id="upload-to">${to}</select></label>
       <button type="submit" class="primary">Upload</button>
     </form>
   </div>
@@ -85,23 +102,28 @@ function usedIn(names) {
   return `<span class="media-used" title="${esc(names.join(", "))}">In ${shown}${names.length > 2 ? ` and ${names.length - 2} more` : ""}</span>`;
 }
 
-function card(v, tz, editor, playlists) {
+// One file. The data-* are what the Library's Find / Show / Sort read (public/media.js): the
+// name, the type, the size, the running time and where the file is used ("default" only in the
+// account's Default playlist, "playlist" in any other, upload links' included, "none" in none).
+// `playlists` are the playlists it is in ({id, name}), by name.
+function card(v, tz, editor, playlists, defaultId) {
   const when = localTime(v.uploaded_at, tz);
   const facts = [fileSize(v.size_bytes), v.width ? `${v.width}×${v.height}` : "", v.codec || ""].filter(Boolean);
   // The viewer's line: everything the table used to show for the file.
   const meta = [...facts, v.media_type === "video" ? runTime(v.duration_seconds) : "", `uploaded ${when}`].filter(Boolean).join(" · ");
+  const use = !playlists ? "none" : playlists.every((p) => p.id === defaultId) ? "default" : "playlist";
   const actions = editor ? `
       <div class="media-actions">
         <label class="inline-check"><input type="checkbox" name="media_id" value="${v.id}" aria-label="Select ${esc(v.original_name)}">Select</label>
         <button type="submit" name="one" value="${v.id}" class="danger small" data-confirm="Delete ${esc(v.original_name)}? It is removed from every playlist that uses it.">Delete</button>
       </div>` : "";
-  return `    <li class="media-card">
+  return `    <li class="media-card" data-name="${esc(v.original_name)}" data-kind="${esc(v.media_type)}" data-size="${Number(v.size_bytes) || 0}" data-length="${Number(v.duration_seconds) || 0}" data-use="${use}">
       ${thumbCell(v, meta)}
       <div class="media-info">
-        <span class="media-name" title="${esc(v.original_name)}">${esc(v.original_name)}</span>
+        <a class="media-name" href="/library/${v.id}">${esc(v.original_name)}</a>
         <span class="media-meta">${esc(facts.join(" · "))}</span>
         <span class="media-meta">${esc(when)}</span>
-        ${usedIn(playlists)}
+        ${usedIn(playlists && playlists.map((p) => p.name))}
       </div>${actions}
     </li>`;
 }
@@ -109,39 +131,64 @@ function card(v, tz, editor, playlists) {
 async function libraryPage(ctx) {
   const user = auth.requireUser(ctx);
   const editor = user.role !== "viewer";
-  const tz = (await ctx.settings()).timezone;
-  const items = await db.all(ctx.env,
-    `SELECT id, original_name, filename, media_type, size_bytes, duration_seconds, width, height, codec, uploaded_at
-     FROM media WHERE owner_id = ? ORDER BY uploaded_at DESC, id DESC`, user.id);
-  // Which playlists each file is in (the account's own, by name): what a delete would touch.
+  const { timezone: tz, default_playlist_id: defaultId } = await ctx.settings();
+  const [items, uses, playlists] = (await db.batch(ctx.env, [
+    [`SELECT id, original_name, filename, media_type, size_bytes, duration_seconds, width, height, codec, uploaded_at
+       FROM media WHERE owner_id = ? ORDER BY uploaded_at DESC, id DESC`, user.id],
+    // Which playlists each file is in (the account's own, by name): what a delete would touch.
+    [`SELECT pi.media_id, p.id, p.name FROM playlist_items pi JOIN playlists p ON p.id = pi.playlist_id
+       WHERE p.owner_id = ? ORDER BY p.name COLLATE NOCASE, p.id`, user.id],
+    // The account's playlists, for "Add to" and Add to playlist.
+    ["SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name COLLATE NOCASE, id", user.id],
+  ])).map((r) => r.results);
   const usedBy = new Map();
-  for (const r of await db.all(ctx.env,
-    `SELECT pi.media_id, p.name FROM playlist_items pi JOIN playlists p ON p.id = pi.playlist_id
-      WHERE p.owner_id = ? ORDER BY p.name COLLATE NOCASE, p.id`, user.id)) {
-    if (!usedBy.has(r.media_id)) usedBy.set(r.media_id, []);
-    usedBy.get(r.media_id).push(r.name);
+  for (const u of uses) {
+    if (!usedBy.has(u.media_id)) usedBy.set(u.media_id, []);
+    usedBy.get(u.media_id).push(u);
   }
+  const dflt = playlists.find((p) => p.id === defaultId);
   const maxBytes = envInt(ctx.env, "PIPLAYER_MAX_UPLOAD_BYTES", 5 * 1024 * 1024 * 1024);
   const totalBytes = items.reduce((n, v) => n + (v.size_bytes || 0), 0);
-  const cards = items.map((v) => card(v, tz, editor, usedBy.get(v.id))).join("\n");
-  // Editors get one form round the whole grid: each file's Delete button and the ticked boxes
-  // post to the same route (a form cannot sit inside another, and every card needs the token).
-  // autocomplete="off": on Back a browser would restore the ticks by position, onto other files
-  // once the list has changed; data-max: Select all ticks no more than one delete takes.
-  const grid = !items.length ? emptyState("NO MEDIA", `No media yet.${editor ? " Drop a file above." : ""}`)
-    : editor ? `<form id="library-form" method="post" action="/library/delete" autocomplete="off" data-max="${MAX_DELETE}">
+  const cards = items.map((v) => card(v, tz, editor, usedBy.get(v.id), defaultId)).join("\n");
+  // Find / Show / Sort: public/media.js shows the bar and does the work in the browser (without
+  // the script the bar stays hidden). Outside the grid's form, so Enter in it submits nothing.
+  // ponytail: every card is on the page; past about 1,000 files add a server ?q= with paging.
+  const head = `<div class="media-head">
+  <h2 id="media-count">Media (${items.length})</h2>
+  <div class="media-find" id="media-find" hidden>
+    <label>Find <input type="search" id="find-q" autocomplete="off"></label>
+    <label>Show <select id="find-show"><option value="">All</option><option value="video">Videos</option><option value="image">Images</option>${dflt ? `<option value="default">Only in ${esc(dflt.name)}</option>` : ""}<option value="none">In no playlist</option></select></label>
+    <label>Sort <select id="find-sort"><option value="">Newest</option><option value="oldest">Oldest</option><option value="name">Name</option><option value="size">Largest</option><option value="length">Longest</option></select></label>
+  </div>
+</div>`;
+  // /library?to=<playlist id> (the playlist editor's Add from Library) picks that playlist.
+  const to = Number(ctx.url.searchParams.get("to"));
+  // Editors get one form round the whole grid: each file's Delete button, the ticked boxes and
+  // Add to playlist (formaction) post from it (a form cannot sit inside another, and every card
+  // needs the token). autocomplete="off": on Back a browser would restore the ticks by position,
+  // onto other files once the list has changed; data-max: Select all ticks no more than one
+  // request takes. The hidden noop button comes first because Enter on a tick box submits through
+  // the form's first submit button: with scripts off that was Delete selected, unasked.
+  const grid = !items.length ? `<h2>Media (0)</h2>\n${emptyState("NO MEDIA", `No media yet.${editor ? " Drop a file above." : ""}`)}`
+    : editor ? `${head}
+<form id="library-form" method="post" action="/library/delete" autocomplete="off" data-max="${MAX_DELETE}">
   ${csrfInput(ctx)}
+  <button type="submit" name="noop" value="1" hidden></button>
   <div class="media-bar">
-    <h2>Media (${items.length})</h2>
     <div class="action-buttons">
       <button type="button" class="small" data-select-all>Select all</button>
       <button type="submit" class="danger small" data-delete-selected data-confirm="Delete the selected files? They are removed from every playlist that uses them.">Delete selected</button>
     </div>
+    <div class="action-buttons media-add">
+      <select name="playlist_id" id="add-to" aria-label="Playlist"><option value="">Pick a playlist</option>${playlists.map((p) => `<option value="${p.id}"${p.id === to ? " selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
+      <button type="submit" class="small" formaction="/library/add-to-playlist" data-add-selected>Add to playlist</button>
+    </div>
+    <span class="sr-only" role="status" data-picked></span>
   </div>
   <ul class="media-grid" data-thumb-put>
 ${cards}
   </ul>
-</form>` : `<h2>Media (${items.length})</h2>
+</form>` : `${head}
 <ul class="media-grid">
 ${cards}
 </ul>`;
@@ -150,9 +197,9 @@ ${cards}
   <span class="page-meta">${items.length} file${items.length === 1 ? "" : "s"} · ${fileSize(totalBytes)} in total</span>
 </div>
 
-${editor ? uploadGrid(maxBytes, ctx) : ""}
+${editor ? uploadGrid(ctx, maxBytes, playlists, dflt) : ""}
 
-${items.length ? "" : `<h2>Media (0)</h2>\n`}${grid}`;
+${grid}`;
   return layout(ctx, { title: "Library", content, scripts: ["/static/media.js", ...(editor ? ["/static/sha256.js", "/static/upload.js"] : [])] });
 }
 
@@ -218,12 +265,15 @@ async function libraryDelete(ctx) {
 }
 
 // The grid's form: `one` is the file whose own Delete was pressed, else every ticked `media_id`.
+// `noop` is Enter on a tick box with scripts off (libraryPage): the ticks come along, nothing is
+// deleted, and the 204 leaves the browser on the page with its ticks.
 async function libraryDeleteMany(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const form = await ctx.form();
+  if (form.has("noop")) return new Response(null, { status: 204 });
   const one = str(form, "one").trim();
   const picked = one ? [one] : form.getAll("media_id").filter((v) => typeof v === "string");
-  if (!picked.length) return auth.flashRedirect(ctx, "/library", "Nothing was ticked. Tick the files to delete, then press Delete selected.", "warn");
+  if (!picked.length) return auth.flashRedirect(ctx, "/library", "Nothing was ticked.", "warn");
   if (picked.length > MAX_DELETE) fail(400, `Delete at most ${MAX_DELETE} files at a time`);
   const rows = await deleteMedia(ctx, user, [...new Set(picked.map((v) => idParam(v, "media_id")))]);
   if (!rows.length) return auth.flashRedirect(ctx, "/library", "Nothing was deleted: those files are no longer in the library.", "warn");

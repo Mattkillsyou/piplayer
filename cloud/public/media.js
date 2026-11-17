@@ -1,5 +1,6 @@
 // Media previews on the Library page and in the playlist editor (src/pages/library.js thumbCell):
-// the small pictures, the viewer a picture opens, and the Library's "Delete selected".
+// the small pictures, the viewer a picture opens, and the Library's media bar (Delete selected,
+// Add to playlist) and Find / Show / Sort.
 //
 // Small pictures. The server cannot decode a video, so a preview is made here, in the browser,
 // the first time a page shows a file that has none. <img data-thumb="<media id>"> asks
@@ -60,8 +61,9 @@
     });
   }
 
-  // A frame of the video at `url` as a canvas. The frame is taken FRAME_AT seconds in; when
-  // that one is black (a slow fade, a title card) the middle of the video is tried once.
+  // A frame of the video at `url` as a canvas. The frame is taken FRAME_AT seconds in (a quarter
+  // of the way in, in a shorter one); when that one is black (a slow fade, a title card) the
+  // middle of the video, always later, is tried once.
   function frameOf(url) {
     return new Promise(function (resolve, reject) {
       var video = document.createElement('video');
@@ -81,7 +83,7 @@
         var canvas;
         try { canvas = draw(video, video.videoWidth, video.videoHeight); } catch (e) { finish(e); return; }
         var length = isFinite(video.duration) ? video.duration : 0;
-        if (!retried && length > 2 * FRAME_AT && isDark(canvas)) {
+        if (!retried && length > 0 && isDark(canvas)) {
           retried = true;
           video.currentTime = length / 2; // 'seeked' calls grab again
           return;
@@ -107,12 +109,17 @@
     });
   }
 
+  // A refusal is marked: signed out (the 303 to the sign-in page, opaque with redirect: manual)
+  // or a stale token (403), no later store from this page would get through either.
   function store(id, blob) {
     return fetch('/library/' + id + '/thumb', {
       method: 'PUT', body: blob, redirect: 'manual',
       headers: { 'X-CSRF-Token': csrf(), 'Content-Type': 'image/jpeg' }
     }).then(function (r) {
-      if (!r.ok) throw new Error('the preview was not stored (' + r.status + ')');
+      if (r.ok) return;
+      var err = new Error('the preview was not stored (' + r.status + ')');
+      err.refused = r.type === 'opaqueredirect' || r.status === 403;
+      throw err;
     });
   }
 
@@ -121,10 +128,12 @@
   // One preview at a time: a library of new uploads would otherwise open every video at once.
   var queue = [];
   var busy = false;
-  var gaveUp = false; // a refused store (signed out, a stale token) ends the making for this page
+  var gaveUp = false; // a refused store, or three failed in a row, ends the making for this page
+  var failed = 0;     // stores failed in a row: an outage must not have every visit download a frame of every video
 
-  // After a refused store nothing more is made here: the waiting tiles say NO PREVIEW instead of
-  // MAKING PREVIEW for ever.
+  // A store that failed costs its own tile only (a file deleted meanwhile, a dropped connection).
+  // After a refused one, or a run of failures, nothing more is made here: the waiting tiles say
+  // NO PREVIEW instead of MAKING PREVIEW for ever.
   function giveUp() {
     gaveUp = true;
     queue.splice(0).forEach(function (img) {
@@ -145,10 +154,14 @@
       : Promise.resolve().then(function () { return draw(img, img.naturalWidth, img.naturalHeight); });
     made.then(toJpeg).then(function (blob) {
       return store(img.dataset.thumb, blob).then(function () {
+        failed = 0;
         if (!isVideo) return; // the picture itself is already on show
         img.src = URL.createObjectURL(blob);
         link.classList.remove('is-making');
-      }, function (err) { giveUp(); throw err; });
+      }, function (err) {
+        if (err.refused || ++failed >= 3) giveUp();
+        throw err;
+      });
     }).then(null, function (err) {
       link.classList.remove('is-making');
       if (isVideo) link.classList.add('no-preview');
@@ -191,11 +204,14 @@
   // simply opens the file in a new tab; with it, the file opens large on this page, a video
   // with its controls, and Previous / Next walk the page's files in order.
   var dialog = null;
-  var stage, nameEl, metaEl, closeBtn, prevBtn, nextBtn, deleteBtn;
+  var stage, nameEl, metaEl, closeBtn, prevBtn, nextBtn, deleteBtn, detailsLink, downloadLink;
   var current = null;
   var downOnBackdrop = false;
 
-  function links() { return Array.prototype.slice.call(document.querySelectorAll('a[data-view]')); }
+  // The previews on show, in page order: the cards Find hides are skipped.
+  function links() {
+    return Array.prototype.filter.call(document.querySelectorAll('a[data-view]'), function (a) { return !a.closest('[hidden]'); });
+  }
 
   // The Delete button of the card a preview sits in (the Library, for editors), if any.
   function deleteOf(link) {
@@ -204,6 +220,9 @@
   }
 
   function clearStage() {
+    // Focus on what goes (the video, the note's link) would drop out of the dialog, and the arrow
+    // keys with it: Close keeps it inside.
+    if (stage.contains(document.activeElement)) closeBtn.focus();
     var playing = stage.querySelector('video');
     if (playing) { playing.pause(); playing.removeAttribute('src'); playing.load(); }
     stage.textContent = '';
@@ -213,7 +232,7 @@
     clearStage();
     var p = document.createElement('p');
     p.className = 'viewer-note';
-    p.textContent = 'This browser cannot show this file. It still plays on the projector. ';
+    p.textContent = 'Cannot show this file here. ';
     var a = document.createElement('a');
     a.href = link.href; a.target = '_blank'; a.rel = 'noopener';
     a.textContent = 'Open the file itself';
@@ -224,13 +243,16 @@
   function build() {
     dialog = document.createElement('dialog');
     dialog.className = 'viewer';
-    dialog.setAttribute('aria-label', 'Preview');
+    // Named by the file shown: read out as the viewer opens, and again on each step (aria-live).
+    dialog.setAttribute('aria-labelledby', 'viewer-name');
     dialog.innerHTML =
-      '<div class="viewer-head"><span class="viewer-name"></span><button type="button" class="small" data-close>Close</button></div>' +
+      '<div class="viewer-head"><span class="viewer-name" id="viewer-name" aria-live="polite"></span><button type="button" class="small" data-close>Close</button></div>' +
       '<div class="viewer-stage"></div>' +
       '<div class="viewer-foot"><span class="viewer-meta"></span><div class="action-buttons">' +
       '<button type="button" class="small" data-step="-1">Previous</button>' +
       '<button type="button" class="small" data-step="1">Next</button>' +
+      '<a class="button small" data-details>Details</a>' +
+      '<a class="button small" data-download>Download</a>' +
       '<button type="button" class="small danger" data-delete>Delete</button></div></div>';
     document.body.appendChild(dialog);
     stage = dialog.querySelector('.viewer-stage');
@@ -240,6 +262,8 @@
     prevBtn = dialog.querySelector('[data-step="-1"]');
     nextBtn = dialog.querySelector('[data-step="1"]');
     deleteBtn = dialog.querySelector('[data-delete]');
+    detailsLink = dialog.querySelector('[data-details]');
+    downloadLink = dialog.querySelector('[data-download]');
     // A click lands on the dialog itself from the dimmed page round it, but also when a press
     // inside (selecting the name, dragging the video's timeline) is let go out there: only a
     // press that started on the dimmed page closes it.
@@ -248,15 +272,44 @@
       if ((e.target === dialog && downOnBackdrop) || e.target.closest('[data-close]')) { dialog.close(); return; }
       var step = e.target.closest('[data-step]');
       if (step) { move(parseInt(step.dataset.step, 10)); return; }
-      // Delete presses the card's own button: one question, one route, whichever way it is reached.
-      if (e.target.closest('[data-delete]') && current && deleteOf(current)) deleteOf(current).click();
+      if (e.target.closest('[data-delete]') && current) remove(current);
     });
     dialog.addEventListener('keydown', function (e) {
       if (e.target.tagName === 'VIDEO') return; // the arrows move through the video there
       if (e.key === 'ArrowLeft') move(-1);
       if (e.key === 'ArrowRight') move(1);
     });
-    dialog.addEventListener('close', function () { clearStage(); current = null; });
+    // Focus goes back to the file last shown, not the one the viewer opened on (where the browser
+    // has just put it).
+    dialog.addEventListener('close', function () {
+      var shown = current;
+      clearStage();
+      current = null;
+      if (shown && shown.isConnected) shown.focus();
+    });
+  }
+
+  // Delete asks the card's own question and posts the card's own route, from here: the page stays
+  // where it was (a reload put a phone back at the top) and the viewer goes on to the next file.
+  // Anything but the Library coming back (signed out, a stale token) reloads the page, which says
+  // why. The fetch follows the redirect, so the "Deleted" notice is used up on the way.
+  function remove(link) {
+    var btn = deleteOf(link);
+    var card = link.closest('.media-card');
+    if (!btn || !confirm(btn.dataset.confirm)) return;
+    fetch(btn.form.action, {
+      method: 'POST', body: new URLSearchParams({ one: btn.value }), headers: { 'X-CSRF-Token': csrf() }
+    }).then(function (r) {
+      if (!r.ok || new URL(r.url).pathname !== '/library') throw new Error('not deleted (' + r.status + ')');
+      if (!card.parentNode) return; // pressed twice: the first one took it
+      var all = links();
+      var i = all.indexOf(link);
+      var to = all[i + 1] || all[i - 1];
+      card.parentNode.removeChild(card);
+      recount();
+      if (current !== link) return; // the viewer has moved on, or closed
+      if (to) show(to); else dialog.close();
+    }).then(null, function () { location.reload(); });
   }
 
   function move(by) {
@@ -275,15 +328,33 @@
       el.controls = true;
       el.autoplay = true;
       el.playsInline = true;
+      el.setAttribute('aria-label', link.dataset.name || '');
     } else {
       el = new Image();
       el.alt = link.dataset.name || '';
     }
-    el.onerror = function () { if (current === link) cannotShow(link); };
+    // The file would not show. When the server has it, this browser cannot decode it: say so.
+    // When it is gone (deleted elsewhere) or the session has ended, the page is stale: reloading
+    // shows the files that are left, or the sign-in page.
+    el.onerror = function () {
+      if (current !== link) return;
+      fetch(link.href, { method: 'HEAD', cache: 'no-store' }).then(function (r) {
+        if (current !== link) return;
+        if (r.ok) cannotShow(link); else location.reload();
+      }, function () { if (current === link) cannotShow(link); });
+    };
     el.src = link.href;
     stage.appendChild(el);
     nameEl.textContent = link.dataset.name || '';
-    metaEl.textContent = link.dataset.meta || '';
+    // One unbreakable piece per fact: a phone broke the upload date at its hyphen.
+    metaEl.textContent = '';
+    (link.dataset.meta || '').split(' · ').forEach(function (fact, n) {
+      if (n) metaEl.appendChild(document.createTextNode(' · '));
+      var span = document.createElement('span');
+      span.className = 'nowrap';
+      span.textContent = fact;
+      metaEl.appendChild(span);
+    });
     var all = links();
     var i = all.indexOf(link);
     var focused = document.activeElement;
@@ -296,6 +367,14 @@
       (other.disabled ? closeBtn : other).focus();
     }
     deleteBtn.hidden = !deleteOf(link);
+    detailsLink.hidden = !link.dataset.page;
+    if (link.dataset.page) detailsLink.href = link.dataset.page;
+    // Saved under the file's own name (same origin, so the browser takes it), with the stored
+    // file's extension when the name has lost it.
+    var name = link.dataset.name || '';
+    var ext = (/\.\w+$/.exec(link.pathname) || [''])[0];
+    downloadLink.setAttribute('href', link.getAttribute('href'));
+    downloadLink.download = name.slice(-ext.length).toLowerCase() === ext.toLowerCase() ? name : name + ext;
     if (!dialog.open) dialog.showModal();
   }
 
@@ -308,33 +387,55 @@
     });
   }
 
-  // --------------------------------------------------------- delete selected ---
+  // ---------------------------------------------------------------- media bar ---
 
-  // The Library's grid form: the button counts the ticked files, is off while none is, and
-  // asks about that many (app.js shows a submit button's own data-confirm). One delete takes at
-  // most data-max files (library.js MAX_DELETE): Select all ticks that many from the top.
+  // The Library's grid form: Delete selected and Add to playlist count the ticked files and are
+  // off while none is (Add also while no playlist is picked: the page would come back with the
+  // ticks gone), and Delete selected asks about the files by name, up to three (app.js shows a
+  // submit button's own data-confirm). One request takes at most data-max files (library.js
+  // MAX_DELETE): Select all ticks that many from the top of what is shown.
   var form = document.getElementById('library-form');
   var bulk = form && form.querySelector('[data-delete-selected]');
   var all = form && form.querySelector('[data-select-all]');
+  var add = form && form.querySelector('[data-add-selected]');
+  var addTo = document.getElementById('add-to');
+  var picked = form && form.querySelector('[data-picked]');
+  var sync = function () {};
+  // After the viewer's Delete took a card off the page: the counts again (Find's own version also
+  // forgets the card).
+  var recount = function () { sync(); };
   if (bulk && all) {
     var max = parseInt(form.dataset.max, 10) || Infinity;
-    var boxes = function () { return Array.prototype.slice.call(form.querySelectorAll('input[name="media_id"]')); };
-    var ticked = function (every) { return every.filter(function (b) { return b.checked; }).length; };
+    // The tick boxes of the cards on show: Find unticks the ones it hides.
+    var boxes = function () {
+      return Array.prototype.filter.call(form.querySelectorAll('input[name="media_id"]'), function (b) { return !b.closest('[hidden]'); });
+    };
+    var ticked = function (every) { return every.filter(function (b) { return b.checked; }); };
     var full = function (every, n) { return n > 0 && n >= Math.min(every.length, max); };
-    var sync = function () {
+    sync = function () {
       var every = boxes();
-      var n = ticked(every);
+      var on = ticked(every);
+      var n = on.length;
+      var names = on.slice(0, 3).map(function (b) { return b.closest('.media-card').dataset.name; });
+      var last = names.pop();
       bulk.disabled = !n || n > max;
       bulk.textContent = n > max ? 'Delete at most ' + max : n ? 'Delete selected (' + n + ')' : 'Delete selected';
       bulk.dataset.confirm = n === 1
-        ? 'Delete the selected file? It is removed from every playlist that uses it.'
-        : 'Delete these ' + n + ' files? They are removed from every playlist that uses them.';
+        ? 'Delete ' + last + '? It is removed from every playlist that uses it.'
+        : 'Delete ' + (n > 3 || !n ? 'these ' + n + ' files' : names.join(', ') + ' and ' + last) + '? They are removed from every playlist that uses them.';
+      if (add && addTo) {
+        add.disabled = !n || n > max || !addTo.value;
+        add.textContent = n > max ? 'Add at most ' + max : n ? 'Add to playlist (' + n + ')' : 'Add to playlist';
+      }
       all.textContent = full(every, n) ? 'Select none' : 'Select all';
+      // Said to a screen reader (role=status), once per change: pageshow syncs again unchanged.
+      var said = n ? n + (n === 1 ? ' file selected' : ' files selected') : '';
+      if (picked && picked.textContent !== said) picked.textContent = said;
     };
     form.addEventListener('change', sync);
     all.addEventListener('click', function () {
       var every = boxes();
-      var n = ticked(every);
+      var n = ticked(every).length;
       if (full(every, n)) {
         every.forEach(function (b) { b.checked = false; });
       } else {
@@ -342,13 +443,77 @@
       }
       sync();
     });
-    // Enter on a tick box would submit the form with its first enabled submit button: with
-    // Delete selected off, that is the first card's own Delete, a file nobody pointed at. Enter
-    // ticks the box instead, as Space does.
+    // Enter on a tick box would submit the form through its first submit button (the hidden
+    // noop, which does nothing). Enter ticks the box instead, as Space does.
     form.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && e.target.type === 'checkbox') { e.preventDefault(); e.target.click(); }
     });
     sync();
     window.addEventListener('pageshow', sync); // the back/forward cache brings the page back as it was
+  }
+
+  // --------------------------------------------------------------------- find ---
+
+  // Find / Show / Sort over the Library's cards (library.js card()'s data-*), in the browser. A
+  // card that does not match is hidden, and unticked so nothing out of sight is deleted or added;
+  // the cards are put in the order picked, which is also the order Add to playlist appends them
+  // in. The view is kept for this tab, so the reload after a delete or an add shows the same files.
+  var finder = document.getElementById('media-find');
+  var grid = finder && document.querySelector('.media-grid');
+  if (grid) {
+    var q = document.getElementById('find-q');
+    var showSel = document.getElementById('find-show');
+    var sortSel = document.getElementById('find-sort');
+    var count = document.getElementById('media-count');
+    var KEY = 'p5k-library-find';
+    // The server sends the newest first: i is that order.
+    var cards = Array.prototype.map.call(grid.children, function (card, i) {
+      var d = card.dataset;
+      return {
+        card: card, box: card.querySelector('input[name="media_id"]'), i: i,
+        name: (d.name || '').toLowerCase(), kind: d.kind, use: d.use, size: +d.size || 0, length: +d.length || 0
+      };
+    });
+    var ORDER = {
+      '': function (a, b) { return a.i - b.i; },
+      oldest: function (a, b) { return b.i - a.i; },
+      name: function (a, b) { return a.name.localeCompare(b.name, undefined, { numeric: true }) || a.i - b.i; },
+      size: function (a, b) { return b.size - a.size || a.i - b.i; },
+      length: function (a, b) { return b.length - a.length || a.i - b.i; }
+    };
+    var apply = function (reorder) {
+      if (reorder) cards.slice().sort(ORDER[sortSel.value] || ORDER['']).forEach(function (c) { grid.appendChild(c.card); });
+      var words = q.value.toLowerCase().split(/\s+/).filter(Boolean);
+      var show = showSel.value;
+      var shown = 0;
+      cards.forEach(function (c) {
+        var hide = (show === 'video' || show === 'image' ? c.kind !== show : show && c.use !== show) ||
+          !words.every(function (w) { return c.name.indexOf(w) >= 0; });
+        c.card.hidden = !!hide;
+        if (!hide) shown++;
+        else if (c.box) c.box.checked = false;
+      });
+      count.textContent = 'Media (' + (shown === cards.length ? shown : shown + ' of ' + cards.length) + ')';
+      try { sessionStorage.setItem(KEY, JSON.stringify({ q: q.value, show: show, sort: sortSel.value })); } catch (e) { /* storage off */ }
+      sync();
+    };
+    try {
+      var kept = JSON.parse(sessionStorage.getItem(KEY)) || {};
+      q.value = kept.q || '';
+      showSel.value = kept.show || '';
+      sortSel.value = kept.sort || '';
+    } catch (e) { /* nothing kept */ }
+    // A kept choice this page does not offer (no Default playlist any more): back to the first.
+    if (showSel.selectedIndex < 0) showSel.selectedIndex = 0;
+    if (sortSel.selectedIndex < 0) sortSel.selectedIndex = 0;
+    recount = function () {
+      cards = cards.filter(function (c) { return c.card.parentNode; });
+      apply(false);
+    };
+    q.addEventListener('input', function () { apply(false); });
+    showSel.addEventListener('change', function () { apply(false); });
+    sortSel.addEventListener('change', function () { apply(true); });
+    finder.hidden = false;
+    apply(!!sortSel.value);
   }
 })();
