@@ -366,6 +366,21 @@ describe("uploading and sending through a link", () => {
     await query("UPDATE devices SET playlist_id = NULL WHERE id = ?", den.id);
   });
 
+  it("Delete selected names the projector it took off an upload playlist on the audit row of that playlist's file only", async () => {
+    const J = fakeFile(555, 41);
+    expect((await send(api, "wall-3.png", J)).status).toBe(200);
+    expect((await anon.postJson(`${api}/play`, { media: [await digest(J)], devices: [den.id] })).status).toBe(200);
+    expect(await playlistOf(den)).not.toBeNull();
+    const wall = (await one("SELECT id FROM media WHERE original_name = 'wall-3.png' AND owner_id = ?", r.ids.editor)).id;
+    const plain = await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('plain-k.png', 'plain-k.png', 'image', 1, ?, ?)", "8".repeat(64), r.ids.editor);
+    const res = await post(r.editor, "/library/delete", [["media_id", String(plain)], ["media_id", String(wall)]]);
+    expect(res.status).toBe(303);
+    expect(await playlistOf(den)).toBeNull();
+    const rows = Object.fromEntries((await audits("delete_media")).slice(0, 2).map((a) => [Number(a.target_id), JSON.parse(a.details)]));
+    expect(rows[plain]).toEqual({ filename: "plain-k.png", playlists: [] });
+    expect(rows[wall]).toMatchObject({ filename: "wall-3.png", devices_cleared: [den.id] });
+  });
+
   it("from a browser that is signed in to the console a link still acts as the link: its own account, no user on the audit rows", async () => {
     const G = fakeFile(410, 23);
     // the admin's session cookie rides along on the editor's link (and /api/link needs no CSRF token)

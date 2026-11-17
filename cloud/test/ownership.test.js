@@ -294,6 +294,7 @@ describe("users page", () => {
     const pl = await playlist("Gone PL", uid);
     const d = await device("gone-1", "Gone One", { owner_id: uid, playlist_id: pl });
     await env.MEDIA.put("media/gone-file.mp4", new Uint8Array(10));
+    await env.MEDIA.put("thumbs/gone-file.mp4.jpg", new Uint8Array([0xff, 0xd8, 0xff])); // its Library preview
     await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('gone-file.mp4', 'g.mp4', 'video', 10, ?, ?)", "f".repeat(64), uid);
     expect(await (await r.admin.get("/users")).text()).toContain('<td title="Projectors this account owns (set on the Devices page)">1</td>\n      <td class="muted nowrap">');
     expect(await (await r.admin.get("/devices")).text()).toContain(`<option value="${uid}">gone</option>`);
@@ -312,6 +313,7 @@ describe("users page", () => {
     expect(await query("SELECT id FROM playlists WHERE owner_id = ? OR id = ?", uid, pl)).toEqual([]);
     expect(await query("SELECT id FROM media WHERE filename = 'gone-file.mp4'")).toEqual([]);
     expect(await env.MEDIA.head("media/gone-file.mp4")).toBeNull();
+    expect(await env.MEDIA.head("thumbs/gone-file.mp4.jpg")).toBeNull();
     expect(await query("SELECT key FROM account_settings WHERE user_id = ?", uid)).toEqual([]);
     expect((await audits("user_delete"))[0].details).toBe('{"media_deleted": 1, "projectors_signed_out": 1}');
     await query("DELETE FROM devices WHERE id = ?", d.id);

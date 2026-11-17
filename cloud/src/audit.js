@@ -26,23 +26,30 @@ export function pyJson(v) {
   return JSON.stringify(v);
 }
 
+// The INSERT of one row as [sql, ...params] (db.batch's shape): log() runs one; a route that
+// writes many rows at once (the Library's delete of several files) puts them in one batch.
 // `owner`: the account id the row is about (null = none: only admins see it); undefined = the
 // acting user's own account.
-export async function log(ctx, action, targetType = null, targetId = null, details = null, user = undefined, owner = undefined) {
+export function statement(ctx, action, targetType = null, targetId = null, details = null, user = undefined, owner = undefined) {
   const u = user === undefined ? ctx.user : user;
   const o = owner === undefined ? (u ? u.id : null) : owner;
-  try {
-    await db.run(ctx.env,
-      `INSERT INTO audit_log (user_id, username, action, target_type, target_id, details, ip, owner_id)
+  return [
+    `INSERT INTO audit_log (user_id, username, action, target_type, target_id, details, ip, owner_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      u ? u.id : null,
-      u ? u.username : null,
-      action,
-      targetType,
-      targetId === null || targetId === undefined ? null : String(targetId),
-      details && Object.keys(details).length ? pyJson(details) : null,
-      clientIp(ctx),
-      o ?? null);
+    u ? u.id : null,
+    u ? u.username : null,
+    action,
+    targetType,
+    targetId === null || targetId === undefined ? null : String(targetId),
+    details && Object.keys(details).length ? pyJson(details) : null,
+    clientIp(ctx),
+    o ?? null,
+  ];
+}
+
+export async function log(ctx, action, ...rest) {
+  try {
+    await db.run(ctx.env, ...statement(ctx, action, ...rest));
   } catch (e) {
     console.error(`audit log write failed for ${action}: ${e}`);
   }

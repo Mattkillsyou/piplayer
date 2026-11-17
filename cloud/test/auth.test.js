@@ -216,6 +216,7 @@ describe("login / logout", () => {
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/login");
     expect(r.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(r.headers.get("clear-site-data")).toBe('"cache"'); // the Library's cached previews go too
     expect(await query("SELECT id FROM sessions WHERE id = ?", id)).toEqual([]);
     expect(c.cookie).toBeNull();
     expect((await c.get("/dashboard")).headers.get("location")).toBe("/login"); // signed out: the dashboard bounces (the home page itself is public)

@@ -105,14 +105,16 @@
   --p5k-text-display: 30px;
   --p5k-text-title: 24px;
   --p5k-text-subtitle: 18px;
-  --p5k-text-name: 13px;
-  --p5k-text-data-lg: 13px;
-  --p5k-text-data: 12px;
-  --p5k-text-data-sm: 11px;
-  --p5k-text-label: 12px;
-  --p5k-text-label-sm: 11px;
-  --p5k-text-body: 13px;
-  --p5k-text-body-sm: 11px;
+  /* One step up from the first console (11 to 13px): file names, table rows and form labels are
+     what an owner reads all day, on a laptop and on a phone. */
+  --p5k-text-name: 14px;
+  --p5k-text-data-lg: 15px;
+  --p5k-text-data: 14px;
+  --p5k-text-data-sm: 13px;
+  --p5k-text-label: 13px;
+  --p5k-text-label-sm: 12px;
+  --p5k-text-body: 15px;
+  --p5k-text-body-sm: 13px;
   --p5k-text-eyebrow: 11px;
 
   --p5k-leading-tight: 1.2;
@@ -431,7 +433,7 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
   padding: 0 12px;
   border-bottom: 2px solid transparent;
   font-family: var(--p5k-font-mono);
-  font-size: var(--p5k-text-data-sm);
+  font-size: 12px;
   letter-spacing: var(--p5k-track-nav);
   text-transform: uppercase;
   color: var(--p5k-muted);
@@ -450,7 +452,7 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
 /* compact rule: tighter tracking below 1400px (ten links plus the SD Flasher pill) */
 @media (max-width: 1400px) {
   .topbar { gap: 14px; }
-  .topbar nav a { padding: 0 7px; font-size: 10px; letter-spacing: 0.06em; }
+  .topbar nav a { padding: 0 7px; font-size: 11px; letter-spacing: 0.06em; }
 }
 /* phone and narrow windows (iPad portrait, half-screen): brand + menu button on one row; nav
    and the user block drop into a stacked list. Below ~1000px the nine links no longer fit. */
@@ -458,7 +460,7 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
   .topbar { flex-wrap: wrap; gap: 10px; padding: 8px 14px; }
   .topbar nav { display: none; flex-basis: 100%; flex-direction: column; gap: 0; order: 3; border-top: 1px solid var(--p5k-rule-2); }
   .topbar.nav-open nav { display: flex; }
-  .topbar nav a { min-height: var(--p5k-touch); padding: 0 6px; border-bottom: 1px solid var(--p5k-rule); font-size: var(--p5k-text-data-sm); letter-spacing: var(--p5k-track-nav); }
+  .topbar nav a { min-height: var(--p5k-touch); padding: 0 6px; border-bottom: 1px solid var(--p5k-rule); font-size: var(--p5k-text-data); letter-spacing: var(--p5k-track-nav); }
   .topbar nav a.active { border-bottom-color: var(--p5k-rule); border-left: 2px solid var(--p5k-rule-max); padding-left: 8px; }
   .topbar nav a.nav-flasher { margin: 8px 0; padding: 0 12px; justify-content: center; }
   .topbar .user { display: none; order: 4; flex-basis: 100%; justify-content: space-between; padding: 10px 6px 6px; }
@@ -495,9 +497,9 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
 .page-head .page-meta strong { color: var(--p5k-phosphor); font-weight: 400; }
 .page-head .eyebrow { margin-bottom: 4px; }
 .page-head .head-actions { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.page-head .head-actions label { margin: 0; } /* the box and its button share one bottom edge */
 @media (max-width: 720px) {
   .page-head .head-actions { flex-direction: column; align-items: stretch; width: 100%; }
-  .page-head .head-actions label { margin: 0; }
   .page-head .head-actions button { min-height: var(--p5k-touch); }
   .page-head .page-meta { text-align: left; }
 }
@@ -655,6 +657,10 @@ button.link {
 }
 button.link:hover { color: var(--p5k-phosphor); border-color: var(--p5k-rule-max); box-shadow: var(--p5k-glow-hover-soft); }
 button.block, .button.block { width: 100%; }
+/* A finger needs 44px: the small buttons (Delete, Set, Edit, Revoke) were 24px tall on a phone. */
+@media (max-width: 720px) {
+  button.small, .button.small, button.link { min-height: var(--p5k-touch); padding-left: 12px; padding-right: 12px; }
+}
 .button-wide { padding: 12px; letter-spacing: 0.24em; font-size: var(--p5k-text-data-sm); }
 
 /* ---------------------------------------------------------------- forms --- */
@@ -690,6 +696,14 @@ input[type=search], input[type=email], input[type=url], input[type=file], select
   outline: none;
   appearance: none;
   -webkit-appearance: none;
+}
+/* A status chip inside a label ("set" / "not configured") keeps its own width: stretched across
+   the column it read as a second, greyed-out box above the real one. */
+label > .badge { align-self: flex-start; }
+/* iPhone Safari zooms the whole page into any box whose text is under 16px, and stays zoomed. */
+@media (max-width: 720px) {
+  input[type=text], input[type=password], input[type=number], input[type=time], input[type=date],
+  input[type=search], input[type=email], input[type=url], select, textarea { font-size: 16px; }
 }
 input::placeholder, textarea::placeholder { color: var(--p5k-dim); }
 input:focus, select:focus, textarea:focus { border-color: var(--p5k-rule-max); box-shadow: var(--p5k-glow-focus); outline: none; }
@@ -763,7 +777,8 @@ input[type=checkbox]:checked::before { color: var(--p5k-on-solid); }
 .row > label { flex: 1 1 180px; margin: 0; }
 .row > button, .row > .button { flex: 0 0 auto; }
 .row.tight { gap: 6px; align-items: center; }
-.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: var(--p5k-space-3); }
+/* align-items: end keeps the boxes of one row on a line when a neighbour's label runs to two lines */
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px 12px; align-items: end; margin-bottom: var(--p5k-space-3); }
 .form-grid label { margin: 0; }
 .days-fieldset { margin: 0 0 var(--p5k-space-4); padding: 10px 12px 12px; border: 1px solid var(--p5k-rule-3); }
 .days-fieldset legend { padding: 0 6px; font-size: var(--p5k-text-label-sm); letter-spacing: var(--p5k-track-label); text-transform: uppercase; color: var(--p5k-muted); }
@@ -775,7 +790,10 @@ form.duration-form, .duration-form { display: inline-flex; align-items: center; 
 .duration-form .unit { font-size: var(--p5k-text-label); color: var(--p5k-dim); }
 
 /* --------------------------------------------------------------- tables --- */
-.table-wrap { overflow-x: auto; margin-bottom: 18px; border: 1px solid var(--p5k-rule-3); }
+/* position: relative: the screen-reader-only texts inside a table (.sr-only is absolutely
+   positioned) then belong to this scroll box. Without it the hidden "Actions" heading of a wide
+   table sat past the right edge of a phone screen and made the whole page slide sideways. */
+.table-wrap { position: relative; overflow-x: auto; margin-bottom: 18px; border: 1px solid var(--p5k-rule-3); }
 .table-wrap table.data { margin: 0; border: 0; }
 table.data { width: 100%; border-collapse: collapse; margin-bottom: 18px; border: 1px solid var(--p5k-rule-3); font-size: var(--p5k-text-data-sm); color: var(--p5k-body); }
 table.data th, table.data td { padding: var(--p5k-pad-cell); text-align: left; vertical-align: middle; border-bottom: 1px solid var(--p5k-rule); }
@@ -798,6 +816,7 @@ table.data td .action-buttons { gap: 6px; }
 table.data td .action-buttons form, table.data td form.inline { margin: 0; }
 table.data td select { min-width: 140px; }
 table.data td input[type=password] { width: 9rem; display: inline-block; }
+table.data td input[type=email], table.data td input[type=text] { min-width: 11rem; } /* a squeezed column left the box one letter wide */
 table.data td .muted.small { display: inline; }
 tr.rule-active td { background: var(--p5k-fill-tint) !important; }
 tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
@@ -812,6 +831,7 @@ tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
   line-height: 1.5;
   color: var(--p5k-body);
   border: var(--p5k-status-warn-edge);
+  overflow-wrap: anywhere; /* a sync error's file name has no spaces: it pushed a phone page sideways */
 }
 .alert::before { content: "! "; }
 .alert.error, .alert.danger { border: 1px solid var(--p5k-rule-max); background: var(--p5k-hatch-soft); color: var(--p5k-phosphor); }
@@ -844,7 +864,8 @@ tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
 .device-grid.faults-only .device-card:not(.is-fault) { display: none; }
 .device-card .tile-actions { display: none; }
 
-.device-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 18px; margin-bottom: 22px; }
+/* align-items: start: a card is as tall as its own content, not as the tallest card of its row */
+.device-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 18px; align-items: start; margin-bottom: 22px; }
 .device-card { position: relative; display: flex; flex-direction: column; border: 1px solid var(--p5k-rule-3); background: var(--p5k-panel); }
 .device-card.is-fault { border-color: var(--p5k-rule-strong); }
 .device-screen {
@@ -930,7 +951,8 @@ tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
 .device-meta { font-size: var(--p5k-text-label); color: var(--p5k-muted); }
 .device-card .alert { margin: 0; }
 @media (max-width: 720px) {
-  .device-grid { grid-template-columns: 1fr; gap: 10px; }
+  /* minmax(0, 1fr), not 1fr: a bare 1fr grows to its widest line of text, which pushed every card past the screen's right edge */
+  .device-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .device-card { flex-direction: row; align-items: flex-start; gap: 10px; padding: 10px; }
   .device-card .device-screen { flex: 0 0 104px; width: 104px; border: 1px solid var(--p5k-rule-2); }
   /* The camera thumb and its error alert are direct children of the card: wrap them onto a
@@ -1110,6 +1132,77 @@ progress::-moz-progress-bar { background: var(--p5k-fill-solid); }
 #upload-status.is-error { color: var(--p5k-phosphor); }
 @media (max-width: 900px) { .library-grid { grid-template-columns: 1fr; } }
 
+/* The files as a grid of previews (pages/library.js card(), public/media.js). Each card: the
+   picture (a link the viewer opens), the name, the facts, and for an editor a tick box and its
+   own Delete, so nothing has to be found by scrolling a wide table sideways on a phone. */
+.media-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 0 0 var(--p5k-space-3); }
+.media-bar h2 { margin: 0; }
+.media-grid { list-style: none; margin: 0 0 22px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.media-card { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--p5k-rule-3); background: var(--p5k-panel); }
+.media-card:has(input:checked) { border-color: var(--p5k-rule-max); box-shadow: var(--p5k-glow-hover-soft); }
+/* 16:9 on black with the whole picture inside (contain): the shape of the projector's screen,
+   so an upright video shows the bars it will have on the wall. */
+.media-thumb { position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; background: #000; border-bottom: 1px solid var(--p5k-rule-2); }
+.media-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.media-thumb:hover img, .media-thumb:focus-visible img { opacity: .85; }
+.media-thumb:focus-visible { outline-offset: -3px; }
+.media-thumb .badge, .media-length { position: absolute; z-index: 1; padding: 2px 5px; font-size: var(--p5k-text-label-sm); line-height: 1.3; letter-spacing: 0.1em; background: rgba(0,0,0,.72); color: #FFFFFF; border: 1px solid rgba(255,255,255,.4); }
+.media-thumb .badge { left: 8px; top: 8px; }
+.media-thumb .badge-video { background: #FFFFFF; color: #000000; border-color: #FFFFFF; }
+.media-length { right: 8px; bottom: 8px; font-family: var(--p5k-font-mono); letter-spacing: 0; white-space: nowrap; }
+/* No picture to show: a video with no preview yet (is-making, while media.js draws one) or a
+   file this browser cannot decode (no-preview). The broken-image mark is hidden either way. */
+.media-thumb.no-preview img, .media-thumb.is-making img { visibility: hidden; }
+.media-thumb.no-preview::after, .media-thumb.is-making::after {
+  content: "NO PREVIEW";
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--p5k-font-display); font-size: var(--p5k-text-name); color: #8A8A8A;
+  background-image: var(--p5k-scanline-strong), var(--p5k-grid-v);
+}
+.media-thumb.is-making::after { content: "MAKING PREVIEW"; animation: p5k-lamp 1.2s steps(2, end) infinite; }
+.media-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 10px 12px; }
+.media-name { font-size: var(--p5k-text-data); line-height: 1.35; color: var(--p5k-ink); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.media-meta { font-size: var(--p5k-text-data-sm); color: var(--p5k-soft); }
+/* two lines, not an ellipsis: on one line the "and 2 more" was what got cut */
+.media-used { font-size: var(--p5k-text-data-sm); color: var(--p5k-body); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.media-used.none { color: var(--p5k-muted); }
+.media-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; padding: 0 12px 12px; }
+.media-actions .inline-check { margin: 0; font-size: var(--p5k-text-data-sm); }
+@media (max-width: 720px) {
+  .media-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .media-info { padding: 8px; }
+  /* Delete on a line of its own, full width: beside the tick box it ran past a 375px card's edge */
+  .media-actions { flex-wrap: wrap; gap: 4px; padding: 0 8px 8px; }
+  .media-actions button { flex: 1 1 100%; }
+  .media-actions .inline-check { min-height: var(--p5k-touch); } /* the whole label is the tap target */
+  .media-actions input[type=checkbox] { width: 22px; height: 22px; }
+  .media-actions input[type=checkbox]::before { font-size: 17px; }
+  .media-bar .action-buttons { flex: 1 1 100%; }
+  .media-bar .action-buttons button { flex: 1 1 0; }
+}
+
+/* The viewer media.js opens over the page: the file large (a video with its controls), its
+   name and facts, Previous / Next, and Delete where the page has one for the file. */
+dialog.viewer { width: min(1100px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 24px); padding: 0; overflow: auto; color: var(--p5k-body); background: var(--p5k-panel); border: 1px solid var(--p5k-rule-strong); }
+dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
+.viewer-head, .viewer-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 12px; }
+.viewer-head { flex-wrap: nowrap; border-bottom: 1px solid var(--p5k-rule-2); }
+.viewer-foot { border-top: 1px solid var(--p5k-rule-2); }
+.viewer-name { min-width: 0; font-size: var(--p5k-text-data-lg); color: var(--p5k-phosphor); overflow-wrap: anywhere; }
+.viewer-meta { font-size: var(--p5k-text-data-sm); color: var(--p5k-soft); }
+.viewer-stage { display: flex; align-items: center; justify-content: center; min-height: 180px; background: #000; }
+.viewer-stage img, .viewer-stage video { display: block; max-width: 100%; max-height: calc(100vh - 170px); max-height: calc(100dvh - 170px); }
+/* a phone's 44px buttons make the head and foot taller: an upright file left Previous / Next below the edge */
+@media (max-width: 720px) {
+  .viewer-stage img, .viewer-stage video { max-height: calc(100vh - 250px); max-height: calc(100dvh - 250px); }
+}
+/* on the stage, which is black in both themes */
+.viewer-note { margin: 0; padding: 28px 18px; text-align: center; color: #C9C9C9; }
+.viewer-note a { color: #FFFFFF; }
+.viewer-note a:focus-visible { outline-color: #FFFFFF; }
+.viewer [hidden] { display: none; }
+
 /* --------------------------------------------------------- playlist editor --- */
 .playlist-head input[type=text] { font-family: var(--p5k-font-display); font-size: 17px; text-transform: uppercase; }
 .playlist-head .row { margin: 0; }
@@ -1127,11 +1220,22 @@ progress::-moz-progress-bar { background: var(--p5k-fill-solid); }
 .sortable-table .drag-handle:hover, .sortable-table .drag-handle:focus-visible { color: var(--p5k-phosphor); }
 .sortable-table .drag-handle:focus-visible { outline-offset: -2px; box-shadow: none; }
 .sortable-table .position-cell { width: 40px; font-family: var(--p5k-font-display); font-size: var(--p5k-text-name); color: var(--p5k-phosphor); }
+/* Each row's preview: the Library's tile (library.js thumbCell), small. */
+.sortable-table td.thumb-cell { width: 128px; padding-top: 6px; padding-bottom: 6px; }
+.sortable-table .media-thumb { width: 128px; border: 1px solid var(--p5k-rule-2); }
+.sortable-table .media-thumb .badge { left: 4px; top: 4px; }
+.sortable-table .media-thumb .badge, .sortable-table .media-length { padding: 1px 4px; font-size: var(--p5k-text-label-sm); }
+.sortable-table .media-length { right: 4px; bottom: 4px; }
+.sortable-table .media-thumb.no-preview::after, .sortable-table .media-thumb.is-making::after { padding: 4px; font-size: 10px; text-align: center; }
+@media (max-width: 720px) {
+  .sortable-table td.thumb-cell, .sortable-table .media-thumb { width: 88px; }
+  .sortable-table .media-length { display: none; }
+}
 .sortable-table tbody tr { transition: background-color .15s; }
 .sortable-ghost td { background: var(--p5k-fill-tint) !important; border-top: 1px dashed var(--p5k-rule-4); border-bottom: 1px dashed var(--p5k-rule-4); opacity: .6; }
 .sortable-chosen td { background: var(--p5k-fill-tint-2) !important; }
 .table-foot { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--p5k-rule-3); margin: 0 0 18px; background: var(--p5k-panel-2); }
-.table-foot form { display: flex; align-items: center; gap: 10px; flex: 1; flex-wrap: wrap; }
+.table-foot form { display: flex; align-items: center; gap: 10px; flex: 1; flex-wrap: wrap; min-width: 0; }
 .table-foot select { flex: 1 1 240px; width: auto; }
 .drop-hint { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 18px; border: 1px dashed var(--p5k-rule-4); font-size: var(--p5k-text-data-sm); color: var(--p5k-soft); }
 .drop-hint .sans { font-family: var(--p5k-font-sans); }
@@ -1207,6 +1311,10 @@ body.login-body { overflow-x: hidden; }
 .auth-card form { display: flex; flex-direction: column; gap: 14px; }
 .auth-card label { margin: 0; letter-spacing: 0.2em; }
 .auth-card input { padding: 10px; font-size: var(--p5k-text-data-lg); }
+/* the 16px iPhone rule under forms, again for the boxes whose own size rule comes later or is stronger */
+@media (max-width: 720px) {
+  .auth-card input, .duration-form input[type=number] { font-size: 16px; }
+}
 .auth-card .alert { margin: 0; }
 .auth-card button.primary { padding: 12px; font-size: var(--p5k-text-data-sm); letter-spacing: 0.24em; }
 .auth-card button.primary:hover { box-shadow: var(--p5k-glow-hover); }

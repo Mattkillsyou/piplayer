@@ -9,7 +9,9 @@ import { env } from "cloudflare:workers";
 import * as accounts from "../src/accounts.js";
 import * as auth from "../src/auth.js";
 import worker from "../src/index.js";
+import { MAX_DELETE, MAX_THUMB_BYTES } from "../src/pages/library.js";
 import * as uploads from "../src/uploads.js";
+import { fileSize, runTime } from "../src/util.js";
 import { BASE, Client, query, setupAdmin } from "./helpers.js";
 
 // [input name, Path(name).suffix.lower(), _final_media_name(sha, name, ext), _sanitize_filename(name)]
@@ -422,33 +424,47 @@ describe("upload protocol", () => {
 });
 
 describe("library page", () => {
-  it("lists media with badges, size, duration, resolution, codec and local time; viewers get no upload panel", async () => {
+  it("lists media as preview cards with badge, size, length, resolution, local time and playlists; viewers get no upload panel", async () => {
     let r = await editor.get("/library");
     expect(r.status).toBe(200);
     let html = await r.text();
     expect(html).toContain("<h1>Library</h1>");
     expect(html).toContain("Upload queue");
     expect(html).toMatch(/<form id="upload-form" method="post" action="\/library\/upload\/init" data-init="\/library\/upload\/init">\s*<input type="hidden" name="csrf_token" value="[^"]+">/);
+    expect(html).toContain('<script src="/static/media.js"></script>');
     expect(html).toContain('<script src="/static/sha256.js"></script>');
     expect(html).toContain('<script src="/static/upload.js"></script>');
     expect(html).toContain("Max 5.0 GB per file.");
     expect(html).toContain('<span class="badge badge-video">VIDEO</span>');
     expect(html).toContain('<span class="badge badge-image">IMAGE</span>');
-    expect(html).toContain('<td class="name">My Clip (1).mp4</td>');
-    expect(html).toContain('<td class="nowrap">12.0 MB</td>');
-    expect(html).toContain('<td class="nowrap">2.0 s</td>');
-    expect(html).toContain('<td class="nowrap">320×240</td>');
-    expect(html).toContain('<td class="nowrap">—</td>');
-    expect(html).toMatch(/<td class="muted nowrap">\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC<\/td>/);
-    expect(html).toContain('data-confirm="Delete My Clip (1).mp4? It is removed from every playlist that uses it."');
+    // the card: a preview that links to the file (the viewer opens it), then the name and the facts
+    const id = (await query("SELECT id FROM media WHERE original_name = 'My Clip (1).mp4'"))[0].id;
+    expect(html).toContain(`<img src="/library/${id}/thumb" alt="" loading="lazy" decoding="async" data-thumb="${id}">`);
+    expect(html).toMatch(/<a class="media-thumb" href="\/api\/media\/[0-9a-f]{16}_u\d+_My_Clip_1\.mp4" target="_blank" rel="noopener" data-view data-kind="video" data-name="My Clip \(1\)\.mp4" data-meta="12 MB · 320×240 · 2\.0 s · uploaded \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC" aria-label="Open My Clip \(1\)\.mp4">/);
+    expect(html).toContain('<span class="media-length">2.0 s</span>');
+    expect(html).toContain('<span class="media-name" title="My Clip (1).mp4">My Clip (1).mp4</span>');
+    expect(html).toContain('<span class="media-meta">12 MB · 320×240</span>');
+    expect(html).toMatch(/<span class="media-meta">\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC<\/span>/);
+    expect(html).toContain('<span class="media-used" title="Default">In Default</span>'); // an upload goes into the account's Default
+    expect(html).toContain('data-kind="img" data-name="pic.png"'); // a picture opens as an <img>, a video as a <video>
+    // one form round the grid: a Delete per card, a tick box per card and Delete selected
+    // autocomplete="off": Back must not restore ticks by position onto other files; data-max caps Select all
+    expect(html).toMatch(new RegExp(`<form id="library-form" method="post" action="/library/delete" autocomplete="off" data-max="${MAX_DELETE}">\\s*<input type="hidden" name="csrf_token" value="[^"]+">`));
+    expect(html).toContain(`<input type="checkbox" name="media_id" value="${id}" aria-label="Select My Clip (1).mp4">`);
+    expect(html).toContain(`<button type="submit" name="one" value="${id}" class="danger small" data-confirm="Delete My Clip (1).mp4? It is removed from every playlist that uses it.">Delete</button>`);
+    expect(html).toContain('data-delete-selected data-confirm="Delete the selected files? They are removed from every playlist that uses them.">Delete selected</button>');
+    expect(html).toContain('<ul class="media-grid" data-thumb-put>');
     expect(html).not.toContain("onsubmit");
+    expect(html).not.toContain("<table");
     expect(html).toMatch(/Media \(\d+\)/);
 
     r = await viewer.get("/library");
     html = await r.text();
     expect(html).not.toContain("Upload queue");
     expect(html).not.toContain("upload.js");
+    expect(html).toContain('<script src="/static/media.js"></script>'); // a viewer can still open a file
     expect(html).not.toContain("Delete</button>");
+    expect(html).not.toContain("data-thumb-put");
     expect((await new Client().get("/library")).status).toBe(303);
     // another account's library, an admin's included, holds none of the editor's files
     for (const c of [viewer, admin]) {
@@ -502,5 +518,108 @@ describe("library page", () => {
     expect(JSON.parse(a.details)).toEqual({ filename: "todelete.png", playlists: [dflt, 77] }); // the upload put it in the editor's Default too
     r = await editor.post(`/library/${media_id}/delete`, { csrf_token: editorCsrf });
     expect(r.status).toBe(404);
+  });
+});
+
+describe("library previews and Delete selected", () => {
+  // A preview body: any bytes that start like a JPEG (the server checks the magic, never decodes).
+  const jpeg = (n, seed = 40) => { const b = fakeFile(n, seed); b.set([0xff, 0xd8, 0xff], 0); return b; };
+  const putThumb = (c, token, id, body, headers = {}) => c.fetch(`/library/${id}/thumb`,
+    { method: "PUT", body, headers: { "X-CSRF-Token": token, "content-type": "image/jpeg", ...headers } });
+  const fileOf = async (id) => (await query("SELECT filename FROM media WHERE id = ?", id))[0].filename;
+  const flash = async (c) => /<div class="alert [a-z]+" role="alert">([^<]*)<\/div>/.exec(await (await c.get("/library")).text())?.[1];
+  const form = (token, pairs) => [["csrf_token", token], ...pairs];
+
+  it("fileSize and runTime read the way a person writes them", () => {
+    expect([0, -5, NaN, "x", 500, 999, 1000, 1024, 963584, 3984589, 10 * MiB - 52429, 10 * MiB, 20 * MiB, 1023.6 * MiB, 1288490189, 5 * 1024 ** 4].map(fileSize))
+      .toEqual(["0 B", "0 B", "0 B", "0 B", "500 B", "999 B", "1.0 KB", "1.0 KB", "941 KB", "3.8 MB", "9.9 MB", "10 MB", "20 MB", "1.0 GB", "1.2 GB", "5120 GB"]);
+    expect([0, -1, null, undefined, "x", Infinity, 6, 0.04, 59.94, 59.95, 65, 600, 3723].map(runTime))
+      .toEqual(["", "", "", "", "", "", "6.0 s", "0.0 s", "59.9 s", "1:00", "1:05", "10:00", "1:02:03"]);
+  });
+
+  it("a picture with no preview yet sends the picture, a video 404; a stored preview is served to its own account only", async () => {
+    let r = await uploadWhole(editor, editorCsrf, "thumb-pic.png", fakeFile(500, 41), { media_type: "image" });
+    const pic = (await r.json()).media_id;
+    r = await uploadWhole(editor, editorCsrf, "thumb-clip.mp4", fakeFile(700, 42));
+    const clip = (await r.json()).media_id;
+    const clipFile = await fileOf(clip);
+
+    r = await editor.get(`/library/${pic}/thumb`);
+    expect([r.status, r.headers.get("location"), r.headers.get("cache-control")]).toEqual([302, `/api/media/${await fileOf(pic)}`, "no-store"]);
+    expect((await editor.get(`/library/${clip}/thumb`)).status).toBe(404);
+    expect((await viewer.get(`/library/${clip}/thumb`)).status).toBe(404); // another account: like a missing file
+    expect((await editor.get("/library/abc/thumb")).status).toBe(400);
+
+    // only an editor of the file's own account stores one, with the CSRF token, a JPEG, small
+    const body = jpeg(2000);
+    expect((await putThumb(viewer, viewerCsrf, clip, body)).status).toBe(403);
+    expect((await putThumb(admin, csrf, clip, body)).status).toBe(404);
+    expect((await editor.fetch(`/library/${clip}/thumb`, { method: "PUT", body, headers: { "content-type": "image/jpeg" } })).status).toBe(403);
+    const notJpeg = fakeFile(100, 43);
+    notJpeg[0] = 0x89;
+    expect((await putThumb(editor, editorCsrf, clip, notJpeg)).status).toBe(400);
+    expect((await putThumb(editor, editorCsrf, clip, jpeg(MAX_THUMB_BYTES + 1))).status).toBe(413);
+    const stream = new ReadableStream({ start(c) { c.enqueue(jpeg(10)); c.close(); } });
+    expect((await putThumb(editor, editorCsrf, clip, stream)).status).toBe(411); // no Content-Length
+    expect(await env.MEDIA.head(`thumbs/${clipFile}.jpg`)).toBeNull();
+
+    r = await putThumb(editor, editorCsrf, clip, body);
+    expect([r.status, await r.json()]).toEqual([200, { ok: true }]);
+    const stored = await env.MEDIA.get(`thumbs/${clipFile}.jpg`);
+    expect(stored.httpMetadata.contentType).toBe("image/jpeg");
+    expect(new Uint8Array(await stored.arrayBuffer())).toEqual(body);
+    r = await editor.get(`/library/${clip}/thumb`);
+    expect([r.status, r.headers.get("content-type"), r.headers.get("cache-control")]).toEqual([200, "image/jpeg", "private, max-age=604800"]);
+    expect(new Uint8Array(await r.arrayBuffer())).toEqual(body);
+    for (const c of [viewer, admin]) expect((await c.get(`/library/${clip}/thumb`)).status).toBe(404);
+
+    // deleting the file takes its preview along
+    expect((await editor.post(`/library/${clip}/delete`, { csrf_token: editorCsrf })).status).toBe(303);
+    expect(await env.MEDIA.head(`thumbs/${clipFile}.jpg`)).toBeNull();
+    expect((await editor.post(`/library/${pic}/delete`, { csrf_token: editorCsrf })).status).toBe(303);
+  });
+
+  it("Delete selected removes the ticked files of the caller's own account, previews and all; a card's own Delete wins over the ticks", async () => {
+    const ids = [];
+    for (const [i, name] of ["sel-a.png", "sel-b.png", "sel-c.png"].entries()) {
+      ids.push((await (await uploadWhole(editor, editorCsrf, name, fakeFile(300 + i, 50 + i), { media_type: "image" })).json()).media_id);
+    }
+    const files = await Promise.all(ids.map(fileOf));
+    for (const f of files) await env.MEDIA.put(`thumbs/${f}.jpg`, jpeg(10));
+    const theirs = (await (await uploadWhole(admin, csrf, "theirs.png", fakeFile(310, 60), { media_type: "image" })).json()).media_id;
+    const left = async () => (await query(`SELECT id FROM media WHERE id IN (${[...ids, theirs].join(",")}) ORDER BY id`)).map((x) => x.id);
+
+    let r = await editor.post("/library/delete", { csrf_token: editorCsrf });
+    expect([r.status, r.headers.get("location")]).toEqual([303, "/library"]);
+    expect(await flash(editor)).toBe("Nothing was ticked. Tick the files to delete, then press Delete selected.");
+    expect((await viewer.post("/library/delete", form(viewerCsrf, [["media_id", String(ids[0])]]))).status).toBe(403);
+    expect((await editor.post("/library/delete", form(editorCsrf, [["media_id", "abc"]]))).status).toBe(400);
+    const tooMany = Array.from({ length: MAX_DELETE + 1 }, (_, i) => ["media_id", String(i + 1)]);
+    expect((await editor.post("/library/delete", form(editorCsrf, tooMany))).status).toBe(400);
+    expect(await left()).toEqual([...ids, theirs]);
+
+    // a card's Delete button (one=) deletes that file only, whatever else is ticked
+    r = await editor.post("/library/delete", form(editorCsrf, [["one", String(ids[0])], ["media_id", String(ids[1])], ["media_id", String(ids[2])]]));
+    expect([r.status, r.headers.get("location")]).toEqual([303, "/library"]);
+    expect(await flash(editor)).toBe("Deleted sel-a.png.");
+    expect(await left()).toEqual([ids[1], ids[2], theirs]);
+
+    // the ticked ones: a repeat counts once, another account's file is skipped like a missing one
+    r = await editor.post("/library/delete", form(editorCsrf, [ids[1], ids[2], ids[2], theirs].map((id) => ["media_id", String(id)])));
+    expect(r.status).toBe(303);
+    expect(await flash(editor)).toBe("Deleted 2 files.");
+    expect(await left()).toEqual([theirs]);
+    for (const f of files) {
+      expect(await env.MEDIA.head(`media/${f}`), f).toBeNull();
+      expect(await env.MEDIA.head(`thumbs/${f}.jpg`), f).toBeNull();
+    }
+    expect(await env.MEDIA.head(`media/${await fileOf(theirs)}`)).not.toBeNull();
+    const audited = await query(`SELECT target_id, details FROM audit_log WHERE action = 'delete_media' AND target_id IN (${ids.map((id) => `'${id}'`).join(",")}) ORDER BY id`);
+    expect(audited.map((a) => [Number(a.target_id), JSON.parse(a.details).filename])).toEqual([[ids[0], "sel-a.png"], [ids[1], "sel-b.png"], [ids[2], "sel-c.png"]]);
+
+    r = await editor.post("/library/delete", form(editorCsrf, [["media_id", String(ids[1])]]));
+    expect(r.status).toBe(303);
+    expect(await flash(editor)).toBe("Nothing was deleted: those files are no longer in the library.");
+    expect((await admin.post(`/library/${theirs}/delete`, { csrf_token: csrf })).status).toBe(303);
   });
 });

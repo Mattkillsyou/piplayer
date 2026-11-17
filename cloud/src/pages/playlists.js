@@ -5,18 +5,13 @@ import * as accounts from "../accounts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
-import { esc, fail, idParam, intField, json, jsonObject, localTime, redirect, str } from "../util.js";
+import { esc, fail, fileSize, idParam, intField, json, jsonObject, localTime, redirect, runTime, str } from "../util.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
+import { RENUMBER_SQL, thumbCell } from "./library.js";
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const round1 = (n) => Number(n).toFixed(1);
 
-// Rewrite positions 0..n-1 in (position, id) order: one statement, run after a removal.
-const RENUMBER_SQL = `UPDATE playlist_items
-   SET position = (SELECT rn FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY position, id) - 1 AS rn
-                                     FROM playlist_items WHERE playlist_id = ?1) x
-                    WHERE x.id = playlist_items.id)
- WHERE playlist_id = ?1`;
 const TOUCH_SQL = "UPDATE playlists SET updated_at = datetime('now') WHERE id = ?";
 
 // The caller's own playlist row (`cols`) or the 404 a missing id gets.
@@ -117,7 +112,7 @@ async function playlistsEdit(ctx) {
   const items = await db.all(ctx.env,
     `SELECT pi.id, pi.position, pi.duration_override_seconds,
             m.id AS media_id, m.original_name, m.media_type,
-            m.duration_seconds, m.filename
+            m.duration_seconds, m.filename, m.size_bytes, m.width, m.height
        FROM playlist_items pi
        JOIN media m ON m.id = pi.media_id
       WHERE pi.playlist_id = ?
@@ -134,9 +129,8 @@ async function playlistsEdit(ctx) {
   const itemRow = (it, i) => `<tr data-item-id="${it.id}">
       <td class="drag-handle" title="Drag to reorder, or focus and press the up/down arrow keys">${canEdit ? `<span role="button" tabindex="0" aria-label="Move ${esc(it.original_name)}">⣿</span>` : ""}</td>
       <td class="position-cell">${i + 1}</td>
-      <td>
-        ${it.media_type === "video" ? '<span class="badge badge-video">VIDEO</span>' : '<span class="badge badge-image">IMAGE</span>'}
-      </td>
+      <td class="thumb-cell">${thumbCell({ ...it, id: it.media_id },
+        [fileSize(it.size_bytes), it.width ? `${it.width}×${it.height}` : "", it.media_type === "video" ? runTime(it.duration_seconds) : ""].filter(Boolean).join(" · "))}</td>
       <td class="name">${esc(it.original_name)}</td>
       <td class="muted nowrap">${it.duration_seconds ? `${round1(it.duration_seconds)} s` : "—"}</td>
       <td>
@@ -175,10 +169,10 @@ async function playlistsEdit(ctx) {
 
 <h2>Playlist order (${items.length})</h2>
 ${!items.length ? emptyState("EMPTY REEL", `Nothing queued.${canEdit ? " Add media below." : ""}`) : `<div class="table-wrap">
-<table class="data sortable-table" id="playlist-items">
+<table class="data sortable-table" id="playlist-items"${canEdit ? " data-thumb-put" : ""}>
   <caption class="sr-only">Playlist items</caption>
   <thead>
-    <tr><th scope="col"><span class="sr-only">Drag handle</span></th><th scope="col">#</th><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Natural</th><th scope="col">Override</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
+    <tr><th scope="col"><span class="sr-only">Drag handle</span></th><th scope="col">#</th><th scope="col">Preview</th><th scope="col">Name</th><th scope="col">Natural</th><th scope="col">Override</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
   </thead>
   <tbody id="sortable-body" data-playlist-id="${playlist.id}"${canEdit ? "" : ' data-readonly="1"'}>
     ${items.map(itemRow).join("\n    ")}
@@ -200,7 +194,7 @@ ${!available.length
   </form>
 </div>`}
 ${items.length ? '<div class="drop-hint"><span>⣿</span><span class="sans">Drag a row by its handle and drop it where it should play. The new order is saved at once; devices pick it up on their next poll.</span></div>' : ""}` : ""}`;
-  return layout(ctx, { title: playlist.name, content, scripts: ["/static/sortable.min.js"] });
+  return layout(ctx, { title: playlist.name, content, scripts: ["/static/sortable.min.js", "/static/media.js"] });
 }
 
 async function playlistAddItem(ctx) {
@@ -287,7 +281,7 @@ async function playlistRemoveItem(ctx) {
   }
   await db.batch(env, [
     ["DELETE FROM playlist_items WHERE id = ? AND playlist_id = ?", itemId, playlistId],
-    [RENUMBER_SQL, playlistId],
+    [RENUMBER_SQL, JSON.stringify([playlistId])],
     [TOUCH_SQL, playlistId],
   ]);
   await audit.log(ctx, "playlist_remove_item", "playlist_item", itemId);

@@ -6,9 +6,21 @@
 (function () {
   'use strict';
 
+  // A destructive form asks first. The question is the form's data-confirm, or the one on the
+  // button that was pressed when a form has several (the Library's grid: a Delete per file and
+  // one for the ticked files). `pressed` stands in for event.submitter on a browser without it
+  // (Safari before 15.4), so a delete there never goes through unasked.
+  var pressed = null;
+  document.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('button[type="submit"]') : null;
+    if (b) pressed = b;
+  }, true);
   document.addEventListener('submit', function (e) {
     var form = e.target;
-    if (form && form.dataset && form.dataset.confirm && !confirm(form.dataset.confirm)) {
+    var by = e.submitter || (pressed && pressed.form === form ? pressed : null);
+    pressed = null;
+    var question = (by && by.dataset && by.dataset.confirm) || (form && form.dataset && form.dataset.confirm);
+    if (question && !confirm(question)) {
       e.preventDefault();
     }
   });

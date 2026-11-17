@@ -219,6 +219,30 @@ export function ageSeconds(value, now = new Date()) {
   return d ? (now.getTime() - d.getTime()) / 1000 : null;
 }
 
+// A byte count as a person reads it: '941 KB', '3.8 MB', '20 MB', '1.2 GB' (one decimal under
+// ten of a unit, none above). The pages used to show megabytes or gigabytes with one decimal
+// whatever the size, so a small picture was '0.0 MB' and a small library '0.0 GB'.
+export function fileSize(bytes) {
+  let v = Math.max(0, Number(bytes) || 0);
+  if (v < 1000) return `${Math.round(v)} B`;
+  for (const unit of ["KB", "MB", "GB"]) {
+    v /= 1024;
+    if (v < 999.5 || unit === "GB") return `${v < 9.95 ? v.toFixed(1) : Math.round(v)} ${unit}`;
+  }
+}
+
+// A running time as a person reads it: '6.0 s' under a minute, then '1:05' and '1:02:03';
+// '' when it is not known (an image, a video the browser could not measure).
+export function runTime(seconds) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s <= 0) return "";
+  if (s < 59.95) return `${(Math.round(s * 10) / 10).toFixed(1)} s`;
+  const t = Math.round(s);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  return h ? `${h}:${pad2(m)}:${pad2(t % 60)}` : `${m}:${pad2(t % 60)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Misc
 // ---------------------------------------------------------------------------

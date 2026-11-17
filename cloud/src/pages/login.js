@@ -111,10 +111,15 @@ async function loginSubmit(ctx) {
   return redirect(next || "/dashboard");
 }
 
+// Clear-Site-Data "cache": the Library's previews are cached privately for a week under
+// sequential ids (/library/<id>/thumb); on a shared computer the next person could otherwise
+// open them from the cache without signing in.
 async function logout(ctx) {
   await audit.log(ctx, "logout");
   await auth.destroySession(ctx);
-  return redirect("/login");
+  const res = redirect("/login");
+  res.headers.set("clear-site-data", '"cache"');
+  return res;
 }
 
 export function register(router) {

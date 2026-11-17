@@ -52,6 +52,9 @@ describe("role matrix", () => {
     expect(page).not.toContain(`href="/playlists/${w.pid}"`);
     page = await (await r.viewer.get(`/playlists/${vpid}`)).text();
     expect(page).toContain('data-readonly="1"');
+    expect(page).toContain('<script src="/static/media.js"></script>'); // a viewer opens the files too
+    expect(page).toContain('<td class="thumb-cell"><a class="media-thumb" href="/api/media/');
+    expect(page).not.toContain("data-thumb-put"); // but never stores a preview
     expect(page).not.toContain("/rename");
     expect(page).not.toContain("Add media");
     page = await (await r.editor.get(`/playlists/${w.pid}`)).text();
@@ -59,6 +62,11 @@ describe("role matrix", () => {
     expect(page).toContain("drag rows to reorder");
     expect(page).toContain("⣿");
     expect(page).toContain('<script src="/static/sortable.min.js"></script>');
+    // each row carries the Library's preview tile (library.js thumbCell); an editor's page makes missing ones
+    expect(page).toContain('<script src="/static/media.js"></script>');
+    expect(page).toContain('<table class="data sortable-table" id="playlist-items" data-thumb-put>');
+    expect(page).toContain('<th scope="col">Preview</th>');
+    expect(page).toMatch(/<td class="thumb-cell"><a class="media-thumb" href="\/api\/media\/[^"]+" target="_blank" rel="noopener" data-view data-kind="(img|video)" data-name="[^"]+" data-meta="[^"]*" aria-label="Open [^"]+">\s*<img src="\/library\/\d+\/thumb"/);
     expect(page).toContain("three.png");           // available to add
     expect(page).toContain("12.3 s");              // natural duration
     expect(page).toContain('placeholder="10.0"');  // default image duration, float repr like Python
@@ -252,5 +260,36 @@ describe("items", () => {
     expect(res.status).toBe(303);
     expect(await positions(pid)).toEqual([{ id: items[0], position: 0 }, { id: items[2], position: 1 }]);
     expect((await audits("playlist_remove_item"))[0]).toMatchObject({ target_type: "playlist_item", target_id: String(items[1]) });
+  });
+});
+
+describe("positions after a reorder", () => {
+  // Six files A..F, then F dragged to third place (A B F C D E). What a removal leaves keeps that
+  // order on positions 0..n-1: the renumber used to re-read the positions it was rewriting and
+  // gave B@0 C@2 F@2 D@3 E@4 (C before F on the projector, two items on one position).
+  async function reordered(name) {
+    const pid = await playlist(name);
+    const files = [];
+    for (const n of "ABCDEF") files.push(await media(`${name}-${n}.png`));
+    const items = [];
+    for (const [i, m] of files.entries()) items.push(await ins("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, ?)", pid, m, i));
+    const order = [items[0], items[1], items[5], items[2], items[3], items[4]];
+    expect((await postJson(r.editor, `/playlists/${pid}/items/reorder`, { order })).status).toBe(200);
+    return { pid, files, items, order };
+  }
+
+  it("Remove in the playlist editor", async () => {
+    const { pid, items, order } = await reordered("renumber-remove");
+    expect((await post(r.editor, `/playlists/${pid}/items/${items[0]}/delete`)).status).toBe(303);
+    expect(await positions(pid)).toEqual(order.slice(1).map((id, position) => ({ id, position })));
+  });
+
+  it("Delete and Delete selected on the Library page", async () => {
+    const { pid, files, items, order } = await reordered("renumber-library");
+    expect((await post(r.editor, `/library/${files[0]}/delete`)).status).toBe(303);
+    expect(await positions(pid)).toEqual(order.slice(1).map((id, position) => ({ id, position })));
+    // two gaps at once (B and D)
+    expect((await post(r.editor, "/library/delete", [["media_id", String(files[1])], ["media_id", String(files[3])]])).status).toBe(303);
+    expect(await positions(pid)).toEqual([items[5], items[2], items[4]].map((id, position) => ({ id, position })));
   });
 });

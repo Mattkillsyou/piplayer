@@ -1,5 +1,6 @@
 // R2 media serving with Range (port of api.get_media over FileResponse) + screenshot storage.
-// Media objects live at `media/<filename>`, screenshots at `screenshots/<device_id>.jpg`,
+// Media objects live at `media/<filename>`, their small previews for the Library at
+// `thumbs/<filename>.jpg` (pages/library.js), screenshots at `screenshots/<device_id>.jpg`,
 // camera snapshots at `camera/<device_id>.jpg`.
 import * as auth from "./auth.js";
 import * as db from "./db.js";
@@ -10,6 +11,7 @@ export const SAFE_FILENAME = /^[A-Za-z0-9._-]+$/;
 export const JPEG_MAGIC = [0xff, 0xd8, 0xff];
 
 export const mediaKey = (filename) => `media/${filename}`;
+export const thumbKey = (filename) => `thumbs/${filename}.jpg`;
 export const screenshotKey = (deviceId) => `screenshots/${deviceId}.jpg`;
 export const cameraKey = (deviceId) => `camera/${deviceId}.jpg`;
 export const MEDIA_CACHE_CONTROL = "public, max-age=31536000, immutable";

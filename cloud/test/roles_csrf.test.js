@@ -72,6 +72,9 @@ function table() {
     ["POST", `/library/upload/${NOPE}/complete`, {}, "json", E(404)],
     ["POST", `/library/upload/${NOPE}/abort`, {}, "json", E(404)],
     ["POST", `/library/${NOPE}/delete`, {}, "form", E(404)],
+    ["POST", "/library/delete", {}, "form", E(303)], // nothing ticked: back to the Library with a warning
+    ["GET", `/library/${NOPE}/thumb`, null, null, ALL(404)],
+    ["PUT", `/library/${NOPE}/thumb`, "x", "raw", E(404)],
     ["POST", "/playlists", { name: "  " }, "form", E(400)],
     ["POST", `/playlists/${NOPE}/items`, { media_id: "1" }, "form", E(404)],
     ["POST", `/playlists/${NOPE}/items/reorder`, { order: [] }, "json", E(404)],

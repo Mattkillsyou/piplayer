@@ -9,6 +9,7 @@ import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as cloudflare from "../cloudflare.js";
 import * as db from "../db.js";
+import * as media from "../media.js";
 import { esc, fail, idParam, localTime, str } from "../util.js";
 import { csrfInput, layout } from "./layout.js";
 import { newTokenBlock, tokenCreateForm, tokenName, tokenTable, userTokens } from "./settings.js";
@@ -243,9 +244,12 @@ async function usersDelete(ctx) {
     if (!(await db.first(ctx.env, "SELECT 1 AS one FROM users WHERE id = ?", userId))) fail(404, "User not found");
     fail(400, "The last admin cannot be deleted");
   }
-  for (const key of keys) {
-    try { await ctx.env.MEDIA.delete(key); }
-    catch (e) { console.error(`R2 delete failed for ${key} of deleted user ${userId}:`, e && e.stack || e); }
+  // Each file and its Library preview (media.thumbKey: thumbs/<filename>.jpg beside media/<filename>),
+  // 1000 keys an R2 call: one call per file ran past the Free plan's 1000 subrequests on a big library.
+  const objects = keys.flatMap((key) => [key, media.thumbKey(key.slice("media/".length))]);
+  for (let i = 0; i < objects.length; i += 1000) {
+    try { await ctx.env.MEDIA.delete(objects.slice(i, i + 1000)); }
+    catch (e) { console.error(`R2 delete failed for ${objects.slice(i, i + 1000).length} object(s) from ${objects[i]} of deleted user ${userId}:`, e && e.stack || e); }
   }
   const details = {};
   if (keys.length) details.media_deleted = keys.length;

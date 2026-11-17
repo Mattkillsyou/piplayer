@@ -190,7 +190,8 @@ describe("L10: library delete survives an R2 delete failure", () => {
     const dflt = await defaultOf("ed");
     expect(await query("SELECT details FROM audit_log WHERE action = 'delete_media'")).toEqual([{ details: `{"filename": "orphan.png", "playlists": [${dflt}]}` }]); // the upload put it in the editor's Default
     expect(await env.MEDIA.head("media/" + filename)).not.toBeNull();
-    expect(errors).toHaveBeenCalledWith(`R2 delete failed for media/${filename}:`, expect.stringContaining("R2 is down"));
+    // one R2 call for the file and its Library preview (thumbs/<filename>.jpg)
+    expect(errors).toHaveBeenCalledWith(`R2 delete failed for 2 object(s) from media/${filename}:`, expect.stringContaining("R2 is down"));
     errors.mockRestore();
     await env.MEDIA.delete("media/" + filename);
   });

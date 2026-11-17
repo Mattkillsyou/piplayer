@@ -109,8 +109,9 @@ describe("style.css (M19, M20, M22, L26, L34)", () => {
 
   it("label sizes, the phone dashboard tiles, the narrow-window menu and the audit details column", async () => {
     const css = await (await r.viewer.get("/static/style.css")).text();
-    expect(css).toContain("--p5k-text-label: 12px;");
-    expect(css).toContain("--p5k-text-label-sm: 11px;");
+    // one step up again since (console UI review): names, rows and labels are read all day, on a phone too
+    expect(css).toContain("--p5k-text-label: 13px;");
+    expect(css).toContain("--p5k-text-label-sm: 12px;");
     expect(css).toContain("--p5k-text-eyebrow: 11px;");
     expect(css).toMatch(/\.brand-eyebrow \{[^}]*font-size: var\(--p5k-text-eyebrow\)/);
     expect(css).not.toMatch(/font-size: [5-9]px/);
