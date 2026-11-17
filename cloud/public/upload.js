@@ -61,7 +61,16 @@
     return m ? m.content : '';
   }
 
-  function mb(n) { return (n / 1024 / 1024).toFixed(1); }
+  // A size as the Library writes it (src/util.js fileSize): '500 B', '9.9 MB', '20 MB', '1.2 GB'.
+  function size(n) {
+    var v = Math.max(0, Number(n) || 0);
+    if (v < 1000) return Math.round(v) + ' B';
+    var units = ['KB', 'MB', 'GB'];
+    for (var i = 0; ; i++) {
+      v /= 1024;
+      if (v < 999.5 || i === units.length - 1) return (v < 9.95 ? v.toFixed(1) : Math.round(v)) + ' ' + units[i];
+    }
+  }
 
   // Read the {"detail"} of an error response (an HTML error page from the edge, say a 413
   // for an oversize part, has none: say so without quoting it).
@@ -141,29 +150,32 @@
     });
   }
 
-  // Count GIF Graphic Control Extension headers (21 F9 04) in a slice: more than one means
-  // an animated GIF. Limitation: a pattern straddling two slices is missed and raw pixel
-  // data could contain it by chance; such a GIF is uploaded as an image / video accordingly.
-  function countGce(bytes) {
-    var n = 0;
-    for (var i = 0; i + 2 < bytes.length; i++) {
-      if (bytes[i] === 0x21 && bytes[i + 1] === 0xF9 && bytes[i + 2] === 0x04) n++;
+  // Count GIF Graphic Control Extension blocks (21 F9 04, flags, delay) in a slice into `gif`, and
+  // add up their frame delays (hundredths of a second; under 2 plays as 10, as ffmpeg does): more
+  // than one block means an animated GIF, and the delays are its running time. Limitation: a block
+  // straddling two slices is missed and raw pixel data could hold one by chance; such a GIF is
+  // uploaded as an image / video accordingly.
+  function scanGif(bytes, gif) {
+    for (var i = 0; i + 5 < bytes.length; i++) {
+      if (bytes[i] === 0x21 && bytes[i + 1] === 0xF9 && bytes[i + 2] === 0x04) {
+        var delay = bytes[i + 4] | bytes[i + 5] << 8;
+        gif.frames++;
+        gif.delay += delay < 2 ? 10 : delay;
+      }
     }
-    return n;
   }
 
   function hashFile(file, onProgress) {
     var h = sha256.create();
-    var gif = ext(file.name) === '.gif';
-    var gce = 0;
+    var gif = ext(file.name) === '.gif' ? { frames: 0, delay: 0 } : null;
     var offset = 0;
     function step() {
-      if (offset >= file.size) return Promise.resolve({ sha256: h.digest(), animated: gif && gce > 1 });
+      if (offset >= file.size) return Promise.resolve({ sha256: h.digest(), animated: !!gif && gif.frames > 1, seconds: gif ? gif.delay / 100 : 0 });
       var end = Math.min(offset + SLICE, file.size);
       return file.slice(offset, end).arrayBuffer().then(function (buf) {
         var bytes = new Uint8Array(buf);
         h.update(bytes);
-        if (gif) gce += countGce(bytes);
+        if (gif) scanGif(bytes, gif);
         offset = end;
         onProgress(offset);
         return step();
@@ -175,7 +187,7 @@
   function addRow(file) {
     var li = document.createElement('li');
     var label = document.createElement('div');
-    label.textContent = file.name + ' (' + mb(file.size) + ' MB)';
+    label.textContent = file.name + ' (' + size(file.size) + ')';
     var bar = document.createElement('progress');
     bar.max = 100; bar.value = 0;
     var text = document.createElement('div');
@@ -203,7 +215,10 @@
         media_type: VIDEO.indexOf(ext(file.name)) >= 0 ? 'video' : 'image',
         duration_seconds: meta.duration_seconds, width: meta.width, height: meta.height
       };
-      if (ext(file.name) === '.gif') body.animated = h.animated;
+      if (ext(file.name) === '.gif') {
+        body.animated = h.animated;
+        if (h.animated) body.duration_seconds = h.seconds; // the browser reports no running time for a GIF
+      }
       row.set(0, 'Starting upload...');
       return request('POST', form.dataset.init, body);
     }).then(function (r) {
@@ -226,7 +241,7 @@
         Object.keys(inflight).forEach(function (k) { extra += inflight[k]; });
         var done = Math.min(received + extra, file.size);
         var pct = done / file.size * 100;
-        row.set(pct, 'Uploading ' + mb(done) + ' / ' + mb(file.size) + ' MB (' + pct.toFixed(0) + '%)');
+        row.set(pct, 'Uploading ' + size(done) + ' / ' + size(file.size) + ' (' + pct.toFixed(0) + '%)');
       }
       var next = 1;
       var failed = null;

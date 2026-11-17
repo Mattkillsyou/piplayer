@@ -24,7 +24,8 @@ import { PLAYLIST_PREFIX } from "./links.js";
 const round1 = (n) => (Math.round(n * 10) / 10).toFixed(1);
 
 export const MAX_THUMB_BYTES = 400 * 1024;
-// A week, not for ever: a preview can be made again (media.js stores a better frame over a dark one).
+// A week: nothing replaces a stored preview, so this only bounds how long a browser keeps one
+// (thumbCell's ?v= keeps that copy from anyone who guesses at ids on a shared browser).
 const THUMB_CACHE = "private, max-age=604800";
 // Most files one POST /library/delete takes (a page holds no more than a library does; the cap
 // keeps one request's statements and R2 calls bounded).
@@ -48,14 +49,16 @@ const isPicture = (filename) => IMAGE_EXTENSIONS.has(extOf(filename));
 // row): a link to the file itself that media.js opens in the viewer (without the script it is
 // just the file in a new tab), holding the small picture and, on it, the type and running time.
 // `meta` is the line the viewer shows under the file, data-page the file's own page (the
-// viewer's Details). Shared with the playlist editor.
+// viewer's Details). The picture's ?v= is the stored name's sha256 prefix: the route ignores it,
+// but a cached preview cannot be asked for by its id alone, by whoever uses the browser next.
+// Shared with the playlist editor.
 export function thumbCell(m, meta = "") {
   const length = m.media_type === "video" ? runTime(m.duration_seconds) : "";
   // The label is the link's whole accessible name: the badge and the running time on the
   // picture are not read out unless it says them too.
   const label = [`Open ${m.original_name}`, m.media_type === "video" ? "video" : "image", length].filter(Boolean).join(", ");
   return `<a class="media-thumb" href="/api/media/${esc(m.filename)}" target="_blank" rel="noopener" data-view data-kind="${isPicture(m.filename) ? "img" : "video"}" data-name="${esc(m.original_name)}" data-meta="${esc(meta)}" data-page="/library/${m.id}" aria-label="${esc(label)}">
-        <img src="/library/${m.id}/thumb" alt="" loading="lazy" decoding="async" data-thumb="${m.id}">
+        <img src="/library/${m.id}/thumb?v=${esc(m.filename.slice(0, 16))}" alt="" loading="lazy" decoding="async" data-thumb="${m.id}">
         ${m.media_type === "video" ? '<span class="badge badge-video">VIDEO</span>' : '<span class="badge badge-image">IMAGE</span>'}
         ${length ? `<span class="media-length">${esc(length)}</span>` : ""}
       </a>`;
@@ -72,7 +75,7 @@ function uploadGrid(ctx, maxBytes, playlists, dflt) {
   return `<div class="library-grid">
   <div class="dropzone brackets">
     <span class="dropzone-title">DROP MEDIA</span>
-    <p>Max ${round1(maxBytes / 1024 / 1024 / 1024)} GB per file. Videos: mp4 · mov · m4v · mkv · webm (1080p H.264 recommended). Images: jpg · png · gif · webp · bmp.</p>
+    <p>Max ${round1(maxBytes / 1024 / 1024 / 1024)} GB per file. Videos: mp4 · mov · m4v · mkv · webm · animated gif (1080p H.264 recommended). Images: jpg · png · gif · webp · bmp.</p>
     <form id="upload-form" method="post" action="/library/upload/init" data-init="/library/upload/init">
       ${csrfInput(ctx)}
       <input type="file" name="file" id="file-input" accept="video/*,image/*" multiple required aria-label="Choose files">
@@ -262,14 +265,15 @@ async function libraryDelete(ctx) {
 }
 
 // The grid's form: `one` is the file whose own Delete was pressed, else every ticked `media_id`.
-// `noop` is Enter on a tick box (libraryPage): the ticks come along, and nothing is deleted.
+// `noop` is Enter on a tick box with scripts off (libraryPage): the ticks come along, nothing is
+// deleted, and the 204 leaves the browser on the page with its ticks.
 async function libraryDeleteMany(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const form = await ctx.form();
-  if (form.has("noop")) return auth.flashRedirect(ctx, "/library", "Nothing was deleted.", "warn");
+  if (form.has("noop")) return new Response(null, { status: 204 });
   const one = str(form, "one").trim();
   const picked = one ? [one] : form.getAll("media_id").filter((v) => typeof v === "string");
-  if (!picked.length) return auth.flashRedirect(ctx, "/library", "Nothing was ticked. Tick the files to delete, then press Delete selected.", "warn");
+  if (!picked.length) return auth.flashRedirect(ctx, "/library", "Nothing was ticked.", "warn");
   if (picked.length > MAX_DELETE) fail(400, `Delete at most ${MAX_DELETE} files at a time`);
   const rows = await deleteMedia(ctx, user, [...new Set(picked.map((v) => idParam(v, "media_id")))]);
   if (!rows.length) return auth.flashRedirect(ctx, "/library", "Nothing was deleted: those files are no longer in the library.", "warn");

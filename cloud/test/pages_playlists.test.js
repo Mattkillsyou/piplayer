@@ -66,7 +66,7 @@ describe("role matrix", () => {
     expect(page).toContain('<script src="/static/media.js"></script>');
     expect(page).toContain('<table class="data sortable-table" id="playlist-items" data-thumb-put>');
     expect(page).toContain('<th scope="col">Preview</th>');
-    expect(page).toMatch(/<td class="thumb-cell"><a class="media-thumb" href="\/api\/media\/[^"]+" target="_blank" rel="noopener" data-view data-kind="(img|video)" data-name="[^"]+" data-meta="[^"]*" data-page="\/library\/\d+" aria-label="Open [^"]+">\s*<img src="\/library\/\d+\/thumb"/);
+    expect(page).toMatch(/<td class="thumb-cell"><a class="media-thumb" href="\/api\/media\/[^"]+" target="_blank" rel="noopener" data-view data-kind="(img|video)" data-name="[^"]+" data-meta="[^"]*" data-page="\/library\/\d+" aria-label="Open [^"]+">\s*<img src="\/library\/\d+\/thumb\?v=[^"]+"/);
     expect(page).toContain("three.png");           // available to add
     expect(page).toContain("12.3 s");              // natural duration
     expect(page).toContain('placeholder="10.0"');  // default image duration, float repr like Python
