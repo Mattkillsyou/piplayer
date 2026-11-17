@@ -172,6 +172,23 @@ describe("M10: complete verifies the browser-supplied sha256", () => {
     const b = (await query("SELECT details FROM audit_log WHERE action = 'upload_media' AND target_id = ?", String((await r2.json()).media_id)))[0];
     expect(b.details).toBe(`{"filename": "ok.mp4", "type": "video", "playlist": ${dflt}}`);
   });
+
+  it("the same file uploaded again under its name while in Recently deleted gets a key of its own: a failed check leaves the trashed bytes", async () => {
+    const data = fakeFile(820, 11);
+    let r = await complete(editor, editorCsrf, await stage(editor, editorCsrf, "kept.mp4", data));
+    expect(r.status).toBe(200);
+    const { media_id } = await r.json();
+    const { filename } = (await query("SELECT filename FROM media WHERE id = ?", media_id))[0];
+    expect((await editor.post(`/library/${media_id}/delete`, { csrf_token: editorCsrf })).status).toBe(303);
+    expect(await query("SELECT filename FROM media_trash WHERE media_id = ?", media_id)).toEqual([{ filename }]);
+    const id = await stage(editor, editorCsrf, "kept.mp4", fakeFile(820, 12), await digest(data));
+    const key = (await query("SELECT key FROM uploads WHERE id = ?", id))[0].key;
+    expect(key).not.toBe(`media/${filename}`);
+    expect(key.startsWith(`media/${filename.slice(0, 16)}_u${edId}_`) && key.endsWith("kept.mp4")).toBe(true);
+    r = await complete(editor, editorCsrf, id);
+    expect(r.status).toBe(400);
+    expect(await digest(await (await env.MEDIA.get(`media/${filename}`)).arrayBuffer())).toBe(await digest(data));
+  });
 });
 
 // A delete no longer calls R2 at all (the file waits in Recently deleted); Empty and the daily
@@ -190,7 +207,7 @@ describe("L10: library delete survives an R2 delete failure", () => {
     expect(r.headers.get("location")).toBe("/library");
     expect(await query("SELECT id FROM media WHERE id = ?", media_id)).toEqual([]);
     const dflt = await defaultOf("ed");
-    expect(await query("SELECT details FROM audit_log WHERE action = 'delete_media'")).toEqual([{ details: `{"filename": "orphan.png", "playlists": [${dflt}]}` }]); // the upload put it in the editor's Default
+    expect(await query("SELECT details FROM audit_log WHERE action = 'delete_media' AND target_id = ?", String(media_id))).toEqual([{ details: `{"filename": "orphan.png", "playlists": [${dflt}]}` }]); // the upload put it in the editor's Default
     expect(await env.MEDIA.head("media/" + filename)).not.toBeNull();
     expect(await query("SELECT media_id FROM media_trash WHERE filename = ?", filename)).toEqual([{ media_id }]);
     expect(errors).not.toHaveBeenCalled();

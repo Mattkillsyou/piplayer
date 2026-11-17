@@ -857,6 +857,7 @@ table.data.users td.name { min-width: 9rem; }
   table.data.stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   table.data.stack tr { padding: 6px 0; border-bottom: 1px solid var(--p5k-rule-3); }
   table.data.stack td { padding: 5px 12px; border: 0; }
+  table.data.stack td:empty { display: none; } /* a viewer's actions cell */
   table.data.stack td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 3px; font-size: var(--p5k-text-label-sm); letter-spacing: var(--p5k-track-label); text-transform: uppercase; color: var(--p5k-muted); }
   table.data.users tr:has(+ .user-tokens) { border-bottom: 0; } /* a user's tokens belong to its card */
   table.data.users .duration-form { display: flex; }

@@ -180,6 +180,11 @@ describe("upload box", () => {
     expect(to.slice(1, -1).map(([, name]) => name)).toEqual(["alpha", "Friday night", "Upload link · lobby-pi"]);
     expect(to.slice(1, -1).every(([v]) => /^\d+$/.test(v))).toBe(true);
     expect(await page(r.viewer)).not.toContain("upload-to");
+    // ?to= (Add from Library) picks the same playlist here; the Default or junk leaves the Default
+    const alpha = to.find(([, name]) => name === "alpha")[0];
+    const picked = async (q) => optionsOf(between(await page(r.editor, `/library?to=${q}`), 'id="upload-to"', "</select>")).filter(([, , on]) => on);
+    expect(await picked(alpha)).toEqual([[alpha, "alpha", true]]);
+    for (const q of [dflt, "abc"]) expect(await picked(q)).toEqual([]);
 
     // no Default playlist on file: uploads went to none, so None is what is picked
     await query("DELETE FROM account_settings WHERE user_id = ? AND key = 'default_playlist_id'", r.ids.editor);

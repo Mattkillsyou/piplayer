@@ -73,12 +73,13 @@ export function thumbCell(m, meta = "") {
 }
 
 // The upload box. "Add to" is where the files go (uploads.js uploadComplete): "" the account's
-// Default playlist as before, an id one of its other playlists, "none" no playlist.
-function uploadGrid(ctx, maxBytes, playlists, dflt) {
+// Default playlist as before, an id one of its other playlists, "none" no playlist. `picked` is
+// the playlist /library?to= came from, when it is one of the others.
+function uploadGrid(ctx, maxBytes, playlists, dflt, picked) {
   const to = [
     dflt ? `<option value="">${esc(dflt.name)}</option>` : "",
-    ...playlists.filter((p) => p !== dflt).map((p) => `<option value="${p.id}">${esc(p.name)}</option>`),
-    `<option value="none"${dflt ? "" : " selected"}>No playlist</option>`,
+    ...playlists.filter((p) => p !== dflt).map((p) => `<option value="${p.id}"${p === picked ? " selected" : ""}>${esc(p.name)}</option>`),
+    `<option value="none"${dflt || picked ? "" : " selected"}>No playlist</option>`,
   ].join("");
   return `<div class="library-grid">
   <div class="dropzone brackets">
@@ -155,6 +156,10 @@ async function libraryPage(ctx) {
     usedBy.get(u.media_id).push(u);
   }
   const dflt = playlists.find((p) => p.id === defaultId);
+  // /library?to=<playlist id> (the playlist editor's Add from Library) picks that playlist in
+  // Add to playlist and in the upload box's Add to.
+  const to = Number(ctx.url.searchParams.get("to"));
+  const picked = playlists.find((p) => p.id === to && p !== dflt);
   const maxBytes = envInt(ctx.env, "PIPLAYER_MAX_UPLOAD_BYTES", 5 * 1024 * 1024 * 1024);
   const totalBytes = items.reduce((n, v) => n + (v.size_bytes || 0), 0);
   const cards = items.map((v) => card(v, tz, editor, usedBy.get(v.id), defaultId)).join("\n");
@@ -169,8 +174,6 @@ async function libraryPage(ctx) {
     <label>Sort <select id="find-sort"><option value="">Newest</option><option value="oldest">Oldest</option><option value="name">Name</option><option value="size">Largest</option><option value="length">Longest</option></select></label>
   </div>
 </div>`;
-  // /library?to=<playlist id> (the playlist editor's Add from Library) picks that playlist.
-  const to = Number(ctx.url.searchParams.get("to"));
   // Editors get one form round the whole grid: each file's Delete button, the ticked boxes and
   // Add to playlist (formaction) post from it (a form cannot sit inside another, and every card
   // needs the token). autocomplete="off": on Back a browser would restore the ticks by position,
@@ -206,7 +209,7 @@ ${cards}
   <span class="page-meta">${items.length} file${items.length === 1 ? "" : "s"} · ${fileSize(totalBytes)} in total</span>
 </div>
 
-${editor ? uploadGrid(ctx, maxBytes, playlists, dflt) : ""}
+${editor ? uploadGrid(ctx, maxBytes, playlists, dflt, picked) : ""}
 
 ${grid}
 ${trash}`;
@@ -548,6 +551,7 @@ async function libraryAddToPlaylist(ctx) {
 // Delete. Any role, the caller's own file only (another account's id answers like a missing one).
 async function filePage(ctx) {
   const user = auth.requireUser(ctx);
+  if (!/^\d+$/.test(ctx.params.media_id)) fail(404, "Not Found"); // /library/delete and the like
   const editor = user.role !== "viewer";
   const m = await ownMedia(ctx, user, "id, original_name, filename, media_type, size_bytes, duration_seconds, width, height, uploaded_at");
   const tz = (await ctx.settings()).timezone;

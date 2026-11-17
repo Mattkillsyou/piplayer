@@ -210,6 +210,13 @@ function part(tag, is = [], props = {}) {
     querySelector: (sel) => p.querySelectorAll(sel)[0] || null,
     appendChild: (c) => { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = p; p.children.push(c); return c; },
     removeChild: (c) => { p.children.splice(p.children.indexOf(c), 1); c.parentNode = null; return c; },
+    insertBefore: (c, ref) => {
+      if (c.parentNode) c.parentNode.removeChild(c);
+      c.parentNode = p;
+      const i = ref ? p.children.indexOf(ref) : -1;
+      p.children.splice(i < 0 ? p.children.length : i, 0, c);
+      return c;
+    },
     setAttribute: (k, v) => { p.attrs[k] = String(v); },
     getAttribute: (k) => p.attrs[k] ?? null,
     removeAttribute: (k) => { delete p.attrs[k]; },
@@ -221,6 +228,7 @@ function part(tag, is = [], props = {}) {
     set: (v) => { while (p.children.length) p.removeChild(p.children[0]); if (v !== "") p.appendChild(part("#text", [], { text: String(v) })); },
   });
   Object.defineProperty(p, "isConnected", { get: () => doc.body.contains(p) });
+  Object.defineProperty(p, "nextSibling", { get: () => (p.parentNode && p.parentNode.children[p.parentNode.children.indexOf(p) + 1]) || null });
   return p;
 }
 
@@ -262,6 +270,7 @@ async function loadPage(files, { fetch = async () => ({ ok: true, status: 200 })
     getElementById: (id) => ids[id] || null,
     createElement: (tag) => (make[tag] ? make[tag]() : tag === "dialog" ? dialogPart() : part(tag, [], { pause() {}, load() {} })),
     createTextNode: (text) => part("#text", [], { text }),
+    importNode: (n) => n,
   };
   body.appendChild(part("meta", ['meta[name="csrf-token"]'], { content: "tok" }));
   const form = body.appendChild(part("form", [], { action: "/library/delete", dataset: { max: "500" } }));
@@ -443,6 +452,34 @@ describe("media.js viewer", () => {
     v.d.fire("click", { target: v.del });
     await vi.waitFor(() => expect(v.d.open).toBe(false));
     expect([p.grid.children.length, p.ids["media-count"].textContent]).toEqual([0, "Media (0)"]);
+  });
+
+  it("Delete from the viewer: the file line and Recently deleted come from the Library the delete came back to", async () => {
+    const freshMeta = part("span");
+    freshMeta.textContent = "2 files · 2 KB in total";
+    const trashes = [part("details", ["details.trash"], { open: false }), part("details", ["details.trash"], { open: false })];
+    vi.stubGlobal("DOMParser", function () {
+      this.parseFromString = (html, type) => {
+        expect([html, type]).toEqual(["<p>the library</p>", "text/html"]);
+        const t = trashes.shift();
+        return { querySelector: (sel) => ({ ".page-head .page-meta": freshMeta, "details.trash": t })[sel] || null };
+      };
+    });
+    const [first, second] = trashes;
+    const p = await loadPage(FILES3, { fetch: async () => ({ ok: true, status: 200, url: "http://piplayer.test/library", text: async () => "<p>the library</p>" }) });
+    const meta = doc.body.appendChild(part("span", [".page-head .page-meta"]));
+    meta.textContent = "3 files · 3 KB in total";
+    const after = () => p.form.parentNode.children[p.form.parentNode.children.indexOf(p.form) + 1];
+    open(p, 1);
+    const v = viewer();
+    v.d.fire("click", { target: v.del });
+    await vi.waitFor(() => expect(meta.textContent).toBe("2 files · 2 KB in total"));
+    await vi.waitFor(() => expect(after()).toBe(first));
+    // an open Recently deleted is replaced by the newer one, still open
+    first.open = true;
+    v.d.fire("click", { target: v.del });
+    await vi.waitFor(() => expect(after()).toBe(second));
+    expect([second.open, first.parentNode, p.reload.mock.calls.length]).toEqual([true, null, 0]);
   });
 
   it("Delete: no question answered, nothing sent; anything but the Library coming back reloads the page", async () => {

@@ -8,10 +8,11 @@ export const APP_EYEBROW = "Matt Brown's";
 
 // Order is the order in the top bar; the SD Flasher comes first and is drawn as a white-on-black
 // pill (.nav-flasher) so the one thing a new user needs stands out. The fourth field is the
-// lowest role that gets the link: an account's own Settings for editors and admins, the Users
-// page (every account) for admins.
+// lowest role that gets the link: the SD Flasher and an account's own Settings for editors and
+// admins (a viewer cannot set up a projector; /flasher itself stays open to every role), the
+// Users page (every account) for admins.
 const NAV = [
-  ["/flasher", "SD Flasher"],
+  ["/flasher", "SD Flasher", null, "editor"],
   ["/dashboard", "Dashboard", (p) => p === "/dashboard"],
   ["/library", "Library"],
   ["/playlists", "Playlists"],

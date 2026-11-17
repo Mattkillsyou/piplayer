@@ -278,11 +278,11 @@ describe("a page per file (GET /library/<id>)", () => {
     for (const absent of ["/rename", "/delete", "data-thumb-put", "data-confirm"]) expect(page).not.toContain(absent);
   });
 
-  it("another account's file, an admin's look included, is the 404 of a missing one; a malformed id 400; anonymous to sign-in", async () => {
+  it("another account's file, an admin's look included, is the 404 of a missing one, and so is a word (GET /library/delete); anonymous to sign-in", async () => {
     const m = await media("private.png");
     for (const c of [r.viewer, r.admin]) expect(await detail(await c.get(`/library/${m}`), 404)).toBe("Not Found");
     expect(await detail(await r.editor.get(`/library/${NOPE}`), 404)).toBe("Not Found");
-    expect(await detail(await r.editor.get("/library/abc"), 400)).toBe("media_id: value is not a valid integer");
+    for (const word of ["abc", "delete", "add-to-playlist", "trash", "upload"]) expect(await detail(await r.editor.get(`/library/${word}`), 404), word).toBe("Not Found");
     const anon = await new Client().get(`/library/${m}`);
     expect([anon.status, anon.headers.get("location")]).toEqual([303, "/login"]);
     // the uploads' own routes are deeper and still theirs

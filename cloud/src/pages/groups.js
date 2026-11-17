@@ -24,8 +24,8 @@ async function groupsPage(ctx) {
   const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name", user.id);
   const row = (g) => `<tr>
       <td class="name">${esc(g.name)}</td>
-      <td>${g.device_count}</td>
-      <td>
+      <td data-label="Devices">${g.device_count}</td>
+      <td data-label="Default playlist">
         <form method="post" action="/groups/${g.id}/assign" class="inline">
           ${csrfInput(ctx)}
           <select name="playlist_id" data-autosubmit aria-label="Default playlist for ${esc(g.name)}"${canEdit ? "" : " disabled"}>
@@ -53,7 +53,7 @@ async function groupsPage(ctx) {
 </div>
 
 ${!groups.length ? emptyState("NO GROUPS", `No groups yet.${canEdit ? " Create one above." : ""}`) : `<div class="table-wrap">
-<table class="data">
+<table class="data stack">
   <caption class="sr-only">Device groups</caption>
   <thead>
     <tr><th scope="col">Name</th><th scope="col">Devices</th><th scope="col">Default playlist</th><th scope="col"><span class="sr-only">Actions</span></th></tr>

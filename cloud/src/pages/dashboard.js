@@ -62,7 +62,8 @@ async function dashboard(ctx) {
   const settings = await ctx.settings();
   const tz = settings.timezone;
   const media = await db.first(env, "SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS bytes FROM media WHERE owner_id = ?", user.id);
-  const playlistCount = (await db.first(env, "SELECT COUNT(*) AS n FROM playlists WHERE owner_id = ?", user.id)).n;
+  const { n: playlistCount, dflt } = await db.first(env,
+    "SELECT COUNT(*) AS n, MAX(CASE WHEN id = ?2 THEN name END) AS dflt FROM playlists WHERE owner_id = ?1", user.id, settings.default_playlist_id ?? null);
   const own = contentClause(user);
   const rows = await visibleDevices(env, user,
     `d.id, d.device_id, d.name, d.last_seen_at, d.last_ip,
@@ -95,7 +96,7 @@ async function dashboard(ctx) {
   <div class="card">
     <span class="card-label">playlists</span>
     <span class="card-value">${playlistCount}</span>
-    <span class="card-sub">Library uploads join the default playlist</span>
+    <span class="card-sub">${dflt === null ? "no default" : `default: ${esc(dflt)}`}</span>
   </div>
   <div class="card">
     <span class="card-label">devices</span>

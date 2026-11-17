@@ -85,7 +85,7 @@ describe("visibility", () => {
     page = await (await r.editor.get("/groups")).text();
     expect(page).toContain("Mine group");
     expect(page).not.toContain("Their group");
-    expect(page).toContain("<td>1</td>");
+    expect(page).toContain('<td data-label="Devices">1</td>');
     page = await (await r.admin.get("/groups")).text();
     expect(page).toContain("Admin group");
     expect(page).not.toContain("Mine group");

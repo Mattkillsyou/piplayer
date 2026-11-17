@@ -43,13 +43,18 @@ describe("/flasher", () => {
     expect([res.status, res.headers.get("location")]).toEqual([303, "/login"]);
   });
 
-  it("the nav has SD Flasher on every page, for every role", async () => {
-    for (const role of ["viewer", "editor", "admin"]) {
+  it("the nav has SD Flasher first on every page for editors and admins, and none for a viewer", async () => {
+    for (const role of ["editor", "admin"]) {
       for (const p of ["/dashboard", "/devices", "/flasher"]) {
         const html = await (await r[role].get(p)).text();
         expect(html, `${role} ${p}`).toContain(`<a href="/flasher" class="nav-flasher${p === "/flasher" ? " active" : ""}">SD Flasher</a>`);
         expect(html.indexOf('>SD Flasher</a>'), `${role} ${p}: SD Flasher comes first`).toBeLessThan(html.indexOf('>Dashboard</a>'));
       }
+    }
+    for (const p of ["/dashboard", "/devices", "/flasher"]) {
+      const res = await r.viewer.get(p);
+      expect(res.status, `viewer ${p}`).toBe(200);
+      expect(await res.text(), `viewer ${p}`).not.toContain('class="nav-flasher');
     }
   });
 });

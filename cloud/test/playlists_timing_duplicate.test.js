@@ -85,12 +85,12 @@ describe("running time on the pages", () => {
     await playlist("Nothing yet");
     let html = await page(r.editor, "/playlists");
     expect(html).toContain('<th scope="col">Items</th><th scope="col">Duration</th><th scope="col">Used by</th>');
-    expect(html).toMatch(/>Listed<\/a><\/td>\s*<td>2<\/td>\s*<td class="nowrap">1:00<\/td>/);
-    expect(html).toMatch(/>Nothing yet<\/a><\/td>\s*<td>0<\/td>\s*<td class="nowrap">—<\/td>/);
+    expect(html).toMatch(/>Listed<\/a><\/td>\s*<td data-label="Items">2<\/td>\s*<td data-label="Duration" class="nowrap">1:00<\/td>/);
+    expect(html).toMatch(/>Nothing yet<\/a><\/td>\s*<td data-label="Items">0<\/td>\s*<td data-label="Duration" class="nowrap">—<\/td>/);
     await setting(r.ids.editor, "default_image_duration", 20);
     try {
       html = await page(r.editor, "/playlists");
-      expect(html).toMatch(/>Listed<\/a><\/td>\s*<td>2<\/td>\s*<td class="nowrap">1:10<\/td>/);
+      expect(html).toMatch(/>Listed<\/a><\/td>\s*<td data-label="Items">2<\/td>\s*<td data-label="Duration" class="nowrap">1:10<\/td>/);
       expect(await page(r.editor, `/playlists/${pid}`)).toContain('<span class="page-meta">2 items · 1:10</span>');
     } finally {
       await query("DELETE FROM account_settings WHERE user_id = ? AND key = 'default_image_duration'", r.ids.editor);

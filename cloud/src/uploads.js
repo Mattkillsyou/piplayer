@@ -156,7 +156,13 @@ export async function uploadInit(ctx) {
     "SELECT id, received FROM uploads WHERE sha256 = ? AND size = ? AND user_id = ?", v.sha256, v.size, user.id);
   if (inflight) return json({ upload_id: inflight.id, part_size: PART_SIZE, received: inflight.received });
 
-  const key = "media/" + finalMediaName(v.sha256, v.name, v.ext, user.id);
+  let key = "media/" + finalMediaName(v.sha256, v.name, v.ext, user.id);
+  // A file in Recently deleted (pages/library.js) keeps its bytes at its stored name for Restore:
+  // the same file uploaded again under the same name gets a name of its own, so its complete (or
+  // a failed check deleting what arrived) never writes over or removes those bytes.
+  if (await db.first(ctx.env, "SELECT 1 FROM media_trash WHERE filename = ?", key.slice("media/".length))) {
+    key = "media/" + finalMediaName(v.sha256, `${randomToken(4)}_${v.name}`, v.ext, user.id);
+  }
   // The key comes from the browser's sha256 prefix and name only: a different file whose
   // sha256 shares the first 16 hex chars must not open a second multipart at a key the
   // library (or another in-flight upload) already holds, or complete would replace those bytes.

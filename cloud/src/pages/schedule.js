@@ -56,11 +56,11 @@ async function schedulePage(ctx) {
   const base = `/devices/${device.id}/schedule`;
 
   const ruleRow = (r) => `<tr${r.is_active ? ' class="rule-active"' : ""}>
-      <td class="position-cell">${r.priority}</td>
+      <td data-label="Priority" class="position-cell">${r.priority}</td>
       <td class="name">${esc(r.name)}</td>
-      <td>${esc(r.playlist_name || "—")}</td>
-      <td class="muted">${esc(r.summary)}</td>
-      <td>${r.is_active ? '<span class="badge badge-active">active now</span>' : r.matches_now ? '<span class="badge badge-muted">matches, but a higher-priority rule is playing</span>' : '<span class="badge badge-muted">waiting</span>'}</td>
+      <td data-label="Playlist">${esc(r.playlist_name || "—")}</td>
+      <td data-label="When" class="muted">${esc(r.summary)}</td>
+      <td data-label="State">${r.is_active ? '<span class="badge badge-active">active now</span>' : r.matches_now ? '<span class="badge badge-muted">matches, but a higher-priority rule is playing</span>' : '<span class="badge badge-muted">waiting</span>'}</td>
       <td>
         ${canEdit ? `<div class="action-buttons">
           <a href="${base}?edit=${r.id}#rule-form" class="button small">Edit</a>
@@ -92,7 +92,7 @@ async function schedulePage(ctx) {
 
 <h2>Rules (${rules.length})</h2>
 ${!rules.length ? emptyState("NO RULES", "The device plays its default playlist always.") : `<div class="table-wrap">
-<table class="data">
+<table class="data stack">
   <caption class="sr-only">Schedule rules</caption>
   <thead>
     <tr><th scope="col">Prio</th><th scope="col">Name</th><th scope="col">Playlist</th><th scope="col">When</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr>

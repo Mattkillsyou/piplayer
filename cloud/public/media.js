@@ -289,6 +289,26 @@
     });
   }
 
+  // The Library page a delete came back to: its "N files" line and its Recently deleted (now with
+  // the file just deleted) replace this page's; Media (N) is recount()'s. A failure here only
+  // leaves the line stale until the next load, never undoes the delete.
+  function freshen(r) {
+    Promise.resolve().then(function () { return r.text(); }).then(function (html) {
+      var fresh = new DOMParser().parseFromString(html, 'text/html');
+      var line = document.querySelector('.page-head .page-meta');
+      var freshLine = fresh.querySelector('.page-head .page-meta');
+      if (line && freshLine) line.textContent = freshLine.textContent;
+      var trash = document.querySelector('details.trash');
+      var freshTrash = fresh.querySelector('details.trash');
+      var form = document.getElementById('library-form');
+      if (!freshTrash || !form) return;
+      freshTrash = document.importNode(freshTrash, true);
+      freshTrash.open = !!(trash && trash.open);
+      form.parentNode.insertBefore(freshTrash, trash || form.nextSibling);
+      if (trash) trash.parentNode.removeChild(trash);
+    }).then(null, function () {});
+  }
+
   // Delete asks the card's own question and posts the card's own route, from here: the page stays
   // where it was (a reload put a phone back at the top) and the viewer goes on to the next file.
   // Anything but the Library coming back (signed out, a stale token) reloads the page, which says
@@ -302,6 +322,7 @@
     }).then(function (r) {
       if (!r.ok || new URL(r.url).pathname !== '/library') throw new Error('not deleted (' + r.status + ')');
       if (!card.parentNode) return; // pressed twice: the first one took it
+      freshen(r);
       var all = links();
       var i = all.indexOf(link);
       var to = all[i + 1] || all[i - 1];

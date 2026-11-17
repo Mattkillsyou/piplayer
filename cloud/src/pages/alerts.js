@@ -14,16 +14,16 @@ const RECENT_LIMIT = 100;
 
 function table(rows, tz, closed) {
   return `<div class="table-wrap">
-  <table class="data">
+  <table class="data stack">
     <caption class="sr-only">${closed ? "Recently recovered alerts" : "Open alerts"}</caption>
     <thead><tr><th scope="col">Device</th><th scope="col">Alert</th><th scope="col">Opened</th><th scope="col">${closed ? "Closed" : "Open for"}</th><th scope="col">Last notified</th></tr></thead>
     <tbody>
     ${rows.map((a) => `<tr>
       <td class="name">${esc(a.name)} <code class="muted small">${esc(a.device_id)}</code></td>
-      <td>${alerts.kindBadge(a.kind)}</td>
-      <td class="muted nowrap">${esc(localTime(a.opened_at, tz))}</td>
-      <td class="muted nowrap">${closed ? esc(localTime(a.closed_at, tz)) : esc(ageText(ageSeconds(a.opened_at)).replace(/ ago$/, ""))}</td>
-      <td class="muted nowrap">${a.notified_at ? esc(localTime(a.notified_at, tz)) : "never"}</td>
+      <td data-label="Alert">${alerts.kindBadge(a.kind)}</td>
+      <td data-label="Opened" class="muted nowrap">${esc(localTime(a.opened_at, tz))}</td>
+      <td data-label="${closed ? "Closed" : "Open for"}" class="muted nowrap">${closed ? esc(localTime(a.closed_at, tz)) : esc(ageText(ageSeconds(a.opened_at)).replace(/ ago$/, ""))}</td>
+      <td data-label="Last notified" class="muted nowrap">${a.notified_at ? esc(localTime(a.notified_at, tz)) : "never"}</td>
     </tr>`).join("\n    ")}
     </tbody>
   </table>

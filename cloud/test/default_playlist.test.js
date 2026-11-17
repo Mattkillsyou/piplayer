@@ -185,7 +185,7 @@ describe("pages", () => {
     expect(groups).toContain('<option value="">— none —</option>');
     expect(groups).not.toContain('<option value="">Default</option>');
     expect(groups).not.toContain("Groups without one play the site default playlist.");
-    expect(await (await r.editor.get("/dashboard")).text()).toContain("Library uploads join the default playlist");
+    expect(await (await r.editor.get("/dashboard")).text()).toContain('<span class="card-sub">default: Default</span>');
     await query("DELETE FROM devices WHERE id = ?", dev.id);
     await query("DELETE FROM device_groups WHERE id = ?", gid);
   });
@@ -193,7 +193,7 @@ describe("pages", () => {
   it("Playlists marks the default with a badge, hides its Delete button and refuses to delete it", async () => {
     const other = await playlist("Deletable");
     const page = await (await r.editor.get("/playlists")).text();
-    expect(page).toContain(`<a href="/playlists/${DEFAULT}">Default</a> <span class="badge" title="Library uploads join this playlist; projectors with no playlist of their own play it">default</span>`);
+    expect(page).toContain(`<a href="/playlists/${DEFAULT}">Default</a> <span class="badge" title="Library uploads join this playlist unless another is picked; projectors with no playlist of their own play it">default</span>`);
     expect(page).not.toContain(`action="/playlists/${DEFAULT}/delete"`);
     expect(page).toContain(`action="/playlists/${other}/delete"`);
     expect(page).not.toContain(`/playlists/${ADMIN_DEFAULT}"`); // the admin's Default is not on the editor's page

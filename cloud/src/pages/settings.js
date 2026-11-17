@@ -309,7 +309,7 @@ async function settingsPage(ctx, fresh = {}) {
       <label>Default image duration (seconds)
         <input type="number" name="default_image_duration" value="${esc(s.default_image_duration)}" min="0.5" max="86400" step="0.5" required>
       </label>
-      <label>Default playlist (Library uploads join it; projectors play it unless they have a playlist of their own)
+      <label>Default playlist (Library uploads join it unless another is picked; projectors play it unless they have a playlist of their own)
         <select name="default_playlist_id">
           ${optionList(playlists, s.default_playlist_id)}
         </select>

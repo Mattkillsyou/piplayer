@@ -73,15 +73,15 @@ async function playlistsPage(ctx) {
     if (p.group_count) parts.push(`${p.group_count} group(s) will lose it as their default playlist`);
     const confirm = `Delete playlist ${p.name}?` + (parts.length ? ` ${parts.join("; ")}.` : "");
     return `<tr>
-      <td class="name"><a href="/playlists/${p.id}">${esc(p.name)}</a>${p.id === defaultId ? ' <span class="badge" title="Library uploads join this playlist; projectors with no playlist of their own play it">default</span>' : ""}</td>
-      <td>${p.item_count}</td>
-      <td class="nowrap">${totalTime(itemsOf.get(p.id) || [], dur) || "—"}</td>
-      <td class="muted">
+      <td class="name"><a href="/playlists/${p.id}">${esc(p.name)}</a>${p.id === defaultId ? ' <span class="badge" title="Library uploads join this playlist unless another is picked; projectors with no playlist of their own play it">default</span>' : ""}</td>
+      <td data-label="Items">${p.item_count}</td>
+      <td data-label="Duration" class="nowrap">${totalTime(itemsOf.get(p.id) || [], dur) || "—"}</td>
+      <td data-label="Used by" class="muted">
         <span title="devices with this as their default playlist">${plural(p.device_count, "device")}</span>
         ${p.group_count ? ` · ${plural(p.group_count, "group")}` : ""}
         ${p.schedule_count ? ` · ${plural(p.schedule_count, "schedule rule")}` : ""}
       </td>
-      <td class="muted nowrap">${esc(localTime(p.updated_at, tz))}</td>
+      <td data-label="Updated" class="muted nowrap">${esc(localTime(p.updated_at, tz))}</td>
       <td>
         <div class="action-buttons">
           <a href="/playlists/${p.id}" class="button small">${canEdit ? "Edit" : "View"}</a>
@@ -105,7 +105,7 @@ async function playlistsPage(ctx) {
 </div>
 
 ${!rows.length ? emptyState("NO PLAYLISTS", `No playlists yet.${canEdit ? " Create one above." : ""}`) : `<div class="table-wrap">
-<table class="data">
+<table class="data stack">
   <caption class="sr-only">Playlists</caption>
   <thead>
     <tr><th scope="col">Name</th><th scope="col">Items</th><th scope="col">Duration</th><th scope="col">Used by</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
