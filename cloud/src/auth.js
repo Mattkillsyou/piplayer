@@ -260,11 +260,13 @@ export function csrfToken(ctx) {
   return ctx.csrf;
 }
 
-// Token from the X-CSRF-Token header or the csrf_token form field must equal the session's.
+// Token from the X-CSRF-Token header, or on a POST the csrf_token form field, must equal the
+// session's. Only HTML forms carry it in the body and they only POST; the PUTs (a preview, an
+// upload part) read their raw body themselves, so reading it here made a form-encoded PUT a 500.
 // index.js calls this for every non-/api/ request that is not GET/HEAD/OPTIONS.
 export async function requireCsrf(ctx) {
   let supplied = ctx.request.headers.get("x-csrf-token");
-  if (supplied === null) {
+  if (supplied === null && ctx.request.method === "POST") {
     const ctype = (ctx.request.headers.get("content-type") || "").toLowerCase();
     if (ctype.startsWith("application/x-www-form-urlencoded") || ctype.startsWith("multipart/form-data")) {
       const form = await ctx.form();

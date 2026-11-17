@@ -116,8 +116,9 @@ describe("style.css (M19, M20, M22, L26, L34)", () => {
     expect(css).toMatch(/\.brand-eyebrow \{[^}]*font-size: var\(--p5k-text-eyebrow\)/);
     expect(css).not.toMatch(/font-size: [5-9]px/);
     expect(css).toContain(".cards { grid-template-columns: repeat(2, 1fr); gap: 8px; }");
-    // M19: the hamburger block starts at 1000px so iPad portrait and half-screen windows get it
-    expect(css).toMatch(/@media \(max-width: 1000px\) \{\n  \.topbar \{ flex-wrap: wrap;/);
+    // M19: the hamburger block starts at 1240px so iPads, half-screen windows and small laptops get
+    // it (the ten links wrapped onto a second line up to about 1240px)
+    expect(css).toMatch(/@media \(max-width: 1240px\) \{\n  \.topbar \{ flex-wrap: wrap;/);
     expect(css).not.toMatch(/@media \(max-width: 720px\) \{\n  \.topbar \{/);
     // L34
     expect(css).toContain(".terminal .log-d { color: var(--p5k-soft); overflow-wrap: anywhere; min-width: 14rem; }");

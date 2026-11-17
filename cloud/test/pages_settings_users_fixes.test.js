@@ -23,10 +23,11 @@ function configure(on = true) {
 }
 
 // Just the Access routes syncAccess touches: one app + one policy per hostname, every PUT
-// recorded; `refuse` makes the policy PUT answer success:false.
+// recorded and every call counted; `refuse` makes the policy PUT answer success:false.
 function fakeAccess() {
-  const fake = { puts: [], refuse: false };
+  const fake = { puts: [], calls: 0, refuse: false };
   vi.stubGlobal("fetch", async (url, init = {}) => {
+    fake.calls++;
     const u = new URL(String(url));
     const method = init.method || "GET";
     const ok = (result) => new Response(JSON.stringify({ success: true, errors: [], result }), { status: 200 });
@@ -87,35 +88,40 @@ describe("H4 + M21: an account's alert addresses are the camera operator list of
     expect(page).toContain('<div class="alert error" role="alert">Saved, but the camera access list could not be updated on every device: Cloudflare API PUT /accounts/.../access/apps/app-1/policies/pol-1: policy is locked. Click Recreate tunnel on each device on the Devices page.</div>');
   });
 
-  it("creating, re-roling or deleting a user re-pushes each projector's own account list; a refusal is a banner", async () => {
+  it("a changed address or a deleted user re-pushes only the projectors whose list it moves; creating or re-roling a user calls nothing; a refusal is a banner", async () => {
     configure();
     const fake = fakeAccess();
-    // no alert email set: the account's own address is its operator list. Another account's
-    // address, an admin's too, is never on it.
+    // no alert email set: the account's own address (or email-like username) is its operator list
     await query("UPDATE users SET email = 'ed@example.net' WHERE id = ?", r.ids.editor);
+    await query("UPDATE users SET email = 'boss@example.net' WHERE id = ?", r.ids.admin);
+    // neither can change any list (operatorEmails never reads the role): not one Cloudflare call,
+    // which used to be 3 per tunnelled projector of the whole site
     expect((await post(r.admin, "/users", { username: "ops@example.net", password: "pw123456", role: "admin" })).status).toBe(303);
-    expect(fake.puts).toEqual([["ed@example.net"]]);
     expect(await (await r.admin.get("/users")).text()).toContain('<div class="alert ok" role="alert">User created.</div>');
     const u = await one("SELECT id FROM users WHERE username = 'ops@example.net'");
-    // an ownerless tunnelled projector follows the site admin (the lowest-id admin): no address known, nothing pushed for it
-    const spare = await device("spare", "Spare", { owner_id: null, tunnel_id: "tun-2", tunnel_hostname: "spare-cam.photogen5000.com" });
     expect((await post(r.admin, `/users/${u.id}/role`, { role: "editor" })).status).toBe(303);
-    expect(fake.puts).toEqual([["ed@example.net"], ["ed@example.net"]]);
     expect(await (await r.admin.get("/users")).text()).toContain('<div class="alert ok" role="alert">Role updated.</div>');
-    // the site admin's address reaches the ownerless one only
-    await query("UPDATE users SET email = 'boss@example.net' WHERE id = ?", r.ids.admin);
+    expect(fake.calls).toBe(0);
+    // an ownerless tunnelled projector follows the site admin; ops-cam is the new account's
+    const spare = await device("spare", "Spare", { owner_id: null, tunnel_id: "tun-2", tunnel_hostname: "spare-cam.photogen5000.com" });
+    const opsCam = await device("ops-cam", "Ops cam", { owner_id: u.id, tunnel_id: "tun-3", tunnel_hostname: "ops-cam-cam.photogen5000.com" });
+    // the editor's new address reaches the editor's projector (lobby) and nothing else
+    expect((await post(r.admin, `/users/${r.ids.editor}/email`, { email: "ed2@example.net" })).status).toBe(303);
+    expect([fake.puts, fake.calls]).toEqual([[["ed2@example.net"]], 3]);
+    // refused: the address is saved, and the banner says what to do by hand
     fake.refuse = true;
-    expect((await post(r.admin, `/users/${u.id}/role`, { role: "admin" })).status).toBe(303);
-    expect((await one("SELECT role FROM users WHERE id = ?", u.id)).role).toBe("admin");
+    expect((await post(r.admin, `/users/${u.id}/email`, { email: "ops2@example.net" })).status).toBe(303);
+    expect(await one("SELECT email FROM users WHERE id = ?", u.id)).toEqual({ email: "ops2@example.net" });
     let page = await (await r.admin.get("/users")).text();
-    expect(page).toContain('<div class="alert error" role="alert">Role updated, but the camera access list could not be updated on every device: Cloudflare API PUT /accounts/.../access/apps/app-1/policies/pol-1: policy is locked. Click Recreate tunnel on each device on the Devices page.</div>');
+    expect(page).toContain('<div class="alert error" role="alert">Email address saved, but the camera access list could not be updated on every device: Cloudflare API PUT /accounts/.../access/apps/app-1/policies/pol-1: policy is locked. Click Recreate tunnel on each device on the Devices page.</div>');
     fake.refuse = false;
+    // deleted: ops-cam is ownerless now, so it and spare get the site admin's list; lobby is not touched
     expect((await post(r.admin, `/users/${u.id}/delete`)).status).toBe(303);
     expect(await one("SELECT id FROM users WHERE id = ?", u.id)).toBeNull();
     page = await (await r.admin.get("/users")).text();
     expect(page).toContain('<div class="alert ok" role="alert">User deleted.</div>');
-    expect(fake.puts.slice(2).sort()).toEqual([["boss@example.net"], ["ed@example.net"]]);
-    await query("DELETE FROM devices WHERE id = ?", spare.id);
+    expect(fake.puts.slice(1)).toEqual([["boss@example.net"], ["boss@example.net"]]);
+    await query("DELETE FROM devices WHERE id IN (?, ?)", spare.id, opsCam.id);
   });
 
   it("the Email field says it is also the camera access list, only when tunnels are configured", async () => {
@@ -127,7 +133,8 @@ describe("H4 + M21: an account's alert addresses are the camera operator list of
     configure();
     const page = await (await r.admin.get("/settings")).text();
     expect(page).not.toContain("These addresses are also the only people allowed to open a device's live camera page");
-    expect(page).toContain("Each email address must be verified in Cloudflare Email Routing first.");
+    // an editor cannot reach Cloudflare: the line says who has to act
+    expect(page).toContain("Email alerts reach only addresses the site owner has verified in Cloudflare Email Routing.");
     expect(page).toContain('<input type="email" multiple name="alert_email"');
     expect(page).toContain('name="alert_webhook_url" value="" placeholder="https://hooks.slack.com/services/..." pattern="https://.*"');
   });

@@ -1,8 +1,12 @@
 // /signup: open self sign-up from the login page; new accounts are editors (the owner's choice).
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { SIGNUPS_PER_IP } from "../src/pages/signup.js";
 import { Client, query, wipe } from "./helpers.js";
 import { audits, roles } from "./pages_common.js";
+
+// The PBKDF2 derivations a deriveBits spy saw (auth.hashPassword): counted, not timed, so a busy
+// machine cannot fail the check and a fast one cannot hide a hash.
+const pbkdf2 = (spy) => spy.mock.calls.filter(([alg]) => alg?.name === "PBKDF2");
 
 describe("sign-up", () => {
   let r;
@@ -10,6 +14,7 @@ describe("sign-up", () => {
     await wipe();
     r = await roles();
   });
+  afterEach(() => vi.restoreAllMocks()); // a failed check must not hand its spy to the next test
 
   it("the login page links to it; the form carries a csrf token; a signed-in user is sent to the dashboard", async () => {
     const c = new Client();
@@ -81,22 +86,23 @@ describe("sign-up", () => {
     await query("DELETE FROM login_failures");
     const c = new Client();
     const csrf_token = await c.csrf("/signup");
-    const t0 = Date.now();
+    const derive = vi.spyOn(crypto.subtle, "deriveBits");
     expect((await c.post("/signup", { username: "dupe3", email: "newbie@example.com", password: "pw123456", password2: "pw123456", csrf_token })).status).toBe(409);
-    expect(Date.now() - t0, "no PBKDF2 on the taken path").toBeLessThan(200);
+    expect(pbkdf2(derive), "no PBKDF2 on the taken path").toEqual([]);
     expect((await c.post("/signup", { username: "dupe3", email: "Dupe3@Example.org", password: "pw123456", password2: "pw123456", csrf_token })).status).toBe(303);
+    expect(pbkdf2(derive).length, "the spy sees the worker's hashing").toBeGreaterThan(0);
     expect(await query("SELECT email FROM users WHERE username = 'dupe3'")).toEqual([{ email: "Dupe3@Example.org" }]);
   });
 
   it("a taken name is refused before any password hashing and still counts toward the per-address cap", async () => {
     await query("DELETE FROM login_failures");
     const ip = { "cf-connecting-ip": "198.51.100.20" };
+    const derive = vi.spyOn(crypto.subtle, "deriveBits");
     for (let i = 0; i < SIGNUPS_PER_IP; i++) {
       const c = new Client();
       const csrf_token = await c.csrf("/signup");
-      const t0 = Date.now();
       expect((await c.post("/signup", { username: "newbie", email: "x@example.com", password: "pw123456", password2: "pw123456", csrf_token }, ip)).status).toBe(409);
-      expect(Date.now() - t0, "no PBKDF2 on the taken path").toBeLessThan(200);
+      expect(pbkdf2(derive), "no PBKDF2 on the taken path").toEqual([]);
     }
     const c = new Client();
     const csrf_token = await c.csrf("/signup");

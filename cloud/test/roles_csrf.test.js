@@ -301,4 +301,15 @@ describe("csrf (contract 8)", () => {
     expect(login).toMatch(HIDDEN_RX);
     expect(META_RX.exec(login)[1]).toBe(HIDDEN_RX.exec(login)[0].match(/value="([^"]+)"/)[1]);
   });
+
+  it("a PUT takes its token from the header only: a form-encoded one is a 403, not a 500 from a body the check had read", async () => {
+    await query("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('form-put.png', 'form-put.png', 'image', 1, ?, ?)", "e".repeat(64), r.ids.editor);
+    const [{ id }] = await query("SELECT id FROM media WHERE filename = 'form-put.png'");
+    const res = await r.editor.fetch(`/library/${id}/thumb`, {
+      method: "PUT", body: new URLSearchParams({ csrf_token: r.editor.token }), headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).detail).toBe(CSRF_DETAIL);
+    await query("DELETE FROM media WHERE id = ?", id);
+  });
 });

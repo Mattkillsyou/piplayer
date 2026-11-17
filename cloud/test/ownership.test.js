@@ -287,7 +287,7 @@ describe("users page", () => {
   it("shows how many projectors each account owns; deleting the account takes its library with it, leaves its projectors ownerless and signed out, and the confirm says so", async () => {
     const page = await (await r.admin.get("/users")).text();
     expect(page).toContain('<th scope="col">Projectors</th>');
-    expect(page).toContain('<td title="Projectors this account owns (set on the Devices page)">1</td>');
+    expect(page).toContain('<td data-label="Projectors" title="Projectors this account owns (set on the Devices page)">1</td>');
     expect(page).toContain('data-confirm="Delete vw? Their library, playlists, groups and settings are deleted with the account, and their API tokens stop working. Their projectors stay on the Devices page with no owner, signed out until each gets a new token there."');
     expect((await post(r.admin, "/users", { username: "gone", password: "gone-pass", role: "editor" })).status).toBe(303);
     const uid = (await one("SELECT id FROM users WHERE username = 'gone'")).id;
@@ -296,7 +296,7 @@ describe("users page", () => {
     await env.MEDIA.put("media/gone-file.mp4", new Uint8Array(10));
     await env.MEDIA.put("thumbs/gone-file.mp4.jpg", new Uint8Array([0xff, 0xd8, 0xff])); // its Library preview
     await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES ('gone-file.mp4', 'g.mp4', 'video', 10, ?, ?)", "f".repeat(64), uid);
-    expect(await (await r.admin.get("/users")).text()).toContain('<td title="Projectors this account owns (set on the Devices page)">1</td>\n      <td class="muted nowrap">');
+    expect(await (await r.admin.get("/users")).text()).toContain('<td data-label="Projectors" title="Projectors this account owns (set on the Devices page)">1</td>\n      <td data-label="Created" class="muted">');
     expect(await (await r.admin.get("/devices")).text()).toContain(`<option value="${uid}">gone</option>`);
     // until the delete the card syncs with its account's content
     const bearer = (path) => SELF.fetch(`${BASE}${path}`, { headers: { authorization: `Bearer ${d.token}` } });

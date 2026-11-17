@@ -71,7 +71,7 @@ function navHtml(ctx) {
       ${links}
     </nav>
     <div class="user">
-      <span class="username">${esc(user.username)}</span>
+      <span class="username" title="${esc(user.username)}">${esc(user.username)}</span>
       <span class="badge badge-${esc(user.role)}">${esc(user.role)}</span>
       <form method="post" action="/logout" class="inline">
         ${csrfInput(ctx)}

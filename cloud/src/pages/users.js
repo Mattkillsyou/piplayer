@@ -12,34 +12,41 @@ import * as db from "../db.js";
 import * as media from "../media.js";
 import { esc, fail, idParam, localTime, str } from "../util.js";
 import { csrfInput, layout } from "./layout.js";
-import { newTokenBlock, tokenCreateForm, tokenName, tokenTable, userTokens } from "./settings.js";
+import { newTokenBlock, tokenCreateForm, tokenName, tokenTable } from "./settings.js";
 
 const ROLE_OK = (role) => auth.ROLES.includes(role);
 
-// Back to the list with the acknowledgement. An account's own address (or email-like username)
-// stands in for its camera operator list while it has no alert email set, and ownerless
-// projectors follow the site admin's (cloudflare.operatorEmails), so a changed address or a
-// deleted user (whose projectors become ownerless) may change who can open live camera pages:
-// push that to every tunnel now.
-async function done(ctx, message) {
-  const accessError = await cloudflare.syncAccess(ctx);
+// Back to the list with the acknowledgement. `accessOwner` is the account whose projectors may
+// have a new camera operator list (cloudflare.operatorEmails): an account's own address (or
+// email-like username) stands in for that list while it has no alert email set, and a deleted
+// user's projectors, now ownerless, follow the site admin's. Only that account's tunnels are
+// re-pushed: the whole fleet ran past the Free plan's subrequest limit. Creating a user or changing
+// a role moves no list (operatorEmails never reads the role, and the site admin is recorded, not
+// recomputed), so those push nothing.
+async function done(ctx, message, accessOwner) {
+  const accessError = accessOwner === undefined ? null : await cloudflare.syncAccess(ctx, accessOwner);
   if (accessError) return auth.flashRedirect(ctx, "/users", `${message}, but the camera access list could not be updated on every device: ${accessError}. Click Recreate tunnel on each device on the Devices page.`, "error");
   return auth.flashRedirect(ctx, "/users", `${message}.`);
 }
 
+// '2026-11-17 10:00 UTC' in two unbreakable halves: a squeezed column puts the time under the
+// date instead of breaking the date at a hyphen.
+const stamp = (value, tz) => esc(localTime(value, tz)).replace(/^(\S+) (.+)$/, '<span class="nowrap">$1</span> <span class="nowrap">$2</span>');
+
 // Second row under a user: their tokens and (admin/editor only) the create form; `newToken`
 // is the plaintext of a token created by this very request, shown once under its user.
-async function tokensRow(ctx, u, tz, newToken) {
-  const tokens = await userTokens(ctx.env, u.id);
+function tokensRow(ctx, u, tokens, tz, newToken) {
   const canHold = u.role !== "viewer";
   if (!tokens.length && !canHold) return "";
   return `<tr class="user-tokens">
       <td colspan="8">
         <details${newToken ? " open" : ""}>
           <summary class="small">API tokens (${tokens.length})</summary>
-          ${newToken ? newTokenBlock(newToken) : ""}
-          ${canHold ? tokenCreateForm(ctx, `/users/${u.id}/tokens`, `Token name for ${u.username}`) : '<p class="muted small">Viewers cannot use operator tokens; change the role first.</p>'}
-          ${tokenTable(ctx, tokens, tz, (t) => `/users/${u.id}/tokens/${t.id}/revoke`)}
+          <div>
+            ${newToken ? newTokenBlock(newToken) : ""}
+            ${canHold ? tokenCreateForm(ctx, `/users/${u.id}/tokens`, `Token name for ${u.username}`) : '<p class="muted small">Viewers cannot use operator tokens; change the role first.</p>'}
+            ${tokenTable(ctx, tokens, tz, (t) => `/users/${u.id}/tokens/${t.id}/revoke`)}
+          </div>
         </details>
       </td>
     </tr>`;
@@ -52,10 +59,15 @@ async function usersPage(ctx, created = null) {
   const users = await db.all(ctx.env,
     `SELECT u.id, u.username, u.email, u.role, u.created_at, (SELECT COUNT(*) FROM devices d WHERE d.owner_id = u.id) AS device_count
        FROM users u ORDER BY u.username`);
+  // Every account's tokens in one statement, sorted out here: a query per account ran past the
+  // Free plan's 50 D1 queries a request at about 45 accounts.
+  const tokensOf = Map.groupBy(await db.all(ctx.env,
+    "SELECT user_id, id, name, created_at, last_used_at FROM api_tokens ORDER BY created_at DESC, id DESC"), (t) => t.user_id);
+  // data-label: each cell's heading, shown above it where a phone stacks the row into a card.
   const row = (u) => `<tr>
       <td class="name">${esc(u.username)}${u.id === me.id ? ' <span class="muted small">(you)</span>' : ""}${u.id === site ? ' <span class="badge badge-muted" title="Projectors without an owner play this account\'s content: it cannot be deleted or given another role">site admin</span>' : ""}</td>
-      <td><span class="badge badge-${esc(u.role)}">${esc(u.role)}</span></td>
-      <td>
+      <td data-label="Role"><span class="badge badge-${esc(u.role)}">${esc(u.role)}</span></td>
+      <td data-label="Email">
         ${u.email ? `<div class="small">${esc(u.email)}</div>` : ""}
         <form method="post" action="/users/${u.id}/email" class="inline duration-form">
           ${csrfInput(ctx)}
@@ -63,9 +75,9 @@ async function usersPage(ctx, created = null) {
           <button type="submit" class="small">Set</button>
         </form>
       </td>
-      <td title="Projectors this account owns (set on the Devices page)">${u.device_count}</td>
-      <td class="muted nowrap">${esc(localTime(u.created_at, tz))}</td>
-      <td>
+      <td data-label="Projectors" title="Projectors this account owns (set on the Devices page)">${u.device_count}</td>
+      <td data-label="Created" class="muted">${stamp(u.created_at, tz)}</td>
+      <td data-label="Change role">
         <form method="post" action="/users/${u.id}/role" class="inline">
           ${csrfInput(ctx)}
           <select name="role" data-autosubmit aria-label="Role for ${esc(u.username)}"${u.id === me.id || u.id === site ? " disabled" : ""}>
@@ -73,7 +85,7 @@ async function usersPage(ctx, created = null) {
           </select>
         </form>
       </td>
-      <td>
+      <td data-label="Set password">
         <form method="post" action="/users/${u.id}/password" class="inline duration-form">
           ${csrfInput(ctx)}
           <input type="password" name="password" placeholder="new password" minlength="6" required autocomplete="new-password" aria-label="New password for ${esc(u.username)}">
@@ -87,8 +99,7 @@ async function usersPage(ctx, created = null) {
         </form>` : ""}
       </td>
     </tr>`;
-  const rows = [];
-  for (const u of users) rows.push(row(u), await tokensRow(ctx, u, tz, created?.userId === u.id ? created.token : ""));
+  const rows = users.flatMap((u) => [row(u), tokensRow(ctx, u, tokensOf.get(u.id) || [], tz, created?.userId === u.id ? created.token : "")]);
   const content = `<div class="page-head">
   <h1>Users</h1>
   <span class="page-meta">${users.length} account${users.length === 1 ? "" : "s"}</span>
@@ -119,7 +130,7 @@ async function usersPage(ctx, created = null) {
 </div>
 
 <div class="table-wrap">
-<table class="data">
+<table class="data stack users">
   <caption class="sr-only">Users</caption>
   <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Email</th><th scope="col">Projectors</th><th scope="col">Created</th><th scope="col">Change role</th><th scope="col">Set password</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
   <tbody>
@@ -215,7 +226,7 @@ async function usersSetEmail(ctx) {
   await db.run(ctx.env, "UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL", userId);
   await audit.log(ctx, "user_set_email", "user", userId, { email }, undefined, userId);
   // The address may be the account's camera operator (cloudflare.operatorEmails).
-  return done(ctx, "Email address saved");
+  return done(ctx, "Email address saved", userId);
 }
 
 // The account goes with everything in it: its media rows, playlists, groups, settings and
@@ -231,7 +242,8 @@ async function usersDelete(ctx) {
   const me = auth.requireRole(ctx, "admin");
   const userId = idParam(ctx.params.user_id, "user_id");
   if (userId === me.id) fail(400, "You cannot delete your own account");
-  if (userId === await accounts.siteAdminId(ctx.env)) fail(400, accounts.SITE_ADMIN_KEPT);
+  const site = await accounts.siteAdminId(ctx.env);
+  if (userId === site) fail(400, accounts.SITE_ADMIN_KEPT);
   const keys = await accounts.mediaKeys(ctx.env, userId);
   // Both statements carry the last-admin guard (see usersSetRole), so a refused delete signs
   // nothing out; `changes` of the delete counts the cascaded session rows too.
@@ -255,7 +267,8 @@ async function usersDelete(ctx) {
   if (keys.length) details.media_deleted = keys.length;
   if (signedOut.meta.changes) details.projectors_signed_out = signedOut.meta.changes;
   await audit.log(ctx, "user_delete", "user", userId, details, undefined, null);
-  return done(ctx, "User deleted");
+  // Its projectors are ownerless now: they follow the site admin's operator list.
+  return done(ctx, "User deleted", site);
 }
 
 // Issue a token for another admin or editor; the page re-renders once with the plaintext

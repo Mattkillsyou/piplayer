@@ -311,7 +311,7 @@ body::after { background: var(--p5k-vignette-page); }
 
 a { color: var(--p5k-phosphor); text-decoration: none; }
 a:hover { color: var(--p5k-phosphor); text-shadow: var(--p5k-text-glow); text-decoration: underline; text-underline-offset: 3px; }
-:focus-visible { outline: 1px solid var(--p5k-rule-max); outline-offset: 2px; box-shadow: var(--p5k-glow-focus); }
+:focus-visible { outline: 2px solid var(--p5k-rule-max); outline-offset: 3px; box-shadow: var(--p5k-glow-focus); }
 /* Keyboard users: the skip link sits off-screen until it is tabbed to; .sr-only is text for screen readers only (table captions). */
 .skip-link { position: absolute; left: -9999px; padding: 6px 10px; background: var(--p5k-fill-tint-2); color: var(--p5k-phosphor); }
 .skip-link:focus { position: static; display: inline-block; }
@@ -444,31 +444,36 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
 }
 .topbar nav a:hover { color: var(--p5k-phosphor); background: var(--p5k-fill-tint-2); text-shadow: none; text-decoration: none; }
 .topbar nav a.active { color: var(--p5k-phosphor); border-bottom-color: var(--p5k-rule-max); background: var(--p5k-fill-tint-2); }
-.topbar nav a:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--p5k-rule-max); color: var(--p5k-phosphor); }
+/* inside the link: the links start at the window's top edge, where an outer ring loses its top */
+.topbar nav a:focus-visible { outline: 2px solid var(--p5k-rule-max); outline-offset: -2px; box-shadow: none; color: var(--p5k-phosphor); }
 /* the SD Flasher link: white on black in both themes, boxed, so it reads as the first thing to click */
 .topbar nav a.nav-flasher { color: #FFFFFF; background: #000000; border: 1px solid #FFFFFF; border-bottom-width: 1px; margin: 12px 8px 12px 0; padding: 0 14px; font-weight: 700; }
 .topbar nav a.nav-flasher:hover, .topbar nav a.nav-flasher.active { color: #FFFFFF; background: #000000; border-color: #FFFFFF; box-shadow: var(--p5k-glow-key); }
+.topbar nav a.nav-flasher:focus-visible { outline-offset: 3px; } /* its margin leaves room outside the pill */
 .topbar .user { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; font-size: var(--p5k-text-data-sm); color: var(--p5k-body); }
 .topbar .user .badge { margin-left: 4px; }
+/* a long name (the full one is its title) must not push the nav onto a second line */
+.topbar .user .username { max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-toggle { display: none; }
 
-/* compact rule: tighter tracking below 1400px (ten links plus the SD Flasher pill) */
-@media (max-width: 1400px) {
+/* compact rule: tighter tracking below 1500px (ten links plus the SD Flasher pill) */
+@media (max-width: 1500px) {
   .topbar { gap: 14px; }
   .topbar nav a { padding: 0 7px; font-size: 11px; letter-spacing: 0.06em; }
 }
-/* phone and narrow windows (iPad portrait, half-screen): brand + menu button on one row; nav
-   and the user block drop into a stacked list. Below ~1000px the nine links no longer fit. */
-@media (max-width: 1000px) {
+/* phone and narrow windows (iPad, half-screen, a small laptop): brand + menu button on one row;
+   nav and the user block drop into a stacked list. Below ~1240px the ten links no longer fit on
+   one line beside the brand and the user (Windows scrollbars included). */
+@media (max-width: 1240px) {
   .topbar { flex-wrap: wrap; gap: 10px; padding: 8px 14px; }
   .topbar nav { display: none; flex-basis: 100%; flex-direction: column; gap: 0; order: 3; border-top: 1px solid var(--p5k-rule-2); }
   .topbar.nav-open nav { display: flex; }
   .topbar nav a { min-height: var(--p5k-touch); padding: 0 6px; border-bottom: 1px solid var(--p5k-rule); font-size: var(--p5k-text-data); letter-spacing: var(--p5k-track-nav); }
   .topbar nav a.active { border-bottom-color: var(--p5k-rule); border-left: 2px solid var(--p5k-rule-max); padding-left: 8px; }
   .topbar nav a.nav-flasher { margin: 8px 0; padding: 0 12px; justify-content: center; }
-  .topbar .user { display: none; order: 4; flex-basis: 100%; justify-content: space-between; padding: 10px 6px 6px; }
+  .topbar .user { display: none; order: 4; flex-basis: 100%; min-width: 0; justify-content: space-between; padding: 10px 6px 6px; }
   .topbar.nav-open .user { display: flex; }
-  .topbar .user .username { margin-right: auto; }
+  .topbar .user .username { margin-right: auto; max-width: none; }
   .nav-toggle {
     display: inline-flex;
     align-items: center;
@@ -652,6 +657,7 @@ button[disabled], .button[disabled], button[disabled]:hover, button.small[disabl
   border-color: var(--p5k-rule-2);
   box-shadow: none;
   cursor: not-allowed;
+  opacity: .4; /* the grey alone matched a live small button, and loses to button.small.danger */
 }
 button.link {
   padding: 6px 10px;
@@ -662,9 +668,11 @@ button.link {
 }
 button.link:hover { color: var(--p5k-phosphor); border-color: var(--p5k-rule-max); box-shadow: var(--p5k-glow-hover-soft); }
 button.block, .button.block { width: 100%; }
-/* A finger needs 44px: the small buttons (Delete, Set, Edit, Revoke) were 24px tall on a phone. */
+/* A finger needs 44px: the small buttons (Delete, Set, Edit, Revoke) were 24px tall on a phone,
+   the full-size ones and the disclosure rows 33-36px. */
 @media (max-width: 720px), (pointer: coarse) { /* a phone held sideways is wider than 720px */
   button.small, .button.small, button.link { min-height: var(--p5k-touch); padding-left: 12px; padding-right: 12px; }
+  button, .button, details summary { min-height: var(--p5k-touch); }
 }
 .button-wide { padding: 12px; letter-spacing: 0.24em; font-size: var(--p5k-text-data-sm); }
 
@@ -756,9 +764,13 @@ input[type=checkbox] {
   vertical-align: middle;
   flex: 0 0 auto;
 }
-input[type=checkbox]::before { content: "×"; font-family: var(--p5k-font-mono); font-size: 11px; line-height: 1; color: transparent; }
+/* hidden, not a transparent colour: Windows contrast themes repaint every colour, so a transparent
+   × showed on every box, ticked or not */
+input[type=checkbox]::before { content: "×"; font-family: var(--p5k-font-mono); font-size: 11px; line-height: 1; visibility: hidden; }
 input[type=checkbox]:checked { border-color: var(--p5k-rule-max); background: var(--p5k-fill-solid); }
-input[type=checkbox]:checked::before { color: var(--p5k-on-solid); }
+input[type=checkbox]:checked::before { color: var(--p5k-on-solid); visibility: visible; }
+/* the ticked card's white frame and glow are dropped there too */
+@media (forced-colors: active) { .media-card:has(input:checked) { outline: 2px solid Highlight; } }
 .inline-check {
   display: inline-flex;
   flex-direction: row;
@@ -775,8 +787,13 @@ input[type=checkbox]:checked::before { color: var(--p5k-on-solid); }
 
 .row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-bottom: var(--p5k-space-3); }
 .row > input, .row > select { flex: 1 1 180px; width: auto; }
+/* a box beside its button (Create token, Create link) is wide enough for its placeholder: on a
+   phone the button goes under it instead of cutting the hint */
+.row > input { flex-basis: 260px; }
 .row > label { flex: 1 1 180px; margin: 0; }
 .row > button, .row > .button { flex: 0 0 auto; }
+/* the SD Flasher's download links: "Download for Mac (Apple Silicon)" is wider than a phone */
+@media (max-width: 720px) { .row > .button { flex: 1 1 100%; white-space: normal; text-align: center; } }
 .row.tight { gap: 6px; align-items: center; }
 /* align-items: end keeps the boxes of one row on a line when a neighbour's label runs to two lines */
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px 12px; align-items: end; margin-bottom: var(--p5k-space-3); }
@@ -823,10 +840,28 @@ table.data td .action-buttons { gap: 6px; }
 table.data td .action-buttons form, table.data td form.inline { margin: 0; }
 table.data td select { min-width: 140px; }
 table.data td input[type=password] { width: 9rem; display: inline-block; }
-table.data td input[type=email], table.data td input[type=text] { min-width: 11rem; } /* a squeezed column left the box one letter wide */
+table.data td input[type=email], table.data td input[type=text] { min-width: 8rem; } /* a squeezed column left the box one letter wide */
 table.data td .muted.small { display: inline; }
 tr.rule-active td { background: var(--p5k-fill-tint) !important; }
 tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
+/* Users: a long name or address breaks anywhere rather than widen its column (an ordinary name
+   still fits 9rem whole), and below 1240px each Set goes under its box, so Set password stays on
+   screen down to a 1024px laptop. */
+table.data.users td.name, table.data.users td div.small { overflow-wrap: anywhere; }
+table.data.users td.name { min-width: 9rem; }
+@media (max-width: 1240px) { table.data.users .duration-form { flex-wrap: wrap; } }
+/* Phones: a table marked .stack reads as one card per row, each cell under its heading
+   (data-label), so no action sits past the right edge. The real headings stay for screen readers. */
+@media (max-width: 720px) {
+  table.data.stack, table.data.stack tbody, table.data.stack tr, table.data.stack td { display: block; }
+  table.data.stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  table.data.stack tr { padding: 6px 0; border-bottom: 1px solid var(--p5k-rule-3); }
+  table.data.stack td { padding: 5px 12px; border: 0; }
+  table.data.stack td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 3px; font-size: var(--p5k-text-label-sm); letter-spacing: var(--p5k-track-label); text-transform: uppercase; color: var(--p5k-muted); }
+  table.data.users tr:has(+ .user-tokens) { border-bottom: 0; } /* a user's tokens belong to its card */
+  table.data.users .duration-form { display: flex; }
+  table.data.users .duration-form input { flex: 1 1 8rem; }
+}
 
 /* ---------------------------------------------------------------- alerts --- */
 .alert {
@@ -1359,6 +1394,14 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
 .terminal .log-u { color: var(--p5k-phosphor); }
 .terminal .log-a code { color: var(--p5k-ink); }
 .terminal .log-d { color: var(--p5k-soft); overflow-wrap: anywhere; min-width: 14rem; }
+/* Phones: each entry wraps like a line of text (time, user, action, target, IP) with its details
+   under it, instead of a six-column table with Target and Details past the right edge. */
+@media (max-width: 720px) {
+  .terminal table.data thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .terminal table.data tr { display: flex; flex-wrap: wrap; gap: 0 8px; padding: 5px 12px; }
+  .terminal table.data td { padding: 0; }
+  .terminal table.data td.log-d { order: 1; flex-basis: 100%; min-width: 0; }
+}
 .terminal-foot { padding: 6px 12px 10px; font-size: var(--p5k-text-data-sm); color: var(--p5k-dim); display: flex; align-items: center; gap: 6px; }
 .terminal-foot .cursor-blink { width: 8px; height: 13px; }
 

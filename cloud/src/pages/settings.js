@@ -61,9 +61,10 @@ function optionList(rows, selected) {
   return rows.map((r) => `<option value="${r.id}"${r.id === selected ? " selected" : ""}>${esc(r.name)}</option>`).join("\n          ");
 }
 
-// Shared with the Users page (admins manage any user's tokens there): the create form, the
-// shown-once plaintext block and the token table. `revokePath(t)` names the revoke route.
-export const userTokens = (env, userId) => db.all(env,
+// The create form, the shown-once plaintext block and the token table are shared with the Users
+// page (admins manage any user's tokens there; it loads every account's at once).
+// `revokePath(t)` names the revoke route.
+const userTokens = (env, userId) => db.all(env,
   "SELECT id, name, created_at, last_used_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC, id DESC", userId);
 
 // Validated name from a create form, or 400 (`what` names the field: an upload link's too).
@@ -80,10 +81,13 @@ export const newTokenBlock = (newToken, { notice = "New token", label = "Token",
     <input type="text" id="${id}" value="${esc(newToken)}" readonly spellcheck="false" autocomplete="off">
   </div>` : "");
 
-export const tokenCreateForm = (ctx, action, label = "Token name") => `<form method="post" action="${action}" class="inline">
+// The box and its button share a .row: as an inline form the button sat flush under a full-width box.
+export const tokenCreateForm = (ctx, action, label = "Token name") => `<form method="post" action="${action}">
     ${csrfInput(ctx)}
-    <input type="text" name="name" placeholder="token name (e.g. office laptop)" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="${esc(label)}">
-    <button type="submit" class="primary small">Create token</button>
+    <div class="row">
+      <input type="text" name="name" placeholder="token name (e.g. office laptop)" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="${esc(label)}">
+      <button type="submit" class="primary small">Create token</button>
+    </div>
   </form>`;
 
 // `caption` and `confirm(t)` (the question the Revoke button asks) let the upload links reuse it.
@@ -91,10 +95,11 @@ export function tokenTable(ctx, tokens, tz, revokePath, {
   caption = "API tokens", confirm = (t) => `Revoke the token ${t.name}? Flashers using it stop working.`,
 } = {}) {
   if (!tokens.length) return "";
+  // stack + data-label: a phone shows each token as a card (style.css table.data.stack)
   const rows = tokens.map((t) => `<tr>
       <td class="name">${esc(t.name)}</td>
-      <td class="muted nowrap">${esc(localTime(t.created_at, tz))}</td>
-      <td class="muted nowrap">${t.last_used_at ? esc(localTime(t.last_used_at, tz)) : "never"}</td>
+      <td data-label="Created" class="muted nowrap">${esc(localTime(t.created_at, tz))}</td>
+      <td data-label="Last used" class="muted nowrap">${t.last_used_at ? esc(localTime(t.last_used_at, tz)) : "never"}</td>
       <td>
         <form method="post" action="${revokePath(t)}" class="inline" data-confirm="${esc(confirm(t))}">
           ${csrfInput(ctx)}
@@ -103,7 +108,7 @@ export function tokenTable(ctx, tokens, tz, revokePath, {
       </td>
     </tr>`).join("\n    ");
   return `<div class="table-wrap">
-  <table class="data">
+  <table class="data stack">
     <caption class="sr-only">${caption}</caption>
     <thead><tr><th scope="col">Name</th><th scope="col">Created</th><th scope="col">Last used</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
     <tbody>
@@ -135,10 +140,12 @@ async function linksPanel(ctx, me, newLink, tz) {
   return `<div class="panel">
   <h2>Upload links</h2>
   ${newTokenBlock(newLink, { notice: "New upload link", label: "Address", id: "new-upload-link" })}
-  <form method="post" action="/settings/links" class="inline">
+  <form method="post" action="/settings/links">
     ${csrfInput(ctx)}
-    <input type="text" name="name" placeholder="who it is for (e.g. a roommate)" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="Link name">
-    <button type="submit" class="primary small">Create link</button>
+    <div class="row">
+      <input type="text" name="name" placeholder="who it is for (e.g. a roommate)" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="Link name">
+      <button type="submit" class="primary small">Create link</button>
+    </div>
   </form>
   ${tokenTable(ctx, rows, tz, (l) => `/settings/links/${l.id}/revoke`,
     { caption: "Upload links", confirm: (l) => `Revoke the upload link ${l.name}? Its address stops working.` })}
@@ -148,7 +155,9 @@ async function linksPanel(ctx, me, newLink, tz) {
       <legend>Projectors on upload links</legend>
       ${projectors.map((d) => `<label class="inline-check"><input type="hidden" name="listed" value="${d.id}"><input type="checkbox" name="device" value="${d.id}"${d.in_upload_links ? " checked" : ""}>${esc(d.name)}</label>`).join("\n      ")}
     </fieldset>
-    <button type="submit" class="small">Save</button>
+    <div class="row">
+      <button type="submit" class="small">Save</button>
+    </div>
   </form>` : ""}
 </div>`;
 }
@@ -222,7 +231,7 @@ async function alertsPanel(ctx, s) {
         <input type="password" name="${n}" value="" placeholder="${have.has(n) ? "leave empty to keep" : "not set"}" autocomplete="off" spellcheck="false" maxlength="200">
       </label>`).join("\n      ")}
     </div>
-    <p class="help small">Each email address must be verified in Cloudflare Email Routing first.</p>
+    <p class="help small">Email alerts reach only addresses the site owner has verified in Cloudflare Email Routing.</p>
     <div class="row">
       <button type="submit" class="primary">Save alert settings</button>
     </div>
