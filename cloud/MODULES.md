@@ -192,7 +192,7 @@ projector shows in that account's log) and `null` for a row about no account (on
 those); `details` is JSON-encoded when
 non-empty by `audit.pyJson()` (Python `json.dumps` text: `{"a": 1, "b": [1, 2]}`, non-ASCII as
 `\uXXXX`, so the Details column matches the CMS); `ip` = `CF-Connecting-IP`. Never throws. Action/target names are exactly web.py's:
-`login`, `login_failed`, `logout`, `upload_media`, `delete_media`, `create_playlist`,
+`login`, `login_failed`, `logout`, `upload_media`, `delete_media`, `restore_media`, `empty_trash` (`{files}`), `create_playlist`,
 `playlist_add_item`, `playlist_set_duration`, `playlist_reorder`, `playlist_remove_item`,
 `playlist_rename`, `playlist_delete`, `register_device`, `device_assign_playlist`,
 `device_set_group`, `device_regen_token`, `device_delete`, `device_send_command`,
@@ -531,7 +531,15 @@ it keeps serving between `migrations apply` and `wrangler deploy`.
 `devices.in_upload_links` (INTEGER NOT NULL DEFAULT 1, 0 or 1): whether the account's upload links
 list the projector (Upload links below). Every existing projector stays on.
 
-`db.js` exports `SCHEMA_VERSION` (18) and `assertMigrated` compares `meta.schema_version`
+`migrations/0019_media_trash.sql` (schema_version 19) adds `media_trash(id, owner_id → users ON
+DELETE CASCADE, media_id, the media columns, places, deleted_at)` with `idx_media_trash_owner
+(owner_id, deleted_at)`, the Library's Recently deleted (`pages/library.js`: `places` is a JSON
+array of `{playlist_id, position, override}`, position being the file's index in that playlist's
+order), and `idx_playlist_items_media` on `playlist_items(media_id)`: a media delete (Library, an
+account) looked a file's items up by a full scan. Nothing else changes, so the worker from before
+it keeps serving between `migrations apply` and `wrangler deploy`.
+
+`db.js` exports `SCHEMA_VERSION` (19) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
@@ -700,7 +708,7 @@ follows, and the helpers that carry them:
 | `ensureDefaultPlaylist(env, userId)` | the account's Default playlist id (its `default_playlist_id` when that is one of its own playlists, else its playlist called Default, created when missing); sign-up, the Users page and `/setup` call it |
 | `adoptOrphans(env, userId)` | `/setup` only: the first admin becomes the site admin (`site_admin_id`) and owns what the migrations left without an owner (library, playlists, groups, uploads, settings but the enrollment key, secrets) |
 | `reassignDevice(ctx, deviceId, newOwnerId)` | the Owner select and an admin's registration of an ownerless id: when the content account changes, clears the playlist and group that are not the new content account's, deletes its schedule rules for another account's playlists (audited `device_schedule_delete` with `cascade_from_owner_change`), clears the old account's camera settings, live URL, screenshot / snapshot stamps, current file and error texts, puts it back on upload links (`in_upload_links = 1`), replaces the token, and raises the new account's `camera_config_version` above the old one's; one batch; returns `{id, device_id, tunnel_id, old_owner, new_owner, content_changed, playlist_cleared, group_cleared, schedules_deleted}`. The caller then runs `pages/devices.finishHandover` (deletes the R2 screenshot and snapshot, replaces the tunnel with `cloudflare.rotateTunnel`) |
-| `mediaKeys(env, userId)` | the R2 keys of an account's library, for the Users page delete, which also replaces the tokens of the account's projectors in the same batch as the delete (they stay, ownerless and signed out: an ownerless projector would get the site admin's content and Wyze login) |
+| `mediaKeys(env, userId)` | the R2 keys of an account's library and its Recently deleted (`media_trash`), for the Users page delete, which also replaces the tokens of the account's projectors in the same batch as the delete (they stay, ownerless and signed out: an ownerless projector would get the site admin's content and Wyze login) |
 
 - A lookup of another account's thing answers exactly like a missing one (same status, same
   `detail`), and a list shows only the reader's own; checks happen before anything changes.

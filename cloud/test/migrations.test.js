@@ -82,9 +82,10 @@ describe("migration 0016 on a live database", () => {
   });
 
   it("reaches the current schema and deletes nothing but the cross-account schedule rule", async () => {
-    // every later migration ran too (0017 only adds the upload_links table, 0018 a devices column)
+    // every later migration ran too (0017 only adds the upload_links table, 0018 a devices column,
+    // 0019 the media_trash table and two indexes)
     expect((await one("SELECT value FROM meta WHERE key = 'schema_version'")).value).toBe(String(db.SCHEMA_VERSION));
-    expect(db.SCHEMA_VERSION).toBe(18);
+    expect(db.SCHEMA_VERSION).toBe(19);
     expect(counts.after).toEqual({
       ...counts.before,
       playlists: counts.before.playlists + 3, // a Default each for ed, admin2 and vw

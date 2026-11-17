@@ -145,10 +145,13 @@ export async function reassignDevice(ctx, deviceId, newOwnerId) {
     content_changed: oldContent !== newContent, ...changes };
 }
 
-// Deleting an account takes its library with it (media.owner_id ON DELETE CASCADE); the R2 objects
-// are not rows, so the Users page collects their keys first and removes them after the delete.
+// Deleting an account takes its library and its Recently deleted with it (media.owner_id and
+// media_trash.owner_id ON DELETE CASCADE); the R2 objects are not rows, so the Users page collects
+// their keys first and removes them after the delete. UNION: a file uploaded again after a delete
+// is one key.
 export async function mediaKeys(env, userId) {
-  return (await db.all(env, "SELECT filename FROM media WHERE owner_id = ?", userId)).map((r) => `media/${r.filename}`);
+  return (await db.all(env, "SELECT filename FROM media WHERE owner_id = ?1 UNION SELECT filename FROM media_trash WHERE owner_id = ?1", userId))
+    .map((r) => `media/${r.filename}`);
 }
 
 export function register() {}

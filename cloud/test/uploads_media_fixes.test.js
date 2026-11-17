@@ -174,8 +174,10 @@ describe("M10: complete verifies the browser-supplied sha256", () => {
   });
 });
 
+// A delete no longer calls R2 at all (the file waits in Recently deleted); Empty and the daily
+// purge do, and survive the same failure (trash.test.js).
 describe("L10: library delete survives an R2 delete failure", () => {
-  it("the row is gone, the audit row is written, the editor is redirected; the object is logged as an orphan", async () => {
+  it("the row is gone, the audit row is written, the editor is redirected; the object waits in Recently deleted", async () => {
     const data = fakeFile(800, 8);
     const r0 = await complete(editor, editorCsrf, await stage(editor, editorCsrf, "orphan.png", data));
     const { media_id } = await r0.json();
@@ -190,10 +192,9 @@ describe("L10: library delete survives an R2 delete failure", () => {
     const dflt = await defaultOf("ed");
     expect(await query("SELECT details FROM audit_log WHERE action = 'delete_media'")).toEqual([{ details: `{"filename": "orphan.png", "playlists": [${dflt}]}` }]); // the upload put it in the editor's Default
     expect(await env.MEDIA.head("media/" + filename)).not.toBeNull();
-    // one R2 call for the file and its Library preview (thumbs/<filename>.jpg)
-    expect(errors).toHaveBeenCalledWith(`R2 delete failed for 2 object(s) from media/${filename}:`, expect.stringContaining("R2 is down"));
+    expect(await query("SELECT media_id FROM media_trash WHERE filename = ?", filename)).toEqual([{ media_id }]);
+    expect(errors).not.toHaveBeenCalled();
     errors.mockRestore();
-    await env.MEDIA.delete("media/" + filename);
   });
 });
 
@@ -245,7 +246,7 @@ describe("L11 / L13: schema-level dedupe (migrations 0006, 0016)", () => {
     const mine = rows.find((x) => x.owner_id === edId);
     const theirs = rows.find((x) => x.owner_id !== edId);
     expect((await editor.post(`/library/${mine.id}/delete`, { csrf_token: editorCsrf })).status).toBe(303);
-    expect(await env.MEDIA.head("media/" + mine.filename)).toBeNull();
+    expect(await query("SELECT id FROM media WHERE id = ?", mine.id)).toEqual([]); // to Recently deleted
     expect(await query("SELECT id FROM media WHERE id = ?", theirs.id)).toEqual([{ id: theirs.id }]);
     expect((await env.MEDIA.head("media/" + theirs.filename)).size).toBe(1300);
   });

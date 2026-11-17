@@ -71,9 +71,9 @@ real request origin.
 `0004_device_codes`, `0005_pi_model`, `0006_indexes`, `0007_command_undeliverable`,
 `0008_login_failures_index`, `0009_device_owner`, `0010_default_playlist`, `0011_password_reset`,
 `0012_device_decode_mode`, `0013_device_frame_pacing`, `0014_device_decoder`,
-`0015_device_render_profile`, `0016_accounts`, `0017_upload_links` and `0018_upload_link_projectors`
-add to it (see the Schema section of MODULES.md for what each one adds; the database is at
-`schema_version` 18).
+`0015_device_render_profile`, `0016_accounts`, `0017_upload_links`, `0018_upload_link_projectors`
+and `0019_media_trash` add to it (see the Schema section of MODULES.md for what each one adds; the
+database is at `schema_version` 19).
 `0006` heals duplicate media rows and duplicate open alerts itself before its unique indexes go
 on, so no manual step precedes it. `0010` creates the "Default" playlist (unless one of that name
 exists), points `settings.default_playlist_id` at it and appends every media file that is in no
@@ -457,9 +457,16 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   and `javascript:` links, so behaviour goes in `public/app.js` and styles in `style.css`.
 - **Housekeeping** (the `0 3 * * *` cron): audit rows older than
   `PIPLAYER_AUDIT_RETENTION_DAYS` (365), abandoned uploads, expired sessions, throttle rows,
-  closed alerts older than 90 days, and enrollment codes older than an hour (an approved but
-  never-claimed flasher token is deleted with its code); it also encrypts any camera RTSP URL
+  closed alerts older than 90 days, enrollment codes older than an hour (an approved but
+  never-claimed flasher token is deleted with its code), and Library files deleted more than 30
+  days ago (their R2 objects too, 1000 rows a night); it also encrypts any camera RTSP URL
   still stored in plain text from before encryption.
+- **A Library delete can be undone for 30 days**: the files move to "Recently deleted" below the
+  grid (`media_trash`, migration 0019) with the place each held in every playlist, and their R2
+  objects stay. Restore brings a file back under its old id, into those places (a playlist deleted
+  meanwhile is skipped); a file whose bytes were uploaded again stays where it is. Empty removes
+  them for good at once. Restore does not point a projector back at an upload link's playlist the
+  delete took it off.
 - **The dashboard's audit tail shows people's actions only** (rows with a username) about the
   reader's own account; device syncs and cron rows are on `/audit`, which shows each account the
   rows about itself and its own actions (admins also the rows about no account). Every validation message on the pages is plain English

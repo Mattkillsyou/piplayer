@@ -9,6 +9,9 @@
 // so the browser of an editor makes it the first time a page shows a file that has none
 // (media.js, PUT /library/<id>/thumb); until then GET /library/<id>/thumb sends the picture
 // itself for an image and 404 for a video (the tile then says so).
+// A delete moves the files to Recently deleted (media_trash, migration 0019), below the grid:
+// Restore puts them back with their ids, playlist places and times; Empty, or the daily purge
+// after TRASH_DAYS, removes them and their R2 objects for good.
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
@@ -27,6 +30,10 @@ const THUMB_CACHE = "private, max-age=604800";
 // Most files one POST /library/delete takes (a page holds no more than a library does; the cap
 // keeps one request's statements and R2 calls bounded).
 export const MAX_DELETE = 500;
+// Recently deleted keeps a file this many days; one Empty or one daily purge removes at most
+// PURGE_MAX of them (two R2 keys each, 1000 keys a call).
+export const TRASH_DAYS = 30;
+export const PURGE_MAX = 1000;
 
 // Rewrite the positions of the playlists in ?1 (a JSON array of ids) to 0..n-1 in (position, id)
 // order (web._renumber_playlist), after a removal. It reads a ROW_NUMBER() snapshot through
@@ -145,6 +152,7 @@ ${cards}
 <ul class="media-grid">
 ${cards}
 </ul>`;
+  const trash = await trashSection(ctx, user);
   const content = `<div class="page-head">
   <h1>Library</h1>
   <span class="page-meta">${items.length} file${items.length === 1 ? "" : "s"} · ${fileSize(totalBytes)} in total</span>
@@ -152,22 +160,39 @@ ${cards}
 
 ${editor ? uploadGrid(maxBytes, ctx) : ""}
 
-${items.length ? "" : `<h2>Media (0)</h2>\n`}${grid}`;
+${items.length ? "" : `<h2>Media (0)</h2>\n`}${grid}
+${trash}`;
   return layout(ctx, { title: "Library", content, scripts: ["/static/media.js", ...(editor ? ["/static/sha256.js", "/static/upload.js"] : [])] });
 }
 
-// Delete the caller's own files `ids` in one transaction whatever their number: the rows go
-// (cascading their playlist_items), the position gaps close in every playlist that held one
+// The first statement of a delete's batch: a media_trash row for each media row in ?1, with its
+// places in the playlists of ?2 (the ones that hold any of the files): its index in each one's
+// (position, id) order, which is what Restore puts back, and its time there.
+const TRASH_SQL = `WITH placed AS (
+    SELECT media_id, playlist_id, duration_override_seconds AS override,
+           ROW_NUMBER() OVER (PARTITION BY playlist_id ORDER BY position, id) - 1 AS position
+      FROM playlist_items WHERE playlist_id IN (SELECT value FROM json_each(?2)))
+  INSERT INTO media_trash (owner_id, media_id, filename, original_name, media_type, size_bytes, duration_seconds,
+      width, height, codec, sha256, uploaded_at, places)
+  SELECT m.owner_id, m.id, m.filename, m.original_name, m.media_type, m.size_bytes, m.duration_seconds,
+         m.width, m.height, m.codec, m.sha256, m.uploaded_at,
+         (SELECT json_group_array(json_object('playlist_id', playlist_id, 'position', position, 'override', override))
+            FROM placed WHERE media_id = m.id)
+    FROM media m WHERE m.id IN (SELECT value FROM json_each(?1)) ORDER BY m.id`;
+
+// Move the caller's own files `ids` to Recently deleted in one transaction whatever their number:
+// each row is copied to media_trash with its playlist places and deleted (cascading its
+// playlist_items), the position gaps close in every playlist that held one
 // (web._renumber_playlist), those playlists' updated_at moves, and a projector pointed at an
 // upload link's playlist (links.js) that this just emptied goes back to its group's playlist or
 // the Default instead of the standby screen: deleting what was sent is how the owner takes it
-// off the wall. An id that is not the caller's (another account's, already deleted) is skipped.
-// Returns the rows deleted ({id, original_name}).
+// off the wall. The R2 objects stay for Restore (purgeTrash removes them). An id that is not the
+// caller's (another account's, already deleted) is skipped. Returns the rows deleted ({id, original_name}).
 async function deleteMedia(ctx, user, ids) {
   const env = ctx.env;
   // The ids go in as one JSON parameter (an IN (?, ...) list would hit D1's bound-parameter limit).
   const rows = await db.all(env,
-    "SELECT id, filename, original_name FROM media WHERE owner_id = ?1 AND id IN (SELECT value FROM json_each(?2)) ORDER BY id", user.id, JSON.stringify(ids));
+    "SELECT id, original_name FROM media WHERE owner_id = ?1 AND id IN (SELECT value FROM json_each(?2)) ORDER BY id", user.id, JSON.stringify(ids));
   if (!rows.length) return rows;
   const own = JSON.stringify(rows.map((r) => r.id));
   const uses = await db.all(env,
@@ -179,34 +204,187 @@ async function deleteMedia(ctx, user, ids) {
   // would also take an owner's own "upload link · x").
   const emptied = `SELECT p.id FROM playlists p WHERE p.id IN (SELECT value FROM json_each(?1)) AND p.name GLOB ?2
       AND NOT EXISTS (SELECT 1 FROM playlist_items WHERE playlist_id = p.id)`;
-  const results = await db.batch(env, [
-    ["DELETE FROM media WHERE id IN (SELECT value FROM json_each(?))", own],
-    [RENUMBER_SQL, affected],
-    ["UPDATE playlists SET updated_at = datetime('now') WHERE id IN (SELECT value FROM json_each(?))", affected],
-    // which projectors go back, and from which playlist (for each file's own audit row)...
-    [`SELECT id, playlist_id FROM devices WHERE playlist_id IN (${emptied}) ORDER BY id`, affected, PLAYLIST_PREFIX + "*"],
-    [`UPDATE devices SET playlist_id = NULL WHERE playlist_id IN (${emptied})`, affected, PLAYLIST_PREFIX + "*"],
+  // Handed to waitUntil so a browser that goes away mid-request cannot stop the work between the
+  // commit and the audit rows.
+  const done = (async () => {
+    const results = await db.batch(env, [
+      [TRASH_SQL, own, affected],
+      ["DELETE FROM media WHERE id IN (SELECT value FROM json_each(?))", own],
+      [RENUMBER_SQL, affected],
+      ["UPDATE playlists SET updated_at = datetime('now') WHERE id IN (SELECT value FROM json_each(?))", affected],
+      // which projectors go back, and from which playlist (for each file's own audit row)...
+      [`SELECT id, playlist_id FROM devices WHERE playlist_id IN (${emptied}) ORDER BY id`, affected, PLAYLIST_PREFIX + "*"],
+      [`UPDATE devices SET playlist_id = NULL WHERE playlist_id IN (${emptied})`, affected, PLAYLIST_PREFIX + "*"],
+    ]);
+    const cleared = results[4].results || [];
+    // One audit row per file, all in one statement batch (audit.log's rule: a failed write never
+    // fails the request). A file's row names only the projectors that left one of its own playlists.
+    try {
+      await db.batch(env, rows.map((r) => {
+        const playlists = playlistsOf.get(r.id);
+        const devices = cleared.filter((d) => playlists.includes(d.playlist_id)).map((d) => d.id);
+        return audit.statement(ctx, "delete_media", "media", r.id,
+          { filename: r.original_name, playlists, devices_cleared: devices.length ? devices : undefined });
+      }));
+    } catch (e) {
+      console.error(`audit log write failed for delete_media: ${e}`);
+    }
+  })();
+  ctx.exec.waitUntil(done);
+  await done;
+  return rows;
+}
+
+// Recently deleted, below the grid (C4): the account's newest MAX_DELETE rows with a tick box
+// each, Restore selected and Empty. "" for a viewer and when there is nothing.
+async function trashSection(ctx, user) {
+  if (user.role === "viewer") return "";
+  const rows = await db.all(ctx.env,
+    `SELECT id, original_name, deleted_at, COUNT(*) OVER () AS total FROM media_trash WHERE owner_id = ?
+      ORDER BY deleted_at DESC, id DESC LIMIT ?`, user.id, MAX_DELETE);
+  if (!rows.length) return "";
+  const tz = (await ctx.settings()).timezone;
+  const total = rows[0].total;
+  const emptying = Math.min(total, PURGE_MAX);
+  // Restore selected first: Enter on a tick box presses the form's first button.
+  return `<details class="trash">
+  <summary>Recently deleted (${total})</summary>
+  <form method="post" action="/library/trash/restore" autocomplete="off">
+    ${csrfInput(ctx)}
+    <ul class="trash-list">
+${rows.map((t) => `      <li><label class="inline-check"><input type="checkbox" name="trash_id" value="${t.id}">${esc(t.original_name)}</label><span class="media-meta">${esc(localTime(t.deleted_at, tz))}</span></li>`).join("\n")}
+    </ul>
+    <div class="action-buttons">
+      <button type="submit" class="small">Restore selected</button>
+      <button type="submit" class="danger small" formaction="/library/trash/empty" data-confirm="Delete ${emptying} file${emptying === 1 ? "" : "s"} for good?">Empty</button>
+    </div>
+  </form>
+</details>`;
+}
+
+// Where restored files go back in one playlist. `items`: its items as they are now, in order
+// ({id, position}); `places`: what comes back ({media_id, position, override, deleted_at}, the
+// position being the file's index when it was deleted). Each place goes back to that index,
+// the newest delete first and one delete's places in playlist order: that undoes the deletes in
+// reverse, so the order comes back exact when nothing else changed since, and close otherwise.
+// Returns {moves: [[item id, position]] for the items that shift, adds: [[media_id, position,
+// override]]}.
+export function mergePlaces(items, places) {
+  const list = items.slice();
+  const order = places.slice().sort((a, b) => (a.deleted_at === b.deleted_at ? a.position - b.position : a.deleted_at < b.deleted_at ? 1 : -1));
+  for (const p of order) list.splice(Math.min(p.position, list.length), 0, p);
+  const moves = [], adds = [];
+  list.forEach((x, i) => {
+    if (x.media_id !== undefined) adds.push([x.media_id, i, x.override ?? null]);
+    else if (x.position !== i) moves.push([x.id, i]);
+  });
+  return { moves, adds };
+}
+
+// Restore the ticked trash rows of the caller's own account: each file comes back under its old
+// id with its times, into every playlist place it held that still exists (mergePlaces). One whose
+// bytes, name or id are in the library again (uploaded anew) cannot come back and stays here.
+async function trashRestore(ctx) {
+  const user = auth.requireRole(ctx, "editor");
+  const picked = (await ctx.form()).getAll("trash_id").filter((v) => typeof v === "string");
+  if (!picked.length) return auth.flashRedirect(ctx, "/library", "Nothing was ticked.", "warn");
+  if (picked.length > MAX_DELETE) fail(400, `Restore at most ${MAX_DELETE} files at a time`);
+  const env = ctx.env;
+  const ids = JSON.stringify([...new Set(picked.map((v) => idParam(v, "trash_id")))]);
+  const rows = await db.all(env,
+    `SELECT t.id, t.media_id, t.original_name, t.places, t.deleted_at,
+            EXISTS (SELECT 1 FROM media WHERE id = t.media_id) OR EXISTS (SELECT 1 FROM media WHERE filename = t.filename)
+              OR EXISTS (SELECT 1 FROM media WHERE owner_id = t.owner_id AND sha256 = t.sha256) AS back
+       FROM media_trash t WHERE t.owner_id = ?1 AND t.id IN (SELECT value FROM json_each(?2)) ORDER BY t.id`, user.id, ids);
+  if (!rows.length) return auth.flashRedirect(ctx, "/library", "Those files are no longer in Recently deleted.", "warn");
+  const back = rows.filter((r) => r.back);
+  const restore = rows.filter((r) => !r.back);
+  if (!restore.length) {
+    return auth.flashRedirect(ctx, "/library", back.length === 1 ? `${back[0].original_name} is already back in the library.` : "Those files are already back in the library.", "warn");
+  }
+  const places = restore.flatMap((r) => JSON.parse(r.places).map((p) => ({ ...p, media_id: r.media_id, deleted_at: r.deleted_at })));
+  // The playlists to go back into: the caller's own that still exist, each read once.
+  const lists = new Map();
+  if (places.length) {
+    for (const it of await db.all(env,
+      `SELECT p.id AS playlist_id, pi.id, pi.position FROM playlists p LEFT JOIN playlist_items pi ON pi.playlist_id = p.id
+        WHERE p.owner_id = ?1 AND p.id IN (SELECT value FROM json_each(?2)) ORDER BY p.id, pi.position, pi.id`,
+      user.id, JSON.stringify([...new Set(places.map((p) => p.playlist_id))]))) {
+      if (!lists.has(it.playlist_id)) lists.set(it.playlist_id, []);
+      if (it.id !== null) lists.get(it.playlist_id).push({ id: it.id, position: it.position });
+    }
+  }
+  const moves = [], adds = [];
+  for (const [pid, items] of lists) {
+    const merged = mergePlaces(items, places.filter((p) => p.playlist_id === pid));
+    moves.push(...merged.moves);
+    adds.push(...merged.adds.map((a) => [pid, ...a]));
+  }
+  const touched = JSON.stringify([...lists.keys()]);
+  const restoreIds = JSON.stringify(restore.map((r) => r.id));
+  // One transaction: the media rows first (the items point at them), the places a playlist
+  // deleted meanwhile cannot take are dropped, RENUMBER closes what an edit since the read moved.
+  await db.batch(env, [
+    [`INSERT INTO media (id, filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256, uploaded_at, owner_id)
+      SELECT media_id, filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256, uploaded_at, owner_id
+        FROM media_trash WHERE owner_id = ?1 AND id IN (SELECT value FROM json_each(?2))`, user.id, restoreIds],
+    ["DELETE FROM media_trash WHERE owner_id = ?1 AND id IN (SELECT value FROM json_each(?2))", user.id, restoreIds],
+    [`UPDATE playlist_items SET position = json_extract(x.value, '$[1]')
+        FROM json_each(?1) AS x WHERE playlist_items.id = json_extract(x.value, '$[0]')`, JSON.stringify(moves)],
+    [`INSERT INTO playlist_items (playlist_id, media_id, position, duration_override_seconds)
+      SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]')
+        FROM json_each(?1) WHERE json_extract(value, '$[0]') IN (SELECT id FROM playlists WHERE owner_id = ?2)`, JSON.stringify(adds), user.id],
+    [RENUMBER_SQL, touched],
+    ["UPDATE playlists SET updated_at = datetime('now') WHERE id IN (SELECT value FROM json_each(?))", touched],
+    ...restore.map((r) => audit.statement(ctx, "restore_media", "media", r.media_id, {
+      filename: r.original_name,
+      playlists: [...new Set(adds.filter((a) => a[1] === r.media_id).map((a) => a[0]))],
+    })),
   ]);
-  const cleared = results[3].results || [];
-  // The rows are gone either way; an R2 hiccup must not turn that into a 500 with no audit row.
-  const keys = rows.flatMap((r) => [media.mediaKey(r.filename), media.thumbKey(r.filename)]);
-  for (let i = 0; i < keys.length; i += 1000) { // R2 takes at most 1000 keys a call
+  const done = restore.length === 1 ? `Restored ${restore[0].original_name}` : `Restored ${restore.length} files`;
+  if (back.length) return auth.flashRedirect(ctx, "/library", `${done}; ${back.length} ${back.length === 1 ? "is" : "are"} already back in the library.`, "warn");
+  return auth.flashRedirect(ctx, "/library", `${done}.`);
+}
+
+// Empty: the caller's whole Recently deleted (PURGE_MAX a press, oldest first) goes for good.
+async function trashEmpty(ctx) {
+  const user = auth.requireRole(ctx, "editor");
+  const rows = await db.all(ctx.env, "SELECT id FROM media_trash WHERE owner_id = ? ORDER BY deleted_at, id LIMIT ?", user.id, PURGE_MAX);
+  if (!rows.length) return auth.flashRedirect(ctx, "/library", "Recently deleted is empty.", "warn");
+  const n = rows.length;
+  const done = purgeTrash(ctx.env, rows.map((r) => r.id), [audit.statement(ctx, "empty_trash", null, null, { files: n })]);
+  ctx.exec.waitUntil(done); // the R2 deletes finish even if the browser goes away
+  await done;
+  return auth.flashRedirect(ctx, "/library", `Deleted ${n} file${n === 1 ? "" : "s"} for good.`);
+}
+
+// Remove the trash rows `ids` for good (with `extra` statements, its audit row, in the same
+// batch), then their files and previews from R2, 1000 keys a call: unless a media row or a trash
+// row that stays holds the same filename (the same bytes uploaded again under the same name share
+// the key). The rows are gone either way; an R2 error is logged.
+async function purgeTrash(env, ids, extra = []) {
+  const list = JSON.stringify(ids);
+  const [doomed] = await db.batch(env, [
+    [`SELECT DISTINCT t.filename FROM media_trash t WHERE t.id IN (SELECT value FROM json_each(?1))
+        AND NOT EXISTS (SELECT 1 FROM media m WHERE m.filename = t.filename)
+        AND t.filename NOT IN (SELECT filename FROM media_trash WHERE id NOT IN (SELECT value FROM json_each(?1)))`, list],
+    ["DELETE FROM media_trash WHERE id IN (SELECT value FROM json_each(?))", list],
+    ...extra,
+  ]);
+  const keys = doomed.results.flatMap((r) => [media.mediaKey(r.filename), media.thumbKey(r.filename)]);
+  for (let i = 0; i < keys.length; i += 1000) {
     try { await env.MEDIA.delete(keys.slice(i, i + 1000)); }
     catch (e) { console.error(`R2 delete failed for ${keys.slice(i, i + 1000).length} object(s) from ${keys[i]}:`, e && e.stack || e); }
   }
-  // One audit row per file, all in one statement batch (audit.log's rule: a failed write never
-  // fails the request). A file's row names only the projectors that left one of its own playlists.
-  try {
-    await db.batch(env, rows.map((r) => {
-      const playlists = playlistsOf.get(r.id);
-      const devices = cleared.filter((d) => playlists.includes(d.playlist_id)).map((d) => d.id);
-      return audit.statement(ctx, "delete_media", "media", r.id,
-        { filename: r.original_name, playlists, devices_cleared: devices.length ? devices : undefined });
-    }));
-  } catch (e) {
-    console.error(`audit log write failed for delete_media: ${e}`);
-  }
-  return rows;
+}
+
+// Daily cron (index.js): what was deleted more than TRASH_DAYS ago goes for good, PURGE_MAX a run.
+// Returns how many rows went.
+export async function housekeeping(env) {
+  const old = await db.all(env, "SELECT id FROM media_trash WHERE deleted_at < datetime('now', ?) ORDER BY deleted_at, id LIMIT ?",
+    `-${TRASH_DAYS} days`, PURGE_MAX);
+  if (old.length) await purgeTrash(env, old.map((r) => r.id));
+  return old.length;
 }
 
 async function libraryDelete(ctx) {
@@ -267,6 +445,8 @@ async function thumbPut(ctx) {
 export function register(router) {
   router.get("/library", libraryPage);
   router.post("/library/delete", libraryDeleteMany);
+  router.post("/library/trash/restore", trashRestore);
+  router.post("/library/trash/empty", trashEmpty);
   router.post("/library/:media_id/delete", libraryDelete);
   router.get("/library/:media_id/thumb", thumbGet);
   router.put("/library/:media_id/thumb", thumbPut);

@@ -1182,6 +1182,25 @@ progress::-moz-progress-bar { background: var(--p5k-fill-solid); }
   .media-bar .action-buttons button { flex: 1 1 0; }
 }
 
+/* Recently deleted (pages/library.js trashSection), below the grid: a file per row, its name the
+   tick box's label, the time it was deleted on the right. */
+.trash { margin: 0 0 22px; }
+.trash form { padding: 8px 10px 10px; }
+.trash-list { list-style: none; margin: 0 0 10px; padding: 0; }
+.trash-list li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 2px 12px; padding: 6px 0; border-bottom: 1px solid var(--p5k-rule); }
+.trash-list .inline-check { min-width: 0; margin: 0; color: var(--p5k-body); overflow-wrap: anywhere; }
+.trash-list .media-meta { white-space: nowrap; }
+/* a phone: the time under the name in every row (beside it, a long name pushed some times onto a line of their own) */
+@media (max-width: 720px) {
+  .trash summary { min-height: var(--p5k-touch); }
+  .trash-list li { flex-direction: column; align-items: flex-start; gap: 0; padding: 0 0 6px; }
+  .trash-list .media-meta { padding-left: 28px; } /* under the name: the box (22px) and its gap */
+  .trash-list .inline-check { min-height: var(--p5k-touch); }
+  .trash-list input[type=checkbox] { width: 22px; height: 22px; }
+  .trash-list input[type=checkbox]::before { font-size: 17px; }
+  .trash .action-buttons button { flex: 1 1 0; }
+}
+
 /* The viewer media.js opens over the page: the file large (a video with its controls), its
    name and facts, Previous / Next, and Delete where the page has one for the file. */
 dialog.viewer { width: min(1100px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 24px); padding: 0; overflow: auto; color: var(--p5k-body); background: var(--p5k-panel); border: 1px solid var(--p5k-rule-strong); }
