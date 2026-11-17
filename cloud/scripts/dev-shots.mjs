@@ -43,6 +43,19 @@ const GPU = process.platform === "win32"
   ? ["--use-angle=d3d11", "--enable-gpu", "--ignore-gpu-blocklist"]
   : ["--enable-gpu", "--ignore-gpu-blocklist"];
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The Library's and the playlist editor's previews are made in the browser, one at a time, after
+// the page has loaded, and a tile further down starts loading only near the screen: scroll the
+// whole page, then wait until no tile is still loading or still being made.
+async function previewsShown(page) {
+  const h = await page.evaluate(() => document.documentElement.scrollHeight);
+  for (let y = 0; y < h; y += 400) { await page.evaluate((v) => window.scrollTo(0, v), y); await sleep(100); }
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForFunction(() => [...document.querySelectorAll(".media-thumb")].every((a) =>
+    !a.classList.contains("is-making") && (a.querySelector("img").naturalWidth > 0 || a.classList.contains("no-preview"))),
+  { timeout: 60000, polling: 250 }).catch(() => console.log("  !! previews still not all shown after 60 s"));
+}
+
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: [...GPU, "--hide-scrollbars"] });
 try {
   const page = await browser.newPage();
@@ -58,7 +71,8 @@ try {
       if (which !== "both" && which !== view) continue;
       await page.setViewport(VIEWS[view]);
       const res = await page.goto(BASE + url, { waitUntil: "networkidle2" });
-      await new Promise((r) => setTimeout(r, 600));
+      await previewsShown(page);
+      await sleep(600);
       const dims = await page.evaluate(() => ({ h: document.documentElement.scrollHeight, w: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
       const n = Math.ceil(dims.h / SLICE[view]);
       for (let i = 0; i < n; i++) {

@@ -60,8 +60,11 @@ async function postJson(p, payload) {
 }
 
 // --------------------------------------------------------------- media ---
-const ff = (args) => execFileSync("ffmpeg", ["-y", "-loglevel", "error", ...args], { stdio: ["ignore", "ignore", "inherit"] });
-const X264 = ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"];
+const ff = (args, stderr = "inherit") => execFileSync("ffmpeg", ["-y", "-loglevel", "error", ...args], { stdio: ["ignore", "ignore", stderr] });
+// The clips are encoded on the GPU (NVENC) where the machine has one; where it has none,
+// makeMedia swaps in ffmpeg's CPU encoders.
+const CPU = { h264_nvenc: "libx264", av1_nvenc: "libvpx-vp9" };
+const H264 = ["-c:v", "h264_nvenc", "-pix_fmt", "yuv420p"];
 // Landscape, upright and phone-sized pictures, an animated GIF, a long name, a clip that fades in
 // from black (the preview must skip the black), and containers a browser may not play (mkv).
 const FILES = [
@@ -71,17 +74,18 @@ const FILES = [
   ["logo-white-on-black.webp", ["-f", "lavfi", "-i", "rgbtestsrc=size=800x800", "-frames:v", "1"]],
   ["old-scan.bmp", ["-f", "lavfi", "-i", "smptebars=size=640x480", "-frames:v", "1"]],
   ["countdown.gif", ["-f", "lavfi", "-i", "testsrc=size=320x240:rate=5:duration=3"]],
-  ["lobby-loop-1080p.mp4", ["-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30:duration=6", ...X264, "-movflags", "+faststart"]],
-  ["IMG_7781.MOV", ["-f", "lavfi", "-i", "life=size=1080x1920:rate=30:mold=10:ratio=0.1:death_color=0x1a0a3a:life_color=0xffffff", "-t", "5", ...X264]],
-  ["Wedding Reception - Final Cut (v3) [approved by client] 2026-10-31.mp4", ["-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=30:duration=8", "-f", "lavfi", "-i", "sine=frequency=440:duration=8", ...X264, "-c:a", "aac", "-shortest", "-movflags", "+faststart"]],
-  ["title-fade-in.mp4", ["-f", "lavfi", "-i", "mandelbrot=size=1280x720:rate=30", "-t", "6", "-vf", "fade=in:0:75", ...X264, "-movflags", "+faststart"]],
-  ["ambient-plasma.webm", ["-f", "lavfi", "-i", "cellauto=size=1280x720:rate=30", "-t", "5", "-c:v", "libvpx-vp9", "-b:v", "900k", "-pix_fmt", "yuv420p"]],
-  ["archive-reel.mkv", ["-f", "lavfi", "-i", "yuvtestsrc=size=1280x720:rate=30:duration=4", ...X264]],
+  ["lobby-loop-1080p.mp4", ["-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30:duration=6", ...H264, "-movflags", "+faststart"]],
+  ["IMG_7781.MOV", ["-f", "lavfi", "-i", "life=size=1080x1920:rate=30:mold=10:ratio=0.1:death_color=0x1a0a3a:life_color=0xffffff", "-t", "5", ...H264]],
+  ["Wedding Reception - Final Cut (v3) [approved by client] 2026-10-31.mp4", ["-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=30:duration=8", "-f", "lavfi", "-i", "sine=frequency=440:duration=8", ...H264, "-c:a", "aac", "-shortest", "-movflags", "+faststart"]],
+  ["title-fade-in.mp4", ["-f", "lavfi", "-i", "mandelbrot=size=1280x720:rate=30", "-t", "6", "-vf", "fade=in:0:75", ...H264, "-movflags", "+faststart"]],
+  ["ambient-plasma.webm", ["-f", "lavfi", "-i", "cellauto=size=1280x720:rate=30", "-t", "5", "-c:v", "av1_nvenc", "-b:v", "900k", "-pix_fmt", "yuv420p"]],
+  ["archive-reel.mkv", ["-f", "lavfi", "-i", "yuvtestsrc=size=1280x720:rate=30:duration=4", ...H264]],
 ];
 function makeMedia() {
   for (const [name, args] of FILES) {
     const out = path.join(MEDIA, name);
-    if (!existsSync(out)) ff([...args, out]);
+    if (existsSync(out)) continue;
+    try { ff([...args, out], "ignore"); } catch { ff([...args.map((a) => CPU[a] || a), out]); }
   }
   const shot = path.join(MEDIA, "_screenshot.jpg");
   if (!existsSync(shot)) ff(["-f", "lavfi", "-i", "testsrc2=size=1280x720", "-frames:v", "1", "-q:v", "5", shot]);
