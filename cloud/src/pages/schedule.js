@@ -2,7 +2,10 @@
 // describe) comes from src/schedules.js (P1); validation is contract 10. A projector's rules
 // play its own account's playlists in its account's zone: the page shows the rules of a
 // projector the user sees (an admin sees every projector, read-only unless it is their own
-// account's), and only its own account adds or deletes rules, with its own playlists.
+// account's), and only its own account adds, edits or deletes rules, with its own playlists.
+// Also add to puts the same rule on more of the account's projectors at once: each gets its own
+// copy, edited and deleted on its own page (a rule belongs to one projector).
+import * as accounts from "../accounts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
@@ -29,6 +32,10 @@ async function schedulePage(ctx) {
       WHERE s.device_id = ?
       ORDER BY s.priority DESC, s.id`, device.content_owner, deviceId);
   const playlists = canEdit ? await db.all(ctx.env, "SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name", user.id) : [];
+  // The account's other projectors, for Also add to.
+  const others = canEdit ? await db.all(ctx.env,
+    `SELECT d.id, d.name FROM devices d WHERE ${accounts.contentOwnerSql("d")} = ? AND d.id != ? ORDER BY d.name COLLATE NOCASE, d.id`,
+    user.id, deviceId) : [];
   // The rules run in the projector's account's zone (the viewer's own for their own projector).
   const tz = ownContent ? (await ctx.settings()).timezone : (await db.loadSettings(ctx.env, device.content_owner)).timezone;
   const now = wallClock(tz);
@@ -41,6 +48,12 @@ async function schedulePage(ctx) {
     r.matches_now = schedules.schedule_matches(r, now);
     r.is_active = !!active && r.id === active.id;
   }
+  // ?edit=<rule id> (the rows' Edit links): the form is that rule's, filled in. Only this
+  // projector's rules; any other id gets the Add form.
+  const edit = canEdit ? rules.find((r) => String(r.id) === ctx.url.searchParams.get("edit")) : undefined;
+  const v = edit || { priority: 10 };
+  const value = (x) => (x ? ` value="${esc(x)}"` : "");
+  const base = `/devices/${device.id}/schedule`;
 
   const ruleRow = (r) => `<tr${r.is_active ? ' class="rule-active"' : ""}>
       <td class="position-cell">${r.priority}</td>
@@ -49,13 +62,17 @@ async function schedulePage(ctx) {
       <td class="muted">${esc(r.summary)}</td>
       <td>${r.is_active ? '<span class="badge badge-active">active now</span>' : r.matches_now ? '<span class="badge badge-muted">matches, but a higher-priority rule is playing</span>' : '<span class="badge badge-muted">waiting</span>'}</td>
       <td>
-        ${canEdit ? `<form method="post" action="/devices/${device.id}/schedule/${r.id}/delete" class="inline" data-confirm="Delete rule ${esc(r.name)}?">
-          ${csrfInput(ctx)}
-          <button type="submit" class="danger small">Delete</button>
-        </form>` : ""}
+        ${canEdit ? `<div class="action-buttons">
+          <a href="${base}?edit=${r.id}#rule-form" class="button small">Edit</a>
+          <form method="post" action="${base}/${r.id}/delete" class="inline" data-confirm="Delete rule ${esc(r.name)}?">
+            ${csrfInput(ctx)}
+            <button type="submit" class="danger small">Delete</button>
+          </form>
+        </div>` : ""}
       </td>
     </tr>`;
-  const dayBox = (name, i) => `<label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="${i}">${name}</label>`;
+  const dayBox = (name, i) => `<label class="inline-check"><input type="checkbox" name="days_of_week_chk" value="${i}"${(v.days_of_week || "").includes(String(i)) ? " checked" : ""}>${name}</label>`;
+  const alsoBox = (d) => `<label class="inline-check"><input type="checkbox" name="also" value="${d.id}">${esc(d.name)}</label>`;
   // Each account sets its own zone on its own Settings page (a viewer cannot open it).
   const zoneHelp = !ownContent
     ? "its own account changes the timezone on its Settings page."
@@ -86,91 +103,141 @@ ${!rules.length ? emptyState("NO RULES", "The device plays its default playlist 
 </table>
 </div>`}
 
-${canEdit ? `<div class="panel">
-  <h2>Add rule</h2>
-  <form method="post" action="/devices/${device.id}/schedule">
+${canEdit ? `<div class="panel" id="rule-form">
+  <h2>${edit ? "Edit rule" : "Add rule"}</h2>
+  <form method="post" action="${base}${edit ? `/${edit.id}` : ""}">
     ${csrfInput(ctx)}
     <div class="form-grid">
       <label>Name
-        <input type="text" name="name" placeholder="e.g., Morning Classes" required>
+        <input type="text" name="name"${value(v.name)} placeholder="e.g., Morning Classes" required>
       </label>
       <label>Playlist
         <select name="playlist_id" required>
           <option value="">— pick —</option>
-          ${playlists.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("\n          ")}
+          ${playlists.map((p) => `<option value="${p.id}"${p.id === v.playlist_id ? " selected" : ""}>${esc(p.name)}</option>`).join("\n          ")}
         </select>
       </label>
       <label>Priority
-        <input type="number" name="priority" value="10" min="0" max="1000">
+        <input type="number" name="priority" value="${v.priority}" min="0" max="1000">
       </label>
     </div>
     <div class="form-grid">
       <label>Start time
-        <input type="time" name="start_time" placeholder="06:00">
+        <input type="time" name="start_time"${value(v.start_time)} placeholder="06:00">
       </label>
       <label>End time
-        <input type="time" name="end_time" placeholder="09:00">
+        <input type="time" name="end_time"${value(v.end_time)} placeholder="09:00">
       </label>
       <label>Start date
-        <input type="date" name="start_date">
+        <input type="date" name="start_date"${value(v.start_date)}>
       </label>
       <label>End date
-        <input type="date" name="end_date" placeholder="never">
+        <input type="date" name="end_date"${value(v.end_date)} placeholder="never">
       </label>
     </div>
 
     <fieldset class="days-fieldset">
       <legend>Days (leave blank for all days)</legend>
       ${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(dayBox).join("\n      ")}
-      <input type="hidden" name="days_of_week" id="days-hidden" value="">
     </fieldset>
+    ${others.length ? `<fieldset class="days-fieldset">
+      <legend>Also add to</legend>
+      ${others.map(alsoBox).join("\n      ")}
+    </fieldset>` : ""}
 
     <div class="row">
-      <button type="submit" class="primary">Add rule</button>
+      <button type="submit" class="primary">${edit ? "Save rule" : "Add rule"}</button>
+      ${edit ? `<a href="${base}" class="button">Cancel</a>` : ""}
     </div>
   </form>
 </div>` : ""}`;
   return layout(ctx, { title: `${device.name} schedule`, content });
 }
 
-async function scheduleCreate(ctx) {
-  const user = auth.requireRole(ctx, "editor");
-  const deviceId = idParam(ctx.params.device_id, "device_id");
-  const form = await ctx.form();
+// The rule a form describes (contract 10), checked before anything is read or written. The days
+// are the ticked boxes when the browser sends them (no script needed), else days_of_week, a
+// "0123456" subset with 0 = Monday (an API client, the e2e suite).
+function parseRule(form) {
   const name = str(form, "name").trim() || "Rule";
   const pid = intField(str(form, "playlist_id"), "Playlist");
   if (pid === null) fail(400, "Pick a playlist");
   const prio = intField(str(form, "priority", "0"), "Priority") ?? 0;
   if (prio < 0 || prio > 1000) fail(400, "Priority must be between 0 and 1000");
-  let startTime = str(form, "start_time").trim() || null;
-  let endTime = str(form, "end_time").trim() || null;
-  if (startTime !== null) {
-    startTime = normalizeHhmm(startTime);
-    if (startTime === null) fail(400, "The start time must be in HH:MM form (00:00 to 23:59)");
-  }
-  if (endTime !== null) {
-    endTime = normalizeHhmm(endTime);
-    if (endTime === null) fail(400, "The end time must be in HH:MM form (00:00 to 23:59)");
-  }
-  if (startTime !== null && endTime !== null && startTime === endTime) {
-    fail(400, "Start and end must differ; leave both empty for all day");
-  }
-  const rawDays = str(form, "days_of_week").trim();
+  const time = (field, which) => {
+    const raw = str(form, field).trim();
+    if (!raw) return null;
+    const t = normalizeHhmm(raw);
+    if (t === null) fail(400, `The ${which} time must be in HH:MM form (00:00 to 23:59)`);
+    return t;
+  };
+  const startTime = time("start_time", "start");
+  const endTime = time("end_time", "end");
+  if (startTime !== null && startTime === endTime) fail(400, "Start and end must differ; leave both empty for all day");
+  const rawDays = (form.getAll("days_of_week_chk").join("") || str(form, "days_of_week")).trim();
   if (rawDays && !/^[0-6]+$/.test(rawDays)) fail(400, "Pick the days by ticking them");
   const days = [...new Set(rawDays)].sort().join("") || null;
   const startDate = isoDateField(str(form, "start_date"), "Start date");
   const endDate = isoDateField(str(form, "end_date"), "End date");
   if (startDate && endDate && startDate > endDate) fail(400, "The start date must be on or before the end date");
+  return { name, pid, prio, startTime, endTime, days, startDate, endDate };
+}
+
+// The projectors ticked under Also add to ({id, owner_id}), each one another of the user's own
+// account's: one read for all of them, and one that is not (handed away since the page loaded,
+// a made-up id) fails the whole request before anything is written.
+async function alsoAddTo(ctx, form, deviceId) {
+  const ids = [...new Set(form.getAll("also").map((v) => idParam(String(v), "also")))];
+  if (!ids.length) return [];
+  const rows = await db.all(ctx.env,
+    `SELECT d.id, d.owner_id FROM devices d
+      WHERE d.id IN (SELECT value FROM json_each(?)) AND d.id != ? AND ${accounts.contentOwnerSql("d")} = ?`,
+    JSON.stringify(ids), deviceId, ctx.user.id);
+  if (rows.length !== ids.length) fail(404, "Device not found");
+  return rows;
+}
+
+// POST /devices/:id/schedule adds a rule, POST /devices/:id/schedule/:rule saves that rule; either
+// also adds a copy to every projector ticked under Also add to, all copies in one batch.
+async function saveRule(ctx) {
+  const user = auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const ruleId = ctx.params.schedule_id === undefined ? null : idParam(ctx.params.schedule_id, "schedule_id");
+  const form = await ctx.form();
+  const rule = parseRule(form);
   const device = await requireDevice(ctx, deviceId);
   requireContentOwner(ctx, device);
-  await requireRow(ctx.env, "playlists", pid, user.id, "Playlist");
-  const id = (await db.run(ctx.env,
+  await requireRow(ctx.env, "playlists", rule.pid, user.id, "Playlist");
+  const copies = await alsoAddTo(ctx, form, deviceId);
+  const fields = [rule.pid, rule.name, rule.prio, rule.startTime, rule.endTime, rule.days, rule.startDate, rule.endDate];
+  if (ruleId !== null) {
+    const { changes } = await db.run(ctx.env,
+      `UPDATE device_schedules SET playlist_id = ?, name = ?, priority = ?, start_time = ?, end_time = ?,
+              days_of_week = ?, start_date = ?, end_date = ?
+        WHERE id = ? AND device_id = ?`, ...fields, ruleId, deviceId);
+    if (!changes) fail(404, "Schedule rule not found");
+  }
+  const added = ruleId === null ? [{ id: deviceId, owner_id: device.owner_id }, ...copies] : copies;
+  const results = added.length ? await db.batch(ctx.env, added.map((d) => [
     `INSERT INTO device_schedules
         (device_id, playlist_id, name, priority, start_time, end_time, days_of_week, start_date, end_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    deviceId, pid, name, prio, startTime, endTime, days, startDate, endDate)).last_row_id;
-  await audit.log(ctx, "device_schedule_create", "device_schedule", id, { device_id: deviceId, name, playlist_id: pid }, undefined, device.owner_id);
-  return redirect(`/devices/${deviceId}/schedule`);
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, d.id, ...fields])) : [];
+  // One audit row per rule written, about its projector's account, in one batch (audit.log's
+  // rule: a failed audit write never fails the request).
+  try {
+    const details = (id) => ({ device_id: id, name: rule.name, playlist_id: rule.pid });
+    await db.batch(ctx.env, [
+      ...(ruleId === null ? [] : [audit.statement(ctx, "device_schedule_update", "device_schedule", ruleId, details(deviceId), undefined, device.owner_id)]),
+      ...added.map((d, i) => audit.statement(ctx, "device_schedule_create", "device_schedule", results[i].meta.last_row_id, details(d.id), undefined, d.owner_id)),
+    ]);
+  } catch (e) {
+    console.error(`audit log write failed for a schedule rule: ${e}`);
+  }
+  const back = `/devices/${deviceId}/schedule`;
+  const n = copies.length;
+  if (!n) return redirect(back);
+  return auth.flashRedirect(ctx, back, ruleId === null
+    ? `Rule added to ${n + 1} projectors.`
+    : `Rule saved and added to ${n} more projector${n === 1 ? "" : "s"}.`);
 }
 
 async function scheduleDelete(ctx) {
@@ -187,6 +254,7 @@ async function scheduleDelete(ctx) {
 
 export function register(router) {
   router.get("/devices/:device_id/schedule", schedulePage);
-  router.post("/devices/:device_id/schedule", scheduleCreate);
+  router.post("/devices/:device_id/schedule", saveRule);
+  router.post("/devices/:device_id/schedule/:schedule_id", saveRule);
   router.post("/devices/:device_id/schedule/:schedule_id/delete", scheduleDelete);
 }

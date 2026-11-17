@@ -16,12 +16,12 @@ describe("dashboard", () => {
     await roleMatrix(r, "GET", "/dashboard");
     const page = await (await r.admin.get("/dashboard")).text();
     expect(page).toContain("<h1>Dashboard</h1>");
-    expect(page).toMatch(/<span class="page-meta">server \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC · UTC<\/span>/);
+    expect(page).toMatch(/<span class="page-meta">your time \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC<\/span>/);
     expect(page).toContain('<span class="empty-title">NO DEVICES</span>');
     expect(page).toContain("No devices yet. Add one to start the wall.");
     expect(page).toContain('<a href="/devices" class="button small">Add a device</a>');
     expect(page).not.toContain('id="wall-filters"');
-    expect(page).toContain("0.0 MB total");
+    expect(page).toContain("0 B total");
     expect(page).toContain("0 playing · 0 faults");
     expect(page).toContain("Monitor wall · 0 devices");
     expect(page).toContain('<ul class="log-lines">');
@@ -59,11 +59,11 @@ describe("dashboard", () => {
     expect(page).toContain('<span class="screen-chip tl" title="2020-01-01 00:00 UTC">');
     expect(page).toContain('<span class="screen-chip tr is-stale badge-stale" title="No new screenshot for more than 3 capture intervals: the player may be idle, black or down">stale</span>');
     expect(page).not.toContain('<span class="screen-chip tr">live</span>');
-    expect(page).toContain('<span class="screen-now">#1 big.mp4</span>');
+    expect(page).toContain('<span class="screen-now">last: #1 big.mp4</span>'); // offline: its last report
     expect(page).toContain('<span class="now-playlist">Grid PL</span>');
     expect(page).toContain('<span class="now-via">via device default</span>');
     expect(page).toContain('<span class="status status-offline"><span class="lamp"></span>offline</span>');
-    expect(page).toContain("d ago · 2020-01-01 00:00 UTC</span>");
+    expect(page).toContain('d ago · <span class="nowrap">2020-01-01 00:00 UTC</span></span>');
     expect(page).toContain('<div class="alert error small" title="Reported by the player on its last sync">Sync problem: 2 of 5 items missing: &lt;x&gt;</div>');
     // device B: group fallback, no screenshot; the Pi model follows the group on the tile
     expect(page).toContain("<code>b-dev</code> · G1");
@@ -179,10 +179,10 @@ describe("dashboard", () => {
   it("timestamps follow the account's timezone setting", async () => {
     await setting(r.ids.editor, "timezone", "America/Los_Angeles");
     const page = await (await r.editor.get("/dashboard")).text();
-    expect(page).toContain("d ago · 2019-12-31 16:00 PST</span>");
+    expect(page).toContain('d ago · <span class="nowrap">2019-12-31 16:00 PST</span></span>');
     expect(page).toContain('title="2019-12-31 16:00 PST"');
     expect(page).toContain('<span class="log-t">2021-03-03 21:09</span>');
-    expect(page).toMatch(/server \d{4}-\d{2}-\d{2} \d{2}:\d{2} P[DS]T · P[DS]T<\/span>/);
+    expect(page).toMatch(/your time \d{4}-\d{2}-\d{2} \d{2}:\d{2} P[DS]T<\/span>/);
     await query("DELETE FROM account_settings WHERE key = 'timezone'");
   });
 });

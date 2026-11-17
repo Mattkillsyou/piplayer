@@ -134,9 +134,9 @@ describe("page content", () => {
     expect(page).toContain('<span class="label">player version</span><span class="value">v1.2.3</span>');
     expect(page).toContain('<span class="now-file">#3 clip.mp4 · playing</span>');
     expect(page).toContain('<span class="status status-playing"><span class="lamp"></span>playing</span>');
-    expect(page).toContain('<div class="device-row">');
+    expect(page).toContain(`<div class="device-row" id="device-${w.dev.id}">`);
     // the never-synced XSS device is offline, so a fault row with the NO SIGNAL thumb
-    expect(page).toContain('<div class="device-row is-fault">');
+    expect(page).toContain(`<div class="device-row is-fault" id="device-${w.xss.id}">`);
     expect(page).toContain('<span class="status status-offline"><span class="lamp"></span>offline</span>');
     expect(page).toContain('<span class="empty-sub">no screenshot yet</span>');
     expect(page).not.toContain("device-camera"); // no camera snapshot yet: no camera thumb
@@ -404,7 +404,7 @@ describe("remote updates", () => {
     // a failed update is a fault even when the player is online and playing
     await query("UPDATE devices SET last_seen_at = datetime('now'), player_status = 'playing' WHERE id = ?", dev.id);
     page = await (await r.editor.get("/devices")).text();
-    const faults = (p) => (p.match(/<div class="device-row is-fault">/g) || []).length;
+    const faults = (p) => (p.match(/<div class="device-row is-fault" id="device-\d+">/g) || []).length;
     const failed = faults(page);
     expect(page).toContain('<span class="status status-playing"><span class="lamp"></span>playing</span>');
     await query("UPDATE devices SET last_update_ok = 1 WHERE id = ?", dev.id);

@@ -544,6 +544,7 @@ def route_table(w):
         ("POST", "/devices/%d/delete" % NOPE, {}, "form", E(404)),
         ("POST", "/devices/%d/command" % NOPE, {"command": "reboot"}, "form", E(404)),
         ("POST", "/devices/%d/schedule" % NOPE, {"name": "r", "playlist_id": str(pid), "priority": "1"}, "form", E(404)),
+        ("POST", "/devices/%d/schedule/%d" % (NOPE, NOPE), {"name": "r", "playlist_id": str(pid), "priority": "1"}, "form", E(404)),
         ("POST", "/devices/%d/schedule/%d/delete" % (NOPE, NOPE), {}, "form", E(404)),
         ("POST", "/groups", {"name": " "}, "form", E(400)),
         ("POST", "/groups/%d/assign" % NOPE, {"playlist_id": ""}, "form", E(404)),

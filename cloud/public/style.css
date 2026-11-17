@@ -731,12 +731,8 @@ input[type=file]::file-selector-button {
 }
 input[type=number] { -moz-appearance: textfield; }
 input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-input[type=time]::-webkit-calendar-picker-indicator, input[type=date]::-webkit-calendar-picker-indicator { opacity: .5; filter: invert(1); cursor: pointer; }
-html[data-theme="light"] input[type=time]::-webkit-calendar-picker-indicator, html[data-theme="light"] input[type=date]::-webkit-calendar-picker-indicator { filter: none; }
-@media (prefers-color-scheme: light) {
-  html:not([data-theme="dark"]) input[type=time]::-webkit-calendar-picker-indicator,
-  html:not([data-theme="dark"]) input[type=date]::-webkit-calendar-picker-indicator { filter: none; }
-}
+/* no filter: Chrome already draws these icons white under color-scheme: dark (inverted, they were black on black) */
+input[type=time]::-webkit-calendar-picker-indicator, input[type=date]::-webkit-calendar-picker-indicator { opacity: .5; cursor: pointer; }
 
 /* × checkboxes */
 input[type=checkbox] {
@@ -783,6 +779,12 @@ input[type=checkbox]:checked::before { color: var(--p5k-on-solid); }
 .days-fieldset { margin: 0 0 var(--p5k-space-4); padding: 10px 12px 12px; border: 1px solid var(--p5k-rule-3); }
 .days-fieldset legend { padding: 0 6px; font-size: var(--p5k-text-label-sm); letter-spacing: var(--p5k-track-label); text-transform: uppercase; color: var(--p5k-muted); }
 .days-fieldset .inline-check { margin-top: 4px; }
+/* the whole label is the tap target: the day boxes were 21px on a phone (as the Library's tick boxes) */
+@media (max-width: 720px) {
+  .days-fieldset .inline-check { min-height: var(--p5k-touch); }
+  .days-fieldset input[type=checkbox] { width: 22px; height: 22px; }
+  .days-fieldset input[type=checkbox]::before { font-size: 17px; }
+}
 .field-note { font-family: var(--p5k-font-mono); font-size: var(--p5k-text-label); color: var(--p5k-dim); }
 
 form.duration-form, .duration-form { display: inline-flex; align-items: center; gap: 6px; }
@@ -864,8 +866,7 @@ tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
 .device-grid.faults-only .device-card:not(.is-fault) { display: none; }
 .device-card .tile-actions { display: none; }
 
-/* align-items: start: a card is as tall as its own content, not as the tallest card of its row */
-.device-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 18px; align-items: start; margin-bottom: 22px; }
+.device-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 18px; margin-bottom: 22px; }
 .device-card { position: relative; display: flex; flex-direction: column; border: 1px solid var(--p5k-rule-3); background: var(--p5k-panel); }
 .device-card.is-fault { border-color: var(--p5k-rule-strong); }
 .device-screen {
@@ -1074,10 +1075,14 @@ details > div, details > ul { padding: 8px 10px; }
 .token-block .action-buttons button { width: 100%; padding: 6px; }
 
 @media (max-width: 1100px) {
-  .device-row { grid-template-columns: 240px 1fr; }
+  /* 270px as on desktop: at 240px the camera's age chip ran under its live / stale chip */
+  .device-row { grid-template-columns: 270px 1fr; }
   .device-row > div:nth-child(3) { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--p5k-rule-2); }
   .device-row .assign { grid-template-columns: 1fr 1fr; }
   .device-row .assign .button { grid-column: 1 / -1; justify-content: center; }
+  /* the Actions row spans the card here: three buttons a line, not a full-width stack of eight */
+  .device-actions .action-buttons { flex-direction: row; }
+  .device-actions .action-buttons form { flex: 1 1 30%; }
 }
 @media (max-width: 720px) {
   .device-row { grid-template-columns: 1fr; border-color: var(--p5k-rule-4); }
@@ -1088,7 +1093,8 @@ details > div, details > ul { padding: 8px 10px; }
   .device-row .device-ident .status { grid-area: status; align-self: center; }
   .device-row .device-ident .device-screen { grid-area: screen; margin-top: 8px; }
   .device-row .device-ident .device-camera { grid-area: auto; grid-column: 1 / -1; }
-  .device-row .device-ident > .alert { grid-column: 1 / -1; }
+  .device-row .device-ident > .alert, .device-row .device-ident > form { grid-column: 1 / -1; }
+  .device-row .device-ident > form { margin-top: 8px; }
   .device-row > div + div { border-left: 0; border-top: 1px solid var(--p5k-rule-2); }
   .device-row .assign { grid-template-columns: 1fr; }
   .facts { grid-template-columns: 1fr 1fr; }
@@ -1243,6 +1249,10 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
 /* --------------------------------------------------------------- schedule --- */
 .zone-note { font-family: var(--p5k-font-sans); font-size: var(--p5k-text-body-sm); color: var(--p5k-muted); }
 .zone-note code { color: var(--p5k-body); }
+/* Add rule, or Save rule and Cancel: a finger's height on a phone, sharing the row */
+@media (max-width: 720px) {
+  #rule-form .row > * { flex: 1 1 0; min-height: var(--p5k-touch); }
+}
 
 /* ------------------------------------------------------------------ audit --- */
 .terminal { border: 1px solid var(--p5k-rule-3); background: var(--p5k-panel-2); margin-bottom: 18px; }

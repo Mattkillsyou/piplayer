@@ -98,6 +98,7 @@ function table() {
     ["POST", `/devices/${NOPE}/camera-source`, { camera_source: "none" }, "form", E(404)],
     ["POST", `/devices/${NOPE}/tunnel`, {}, "form", E(400)],
     ["POST", `/devices/${NOPE}/schedule`, { name: "r", playlist_id: String(pid), priority: "1" }, "form", E(404)],
+    ["POST", `/devices/${NOPE}/schedule/${NOPE}`, { name: "r", playlist_id: String(pid), priority: "1" }, "form", E(404)],
     ["POST", `/devices/${NOPE}/schedule/${NOPE}/delete`, {}, "form", E(404)],
     ["POST", "/groups", { name: " " }, "form", E(400)],
     ["POST", `/groups/${NOPE}/assign`, { playlist_id: "" }, "form", E(404)],

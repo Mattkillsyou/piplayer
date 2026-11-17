@@ -186,7 +186,7 @@ describe("camera live URL", () => {
 
     const res = await post(r.admin, `/devices/${dev.id}/camera-url`, { camera_live_url: "   " });
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/devices");
+    expect(res.headers.get("location")).toBe(`/devices#device-${dev.id}`);
     expect((await row()).camera_live_url).toBeNull();
   });
 
