@@ -349,6 +349,9 @@ p:last-child { margin-bottom: 0; }
 .mono { font-family: var(--p5k-font-mono); }
 .sans { font-family: var(--p5k-font-sans); }
 .nowrap { white-space: nowrap; }
+/* hidden means gone: the browser's own [hidden] rule loses to any display a class sets (buttons
+   are inline-flex, the Library's cards flex), so a hidden button or card stayed on show. */
+[hidden] { display: none !important; }
 .eyebrow, .label {
   font-family: var(--p5k-font-mono);
   font-size: var(--p5k-text-label-sm);
@@ -1118,13 +1121,13 @@ details > div, details > ul { padding: 8px 10px; }
 .dropzone form { display: flex; flex-direction: column; gap: 10px; width: 100%; }
 .dropzone input[type=file] { width: 100%; }
 .dropzone .button, .dropzone button { width: 100%; }
+.dropzone label { margin: 0; text-align: left; }
 .upload-panel { border: 1px solid var(--p5k-rule-3); display: flex; flex-direction: column; }
 .upload-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--p5k-rule-2); }
 .upload-panel-head h2 { margin: 0; font-size: var(--p5k-text-label-sm); }
 .upload-panel-body { padding: 11px 12px; display: flex; flex-direction: column; gap: 7px; }
 .upload-panel-body p { margin: 0; }
 progress { display: block; width: 100%; height: 8px; margin: 0; border: 1px solid var(--p5k-rule-3); background: var(--p5k-field); appearance: none; -webkit-appearance: none; }
-progress[hidden] { display: none; }
 progress::-webkit-progress-bar { background: var(--p5k-field); }
 progress::-webkit-progress-value { background: var(--p5k-fill-solid); }
 progress::-moz-progress-bar { background: var(--p5k-fill-solid); }
@@ -1136,7 +1139,14 @@ progress::-moz-progress-bar { background: var(--p5k-fill-solid); }
    picture (a link the viewer opens), the name, the facts, and for an editor a tick box and its
    own Delete, so nothing has to be found by scrolling a wide table sideways on a phone. */
 .media-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 0 0 var(--p5k-space-3); }
-.media-bar h2 { margin: 0; }
+.media-bar select { width: auto; max-width: 16rem; padding-top: 4px; padding-bottom: 4px; font-size: var(--p5k-text-label-sm); } /* a small button's height */
+/* Above the bar: the heading, and Find / Show / Sort once media.js shows them. */
+.media-head { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; margin: 0 0 var(--p5k-space-3); }
+.media-head h2 { margin: 0; }
+.media-find { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
+.media-find label { flex-direction: row; align-items: center; gap: 8px; margin: 0; }
+.media-find input[type=search] { width: 14rem; }
+.media-find select { width: auto; }
 .media-grid { list-style: none; margin: 0 0 22px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
 .media-card { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--p5k-rule-3); background: var(--p5k-panel); }
 .media-card:has(input:checked) { border-color: var(--p5k-rule-max); box-shadow: var(--p5k-glow-hover-soft); }
@@ -1162,7 +1172,8 @@ progress::-moz-progress-bar { background: var(--p5k-fill-solid); }
 }
 .media-thumb.is-making::after { content: "MAKING PREVIEW"; animation: p5k-lamp 1.2s steps(2, end) infinite; }
 .media-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 10px 12px; }
-.media-name { font-size: var(--p5k-text-data); line-height: 1.35; color: var(--p5k-ink); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+/* the whole name, wrapped: cut to two lines, two versions of a file read the same */
+.media-name { font-size: var(--p5k-text-data); line-height: 1.35; color: var(--p5k-ink); overflow-wrap: anywhere; }
 .media-meta { font-size: var(--p5k-text-data-sm); color: var(--p5k-soft); }
 /* two lines, not an ellipsis: on one line the "and 2 more" was what got cut */
 .media-used { font-size: var(--p5k-text-data-sm); color: var(--p5k-body); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
@@ -1180,6 +1191,10 @@ progress::-moz-progress-bar { background: var(--p5k-fill-solid); }
   .media-actions input[type=checkbox]::before { font-size: 17px; }
   .media-bar .action-buttons { flex: 1 1 100%; }
   .media-bar .action-buttons button { flex: 1 1 0; }
+  .media-bar select { flex: 1 1 auto; max-width: none; font-size: 16px; } /* its own row when "Pick a playlist" would not fit */
+  .media-find, .media-find label { flex: 1 1 100%; }
+  .media-find input[type=search], .media-find select { flex: 1 1 0; width: auto; }
+  .media-bar select, .media-find input, .media-find select, .dropzone select { min-height: var(--p5k-touch); }
 }
 
 /* The viewer media.js opens over the page: the file large (a video with its controls), its
@@ -1201,7 +1216,6 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
 .viewer-note { margin: 0; padding: 28px 18px; text-align: center; color: #C9C9C9; }
 .viewer-note a { color: #FFFFFF; }
 .viewer-note a:focus-visible { outline-color: #FFFFFF; }
-.viewer [hidden] { display: none; }
 
 /* --------------------------------------------------------- playlist editor --- */
 .playlist-head input[type=text] { font-family: var(--p5k-font-display); font-size: 17px; text-transform: uppercase; }

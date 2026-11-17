@@ -1,5 +1,6 @@
 // Media previews on the Library page and in the playlist editor (src/pages/library.js thumbCell):
-// the small pictures, the viewer a picture opens, and the Library's "Delete selected".
+// the small pictures, the viewer a picture opens, and the Library's media bar (Delete selected,
+// Add to playlist) and Find / Show / Sort.
 //
 // Small pictures. The server cannot decode a video, so a preview is made here, in the browser,
 // the first time a page shows a file that has none. <img data-thumb="<media id>"> asks
@@ -191,11 +192,14 @@
   // simply opens the file in a new tab; with it, the file opens large on this page, a video
   // with its controls, and Previous / Next walk the page's files in order.
   var dialog = null;
-  var stage, nameEl, metaEl, closeBtn, prevBtn, nextBtn, deleteBtn;
+  var stage, nameEl, metaEl, closeBtn, prevBtn, nextBtn, deleteBtn, detailsLink, downloadLink;
   var current = null;
   var downOnBackdrop = false;
 
-  function links() { return Array.prototype.slice.call(document.querySelectorAll('a[data-view]')); }
+  // The previews on show, in page order: the cards Find hides are skipped.
+  function links() {
+    return Array.prototype.filter.call(document.querySelectorAll('a[data-view]'), function (a) { return !a.closest('[hidden]'); });
+  }
 
   // The Delete button of the card a preview sits in (the Library, for editors), if any.
   function deleteOf(link) {
@@ -231,6 +235,8 @@
       '<div class="viewer-foot"><span class="viewer-meta"></span><div class="action-buttons">' +
       '<button type="button" class="small" data-step="-1">Previous</button>' +
       '<button type="button" class="small" data-step="1">Next</button>' +
+      '<a class="button small" data-details>Details</a>' +
+      '<a class="button small" data-download>Download</a>' +
       '<button type="button" class="small danger" data-delete>Delete</button></div></div>';
     document.body.appendChild(dialog);
     stage = dialog.querySelector('.viewer-stage');
@@ -240,6 +246,8 @@
     prevBtn = dialog.querySelector('[data-step="-1"]');
     nextBtn = dialog.querySelector('[data-step="1"]');
     deleteBtn = dialog.querySelector('[data-delete]');
+    detailsLink = dialog.querySelector('[data-details]');
+    downloadLink = dialog.querySelector('[data-download]');
     // A click lands on the dialog itself from the dimmed page round it, but also when a press
     // inside (selecting the name, dragging the video's timeline) is let go out there: only a
     // press that started on the dimmed page closes it.
@@ -296,6 +304,14 @@
       (other.disabled ? closeBtn : other).focus();
     }
     deleteBtn.hidden = !deleteOf(link);
+    detailsLink.hidden = !link.dataset.page;
+    if (link.dataset.page) detailsLink.href = link.dataset.page;
+    // Saved under the file's own name (same origin, so the browser takes it), with the stored
+    // file's extension when the name has lost it.
+    var name = link.dataset.name || '';
+    var ext = (/\.\w+$/.exec(link.pathname) || [''])[0];
+    downloadLink.setAttribute('href', link.getAttribute('href'));
+    downloadLink.download = name.slice(-ext.length).toLowerCase() === ext.toLowerCase() ? name : name + ext;
     if (!dialog.open) dialog.showModal();
   }
 
@@ -308,33 +324,52 @@
     });
   }
 
-  // --------------------------------------------------------- delete selected ---
+  // ---------------------------------------------------------------- media bar ---
 
-  // The Library's grid form: the button counts the ticked files, is off while none is, and
-  // asks about that many (app.js shows a submit button's own data-confirm). One delete takes at
-  // most data-max files (library.js MAX_DELETE): Select all ticks that many from the top.
+  // The Library's grid form: Delete selected and Add to playlist count the ticked files and are
+  // off while none is (Add also while no playlist is picked: the page would come back with the
+  // ticks gone), and Delete selected asks about the files by name, up to three (app.js shows a
+  // submit button's own data-confirm). One request takes at most data-max files (library.js
+  // MAX_DELETE): Select all ticks that many from the top of what is shown.
   var form = document.getElementById('library-form');
   var bulk = form && form.querySelector('[data-delete-selected]');
   var all = form && form.querySelector('[data-select-all]');
+  var add = form && form.querySelector('[data-add-selected]');
+  var addTo = document.getElementById('add-to');
+  var picked = form && form.querySelector('[data-picked]');
+  var sync = function () {};
   if (bulk && all) {
     var max = parseInt(form.dataset.max, 10) || Infinity;
-    var boxes = function () { return Array.prototype.slice.call(form.querySelectorAll('input[name="media_id"]')); };
-    var ticked = function (every) { return every.filter(function (b) { return b.checked; }).length; };
+    // The tick boxes of the cards on show: Find unticks the ones it hides.
+    var boxes = function () {
+      return Array.prototype.filter.call(form.querySelectorAll('input[name="media_id"]'), function (b) { return !b.closest('[hidden]'); });
+    };
+    var ticked = function (every) { return every.filter(function (b) { return b.checked; }); };
     var full = function (every, n) { return n > 0 && n >= Math.min(every.length, max); };
-    var sync = function () {
+    sync = function () {
       var every = boxes();
-      var n = ticked(every);
+      var on = ticked(every);
+      var n = on.length;
+      var names = on.slice(0, 3).map(function (b) { return b.closest('.media-card').dataset.name; });
+      var last = names.pop();
       bulk.disabled = !n || n > max;
       bulk.textContent = n > max ? 'Delete at most ' + max : n ? 'Delete selected (' + n + ')' : 'Delete selected';
       bulk.dataset.confirm = n === 1
-        ? 'Delete the selected file? It is removed from every playlist that uses it.'
-        : 'Delete these ' + n + ' files? They are removed from every playlist that uses them.';
+        ? 'Delete ' + last + '? It is removed from every playlist that uses it.'
+        : 'Delete ' + (n > 3 || !n ? 'these ' + n + ' files' : names.join(', ') + ' and ' + last) + '? They are removed from every playlist that uses them.';
+      if (add && addTo) {
+        add.disabled = !n || n > max || !addTo.value;
+        add.textContent = n > max ? 'Add at most ' + max : n ? 'Add to playlist (' + n + ')' : 'Add to playlist';
+      }
       all.textContent = full(every, n) ? 'Select none' : 'Select all';
+      // Said to a screen reader (role=status), once per change: pageshow syncs again unchanged.
+      var said = n ? n + (n === 1 ? ' file selected' : ' files selected') : '';
+      if (picked && picked.textContent !== said) picked.textContent = said;
     };
     form.addEventListener('change', sync);
     all.addEventListener('click', function () {
       var every = boxes();
-      var n = ticked(every);
+      var n = ticked(every).length;
       if (full(every, n)) {
         every.forEach(function (b) { b.checked = false; });
       } else {
@@ -342,13 +377,73 @@
       }
       sync();
     });
-    // Enter on a tick box would submit the form with its first enabled submit button: with
-    // Delete selected off, that is the first card's own Delete, a file nobody pointed at. Enter
-    // ticks the box instead, as Space does.
+    // Enter on a tick box would submit the form through its first submit button (the hidden
+    // noop: "Nothing was deleted." and the ticks gone). Enter ticks the box instead, as Space does.
     form.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && e.target.type === 'checkbox') { e.preventDefault(); e.target.click(); }
     });
     sync();
     window.addEventListener('pageshow', sync); // the back/forward cache brings the page back as it was
+  }
+
+  // --------------------------------------------------------------------- find ---
+
+  // Find / Show / Sort over the Library's cards (library.js card()'s data-*), in the browser. A
+  // card that does not match is hidden, and unticked so nothing out of sight is deleted or added;
+  // the cards are put in the order picked, which is also the order Add to playlist appends them
+  // in. The view is kept for this tab, so the reload after a delete or an add shows the same files.
+  var finder = document.getElementById('media-find');
+  var grid = finder && document.querySelector('.media-grid');
+  if (grid) {
+    var q = document.getElementById('find-q');
+    var showSel = document.getElementById('find-show');
+    var sortSel = document.getElementById('find-sort');
+    var count = document.getElementById('media-count');
+    var KEY = 'p5k-library-find';
+    // The server sends the newest first: i is that order.
+    var cards = Array.prototype.map.call(grid.children, function (card, i) {
+      var d = card.dataset;
+      return {
+        card: card, box: card.querySelector('input[name="media_id"]'), i: i,
+        name: (d.name || '').toLowerCase(), kind: d.kind, use: d.use, size: +d.size || 0, length: +d.length || 0
+      };
+    });
+    var ORDER = {
+      '': function (a, b) { return a.i - b.i; },
+      oldest: function (a, b) { return b.i - a.i; },
+      name: function (a, b) { return a.name.localeCompare(b.name, undefined, { numeric: true }) || a.i - b.i; },
+      size: function (a, b) { return b.size - a.size || a.i - b.i; },
+      length: function (a, b) { return b.length - a.length || a.i - b.i; }
+    };
+    var apply = function (reorder) {
+      if (reorder) cards.slice().sort(ORDER[sortSel.value] || ORDER['']).forEach(function (c) { grid.appendChild(c.card); });
+      var words = q.value.toLowerCase().split(/\s+/).filter(Boolean);
+      var show = showSel.value;
+      var shown = 0;
+      cards.forEach(function (c) {
+        var hide = (show === 'video' || show === 'image' ? c.kind !== show : show && c.use !== show) ||
+          !words.every(function (w) { return c.name.indexOf(w) >= 0; });
+        c.card.hidden = !!hide;
+        if (!hide) shown++;
+        else if (c.box) c.box.checked = false;
+      });
+      count.textContent = 'Media (' + (shown === cards.length ? shown : shown + ' of ' + cards.length) + ')';
+      try { sessionStorage.setItem(KEY, JSON.stringify({ q: q.value, show: show, sort: sortSel.value })); } catch (e) { /* storage off */ }
+      sync();
+    };
+    try {
+      var kept = JSON.parse(sessionStorage.getItem(KEY)) || {};
+      q.value = kept.q || '';
+      showSel.value = kept.show || '';
+      sortSel.value = kept.sort || '';
+    } catch (e) { /* nothing kept */ }
+    // A kept choice this page does not offer (no Default playlist any more): back to the first.
+    if (showSel.selectedIndex < 0) showSel.selectedIndex = 0;
+    if (sortSel.selectedIndex < 0) sortSel.selectedIndex = 0;
+    q.addEventListener('input', function () { apply(false); });
+    showSel.addEventListener('change', function () { apply(false); });
+    sortSel.addEventListener('change', function () { apply(true); });
+    finder.hidden = false;
+    apply(!!sortSel.value);
   }
 })();

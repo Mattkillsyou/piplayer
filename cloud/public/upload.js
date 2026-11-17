@@ -1,7 +1,8 @@
 // Library upload queue: for each selected file read its metadata in the browser, hash it
 // (sha256.js, 8 MiB slices) and drive the chunk protocol of src/uploads.js:
 // POST init -> PUT parts (skipping the ones the server already has, PARALLEL at a time so
-// the round trip of one part does not idle the connection) -> POST complete.
+// the round trip of one part does not idle the connection) -> POST complete, whose body names
+// the playlist the Library's "Add to" picked ({"playlist": ""} the Default, an id, or "none").
 // Progress shows the hashing percentage first, then the upload percentage; a server error
 // is shown as its {"detail"} text (plain English from src/uploads.js). While files are in
 // flight the browser asks before the page is left or reloaded (the upload would stop; the
@@ -20,6 +21,7 @@
   var form = document.getElementById('upload-form');
   if (!form) return;
   var input = document.getElementById('file-input');
+  var to = document.getElementById('upload-to'); // the Library's "Add to"; an upload link has none
   var queue = document.getElementById('upload-queue');
   var status = document.getElementById('upload-status');
   var base = form.dataset.base || '/library/upload'; // where the chunk routes of src/uploads.js live
@@ -186,7 +188,8 @@
     };
   }
 
-  function uploadOne(file, row) {
+  // `dest` is the body of the complete request.
+  function uploadOne(file, row, dest) {
     var meta, hashed, init;
     return readMeta(file).then(function (m) {
       meta = m;
@@ -272,7 +275,7 @@
     }).then(function () {
       if (init.existing) return null;
       row.set(100, 'Upload received, saving...');
-      return request('POST', base + '/' + init.upload_id + '/complete');
+      return request('POST', base + '/' + init.upload_id + '/complete', dest);
     }).then(function () {
       row.set(100, 'Done.');
       return hashed.sha256; // truthy: the file is in the library
@@ -308,12 +311,14 @@
     keepAwake();
     status.textContent = '';
     if (play) queue.textContent = ''; // the link page is not reloaded: start each send with an empty queue
+    // Read once: changing "Add to" while files are in flight moves none of this batch.
+    var dest = to ? { playlist: to.value } : {};
     var rows = files.map(addRow);
     var ok = 0;
     var sent = []; // sha256 of every file that is in the library now, in the order picked
     var chain = Promise.resolve();
     files.forEach(function (file, i) {
-      chain = chain.then(function () { return uploadOne(file, rows[i]); }).then(function (r) { if (r) { ok++; sent.push(r); } });
+      chain = chain.then(function () { return uploadOne(file, rows[i], dest); }).then(function (r) { if (r) { ok++; sent.push(r); } });
     });
     chain.then(function () {
       if (!play || !sent.length) return null;
