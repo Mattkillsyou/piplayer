@@ -45,6 +45,19 @@ export function resolveDuration(item, defaultImageDuration) {
   return null;
 }
 
+// How long an item stays on the wall as the player runs it (player/player/sync.py _item_options),
+// null when that is not known. A picture: its override or the default. A video: its own length;
+// an override becomes mpv's `length`, which cuts a video short but never stretches it, except an
+// animated GIF (stored name ending .gif), which loops until its override runs out.
+export function playSeconds(item, defaultImageDuration) {
+  const eff = resolveDuration(item, defaultImageDuration);
+  if (item.media_type === "image") return eff;
+  const length = item.duration_seconds > 0 ? Number(item.duration_seconds) : null;
+  if (eff === null) return length;
+  if (String(item.filename || "").toLowerCase().endsWith(".gif")) return eff;
+  return length === null ? null : Math.min(eff, length);
+}
+
 // "sha256:" + hex(sha256("playlist:{id}\n" + Σ "{position}:{filename}:{sha256}:{effective_duration}\n")),
 // byte-identical to the Python CMS so a player sees the same hash from either manager.
 export async function playlist_hash(playlistId, items) {

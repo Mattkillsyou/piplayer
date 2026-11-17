@@ -59,7 +59,7 @@ describe("role matrix", () => {
     expect(page).not.toContain("Add media");
     page = await (await r.editor.get(`/playlists/${w.pid}`)).text();
     expect(page).toContain(`data-playlist-id="${w.pid}"`);
-    expect(page).toContain("drag rows to reorder");
+    expect(page).toContain('<span class="page-meta">2 items · 22.3 s</span>'); // 10 s picture + 12.34 s video
     expect(page).toContain("⣿");
     expect(page).toContain('<script src="/static/sortable.min.js"></script>');
     // each row carries the Library's preview tile (library.js thumbCell); an editor's page makes missing ones
