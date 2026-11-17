@@ -76,6 +76,8 @@ function table() {
     ["POST", "/library/add-to-playlist", {}, "form", E(303)], // no playlist picked: back to the Library with a warning
     ["POST", `/library/${NOPE}/delete`, {}, "form", E(404)],
     ["POST", "/library/delete", {}, "form", E(303)], // nothing ticked: back to the Library with a warning
+    ["POST", "/library/trash/restore", {}, "form", E(303)], // likewise
+    ["POST", "/library/trash/empty", {}, "form", E(303)], // Recently deleted is empty: likewise
     ["GET", `/library/${NOPE}/thumb`, null, null, ALL(404)],
     ["PUT", `/library/${NOPE}/thumb`, "x", "raw", E(404)],
     ["POST", "/playlists", { name: "  " }, "form", E(400)],

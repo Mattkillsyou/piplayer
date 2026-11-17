@@ -542,8 +542,8 @@ describe("sentMessage", () => {
 
 describe("schema", () => {
   it("migrations 0017 and 0018 made upload_links and devices.in_upload_links, and the version matches db.js", async () => {
-    expect(db.SCHEMA_VERSION).toBe(18);
-    expect(await one("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual({ value: "18" });
+    expect(db.SCHEMA_VERSION).toBe(19);
+    expect(await one("SELECT value FROM meta WHERE key = 'schema_version'")).toEqual({ value: "19" });
     const dev = (await query("PRAGMA table_info(devices)")).find((c) => c.name === "in_upload_links");
     expect([dev.notnull, dev.dflt_value]).toEqual([1, "1"]);
     const cols = (await query("PRAGMA table_info(upload_links)")).map((c) => c.name);

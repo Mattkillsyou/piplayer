@@ -357,7 +357,7 @@ describe("upload protocol", () => {
     // deleting one account's copy leaves the other's row and object
     const mine = await query("SELECT id, filename FROM media WHERE sha256 = ? AND owner_id = ?", sha, edId);
     expect((await editor.post(`/library/${mine[0].id}/delete`, { csrf_token: editorCsrf })).status).toBe(303);
-    expect(await env.MEDIA.head("media/" + mine[0].filename)).toBeNull();
+    expect(await query("SELECT media_id FROM media_trash WHERE filename = ?", mine[0].filename)).toEqual([{ media_id: mine[0].id }]); // Recently deleted
     const theirs = rows.find((x) => x.owner_id === otherId);
     expect((await env.MEDIA.head("media/" + theirs.filename)).size).toBe(1 * MiB);
     expect((await query("SELECT COUNT(*) AS n FROM media WHERE sha256 = ?", sha))[0].n).toBe(1);
@@ -483,7 +483,7 @@ describe("library page", () => {
     expect(html).toContain("x&lt;img src=x onerror=alert(1)&gt;.png");
   });
 
-  it("delete removes the row + R2 object, renumbers playlists, audits; 404 after; viewers 403", async () => {
+  it("delete moves the row to Recently deleted (the R2 object stays), renumbers playlists, audits; 404 after; viewers 403", async () => {
     const d = fakeFile(2000, 18);
     let r = await uploadWhole(editor, editorCsrf, "todelete.png", d, { media_type: "image" });
     const { media_id } = await r.json();
@@ -509,7 +509,9 @@ describe("library page", () => {
     expect(r.status).toBe(303);
     expect(r.headers.get("location")).toBe("/library");
     expect(await query("SELECT id FROM media WHERE id = ?", media_id)).toEqual([]);
-    expect(await env.MEDIA.head("media/" + filename)).toBeNull();
+    expect(await env.MEDIA.head("media/" + filename)).not.toBeNull();
+    expect(JSON.parse((await query("SELECT places FROM media_trash WHERE media_id = ?", media_id))[0].places))
+      .toContainEqual({ playlist_id: 77, position: 1, override: null });
     expect(await query("SELECT media_id, position FROM playlist_items WHERE playlist_id = 77 ORDER BY position"))
       .toEqual([{ media_id: other, position: 0 }, { media_id: other, position: 1 }]);
     expect((await query("SELECT updated_at FROM playlists WHERE id = 77"))[0].updated_at).not.toBe("2000-01-01 00:00:00");
@@ -573,13 +575,13 @@ describe("library previews and Delete selected", () => {
     expect(new Uint8Array(await r.arrayBuffer())).toEqual(body);
     for (const c of [viewer, admin]) expect((await c.get(`/library/${clip}/thumb`)).status).toBe(404);
 
-    // deleting the file takes its preview along
+    // deleting the file keeps its preview for Restore (Empty takes it along: trash.test.js)
     expect((await editor.post(`/library/${clip}/delete`, { csrf_token: editorCsrf })).status).toBe(303);
-    expect(await env.MEDIA.head(`thumbs/${clipFile}.jpg`)).toBeNull();
+    expect(await env.MEDIA.head(`thumbs/${clipFile}.jpg`)).not.toBeNull();
     expect((await editor.post(`/library/${pic}/delete`, { csrf_token: editorCsrf })).status).toBe(303);
   });
 
-  it("Delete selected removes the ticked files of the caller's own account, previews and all; a card's own Delete wins over the ticks", async () => {
+  it("Delete selected moves the ticked files of the caller's own account to Recently deleted; a card's own Delete wins over the ticks", async () => {
     const ids = [];
     for (const [i, name] of ["sel-a.png", "sel-b.png", "sel-c.png"].entries()) {
       ids.push((await (await uploadWhole(editor, editorCsrf, name, fakeFile(300 + i, 50 + i), { media_type: "image" })).json()).media_id);
@@ -609,10 +611,11 @@ describe("library previews and Delete selected", () => {
     expect(r.status).toBe(303);
     expect(await flash(editor)).toBe("Deleted 2 files.");
     expect(await left()).toEqual([theirs]);
-    for (const f of files) {
-      expect(await env.MEDIA.head(`media/${f}`), f).toBeNull();
-      expect(await env.MEDIA.head(`thumbs/${f}.jpg`), f).toBeNull();
+    for (const f of files) { // kept for Restore
+      expect(await env.MEDIA.head(`media/${f}`), f).not.toBeNull();
+      expect(await env.MEDIA.head(`thumbs/${f}.jpg`), f).not.toBeNull();
     }
+    expect((await query(`SELECT media_id FROM media_trash WHERE media_id IN (${ids.join(",")}) ORDER BY media_id`)).map((t) => t.media_id)).toEqual(ids);
     expect(await env.MEDIA.head(`media/${await fileOf(theirs)}`)).not.toBeNull();
     const audited = await query(`SELECT target_id, details FROM audit_log WHERE action = 'delete_media' AND target_id IN (${ids.map((id) => `'${id}'`).join(",")}) ORDER BY id`);
     expect(audited.map((a) => [Number(a.target_id), JSON.parse(a.details).filename])).toEqual([[ids[0], "sel-a.png"], [ids[1], "sel-b.png"], [ids[2], "sel-c.png"]]);
