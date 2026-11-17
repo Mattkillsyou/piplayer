@@ -87,6 +87,8 @@ function table() {
     ["POST", `/playlists/${NOPE}/items/${NOPE}/delete`, {}, "form", E(404)],
     ["POST", `/playlists/${NOPE}/rename`, { name: "x" }, "form", E(404)],
     ["POST", `/playlists/${NOPE}/delete`, {}, "form", E(404)],
+    ["POST", `/playlists/${NOPE}/pictures`, { duration: "5" }, "form", E(404)],
+    ["POST", `/playlists/${NOPE}/duplicate`, {}, "form", E(404)],
     ["POST", "/devices", { device_id: "Bad_ID!", name: "x" }, "form", E(400)],
     ["POST", `/devices/${NOPE}/assign`, { playlist_id: "" }, "form", E(404)],
     ["POST", `/devices/${NOPE}/group`, { group_id: "" }, "form", E(404)],

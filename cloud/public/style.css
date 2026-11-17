@@ -1263,9 +1263,19 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
 .viewer-note a:focus-visible { outline-color: #FFFFFF; }
 
 /* --------------------------------------------------------- playlist editor --- */
-.playlist-head input[type=text] { font-family: var(--p5k-font-display); font-size: 17px; text-transform: uppercase; }
+/* the box in the general input face: in Silkscreen a name read as capitals, whatever its case */
+.playlist-head input[type=text] { font-size: 17px; }
 .playlist-head .row { margin: 0; }
 .playlist-head .row > input { flex: 1 1 260px; }
+/* "Every picture [ ] sec [Set all]" on one line, beside the heading */
+.section-head .duration-form label { flex-direction: row; align-items: center; gap: 8px; margin: 0; }
+@media (max-width: 720px) {
+  .playlist-head .row > label { flex-basis: 100%; }
+  .playlist-head .row > button { flex: 1 1 0; }
+  .playlist-head .row > button, .playlist-head input[type=text] { min-height: var(--p5k-touch); }
+  /* 16px: iPhone Safari zooms into a box with smaller text */
+  .section-head .duration-form input[type=number], .sortable-table .duration-form input[type=number] { min-height: var(--p5k-touch); font-size: 16px; }
+}
 .sortable-table .drag-handle {
   width: 34px;
   cursor: grab;
@@ -1286,9 +1296,28 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
 .sortable-table .media-thumb .badge, .sortable-table .media-length { padding: 1px 4px; font-size: var(--p5k-text-label-sm); }
 .sortable-table .media-length { right: 4px; bottom: 4px; }
 .sortable-table .media-thumb.no-preview::after, .sortable-table .media-thumb.is-making::after { padding: 4px; font-size: 10px; text-align: center; }
-@media (max-width: 720px) {
+/* a name with no break points must not widen the table past Remove */
+.sortable-table td.name { overflow-wrap: anywhere; }
+@media (max-width: 900px) {
   .sortable-table td.thumb-cell, .sortable-table .media-thumb { width: 88px; }
-  .sortable-table .media-length { display: none; }
+}
+/* Up to 800px an item takes two lines inside the screen: the handle, #, preview, and the name
+   over its time; then the override box and Remove. The header stays for screen readers. */
+@media (max-width: 800px) {
+  .sortable-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .sortable-table tbody tr { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr) auto; align-items: center; border-bottom: 1px solid var(--p5k-rule); }
+  .sortable-table tbody tr:last-child { border-bottom: 0; }
+  .sortable-table tbody td { border-bottom: 0; }
+  .sortable-table tbody td.thumb-cell { width: auto; }
+  .sortable-table tbody td:nth-child(-n+3) { grid-row: span 2; }
+  .sortable-table tbody td.name { grid-column: 4 / -1; align-self: end; padding-bottom: 2px; }
+  .sortable-table tbody td:nth-child(5) { grid-column: 4 / -1; align-self: start; padding-top: 2px; }
+  .sortable-table tbody td:nth-child(6) { grid-column: 1 / 5; }
+  /* a viewer's override is already in the time under the name */
+  .sortable-table tbody[data-readonly] td:nth-child(n+6) { display: none; }
+  /* the stripe on the row, so the space between its cells is striped too */
+  table.sortable-table tbody tr:nth-child(n) td { background: none; }
+  .sortable-table tbody tr:nth-child(even) { background: var(--p5k-zebra); }
 }
 .sortable-table tbody tr { transition: background-color .15s; }
 .sortable-ghost td { background: var(--p5k-fill-tint) !important; border-top: 1px dashed var(--p5k-rule-4); border-bottom: 1px dashed var(--p5k-rule-4); opacity: .6; }

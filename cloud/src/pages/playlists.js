@@ -5,12 +5,12 @@ import * as accounts from "../accounts.js";
 import * as audit from "../audit.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
-import { esc, fail, fileSize, idParam, intField, json, jsonObject, localTime, redirect, runTime, str } from "../util.js";
+import { playSeconds } from "../manifest.js";
+import { esc, fail, fileSize, floatField, idParam, intField, json, jsonObject, localTime, redirect, runTime, str } from "../util.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 import { appendToPlaylist, RENUMBER_SQL, thumbCell } from "./library.js";
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-const round1 = (n) => Number(n).toFixed(1);
 
 const TOUCH_SQL = "UPDATE playlists SET updated_at = datetime('now') WHERE id = ?";
 
@@ -21,10 +21,32 @@ async function ownPlaylist(ctx, playlistId, cols = "id") {
   return row;
 }
 
+// A duration box: '' is null (back to the default), else 0.5 to 86400 seconds or 400. Python's
+// float() took 'inf' / 'nan' and the range check refused them; floatField refuses them up front.
+function parseDuration(raw) {
+  const msg = "Duration must be a number of seconds between 0.5 and 86400";
+  const dur = floatField(raw, "Duration", msg);
+  if (dur !== null && (dur < 0.5 || dur > 86400)) fail(400, msg);
+  return dur;
+}
+
+// One pass of `items` as the player runs it: "1:05", "at least 1:05" when an item's length is
+// unknown (a video the uploader's browser could not measure), "" when nothing is known.
+function totalTime(items, defaultImageDuration) {
+  let known = 0;
+  let unknown = false;
+  for (const it of items) {
+    const s = playSeconds(it, defaultImageDuration);
+    if (s === null) unknown = true; else known += s;
+  }
+  const t = runTime(known);
+  return t && unknown ? `at least ${t}` : t;
+}
+
 async function playlistsPage(ctx) {
   const user = auth.requireUser(ctx);
   const canEdit = user.role !== "viewer";
-  const { timezone: tz, default_playlist_id: defaultId } = await ctx.settings();
+  const { timezone: tz, default_playlist_id: defaultId, default_image_duration: dur } = await ctx.settings();
   // The account's own playlists; "used by" counts the projectors, groups and schedule rules that
   // play them, which are all the account's own (only its projectors may point at its playlists).
   const co = accounts.contentOwnerSql("d");
@@ -35,6 +57,15 @@ async function playlistsPage(ctx) {
             (SELECT COUNT(*) FROM device_groups g WHERE g.playlist_id = p.id AND g.owner_id = ?1) AS group_count,
             (SELECT COUNT(*) FROM device_schedules s JOIN devices d ON d.id = s.device_id WHERE s.playlist_id = p.id AND ${co} = ?1) AS schedule_count
        FROM playlists p WHERE p.owner_id = ?1 ORDER BY p.name`, user.id);
+  // Every item of those playlists, for each one's running time.
+  const itemsOf = new Map();
+  for (const it of await db.all(ctx.env,
+    `SELECT pi.playlist_id, pi.duration_override_seconds, m.media_type, m.duration_seconds, m.filename
+       FROM playlist_items pi JOIN media m ON m.id = pi.media_id JOIN playlists p ON p.id = pi.playlist_id
+      WHERE p.owner_id = ?`, user.id)) {
+    if (!itemsOf.has(it.playlist_id)) itemsOf.set(it.playlist_id, []);
+    itemsOf.get(it.playlist_id).push(it);
+  }
   const rowHtml = (p) => {
     const parts = [];
     if (p.schedule_count) parts.push(`${p.schedule_count} schedule rule(s) will be deleted`);
@@ -44,6 +75,7 @@ async function playlistsPage(ctx) {
     return `<tr>
       <td class="name"><a href="/playlists/${p.id}">${esc(p.name)}</a>${p.id === defaultId ? ' <span class="badge" title="Library uploads join this playlist; projectors with no playlist of their own play it">default</span>' : ""}</td>
       <td>${p.item_count}</td>
+      <td class="nowrap">${totalTime(itemsOf.get(p.id) || [], dur) || "—"}</td>
       <td class="muted">
         <span title="devices with this as their default playlist">${plural(p.device_count, "device")}</span>
         ${p.group_count ? ` · ${plural(p.group_count, "group")}` : ""}
@@ -76,7 +108,7 @@ ${!rows.length ? emptyState("NO PLAYLISTS", `No playlists yet.${canEdit ? " Crea
 <table class="data">
   <caption class="sr-only">Playlists</caption>
   <thead>
-    <tr><th scope="col">Name</th><th scope="col">Items</th><th scope="col">Used by</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
+    <tr><th scope="col">Name</th><th scope="col">Items</th><th scope="col">Duration</th><th scope="col">Used by</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
   </thead>
   <tbody>
     ${rows.map(rowHtml).join("\n    ")}
@@ -125,14 +157,16 @@ async function playlistsEdit(ctx) {
   // Python renders config.DEFAULT_IMAGE_DURATION (a float) with repr, so 10 shows as "10.0".
   const dur = (await ctx.settings()).default_image_duration;
   const defaultImageDuration = Number.isInteger(dur) ? dur.toFixed(1) : String(dur);
+  const time = totalTime(items, dur);
 
-  const itemRow = (it, i) => `<tr data-item-id="${it.id}">
+  // id="item-N": a row's Set comes back to that row (playlistSetDuration).
+  const itemRow = (it, i) => `<tr id="item-${it.id}" data-item-id="${it.id}">
       <td class="drag-handle" title="Drag to reorder, or focus and press the up/down arrow keys">${canEdit ? `<span role="button" tabindex="0" aria-label="Move ${esc(it.original_name)}">⣿</span>` : ""}</td>
       <td class="position-cell">${i + 1}</td>
       <td class="thumb-cell">${thumbCell({ ...it, id: it.media_id },
         [fileSize(it.size_bytes), it.width ? `${it.width}×${it.height}` : "", it.media_type === "video" ? runTime(it.duration_seconds) : ""].filter(Boolean).join(" · "))}</td>
       <td class="name">${esc(it.original_name)}</td>
-      <td class="muted nowrap">${it.duration_seconds ? `${round1(it.duration_seconds)} s` : "—"}</td>
+      <td class="muted nowrap">${runTime(playSeconds(it, dur)) || "—"}</td>
       <td>
         ${canEdit ? `<form method="post" action="/playlists/${playlist.id}/items/${it.id}/duration" class="inline duration-form">
           ${csrfInput(ctx)}
@@ -151,10 +185,14 @@ async function playlistsEdit(ctx) {
         </form>` : ""}
       </td>
     </tr>`;
-  const option = (m) => `<option value="${m.id}">
-        [${esc(m.media_type.toUpperCase())}] ${esc(m.original_name)}${m.duration_seconds ? ` (${round1(m.duration_seconds)}s)` : ""}
+  const option = (m) => {
+    const t = runTime(m.duration_seconds);
+    return `<option value="${m.id}">
+        [${esc(m.media_type.toUpperCase())}] ${esc(m.original_name)}${t ? ` (${t})` : ""}
       </option>`;
+  };
 
+  // Duplicate shares the name form (formaction) so it sits beside Rename; Enter still renames.
   const content = `<a href="/playlists" class="back">← All playlists</a>
 <div class="page-head playlist-head">
   ${canEdit ? `<form method="post" action="/playlists/${playlist.id}/rename" class="row">
@@ -163,16 +201,27 @@ async function playlistsEdit(ctx) {
       <input type="text" name="name" value="${esc(playlist.name)}" required>
     </label>
     <button type="submit">Rename</button>
+    <button type="submit" formaction="/playlists/${playlist.id}/duplicate" formnovalidate>Duplicate</button>
   </form>` : `<h1>${esc(playlist.name)}</h1>`}
-  <span class="page-meta">${items.length} item${items.length === 1 ? "" : "s"}${canEdit ? " · drag rows to reorder" : ""}</span>
+  <span class="page-meta">${plural(items.length, "item")}${time ? ` · ${time}` : ""}</span>
 </div>
 
-<h2>Playlist order (${items.length})</h2>
+<div class="section-head">
+  <h2>Playlist order (${items.length})</h2>
+  ${canEdit && items.some((it) => it.media_type === "image") ? `<form method="post" action="/playlists/${playlist.id}/pictures" class="inline duration-form">
+    ${csrfInput(ctx)}
+    <label>Every picture
+      <input type="number" name="duration" min="0.5" max="86400" step="0.5" placeholder="${esc(defaultImageDuration)}">
+    </label>
+    <span class="unit">sec</span>
+    <button type="submit" class="small">Set all</button>
+  </form>` : ""}
+</div>
 ${!items.length ? emptyState("EMPTY REEL", `Nothing queued.${canEdit ? " Add media below." : ""}`) : `<div class="table-wrap">
 <table class="data sortable-table" id="playlist-items"${canEdit ? " data-thumb-put" : ""}>
   <caption class="sr-only">Playlist items</caption>
   <thead>
-    <tr><th scope="col"><span class="sr-only">Drag handle</span></th><th scope="col">#</th><th scope="col">Preview</th><th scope="col">Name</th><th scope="col">Natural</th><th scope="col">Override</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
+    <tr><th scope="col"><span class="sr-only">Drag handle</span></th><th scope="col">#</th><th scope="col">Preview</th><th scope="col">Name</th><th scope="col">Duration</th><th scope="col">Override</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
   </thead>
   <tbody id="sortable-body" data-playlist-id="${playlist.id}"${canEdit ? "" : ' data-readonly="1"'}>
     ${items.map(itemRow).join("\n    ")}
@@ -217,22 +266,61 @@ async function playlistSetDuration(ctx) {
   auth.requireRole(ctx, "editor");
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
   const itemId = idParam(ctx.params.item_id, "item_id");
-  const raw = str(await ctx.form(), "duration").trim();
-  let dur = null;
-  if (raw) {
-    // Python float() accepts 'inf'/'nan' and then the range check rejects them; here the
-    // number regex rejects them up front, same 400 either way.
-    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(raw)) fail(400, "Duration must be a number of seconds between 0.5 and 86400");
-    dur = Number(raw);
-    if (!Number.isFinite(dur) || dur < 0.5 || dur > 86400) fail(400, "Duration must be a number of seconds between 0.5 and 86400");
-  }
+  const dur = parseDuration(str(await ctx.form(), "duration"));
   const r = await db.run(ctx.env,
     `UPDATE playlist_items SET duration_override_seconds = ? WHERE id = ? AND playlist_id = ?
         AND playlist_id IN (SELECT id FROM playlists WHERE owner_id = ?)`, dur, itemId, playlistId, ctx.user.id);
   if (!r.changes) fail(404, "Playlist item not found");
   await db.run(ctx.env, TOUCH_SQL, playlistId);
   await audit.log(ctx, "playlist_set_duration", "playlist_item", itemId, { duration: dur });
-  return redirect(`/playlists/${playlistId}`);
+  return redirect(`/playlists/${playlistId}#item-${itemId}`);
+}
+
+// "Every picture": one time for all the playlist's pictures, or back to the account's default
+// when the box is empty. Its videos keep their own.
+async function playlistSetPictures(ctx) {
+  const user = auth.requireRole(ctx, "editor");
+  const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
+  const dur = parseDuration(str(await ctx.form(), "duration"));
+  await ownPlaylist(ctx, playlistId);
+  const [r] = await db.batch(ctx.env, [
+    [`UPDATE playlist_items SET duration_override_seconds = ?1
+       WHERE playlist_id = ?2 AND media_id IN (SELECT id FROM media WHERE media_type = 'image' AND owner_id = ?3)`, dur, playlistId, user.id],
+    [TOUCH_SQL, playlistId],
+  ]);
+  const n = r.meta.changes;
+  if (!n) return auth.flashRedirect(ctx, `/playlists/${playlistId}`, "There are no pictures in this playlist.", "warn");
+  await audit.log(ctx, "playlist_set_picture_duration", "playlist", playlistId, { duration: dur, items: n });
+  return auth.flashRedirect(ctx, `/playlists/${playlistId}`,
+    dur === null ? `${plural(n, "picture")} back to the default.` : `${plural(n, "picture")} set to ${runTime(dur)}.`);
+}
+
+// A copy with the same files, order and times, named "NAME copy" (then "NAME copy 2", ...). One
+// batch, so never half a copy; it plays nowhere until it is given to a projector or schedule.
+async function playlistDuplicate(ctx) {
+  const user = auth.requireRole(ctx, "editor");
+  const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
+  const own = await db.all(ctx.env, "SELECT id, name FROM playlists WHERE owner_id = ?", user.id);
+  const from = own.find((p) => p.id === playlistId);
+  if (!from) fail(404, "Playlist not found");
+  const taken = new Set(own.map((p) => p.name));
+  let name = `${from.name} copy`;
+  for (let n = 2; taken.has(name); n++) name = `${from.name} copy ${n}`;
+  let results;
+  try {
+    results = await db.batch(ctx.env, [
+      ["INSERT INTO playlists (owner_id, name, legacy_name) VALUES (?, ?, ?)", user.id, name, accounts.uniqueKey()],
+      [`INSERT INTO playlist_items (playlist_id, media_id, position, duration_override_seconds)
+        SELECT (SELECT id FROM playlists WHERE owner_id = ?1 AND name = ?2), media_id, position, duration_override_seconds
+          FROM playlist_items WHERE playlist_id = ?3 ORDER BY position, id`, user.id, name, playlistId],
+    ]);
+  } catch (e) {
+    if (db.isConstraintError(e)) fail(409, "A playlist with that name already exists");
+    throw e;
+  }
+  const pid = results[0].meta.last_row_id;
+  await audit.log(ctx, "playlist_duplicate", "playlist", pid, { from: playlistId, name });
+  return auth.flashRedirect(ctx, `/playlists/${pid}`, `Duplicated as ${name}.`);
 }
 
 async function playlistReorder(ctx) {
@@ -324,6 +412,8 @@ export function register(router) {
   router.post("/playlists/:playlist_id/items/reorder", playlistReorder);
   router.post("/playlists/:playlist_id/items/:item_id/duration", playlistSetDuration);
   router.post("/playlists/:playlist_id/items/:item_id/delete", playlistRemoveItem);
+  router.post("/playlists/:playlist_id/pictures", playlistSetPictures);
+  router.post("/playlists/:playlist_id/duplicate", playlistDuplicate);
   router.post("/playlists/:playlist_id/rename", playlistRename);
   router.post("/playlists/:playlist_id/delete", playlistDelete);
 }
