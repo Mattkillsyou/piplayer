@@ -9,6 +9,7 @@
 // and another account's upload id answers exactly like an unknown one. An upload link
 // (pages/links.js, migration 0017) drives the same handlers for the account that made it: the
 // token in its path stands in for the session (ctx.link, uploader()).
+import * as accounts from "./accounts.js";
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
 import * as db from "./db.js";
@@ -258,6 +259,27 @@ export async function uploadStatus(ctx) {
   return json({ received: row.received, size: row.size, part_size: PART_SIZE, parts: partNumbers(row) });
 }
 
+// The playlist a Library upload joins, from the complete body's "playlist" (public/upload.js
+// sends the Library's "Add to" select): "" or none = the uploader's own Default playlist (their
+// default_playlist_id, db.loadSettings), as it was before there was a choice and as an old cached
+// upload.js still asks; "none" = no playlist; digits = another playlist of the uploader's own,
+// else 404. Settled before anything is written, so a refused one leaves the upload to be
+// completed again.
+async function destination(ctx, userId) {
+  // A form post's body was read by the CSRF check, and a form carries no choice.
+  const text = ctx.request.bodyUsed ? "" : await ctx.request.text();
+  let body;
+  try { body = text ? JSON.parse(text) : {}; } catch { body = null; }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) fail(400, "body must be a JSON object");
+  const choice = body.playlist;
+  if (choice === undefined || choice === "") return (await ctx.settings()).default_playlist_id;
+  if (choice === "none") return null;
+  if (typeof choice !== "string" || !/^\d+$/.test(choice)) fail(400, "playlist must be a playlist id, \"\" or \"none\"");
+  const own = await accounts.ownRow(ctx.env, "playlists", parseInt(choice, 10), userId);
+  if (!own) fail(404, "Playlist not found");
+  return own.id;
+}
+
 export async function uploadComplete(ctx) {
   const row = await loadUpload(ctx);
   const total = totalParts(row.size);
@@ -265,6 +287,9 @@ export async function uploadComplete(ctx) {
   if (parts.length !== total || row.received !== row.size) {
     fail(400, `upload incomplete: ${row.received} of ${row.size} bytes (${parts.length}/${total} parts)`);
   }
+  // Not through an upload link, whatever its body says: its files go on the projectors the sender
+  // picks (links.linkPlay), and joining a playlist would put them on every other projector too.
+  const playlist = ctx.link ? null : await destination(ctx, row.user_id);
   // Re-check the duplicate rule: another upload of the same bytes to this library may have won
   // meanwhile (the fast path with the friendly name; the UNIQUE index on (owner_id, sha256)
   // catches the same-instant race).
@@ -275,12 +300,10 @@ export async function uploadComplete(ctx) {
     return ctx.link ? json({ media_id: existing.id }) : alreadyHere(existing);
   }
   const filename = row.key.slice("media/".length);
-  // Every upload joins the uploader's own Default playlist (their default_playlist_id, one of their
-  // own playlists: db.loadSettings) at the end, in the same transaction as the media row: the new
+  // The upload joins its playlist at the end in the same transaction as the media row: the new
   // file is found by (owner, sha256), UNIQUE, so the item and the media row land or fail together.
-  // Not through an upload link: its files go on the projectors the sender picks (links.linkPlay),
-  // and joining Default would put them on every other projector as well.
-  const defaultPlaylist = ctx.link ? null : (await ctx.settings()).default_playlist_id;
+  // A playlist deleted since destination() looked is skipped (HAVING) rather than failing the
+  // foreign key, which would throw the uploaded bytes away.
   let mediaId;
   try {
     // The media row is inserted before R2 completes the object, so a name or sha256 clash
@@ -289,11 +312,12 @@ export async function uploadComplete(ctx) {
       [`INSERT INTO media (filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256, owner_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
       filename, row.name, row.media_type, row.size, row.duration_seconds, row.width, row.height, row.sha256, row.user_id],
-      ...(defaultPlaylist ? [
+      ...(playlist ? [
         [`INSERT INTO playlist_items (playlist_id, media_id, position)
-          SELECT ?1, (SELECT id FROM media WHERE sha256 = ?2 AND owner_id = ?3), COALESCE(MAX(position), -1) + 1 FROM playlist_items WHERE playlist_id = ?1`,
-        defaultPlaylist, row.sha256, row.user_id],
-        ["UPDATE playlists SET updated_at = datetime('now') WHERE id = ?", defaultPlaylist],
+          SELECT ?1, (SELECT id FROM media WHERE sha256 = ?2 AND owner_id = ?3), COALESCE(MAX(position), -1) + 1 FROM playlist_items WHERE playlist_id = ?1
+          HAVING EXISTS (SELECT 1 FROM playlists WHERE id = ?1)`,
+        playlist, row.sha256, row.user_id],
+        ["UPDATE playlists SET updated_at = datetime('now') WHERE id = ?", playlist],
       ] : []),
       ["DELETE FROM uploads WHERE id = ?", row.id],
     ]);
@@ -340,7 +364,7 @@ export async function uploadComplete(ctx) {
   // the browser may happen to be signed in to the console (/api/ paths still read the session),
   // but it is the link that uploaded, not that person.
   await audit.log(ctx, "upload_media", "media", mediaId,
-    { filename: row.name, type: row.media_type, playlist: defaultPlaylist ?? undefined, sha_verified: shaVerified ? undefined : false, link: ctx.link ? ctx.link.name : undefined },
+    { filename: row.name, type: row.media_type, playlist: playlist ?? undefined, sha_verified: shaVerified ? undefined : false, link: ctx.link ? ctx.link.name : undefined },
     ctx.link ? null : undefined, row.user_id);
   return json({ media_id: mediaId });
 }

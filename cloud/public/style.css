@@ -1211,6 +1211,17 @@ html:has(.media-bar) { scroll-padding-top: 96px; }
   .media-bar select, .media-find input, .media-find select, .dropzone select { min-height: var(--p5k-touch); }
 }
 
+/* A file's own page (pages/library.js filePage): the name box as wide as the head allows, the
+   preview no larger than a stored one, and the playlists it is in as rows a finger can hit. */
+.file-page .page-head .row { flex: 1 1 320px; margin: 0; }
+.file-page .media-thumb { max-width: 640px; margin-bottom: var(--p5k-space-3); border: 1px solid var(--p5k-rule-2); }
+.file-page ul { list-style: none; max-width: 640px; margin: 0; padding: 0; border: 1px solid var(--p5k-rule-3); }
+.file-page li + li { border-top: 1px solid var(--p5k-rule-2); }
+.file-page li a { display: flex; align-items: center; min-height: var(--p5k-touch); padding: 0 12px; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .file-page .page-head input, .file-page .page-head button { min-height: var(--p5k-touch); }
+}
+
 /* The viewer media.js opens over the page: the file large (a video with its controls), its
    name and facts, Previous / Next, and Delete where the page has one for the file. */
 dialog.viewer { width: min(1100px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 24px); padding: 0; overflow: auto; color: var(--p5k-body); background: var(--p5k-panel); border: 1px solid var(--p5k-rule-strong); }
