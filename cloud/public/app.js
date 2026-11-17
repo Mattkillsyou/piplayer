@@ -195,22 +195,11 @@
     });
   }
 
-  // Schedule form: fold the checked days into the hidden days_of_week field ("0123456" subset).
-  function initDays() {
-    var days = document.getElementById('days-hidden');
-    if (!days || !days.form) return;
-    days.form.addEventListener('submit', function () {
-      var checks = days.form.querySelectorAll('input[name="days_of_week_chk"]:checked');
-      days.value = Array.prototype.map.call(checks, function (c) { return c.value; }).join('');
-    });
-  }
-
   function init() {
     initNav();
     initSortable();
     initWallFilter();
     initDropzone();
-    initDays();
   }
 
   window.piplayer = { csrf: csrf, postJson: postJson };

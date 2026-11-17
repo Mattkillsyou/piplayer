@@ -36,11 +36,11 @@ describe("M15 / M18: per-device commands", () => {
     const dev = await device("dup-1", "Dup <one>");
     await query("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?", dev.id);  // it is checking in
     let res = await post(r.editor, `/devices/${dev.id}/command`, { command: "reboot" });
-    expect([res.status, res.headers.get("location")]).toEqual([303, "/devices"]);
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices#device-${dev.id}`]);
     expect(await banner(r.editor, "ok")).toBe("Reboot queued for Dup &lt;one&gt;; the Pi picks it up on its next check-in.");
     expect(await banner(r.editor, "ok")).toBeNull(); // one-shot
     res = await post(r.editor, `/devices/${dev.id}/command`, { command: "reboot" });
-    expect([res.status, res.headers.get("location")]).toEqual([303, "/devices"]);
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices#device-${dev.id}`]);
     expect(await banner(r.editor, "warn")).toBe("Reboot is already waiting for Dup &lt;one&gt;; the Pi picks it up on its next check-in.");
 
     // a projector that is not checking in cannot pick anything up: say so rather than promise it,
@@ -81,10 +81,10 @@ describe("M15 / M18: per-device commands", () => {
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 
-  it("the dashboard Reboot tile posts to the same handler and lands on /devices with the banner", async () => {
+  it("the dashboard Reboot tile posts to the same handler and lands on its card on /devices with the banner", async () => {
     const dev = await device("dup-2", "Dup two");
     await query("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?", dev.id);
-    expect((await post(r.admin, `/devices/${dev.id}/command`, { command: "force-sync" })).headers.get("location")).toBe("/devices");
+    expect((await post(r.admin, `/devices/${dev.id}/command`, { command: "force-sync" })).headers.get("location")).toBe(`/devices#device-${dev.id}`);
     expect(await banner(r.admin, "ok")).toBe("Resync queued for Dup two; the Pi picks it up on its next check-in.");
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });

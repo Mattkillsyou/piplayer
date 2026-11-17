@@ -5,7 +5,7 @@
 // rows (audit.auditScope). Only the Devices page shows an admin every projector.
 import * as auth from "../auth.js";
 import * as db from "../db.js";
-import { esc, localTime, nowUtc, zoneName } from "../util.js";
+import { esc, fileSize, localTime, nowUtc } from "../util.js";
 import { cameraScreen, contentClause, decorateDevices, deviceScreen, isFault, noProjectors, projectorState, settingsForRows, statusLamp, updateStatus, visibleDevices } from "./devices.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
 import { auditScope } from "./audit.js";
@@ -30,7 +30,7 @@ function deviceCard(ctx, d, tz, canEdit) {
           <span class="now-via">via ${esc(d.active_source)}</span>`
     : '<span class="now-playlist">no playlist</span>'}
       </div>
-      <span class="device-meta">last seen ${d.last_seen_at ? `${esc(d.seen_age)} · ${esc(localTime(d.last_seen_at, tz))}` : "never"}</span>
+      <span class="device-meta">last seen ${d.last_seen_at ? `${esc(d.seen_age)} · <span class="nowrap">${esc(localTime(d.last_seen_at, tz))}</span>` : "never"}</span>
       ${d.last_error ? `<div class="alert error small" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
       ${updateStatus(d, tz)}
       ${d.projector_control && d.projector_control !== "none" ? `<div class="device-meta">${projectorState(d)}</div>` : ""}
@@ -83,14 +83,14 @@ async function dashboard(ctx) {
 
   const content = `<div class="page-head">
   <h1>Dashboard</h1>
-  <span class="page-meta">server ${esc(localTime(nowUtc(), tz))} · ${esc(zoneName(tz))}</span>
+  <span class="page-meta">your time ${esc(localTime(nowUtc(), tz))}</span>
 </div>
 
 <div class="cards">
   <div class="card">
     <span class="card-label">media files</span>
     <span class="card-value">${media.n}</span>
-    <span class="card-sub">${(media.bytes / 1024 / 1024).toFixed(1)} MB total</span>
+    <span class="card-sub">${fileSize(media.bytes)} total</span>
   </div>
   <div class="card">
     <span class="card-label">playlists</span>
@@ -117,7 +117,7 @@ async function dashboard(ctx) {
   </div>` : ""}
 </div>
 ${!n
-    ? (user.role === "admin" ? emptyState("NO DEVICES", "No devices yet. Add one to start the wall.", '<a href="/devices" class="button small">Add a device</a>') : noProjectors())
+    ? (user.role === "admin" ? emptyState("NO DEVICES", "No devices yet. Add one to start the wall.", '<a href="/devices" class="button small">Add a device</a>') : noProjectors(canEdit))
     : `<div class="device-grid" id="monitor-wall">
   ${devices.map((d) => deviceCard(ctx, d, tz, canEdit)).join("\n  ")}
 </div>`}

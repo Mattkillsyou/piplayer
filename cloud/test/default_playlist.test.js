@@ -175,12 +175,15 @@ describe("resolution order", () => {
 });
 
 describe("pages", () => {
-  it("Devices and Groups selects call the empty choice Default", async () => {
+  it("Devices and Groups selects call the empty choice none, never the Default playlist's own name", async () => {
     const dev = await device("labels", "Labels");
     const gid = await group("Labelled");
-    expect(await (await r.editor.get("/devices")).text()).toContain('<option value="">Default (plays unless you pick one)</option>');
+    const devices = await (await r.editor.get("/devices")).text();
+    expect(devices).toContain('<select name="playlist_id" data-autosubmit>\n              <option value="">— none —</option>');
+    expect(devices).not.toContain("Default (plays unless you pick one)");
     const groups = await (await r.editor.get("/groups")).text();
-    expect(groups).toContain('<option value="">Default</option>');
+    expect(groups).toContain('<option value="">— none —</option>');
+    expect(groups).not.toContain('<option value="">Default</option>');
     expect(groups).not.toContain("Groups without one play the site default playlist.");
     expect(await (await r.editor.get("/dashboard")).text()).toContain("Library uploads join the default playlist");
     await query("DELETE FROM devices WHERE id = ?", dev.id);

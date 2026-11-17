@@ -173,6 +173,11 @@ export function requireContentOwner(ctx, row) {
 
 const screenshotHref = (d) => `/devices/${d.id}/screenshot?t=${esc(encodeURIComponent(d.last_screenshot_at))}`;
 
+// What the player last reported playing, by its Library name (it reports the stored
+// '<sha16>_u<id>_<name>'; a file with no Library row, from a USB stick or the dev seed, as
+// reported). An offline projector's report is its last one, not what is on the wall now.
+const nowText = (d) => `${d.offline ? "last: " : ""}#${(d.current_position || 0) + 1} ${d.current_name || d.current_filename}`;
+
 // The `.device-screen` block shared by the Devices rows and the dashboard wall: thumb (or
 // NO SIGNAL), age chip + live/stale chip; `link` wraps the thumb in a new-tab link, `now`
 // adds the now-playing overlay, `tz` puts the local capture time on the age chip (dashboard),
@@ -196,7 +201,7 @@ export function deviceScreen(d, { link = false, now = false, tz = null, staleTit
   }
   return `<div class="device-screen${d.screenshot_stale ? " is-stale" : ""}">
       ${inner}
-      ${now && d.current_filename ? `<span class="screen-now">#${(d.current_position || 0) + 1} ${esc(d.current_filename)}</span>` : ""}
+      ${now && d.current_filename ? `<span class="screen-now">${esc(nowText(d))}</span>` : ""}
     </div>`;
 }
 
@@ -476,7 +481,7 @@ function commandForm(ctx, d, command, label, cls, title = "", extra = "") {
 // text: those are its account's to choose.
 function assignForms(ctx, d, playlists, groups, dis) {
   if (d.content_owner !== ctx.user.id) {
-    return `<p class="help small assign-other" title="Only the projector's own account picks what it plays">Plays what ${esc(d.content_owner_name || "its account")} picks: group ${d.group_name ? esc(d.group_name) : "none"}, default playlist ${d.playlist_name ? esc(d.playlist_name) : "Default"}.</p>`;
+    return `<p class="help small assign-other" title="Only the projector's own account picks what it plays">Plays what ${esc(d.content_owner_name || "its account")} picks: group ${d.group_name ? esc(d.group_name) : "none"}, default playlist ${d.playlist_name ? esc(d.playlist_name) : "none"}.</p>`;
   }
   return `<form method="post" action="/devices/${d.id}/group">
           ${csrfInput(ctx)}
@@ -491,7 +496,7 @@ function assignForms(ctx, d, playlists, groups, dis) {
           ${csrfInput(ctx)}
           <label>default playlist
             <select name="playlist_id" data-autosubmit${dis}>
-              <option value="">Default (plays unless you pick one)</option>
+              <option value="">— none —</option>
               ${optionList(playlists, d.playlist_id)}
             </select>
           </label>
@@ -506,7 +511,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
   const dis = canEdit ? "" : " disabled";
   const live = liveUrl(d.camera_live_url);
   const ownContent = d.content_owner === ctx.user.id;
-  return `<div class="device-row${isFault(d) ? " is-fault" : ""}">
+  return `<div class="device-row${isFault(d) ? " is-fault" : ""}" id="device-${d.id}">
     <div class="device-ident">
       ${deviceScreen(d, { link: true, staleTitle: "No new screenshot for more than 3 capture intervals" })}
       ${cameraScreen(d, { link: true, staleTitle: "No new camera snapshot for more than 3 camera intervals" })}
@@ -542,7 +547,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
     ? `<span class="now-file">nothing in it yet · ${d.active_source === "default playlist" ? '<a href="/library">upload files in the Library</a>' : `<a href="/playlists/${d.active_playlist_id}">add files to it</a>`}</span>`
     : ""}
         ${d.current_filename
-    ? `<span class="now-file">#${(d.current_position || 0) + 1} ${esc(d.current_filename)}${d.player_status ? ` · ${esc(lampText(d.player_status))}` : ""}</span>`
+    ? `<span class="now-file">${esc(nowText(d))}${d.player_status && !d.offline ? ` · ${esc(lampText(d.player_status))}` : ""}</span>`
     : ""}
       </div>
 
@@ -654,24 +659,29 @@ sudo -E bash deploy/install-player.sh</pre>
 }
 
 // Devices / Dashboard empty state for an account that owns nothing yet: its projectors arrive
-// through the SD Flasher (the /flasher page), not the Add device form.
-export const noProjectors = () => emptyState("NO PROJECTORS", 'No projectors yet. Flash a card with the <a href="/flasher">SD Flasher</a> and it appears here.');
+// through the SD Flasher (the /flasher page), not the Add device form. The flasher refuses a
+// viewer's sign-in (api.js), so a viewer is not sent there.
+export const noProjectors = (canEdit) => emptyState("NO PROJECTORS", canEdit
+  ? 'No projectors yet. Flash a card with the <a href="/flasher">SD Flasher</a> and it appears here.'
+  : "No projectors yet.");
 
 // The device rows a page shows (`own`: by default ownedClause, the viewer's own and every one for
 // an admin) with the columns the Devices page and the Dashboard need, content_owner and its
-// username, and the playlist / group names only when they are the projector's own account's
-// (another account's reads as none).
+// username, the playlist / group names only when they are the projector's own account's
+// (another account's reads as none), and current_name, the Library name of the file the player
+// reports (media.filename is unique: one indexed read per projector).
 export function visibleDevices(env, user, cols, own = ownedClause(user)) {
   const co = accounts.contentOwnerSql("d");
   return db.all(env,
     `SELECT ${cols}, d.owner_id, ${co} AS content_owner,
             p.id AS playlist_id, p.name AS playlist_name, g.id AS group_id, g.name AS group_name,
-            u.username AS owner_name, cu.username AS content_owner_name
+            u.username AS owner_name, cu.username AS content_owner_name, cm.original_name AS current_name
        FROM devices d
        LEFT JOIN playlists p ON p.id = d.playlist_id AND p.owner_id = ${co}
        LEFT JOIN device_groups g ON g.id = d.group_id AND g.owner_id = ${co}
        LEFT JOIN users u ON u.id = d.owner_id
        LEFT JOIN users cu ON cu.id = ${co}
+       LEFT JOIN media cm ON cm.filename = d.current_filename AND cm.owner_id = ${co}
       WHERE ${own.sql}
       ORDER BY d.name`, ...own.params);
 }
@@ -762,13 +772,18 @@ async function devicesPage(ctx) {
 </div>
 
 ${!devices.length
-    ? (isAdmin ? emptyState("NO DEVICES", "No devices yet. Add one above.") : noProjectors())
+    ? (isAdmin ? emptyState("NO DEVICES", "No devices yet. Add one above.") : noProjectors(canEdit))
     : `<div class="device-rows">
   ${devices.map((d) => deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, d.id === open, tz, install,
     settingsFor.get(d.content_owner) || settings, wyzeOn.get(d.content_owner) || false, tunnelOn)).join("\n  ")}
 </div>`}`;
   return layout(ctx, { title: "Devices", content });
 }
+
+// A change made on one projector's card lands back on that card (deviceRow's id): on a phone each
+// projector is a few screens tall, and every change used to start the scroll again from the top.
+// A new or deleted projector, the fleet update and a hand-over's notice still land at the top.
+const cardUrl = (id) => `/devices#device-${id}`;
 
 // A manual addition belongs to whoever adds it (an admin's too: an ownerless projector would
 // play the site admin's content and settings, not the adder's).
@@ -808,7 +823,7 @@ async function devicesRename(ctx) {
     await db.bumpCameraConfigVersion(ctx.env, row.content_owner);
   }
   await audit.log(ctx, "device_rename", "device", deviceId, { name }, undefined, row.owner_id);
-  return auth.flashRedirect(ctx, "/devices", `Renamed to ${name}.`);
+  return auth.flashRedirect(ctx, cardUrl(deviceId), `Renamed to ${name}.`);
 }
 
 // What a projector plays is its own account's choice, from its own playlists and groups.
@@ -821,7 +836,7 @@ async function devicesAssign(ctx) {
   await requireRow(ctx.env, "playlists", pid, user.id, "Playlist");
   await db.run(ctx.env, "UPDATE devices SET playlist_id = ? WHERE id = ?", pid, deviceId);
   await audit.log(ctx, "device_assign_playlist", "device", deviceId, { playlist_id: pid }, undefined, row.owner_id);
-  return redirect("/devices");
+  return redirect(cardUrl(deviceId));
 }
 
 async function devicesSetGroup(ctx) {
@@ -833,7 +848,7 @@ async function devicesSetGroup(ctx) {
   await requireRow(ctx.env, "device_groups", gid, user.id, "Group");
   await db.run(ctx.env, "UPDATE devices SET group_id = ? WHERE id = ?", gid, deviceId);
   await audit.log(ctx, "device_set_group", "device", deviceId, { group_id: gid }, undefined, row.owner_id);
-  return redirect("/devices");
+  return redirect(cardUrl(deviceId));
 }
 
 // The tunnel token travels in every sync response, so a leaked device token means a leaked
@@ -891,9 +906,9 @@ async function devicesSendCommand(ctx) {
   const tail = !late ? "; the Pi picks it up on its next check-in."
     : seen === null ? ", but it has never checked in: nothing happens until it is on and connected."
       : `, but it last checked in ${ageText(seen)}: nothing happens until it is back on and connected.`;
-  if (!changes) return auth.flashRedirect(ctx, "/devices", `${commandText(command)} is already waiting for ${row.name}${tail}`, "warn");
+  if (!changes) return auth.flashRedirect(ctx, cardUrl(deviceId), `${commandText(command)} is already waiting for ${row.name}${tail}`, "warn");
   await audit.log(ctx, "device_send_command", "device", deviceId, { command, command_id: id }, undefined, row.owner_id);
-  return auth.flashRedirect(ctx, "/devices", `${commandText(command)} queued for ${row.name}${tail}`, late ? "warn" : "ok");
+  return auth.flashRedirect(ctx, cardUrl(deviceId), `${commandText(command)} queued for ${row.name}${tail}`, late ? "warn" : "ok");
 }
 
 // Drop what a projector never picked up. Only the undelivered rows: one already in the Pi's
@@ -904,9 +919,9 @@ async function devicesCancelCommands(ctx) {
   const row = await requireDevice(ctx, deviceId, "d.name");
   const { changes } = await db.run(ctx.env,
     "DELETE FROM device_commands WHERE device_id = ? AND delivered_at IS NULL AND completed_at IS NULL", deviceId);
-  if (!changes) return auth.flashRedirect(ctx, "/devices", `Nothing was waiting for ${row.name}.`, "warn");
+  if (!changes) return auth.flashRedirect(ctx, cardUrl(deviceId), `Nothing was waiting for ${row.name}.`, "warn");
   await audit.log(ctx, "device_cancel_commands", "device", deviceId, { cancelled: changes }, undefined, row.owner_id);
-  return auth.flashRedirect(ctx, "/devices", `Cancelled ${changes} waiting command${changes === 1 ? "" : "s"} for ${row.name}.`);
+  return auth.flashRedirect(ctx, cardUrl(deviceId), `Cancelled ${changes} waiting command${changes === 1 ? "" : "s"} for ${row.name}.`);
 }
 
 // Fleet action: queue one update command for every device the user may see that is not already
@@ -969,7 +984,7 @@ async function devicesSetCameraUrl(ctx) {
   const row = await requireDevice(ctx, deviceId);
   await db.run(ctx.env, "UPDATE devices SET camera_live_url = ? WHERE id = ?", url, deviceId);
   await audit.log(ctx, "device_set_camera_url", "device", deviceId, { camera_live_url: url }, undefined, row.owner_id);
-  return redirect("/devices");
+  return redirect(cardUrl(deviceId));
 }
 
 // Per-device camera source: '' = the account default (row NULL: wyze when the projector's account
@@ -993,12 +1008,12 @@ async function devicesSetCameraSource(ctx) {
   if (source === "rtsp" && rtsp === null) fail(400, "Enter the stream address for the rtsp source");
   const wyzeName = str(form, "camera_wyze_name").trim() || null;
   if (wyzeName !== null && ([...wyzeName].length > MAX_WYZE_NAME || /[\x00-\x1f\x7f]/.test(wyzeName))) fail(400, `Camera name may be at most ${MAX_WYZE_NAME} printable characters`);
-  if (row.camera_source === source && row.camera_rtsp_url === rtsp && row.camera_wyze_name === wyzeName) return redirect("/devices");
+  if (row.camera_source === source && row.camera_rtsp_url === rtsp && row.camera_wyze_name === wyzeName) return redirect(cardUrl(deviceId));
   await db.run(ctx.env, "UPDATE devices SET camera_source = ?, camera_rtsp_url = ?, camera_wyze_name = ? WHERE id = ?", source, rtsp, wyzeName, deviceId);
   await db.bumpCameraConfigVersion(ctx.env, row.content_owner);
   await audit.log(ctx, "device_set_camera_source", "device", deviceId,
     { camera_source: source ?? "default", camera_wyze_name: wyzeName ?? undefined, camera_rtsp_url: rtsp ? "set" : undefined }, undefined, row.owner_id);
-  return redirect("/devices");
+  return redirect(cardUrl(deviceId));
 }
 
 // cloudflare.rotateTunnel for a devices row ({id, device_id, tunnel_id, owner_id}) that never throws:
@@ -1068,7 +1083,7 @@ async function devicesSetProjector(ctx) {
   await db.run(ctx.env, "UPDATE devices SET projector_control = ?, projector_power_mode = ?, broadlink_host = ? WHERE id = ?",
     control, mode, host, deviceId);
   await audit.log(ctx, "device_set_projector", "device", deviceId, { projector_control: control, projector_power_mode: mode, broadlink_host: host ?? undefined }, undefined, row.owner_id);
-  return redirect("/devices");
+  return redirect(cardUrl(deviceId));
 }
 
 // Owner select (admin only): hand a projector to an account, or to nobody (only admins see it
@@ -1095,7 +1110,7 @@ async function devicesSetOwner(ctx) {
   if (moved.content_changed) {
     return auth.flashRedirect(ctx, "/devices", `Owner changed. The projector is signed out and its camera settings, screenshot and snapshot are cleared: its new account installs the new token from Token / install (or flashes a new card).`);
   }
-  return redirect("/devices");
+  return redirect(cardUrl(deviceId));
 }
 
 export function register(router) {
