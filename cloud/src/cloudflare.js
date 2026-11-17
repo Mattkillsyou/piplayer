@@ -145,14 +145,16 @@ export async function provisionDevice(ctx, device) {
   return { tunnel_id, hostname };
 }
 
-// The operator list changed (an account's alert email addresses, a user added, removed or
-// re-roled, a projector handed to another account): rewrite the Access policy of every tunnelled
-// projector concerned so the change reaches them now, not on their next provision. `ownerId`
-// limits it to the projectors of that content account; omitted, every tunnelled projector gets its
-// own account's list (a user change can move who the site admin is). `deviceId` limits it to one
-// projector. null on success or when there is nothing to do (not configured, no email known, no
-// tunnels), else the reason for the caller's banner; audits camera_access_updated per account.
-// Settings are re-read: the caller has just saved them and ctx.settings() is memoised.
+// The operator list changed (an account's alert email addresses or own address, a deleted user
+// whose projectors now follow the site admin, a projector handed to another account): rewrite the
+// Access policy of every tunnelled projector concerned so the change reaches them now, not on
+// their next provision. `ownerId` limits it to the projectors of that content account, `deviceId`
+// to one projector; with neither it is every tunnelled projector, and at 3-4 API calls each a
+// fleet past about 15 runs out of the Free plan's 50 external subrequests, so the pages always
+// name the account or the projector. null on success or when there is nothing to do (not
+// configured, no email known, no tunnels), else the reason for the caller's banner; audits
+// camera_access_updated per account. Settings are re-read: the caller has just saved them and
+// ctx.settings() is memoised.
 export async function syncAccess(ctx, ownerId = undefined, deviceId = undefined) {
   if (!configured(ctx.env)) return null;
   const where = ["d.tunnel_id IS NOT NULL"];

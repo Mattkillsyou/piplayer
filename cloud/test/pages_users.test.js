@@ -40,7 +40,7 @@ describe("users", () => {
     expect(page).toContain('<span class="badge badge-editor">editor</span>');
     expect(page).not.toContain("onchange");
     expect(page).not.toContain('maxlength="72"');
-    expect(page).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+    expect(page).toMatch(/\d{4}-\d{2}-\d{2}<\/span> <span class="nowrap">\d{2}:\d{2} UTC/); // date and time each kept whole
     // the admin's own row has no delete form
     const me = await uid("admin");
     expect(page).not.toContain(`/users/${me.id}/delete`);

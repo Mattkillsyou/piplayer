@@ -134,11 +134,20 @@ export function parseDbUtc(value) {
   return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)));
 }
 
+// One formatter per zone for the isolate's life: building one costs about 70 us in workerd, and
+// the Library, the audit log and every projector sync format a time per row. An unknown zone
+// still throws from the constructor, so it is never stored; valid zone names are a closed list.
+const ZONE_FORMATS = new Map();
+
 function partsIn(date, timeZone) {
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", weekday: "short", timeZoneName: "short",
-  });
+  let fmt = ZONE_FORMATS.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", weekday: "short", timeZoneName: "short",
+    });
+    ZONE_FORMATS.set(timeZone, fmt);
+  }
   const out = {};
   for (const p of fmt.formatToParts(date)) out[p.type] = p.value;
   return out;
