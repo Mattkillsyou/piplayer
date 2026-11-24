@@ -336,21 +336,26 @@ ${rows.map((t) => `      <li><label class="inline-check"><input type="checkbox" 
 // delete being its new stored position, so restoring them later is exact too.
 // Returns {moves: [[item id, position]] for the items that shift, adds: [[media_id, position,
 // override]], waits: [[place, position]] for the places that stay at a new index}.
-// ponytail: quadratic in the places that stay in one playlist; a sorted count past thousands.
+// ponytail: a place that stays looks at every delete time before it (one delete is one time);
+// a sorted count if one playlist ever waits on thousands of separate deletes.
 export function mergePlaces(items, places) {
   const list = items.slice();
   const order = places.slice().sort((a, b) => (a.deleted_at === b.deleted_at ? a.position - b.position : a.deleted_at < b.deleted_at ? 1 : -1));
   for (const p of order) list.splice(Math.min(p.position, list.length), 0, p);
-  const moves = [], adds = [], waits = [], gone = [];
+  const moves = [], adds = [], waits = [];
+  const gone = new Map(); // delete time -> how many places that stay, of that delete, came before
+  let left = 0;
   list.forEach((x, k) => {
     if (x.trash_id !== undefined) {
       // the ones that stay from older deletes have left again by the time of its own
-      const at = k - gone.filter((t) => t < x.deleted_at).length;
-      if (at !== x.position) waits.push([x, at]);
-      gone.push(x.deleted_at);
+      let older = 0;
+      for (const [t, n] of gone) if (t < x.deleted_at) older += n;
+      if (k - older !== x.position) waits.push([x, k - older]);
+      gone.set(x.deleted_at, (gone.get(x.deleted_at) || 0) + 1);
+      left++;
       return;
     }
-    const i = k - gone.length;
+    const i = k - left;
     if (x.media_id !== undefined) adds.push([x.media_id, i, x.override ?? null]);
     else if (x.position !== i) moves.push([x.id, i]);
   });
