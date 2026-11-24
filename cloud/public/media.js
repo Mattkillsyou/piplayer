@@ -280,12 +280,13 @@
       if (e.key === 'ArrowRight') move(1);
     });
     // Focus goes back to the file last shown, not the one the viewer opened on (where the browser
-    // has just put it).
+    // has just put it); to Find when Delete took the last file on show (the page has no other).
     dialog.addEventListener('close', function () {
       var shown = current;
       clearStage();
       current = null;
-      if (shown && shown.isConnected) shown.focus();
+      var back = shown && shown.isConnected ? shown : document.getElementById('find-q');
+      if (back) back.focus();
     });
   }
 
