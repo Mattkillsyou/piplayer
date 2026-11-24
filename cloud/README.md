@@ -258,7 +258,9 @@ account"): it starts as an **editor** of its own new, empty account straight awa
 Default playlist, no invite or approval (the owner's choice), capped at 5 attempts per address per
 10 minutes and audited as `user_signup`. It sees nothing of anyone else's and has no Users page. Sign-up asks for an email
 address (`users.email`, one account per address, `auth.emailProblem`); admins put one on older
-accounts from the Users page. Forgot password (`/forgot`, linked from the sign-in card and the
+accounts from the Users page. Every account, a viewer too, changes its own password and email on
+`/account` (the name in the top bar) with its current password: wrong ones count against the login
+throttle, a new password ends its other sessions, and either change retires the mailed reset links. Forgot password (`/forgot`, linked from the sign-in card and the
 home page) takes a username or email and always answers the same card; when the account has an
 address a link with a one-off token goes out through the `EMAIL` send_email binding (only the
 token's sha256 is stored, 30 minutes, 3 per account per hour), and `/reset?token=` changes the
@@ -331,7 +333,7 @@ Rename form per device (editor+); the flasher's name is otherwise only changed b
   Free (30 s default on Paid, and Paid may raise it with `[limits] cpu_ms`, which Free refuses),
   so upload completion hashes files only up to `PIPLAYER_VERIFY_SHA_MAX_BYTES` (8 MiB) and a
   PBKDF2-SHA256 derivation at 100 000 iterations (≈ 13-15 ms) sits at the edge of that budget on
-  `/login`, `/setup` and `/users` (Cloudflare error 1102, `Worker exceeded resource limits`, is
+  `/login`, `/setup` and `/users`, and `/account` runs two when the password changes (Cloudflare error 1102, `Worker exceeded resource limits`, is
   the symptom if it ever trips; the Paid plan removes it). Subrequests
   also count against a per-invocation budget and every D1 statement and R2 call is one: Free
   allows 50 external + 1 000 to Cloudflare services, Paid 10 000 (configurable). `/devices`
