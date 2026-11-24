@@ -500,6 +500,7 @@
   // in. Show "in:<playlist id>" keeps the cards whose data-in (their playlists' ids) holds it.
   // The view is kept for this tab, so the reload after a delete or an add shows the same files,
   // and per signed-in user (usernames are unique): the next account on the tab starts afresh.
+  // upload.js clears it after a batch, so the new files are on show.
   var finder = document.getElementById('media-find');
   var grid = finder && document.querySelector('.media-grid');
   if (grid) {

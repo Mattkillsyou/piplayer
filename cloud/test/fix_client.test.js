@@ -130,6 +130,74 @@ describe("media.js Find / Show", () => {
   });
 });
 
+describe("upload.js", () => {
+  const png = (name) => new File([new Uint8Array(10)], name);
+  // upload.js on the Library page signed in as admin (Add to `to`, none: a page without it):
+  // uploads `files` through stand-in requests, init answering `inits` in turn (by default a new
+  // upload). Returns the requests sent ([method, url, parsed body]), each queue row's last words
+  // and the reload.
+  async function upload({ to = null, files = [png("a.png")], inits = [], store = null } = {}) {
+    const sent = [];
+    vi.stubGlobal("XMLHttpRequest", class {
+      upload = {};
+      open(method, url) { Object.assign(this, { method, url }); }
+      setRequestHeader() {}
+      send(body) {
+        sent.push([this.method, this.url, typeof body === "string" ? JSON.parse(body) : body]);
+        const reply = this.url.endsWith("/init") ? inits.shift() || { upload_id: 5, part_size: 8 * 1024 * 1024, received: 0 } : { ok: true };
+        Object.assign(this, { status: 200, responseURL: this.url, responseText: JSON.stringify(reply) });
+        setTimeout(() => this.onload());
+      }
+    });
+    vi.stubGlobal("Image", class { set src(v) { setTimeout(() => this.onerror()); } }); // no metadata: nulls
+    const rows = [];
+    const button = el();
+    const form = el({ dataset: { init: "/library/upload/init" }, querySelector: () => button });
+    const ids = {
+      "upload-form": form, "file-input": el({ files }), "upload-queue": el({ appendChild(li) { rows.push(li); } }),
+      "upload-status": el(), ...(to ? { "upload-to": to } : {}),
+    };
+    const reload = vi.fn();
+    vi.stubGlobal("window", { addEventListener() {}, location: { reload } });
+    vi.stubGlobal("sessionStorage", store && storage(store));
+    vi.stubGlobal("document", {
+      addEventListener() {}, getElementById: (id) => ids[id] || null,
+      querySelector: (sel) => (sel === ".topbar .username" ? { textContent: "admin" } : null),
+      createElement: () => el({ kids: [], appendChild(c) { this.kids.push(c); } }),
+    });
+    URL.createObjectURL = () => "blob:x";
+    URL.revokeObjectURL = () => {};
+    try {
+      await import("../public/upload.js");
+      form.fire("submit");
+      expect(button.disabled).toBe(true);
+      await vi.waitFor(() => expect(button.disabled).toBe(false), { timeout: 5000 });
+    } finally {
+      delete URL.createObjectURL;
+      delete URL.revokeObjectURL;
+    }
+    return { sent, said: rows.map((li) => li.kids[2].textContent), status: ids["upload-status"].textContent, reload };
+  }
+  const addTo = (value) => {
+    const to = select(["", "3", "none"], ["Default", "Friday night", "No playlist"]);
+    to.value = value;
+    return to;
+  };
+  const inits = ({ sent }) => sent.filter(([, url]) => url.endsWith("/init")).map(([, , body]) => body.playlist);
+
+  it("after a batch the Library opens on every file: the kept Find / Show would hide the new ones", async () => {
+    const store = {};
+    let p = await library({ store });
+    p.set("find-show", "video");
+    expect(p.shown()).toEqual(["Clip 10.mp4", "Clip 2.mp4"]);
+    vi.resetModules();
+    await upload({ to: addTo(""), store });
+    vi.resetModules();
+    p = await library({ store });
+    expect([p.ids["find-show"].value, p.count.textContent]).toEqual(["", "Media (4)"]);
+  });
+});
+
 // --------------------------------------------------------------------------- a page of parts ---
 
 // The viewer and Recently deleted need more of a page: parts in a tree, each matching the

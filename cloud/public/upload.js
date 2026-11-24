@@ -356,6 +356,13 @@
         status.textContent = [sentText, failed].filter(Boolean).join(' ');
         return;
       }
+      // The Library opens on every file, so the new ones are on show: media.js keeps a Find / Show
+      // for the tab under this key (per signed-in user).
+      if (ok) {
+        try {
+          sessionStorage.removeItem('p5k-library-find:' + ((document.querySelector('.topbar .username') || {}).textContent || ''));
+        } catch (e) { /* storage off */ }
+      }
       if (ok === files.length) {
         status.textContent = 'Upload complete. Reloading...';
         window.location.reload();
