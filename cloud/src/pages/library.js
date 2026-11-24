@@ -113,8 +113,9 @@ function usedIn(names) {
 
 // One file. The data-* are what the Library's Find / Show / Sort read (public/media.js): the
 // name, the type, the size, the running time and where the file is used ("default" only in the
-// account's Default playlist, "playlist" in any other, upload links' included, "none" in none).
-// `playlists` are the playlists it is in ({id, name}), by name.
+// account's Default playlist, "playlist" in any other, upload links' included, "none" in none)
+// and the ids of the playlists it is in (data-in, for Show <playlist>). `playlists` are the
+// playlists it is in ({id, name}), by name.
 function card(v, tz, editor, playlists, defaultId) {
   const when = localTime(v.uploaded_at, tz);
   const facts = [fileSize(v.size_bytes), v.width ? `${v.width}×${v.height}` : "", v.codec || ""].filter(Boolean);
@@ -124,9 +125,9 @@ function card(v, tz, editor, playlists, defaultId) {
   const actions = editor ? `
       <div class="media-actions">
         <label class="inline-check"><input type="checkbox" name="media_id" value="${v.id}" aria-label="Select ${esc(v.original_name)}">Select</label>
-        <button type="submit" name="one" value="${v.id}" class="danger small" data-confirm="Delete ${esc(v.original_name)}? It is removed from every playlist that uses it.">Delete</button>
+        <button type="submit" name="one" value="${v.id}" class="danger small" data-confirm="Delete ${esc(v.original_name)}? It is removed from every playlist that uses it and kept in Recently deleted for ${TRASH_DAYS} days.">Delete</button>
       </div>` : "";
-  return `    <li class="media-card" data-name="${esc(v.original_name)}" data-kind="${esc(v.media_type)}" data-size="${Number(v.size_bytes) || 0}" data-length="${Number(v.duration_seconds) || 0}" data-use="${use}">
+  return `    <li class="media-card" data-name="${esc(v.original_name)}" data-kind="${esc(v.media_type)}" data-size="${Number(v.size_bytes) || 0}" data-length="${Number(v.duration_seconds) || 0}" data-use="${use}" data-in="${(playlists || []).map((p) => p.id).join(" ")}">
       ${thumbCell(v, meta)}
       <div class="media-info">
         <a class="media-name" href="/library/${v.id}">${esc(v.original_name)}</a>
@@ -165,12 +166,13 @@ async function libraryPage(ctx) {
   const cards = items.map((v) => card(v, tz, editor, usedBy.get(v.id), defaultId)).join("\n");
   // Find / Show / Sort: public/media.js shows the bar and does the work in the browser (without
   // the script the bar stays hidden). Outside the grid's form, so Enter in it submits nothing.
-  // ponytail: every card is on the page; past about 1,000 files add a server ?q= with paging.
+  // ponytail: every card is on the page; past about 400 files (measured: 10 ms of Worker CPU,
+  // the Free plan's limit, at 400-500 files on a first render) add a server ?q= with paging.
   const head = `<div class="media-head">
-  <h2 id="media-count">Media (${items.length})</h2>
+  <h2 id="media-count" aria-live="polite">Media (${items.length})</h2>
   <div class="media-find" id="media-find" hidden>
     <label>Find <input type="search" id="find-q" autocomplete="off"></label>
-    <label>Show <select id="find-show"><option value="">All</option><option value="video">Videos</option><option value="image">Images</option>${dflt ? `<option value="default">Only in ${esc(dflt.name)}</option>` : ""}<option value="none">In no playlist</option></select></label>
+    <label>Show <select id="find-show"><option value="">All</option><option value="video">Videos</option><option value="image">Images</option>${dflt ? `<option value="default">Only in ${esc(dflt.name)}</option>` : ""}<option value="none">In no playlist</option>${playlists.length ? `<optgroup label="Playlists">${playlists.map((p) => `<option value="in:${p.id}">${esc(p.name)}</option>`).join("")}</optgroup>` : ""}</select></label>
     <label>Sort <select id="find-sort"><option value="">Newest</option><option value="oldest">Oldest</option><option value="name">Name</option><option value="size">Largest</option><option value="length">Longest</option></select></label>
   </div>
 </div>`;
@@ -184,11 +186,12 @@ async function libraryPage(ctx) {
     : editor ? `${head}
 <form id="library-form" method="post" action="/library/delete" autocomplete="off" data-max="${MAX_DELETE}">
   ${csrfInput(ctx)}
+  ${playlists.some((p) => p.id === to) ? `<input type="hidden" name="back" value="/library?to=${to}">` : ""}
   <button type="submit" name="noop" value="1" hidden></button>
   <div class="media-bar">
     <div class="action-buttons">
       <button type="button" class="small" data-select-all>Select all</button>
-      <button type="submit" class="danger small" data-delete-selected data-confirm="Delete the selected files? They are removed from every playlist that uses them.">Delete selected</button>
+      <button type="submit" class="danger small" data-delete-selected data-confirm="Delete the selected files? They are removed from every playlist that uses them and kept in Recently deleted for ${TRASH_DAYS} days.">Delete selected</button>
     </div>
     <div class="action-buttons media-add">
       <select name="playlist_id" id="add-to" aria-label="Playlist"><option value="">Pick a playlist</option>${playlists.map((p) => `<option value="${p.id}"${p.id === to ? " selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
@@ -443,8 +446,13 @@ async function libraryDelete(ctx) {
   const mediaId = idParam(ctx.params.media_id, "media_id");
   const [row] = await deleteMedia(ctx, user, [mediaId]);
   if (!row) fail(404, "Not Found");
-  return auth.flashRedirect(ctx, "/library", `Deleted ${row.original_name}.`);
+  return auth.flashRedirect(ctx, "/library", `Moved ${row.original_name} to Recently deleted.`);
 }
+
+// Where a form of the Library comes back to: the page it was posted from (its hidden "back"), when
+// that is the Library opened from a playlist (?to=, which keeps that playlist picked) or a file's
+// own page; else the Library.
+const backTo = (form) => (/^\/library(\/\d+|\?to=\d+)?$/.test(str(form, "back")) ? str(form, "back") : "/library");
 
 // The grid's form: `one` is the file whose own Delete was pressed, else every ticked `media_id`.
 // `noop` is Enter on a tick box with scripts off (libraryPage): the ticks come along, nothing is
@@ -455,11 +463,12 @@ async function libraryDeleteMany(ctx) {
   if (form.has("noop")) return new Response(null, { status: 204 });
   const one = str(form, "one").trim();
   const picked = one ? [one] : form.getAll("media_id").filter((v) => typeof v === "string");
-  if (!picked.length) return auth.flashRedirect(ctx, "/library", "Nothing was ticked.", "warn");
+  const back = backTo(form);
+  if (!picked.length) return auth.flashRedirect(ctx, back, "Nothing was ticked.", "warn");
   if (picked.length > MAX_DELETE) fail(400, `Delete at most ${MAX_DELETE} files at a time`);
   const rows = await deleteMedia(ctx, user, [...new Set(picked.map((v) => idParam(v, "media_id")))]);
-  if (!rows.length) return auth.flashRedirect(ctx, "/library", "Nothing was deleted: those files are no longer in the library.", "warn");
-  return auth.flashRedirect(ctx, "/library", rows.length === 1 ? `Deleted ${rows[0].original_name}.` : `Deleted ${rows.length} files.`);
+  if (!rows.length) return auth.flashRedirect(ctx, back, "Nothing was deleted: those files are no longer in the library.", "warn");
+  return auth.flashRedirect(ctx, back, rows.length === 1 ? `Moved ${rows[0].original_name} to Recently deleted.` : `Moved ${rows.length} files to Recently deleted.`);
 }
 
 // The caller's own media row (`cols`) behind :media_id, or the 404 a missing id gets.
@@ -471,15 +480,18 @@ async function ownMedia(ctx, user, cols) {
 
 // The small picture of a file: the stored preview, else the file itself when a browser can
 // show it as a picture (a redirect, so the copy the viewer needs is fetched once), else 404.
+// A picture no larger than a preview (media.js MAX_SIDE, 640) never gets one: its redirect is
+// kept like a preview, or every view of the page would ask for it again.
 async function thumbGet(ctx) {
-  const row = await ownMedia(ctx, auth.requireUser(ctx), "filename");
+  const row = await ownMedia(ctx, auth.requireUser(ctx), "filename, width, height");
   try {
     return await media.serveObject(ctx.request, ctx.env.MEDIA, media.thumbKey(row.filename), { "cache-control": THUMB_CACHE });
   } catch (e) {
     if (!(e instanceof HttpError) || e.status !== 404) throw e;
   }
   if (!isPicture(row.filename)) fail(404, "No preview yet");
-  return new Response(null, { status: 302, headers: { location: `/api/media/${row.filename}`, "cache-control": "no-store" } });
+  const small = row.width > 0 && row.height > 0 && Math.max(row.width, row.height) <= 640;
+  return new Response(null, { status: 302, headers: { location: `/api/media/${row.filename}`, "cache-control": small ? THUMB_CACHE : "no-store" } });
 }
 
 // Store the preview media.js made in the browser: a JPEG, small, for one of the caller's own files.
@@ -505,7 +517,10 @@ async function thumbPut(ctx) {
 // already}: the files put in, and the account's own files that were in it before (an id that is
 // not one of its files, or no longer is, counts as neither).
 export async function appendToPlaylist(env, playlistId, mediaIds, ownerId) {
-  const own = `FROM json_each(?2) j JOIN media m ON m.id = j.value AND m.owner_id = ?3
+  // CROSS JOIN: SQLite keeps its left table outer, so every statement walks the ids given and
+  // looks each file up. With a plain JOIN the UPDATE's EXISTS walked every file of the account
+  // and scanned the ids for each: 1.26M rows read to re-add 500 files in a 3,000-file library.
+  const own = `FROM json_each(?2) j CROSS JOIN media m ON m.id = j.value AND m.owner_id = ?3
     JOIN playlists p ON p.id = ?1 AND p.owner_id = ?3`;
   // NOT IN, not a correlated NOT EXISTS: the playlist's items are read once, not once per file.
   const fresh = `${own} WHERE m.id NOT IN (SELECT media_id FROM playlist_items WHERE playlist_id = ?1)`;
@@ -530,24 +545,26 @@ const MAX_NAME = 1024;
 async function libraryAddToPlaylist(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const form = await ctx.form();
+  const back = backTo(form);
   const playlistId = intField(str(form, "playlist_id"), "Playlist");
-  if (playlistId === null) return auth.flashRedirect(ctx, "/library", "Pick a playlist.", "warn");
+  if (playlistId === null) return auth.flashRedirect(ctx, back, "Pick a playlist.", "warn");
   const playlist = await accounts.ownRow(ctx.env, "playlists", playlistId, user.id, "id, name");
   if (!playlist) fail(404, "Playlist not found");
   const picked = form.getAll("media_id").filter((v) => typeof v === "string");
-  if (!picked.length) return auth.flashRedirect(ctx, "/library", "Nothing was ticked.", "warn");
+  if (!picked.length) return auth.flashRedirect(ctx, back, "Nothing was ticked.", "warn");
   if (picked.length > MAX_DELETE) fail(400, `Add at most ${MAX_DELETE} files at a time`);
   const ids = [...new Set(picked.map((v) => idParam(v, "media_id")))];
   const { added, already } = await appendToPlaylist(ctx.env, playlist.id, ids, user.id);
   if (!added && !already) fail(404, "Media not found");
-  if (!added) return auth.flashRedirect(ctx, "/library", `${already === 1 ? "That file is" : "Those files are"} already in ${playlist.name}.`, "warn");
+  if (!added) return auth.flashRedirect(ctx, back, `${already === 1 ? "That file is" : "Those files are"} already in ${playlist.name}.`, "warn");
   await audit.log(ctx, "playlist_add_items", "playlist", playlist.id, { added, media_ids: ids });
   const skipped = already ? `; ${already} ${already === 1 ? "was" : "were"} already in it` : "";
-  return auth.flashRedirect(ctx, "/library", `Added ${added} file${added === 1 ? "" : "s"} to ${playlist.name}${skipped}.`);
+  return auth.flashRedirect(ctx, back, `Added ${added} file${added === 1 ? "" : "s"} to ${playlist.name}${skipped}.`);
 }
 
 // A file's own page (the Library card's name links here): its name (a rename form for an
-// editor), the preview, the facts, Download under its own name, every playlist it is in, and
+// editor), the preview, the facts, Download under its own name, every playlist it is in (each
+// links to its editor), Add to one of the others (Add to playlist's route, back to this page) and
 // Delete. Any role, the caller's own file only (another account's id answers like a missing one).
 async function filePage(ctx) {
   const user = auth.requireUser(ctx);
@@ -555,9 +572,12 @@ async function filePage(ctx) {
   const editor = user.role !== "viewer";
   const m = await ownMedia(ctx, user, "id, original_name, filename, media_type, size_bytes, duration_seconds, width, height, uploaded_at");
   const tz = (await ctx.settings()).timezone;
-  const playlists = await db.all(ctx.env,
-    `SELECT DISTINCT p.id, p.name FROM playlist_items pi JOIN playlists p ON p.id = pi.playlist_id AND p.owner_id = ?
-      WHERE pi.media_id = ? ORDER BY p.name COLLATE NOCASE, p.id`, user.id, m.id);
+  // The account's playlists, `has` the ones the file is in.
+  const all = await db.all(ctx.env,
+    `SELECT id, name, id IN (SELECT playlist_id FROM playlist_items WHERE media_id = ?2) AS has
+       FROM playlists WHERE owner_id = ?1 ORDER BY name COLLATE NOCASE, id`, user.id, m.id);
+  const playlists = all.filter((p) => p.has);
+  const others = all.filter((p) => !p.has);
   const video = m.media_type === "video";
   const meta = [video ? "Video" : "Image", video ? runTime(m.duration_seconds) : "", m.width ? `${m.width}×${m.height}` : "",
     fileSize(m.size_bytes), `uploaded ${localTime(m.uploaded_at, tz)}`].filter(Boolean).join(" · ");
@@ -569,25 +589,33 @@ async function filePage(ctx) {
   const content = `<a href="/library" class="back">← Library</a>
 <div class="file-page"${editor ? " data-thumb-put" : ""}>
 <div class="page-head">
-  ${editor ? `<form method="post" action="/library/${m.id}/rename" class="row">
+  ${editor ? `<h1 class="sr-only">${esc(m.original_name)}</h1>
+  <form method="post" action="/library/${m.id}/rename" class="row">
     ${csrfInput(ctx)}
     <label>file name
       <input type="text" name="name" value="${esc(m.original_name)}" maxlength="${MAX_NAME}" required>
     </label>
     <button type="submit">Rename</button>
   </form>` : `<h1>${esc(m.original_name)}</h1>`}
-  <span class="page-meta">${esc(meta)}</span>
+  <span class="page-meta">${meta.split(" · ").map((f) => `<span class="nowrap">${esc(f)}</span>`).join(" · ")}</span>
 </div>
 ${thumbCell(m, meta)}
 <div class="action-buttons">
   <a class="button small" href="/api/media/${esc(m.filename)}" download="${esc(saveAs)}">Download</a>
-  ${editor ? `<form method="post" action="/library/${m.id}/delete" class="inline" data-confirm="Delete ${esc(m.original_name)}? It is removed from every playlist that uses it.">
+  ${editor ? `<form method="post" action="/library/${m.id}/delete" class="inline" data-confirm="Delete ${esc(m.original_name)}? It is removed from every playlist that uses it and kept in Recently deleted for ${TRASH_DAYS} days.">
     ${csrfInput(ctx)}
     <button type="submit" class="danger small">Delete</button>
   </form>` : ""}
 </div>
 <h2>Playlists (${playlists.length})</h2>
 ${list ? `<ul>\n  ${list}\n</ul>` : '<p class="muted">Not in any playlist</p>'}
+${editor && others.length ? `<form method="post" action="/library/add-to-playlist" class="row">
+  ${csrfInput(ctx)}
+  <input type="hidden" name="back" value="/library/${m.id}">
+  <input type="hidden" name="media_id" value="${m.id}">
+  <select name="playlist_id" aria-label="Playlist" required><option value="">Pick a playlist</option>${others.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select>
+  <button type="submit">Add</button>
+</form>` : ""}
 </div>`;
   return layout(ctx, { title: m.original_name, content, scripts: ["/static/media.js"] });
 }

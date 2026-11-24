@@ -256,13 +256,13 @@ describe("a page per file (GET /library/<id>)", () => {
     expect(page).toContain('<a href="/library" class="back">← Library</a>');
     expect(page).toContain('<div class="file-page" data-thumb-put>');
     expect(page).toMatch(new RegExp(`<form method="post" action="/library/${m}/rename" class="row">\\s*<input type="hidden" name="csrf_token" value="[^"]+">\\s*<label>file name\\s*<input type="text" name="name" value="Lobby loop.mp4" maxlength="1024" required>\\s*</label>\\s*<button type="submit">Rename</button>`));
-    expect(page).toMatch(/<span class="page-meta">Video · 1:05 · 1920×1080 · 12 MB · uploaded \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC<\/span>/);
+    expect(page).toMatch(/<span class="page-meta"><span class="nowrap">Video<\/span> · <span class="nowrap">1:05<\/span> · <span class="nowrap">1920×1080<\/span> · <span class="nowrap">12 MB<\/span> · <span class="nowrap">uploaded \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC<\/span><\/span>/);
     // the preview tile (thumbCell): it opens the viewer, whose line is the page's
     expect(page).toContain('<a class="media-thumb" href="/api/media/f1_u1_Lobby_loop.mp4"');
     expect(page).toContain('data-meta="Video · 1:05 · 1920×1080 · 12 MB · uploaded ');
     expect(page).toContain(`<img src="/library/${m}/thumb?v=f1_u1_Lobby_loop"`);
     expect(page).toContain('<a class="button small" href="/api/media/f1_u1_Lobby_loop.mp4" download="Lobby loop.mp4">Download</a>');
-    expect(page).toMatch(new RegExp(`<form method="post" action="/library/${m}/delete" class="inline" data-confirm="Delete Lobby loop.mp4\\? It is removed from every playlist that uses it.">\\s*<input type="hidden" name="csrf_token" value="[^"]+">\\s*<button type="submit" class="danger small">Delete</button>`));
+    expect(page).toMatch(new RegExp(`<form method="post" action="/library/${m}/delete" class="inline" data-confirm="Delete Lobby loop.mp4\\? It is removed from every playlist that uses it and kept in Recently deleted for 30 days.">\\s*<input type="hidden" name="csrf_token" value="[^"]+">\\s*<button type="submit" class="danger small">Delete</button>`));
     expect(page).toContain(`<h2>Playlists (2)</h2>\n<ul>\n  <li><a href="/playlists/${first}">A first</a></li>\n  <li><a href="/playlists/${second}">b-second</a></li>\n</ul>`);
     expect(page).toContain('<script src="/static/media.js"></script>');
   });
@@ -271,7 +271,7 @@ describe("a page per file (GET /library/<id>)", () => {
     const m = await media("their pic.jpg", "image", { owner: r.ids.viewer, filename: "f2_u3_their_pic.jpg" });
     const page = await (await r.viewer.get(`/library/${m}`)).text();
     expect(page).toContain("<h1>their pic.jpg</h1>");
-    expect(page).toMatch(/<span class="page-meta">Image · 1\.0 KB · uploaded [^<]+<\/span>/);
+    expect(page).toMatch(/<span class="page-meta"><span class="nowrap">Image<\/span> · <span class="nowrap">1\.0 KB<\/span> · <span class="nowrap">uploaded [^<]+<\/span><\/span>/);
     expect(page).toContain('download="their pic.jpg">Download</a>');
     expect(page).toContain('<p class="muted">Not in any playlist</p>');
     expect(page).toContain('<div class="file-page">');

@@ -1546,3 +1546,13 @@ a.card:hover { text-decoration: none; border-color: var(--p5k-rule-strong); }
 
 /* devices: missing-pause-alerts-per-projector */
 .device-row .alerts-paused { align-self: flex-start; justify-self: start; }
+
+/* library: file-page-no-playlist-actions */
+.file-page > form.row { max-width: 640px; margin-top: 10px; }
+@media (max-width: 720px) {
+  .file-page > form.row select { min-height: var(--p5k-touch); }
+}
+
+/* library: missing-library-filter-by-playlist */
+#find-show { max-width: 16rem; } /* a long playlist name in Show widened the bar past the page */
+@media (max-width: 720px) { #find-show { width: 100%; max-width: none; } }

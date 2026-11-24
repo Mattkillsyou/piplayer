@@ -451,8 +451,8 @@ describe("library page", () => {
     // autocomplete="off": Back must not restore ticks by position onto other files; data-max caps Select all
     expect(html).toMatch(new RegExp(`<form id="library-form" method="post" action="/library/delete" autocomplete="off" data-max="${MAX_DELETE}">\\s*<input type="hidden" name="csrf_token" value="[^"]+">`));
     expect(html).toContain(`<input type="checkbox" name="media_id" value="${id}" aria-label="Select My Clip (1).mp4">`);
-    expect(html).toContain(`<button type="submit" name="one" value="${id}" class="danger small" data-confirm="Delete My Clip (1).mp4? It is removed from every playlist that uses it.">Delete</button>`);
-    expect(html).toContain('data-delete-selected data-confirm="Delete the selected files? They are removed from every playlist that uses them.">Delete selected</button>');
+    expect(html).toContain(`<button type="submit" name="one" value="${id}" class="danger small" data-confirm="Delete My Clip (1).mp4? It is removed from every playlist that uses it and kept in Recently deleted for 30 days.">Delete</button>`);
+    expect(html).toContain('data-delete-selected data-confirm="Delete the selected files? They are removed from every playlist that uses them and kept in Recently deleted for 30 days.">Delete selected</button>');
     expect(html).toContain('<ul class="media-grid" data-thumb-put>');
     expect(html).not.toContain("onsubmit");
     expect(html).not.toContain("<table");
@@ -540,7 +540,7 @@ describe("library previews and Delete selected", () => {
   });
 
   it("a picture with no preview yet sends the picture, a video 404; a stored preview is served to its own account only", async () => {
-    let r = await uploadWhole(editor, editorCsrf, "thumb-pic.png", fakeFile(500, 41), { media_type: "image" });
+    let r = await uploadWhole(editor, editorCsrf, "thumb-pic.png", fakeFile(500, 41), { media_type: "image", width: 4032, height: 3024 });
     const pic = (await r.json()).media_id;
     r = await uploadWhole(editor, editorCsrf, "thumb-clip.mp4", fakeFile(700, 42));
     const clip = (await r.json()).media_id;
@@ -603,13 +603,13 @@ describe("library previews and Delete selected", () => {
     // a card's Delete button (one=) deletes that file only, whatever else is ticked
     r = await editor.post("/library/delete", form(editorCsrf, [["one", String(ids[0])], ["media_id", String(ids[1])], ["media_id", String(ids[2])]]));
     expect([r.status, r.headers.get("location")]).toEqual([303, "/library"]);
-    expect(await flash(editor)).toBe("Deleted sel-a.png.");
+    expect(await flash(editor)).toBe("Moved sel-a.png to Recently deleted.");
     expect(await left()).toEqual([ids[1], ids[2], theirs]);
 
     // the ticked ones: a repeat counts once, another account's file is skipped like a missing one
     r = await editor.post("/library/delete", form(editorCsrf, [ids[1], ids[2], ids[2], theirs].map((id) => ["media_id", String(id)])));
     expect(r.status).toBe(303);
-    expect(await flash(editor)).toBe("Deleted 2 files.");
+    expect(await flash(editor)).toBe("Moved 2 files to Recently deleted.");
     expect(await left()).toEqual([theirs]);
     for (const f of files) { // kept for Restore
       expect(await env.MEDIA.head(`media/${f}`), f).not.toBeNull();

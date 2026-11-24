@@ -167,7 +167,13 @@ export function cookieHeader(ctx, value, maxAge, name = SESSION_COOKIE) {
 export const FLASH_COOKIE = "piplayer_flash";
 
 export function flashRedirect(ctx, location, message, kind = "ok") {
-  ctx.cookies.push(cookieHeader(ctx, encodeURIComponent(JSON.stringify({ m: message, k: kind })), 60, FLASH_COOKIE));
+  const value = (m) => encodeURIComponent(JSON.stringify({ m, k: kind }));
+  // A browser drops a cookie whose name and value pass 4096 bytes, and the notice with it (a long
+  // non-ASCII file or playlist name in it): such a message is cut to 300 characters, at most 12
+  // bytes each once encoded.
+  let v = value(message);
+  if (v.length > 4000) v = value([...message].slice(0, 300).join("") + "…");
+  ctx.cookies.push(cookieHeader(ctx, v, 60, FLASH_COOKIE));
   return redirect(location);
 }
 
