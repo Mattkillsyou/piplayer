@@ -31,6 +31,7 @@ function deviceCard(ctx, d, tz, canEdit) {
     : '<span class="now-playlist">no playlist</span>'}
       </div>
       <span class="device-meta">last seen ${d.last_seen_at ? `${esc(d.seen_age)} · <span class="nowrap">${esc(localTime(d.last_seen_at, tz))}</span>` : "never"}</span>
+      ${d.alerts_paused ? '<span class="device-meta">alerts paused</span>' : ""}
       ${d.last_error ? `<div class="alert error small" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
       ${updateStatus(d, tz)}
       ${d.projector_control && d.projector_control !== "none" ? `<div class="device-meta">${projectorState(d)}</div>` : ""}

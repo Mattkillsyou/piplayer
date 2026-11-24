@@ -3,8 +3,10 @@
 // or another account's projector, the card a New token or a tunnel lands on, the links to a
 // projector's card and its playlist and file, and pausing a projector's alerts.
 import { beforeAll, describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import * as alerts from "../src/alerts.js";
 import { query } from "./helpers.js";
-import { device, media, one, playlist, post, roles } from "./pages_common.js";
+import { audits, device, media, one, playlist, post, roleMatrix, roles } from "./pages_common.js";
 
 let r;
 const now = () => new Date().toISOString().slice(0, 19).replace("T", " ");
@@ -88,5 +90,72 @@ describe("links to a projector's card, its playlist and its file", () => {
     expect(admin).toContain('<span class="now-file">#1 Loop.mp4 · playing</span>');
     await query("DELETE FROM alerts");
     await query("DELETE FROM devices WHERE id = ?", dev.id);
+  });
+});
+
+describe("pausing a projector's alerts", () => {
+  it("Pause alerts: no fault, its open alerts close without a word, the alert check skips it; Resume brings it back", async () => {
+    const dev = await device("spare-1", "Spare <one>", { last_seen_at: "2026-01-01 00:00:00" }); // unplugged for months
+    const open = () => query("SELECT kind FROM alerts WHERE device_id = ? AND closed_at IS NULL", dev.id);
+    expect((await alerts.evaluate(env)).opened).toBe(1);
+    expect(await open()).toEqual([{ kind: "offline" }]);
+    expect(await (await r.editor.get("/dashboard")).text()).toContain("0 playing · 1 fault</span>");
+    let res = await post(r.editor, `/devices/${dev.id}/alerts`, { paused: "1" });
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices#device-${dev.id}`]);
+    expect(await one("SELECT alerts_paused FROM devices WHERE id = ?", dev.id)).toEqual({ alerts_paused: 1 });
+    expect(await open()).toEqual([]);
+    let page = await (await r.editor.get("/devices")).text();
+    expect(page).toContain('<div class="alert ok" role="alert">Alerts paused for Spare &lt;one&gt;.</div>');
+    expect(page).toContain(`<div class="device-row" id="device-${dev.id}">`); // not is-fault
+    expect(page).toContain('<span class="badge badge-muted alerts-paused">alerts paused</span>');
+    expect(page).toMatch(/<input type="hidden" name="paused" value="0">\s*<button type="submit" class="small">Resume alerts<\/button>/);
+    const dash = await (await r.editor.get("/dashboard")).text();
+    expect(dash).toContain("0 playing · 0 faults</span>");
+    expect(dash).toContain('<span class="device-meta">alerts paused</span>');
+    expect(dash).toContain(`<div class="device-card">`);
+    // its closed alert on the Alerts page says why it closed
+    expect(await (await r.editor.get("/alerts")).text()).toContain(`<code class="muted small">spare-1</code> <span class="badge badge-muted">alerts paused</span></td>`);
+    // the check opens nothing for it; one left open (a check running while it was paused) closes, unannounced
+    expect(await alerts.evaluate(env)).toMatchObject({ opened: 0, closed: 0, repeated: 0 });
+    await query("INSERT INTO alerts (device_id, kind, opened_at, notified_at) VALUES (?, 'offline', ?, ?)", dev.id, now(), now());
+    expect(await alerts.evaluate(env)).toMatchObject({ opened: 0, closed: 0, repeated: 0 });
+    expect(await open()).toEqual([]);
+    res = await post(r.editor, `/devices/${dev.id}/alerts`, { paused: "0" });
+    expect(res.headers.get("location")).toBe(`/devices#device-${dev.id}`);
+    page = await (await r.editor.get("/devices")).text();
+    expect(page).toContain('<div class="alert ok" role="alert">Alerts resumed for Spare &lt;one&gt;.</div>');
+    expect(page).toContain(`<div class="device-row is-fault" id="device-${dev.id}">`);
+    expect(page).toMatch(/<input type="hidden" name="paused" value="1">\s*<button type="submit" class="small">Pause alerts<\/button>/);
+    expect(page).not.toContain("alerts paused</span>");
+    expect((await alerts.evaluate(env)).opened).toBe(1);
+    expect((await audits("device_pause_alerts"))[0]).toMatchObject({ username: "ed", target_type: "device", target_id: String(dev.id) });
+    expect((await audits("device_resume_alerts"))[0]).toMatchObject({ username: "ed", target_id: String(dev.id) });
+    await query("DELETE FROM alerts");
+    await query("DELETE FROM devices WHERE id = ?", dev.id);
+  });
+
+  it("is for editors and admins; a viewer sees that it is paused; another account's projector is a 404", async () => {
+    const dev = await device("spare-2", "Spare two");
+    await roleMatrix(r, "POST", `/devices/${dev.id}/alerts`, { fields: { paused: "1" } });
+    const theirs = await device("spare-3", "Theirs", { owner_id: r.ids.admin });
+    const res = await post(r.editor, `/devices/${theirs.id}/alerts`, { paused: "1" });
+    expect([res.status, (await res.json()).detail]).toEqual([404, "Device not found"]);
+    await query("UPDATE devices SET owner_id = ? WHERE id = ?", r.ids.viewer, dev.id);
+    const page = await (await r.viewer.get("/devices")).text();
+    expect(page).toContain('<span class="badge badge-muted alerts-paused">alerts paused</span>');
+    expect(page).not.toContain(`action="/devices/${dev.id}/alerts"`);
+    await query("DELETE FROM devices WHERE id IN (?, ?)", dev.id, theirs.id);
+  });
+});
+
+describe("migration 0020", () => {
+  it("adds alerts_paused with a default, so the worker from before it keeps adding and reading projectors", async () => {
+    const col = (await query("PRAGMA table_info(devices)")).find((c) => c.name === "alerts_paused");
+    expect([col.notnull, col.dflt_value]).toEqual([1, "0"]);
+    // api.registerDevice's INSERT as the worker before 0020 sends it
+    const id = (await env.DB.prepare("INSERT INTO devices (device_id, name, token, group_id, playlist_id, owner_id, pi_model) VALUES ('old-worker', 'Old', 'tok-old', NULL, NULL, NULL, NULL)").run()).meta.last_row_id;
+    expect(await one("SELECT alerts_paused FROM devices WHERE id = ?", id)).toEqual({ alerts_paused: 0 });
+    expect((await query("PRAGMA index_list(media_trash)")).map((i) => i.name)).toContain("idx_media_trash_filename");
+    await query("DELETE FROM devices WHERE id = ?", id);
   });
 });

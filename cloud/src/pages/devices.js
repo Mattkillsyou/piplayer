@@ -57,7 +57,8 @@ const decodeBadge = (d) => {
     : `<span class="badge badge-muted decode-badge" title="Hardware decoding (${esc(d.decode_mode)})">hardware decoding${esc(slow)}${esc(pacing)}</span>`;
 };
 // A failed remote update (last_update_ok = 0, api.storeUpdateStatus) is a fault until the next report.
-export const isFault = (d) => d.lamp === "mpv-down" || d.lamp === "offline" || d.last_update_ok === 0;
+// A projector whose alerts are paused (a spare, off on purpose) is never one.
+export const isFault = (d) => !d.alerts_paused && (d.lamp === "mpv-down" || d.lamp === "offline" || d.last_update_ok === 0);
 
 // Fill in the served playlist (schedule/device/group/account Default), screenshot age + stale
 // flag and last-seen age for a list of device rows (web._decorate_device), with the fleet's
@@ -523,6 +524,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
       <span class="device-name">${esc(d.name)}</span>
       <span class="device-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}${d.pi_model ? ` · ${esc(d.pi_model)}` : ""}${isAdmin ? ` · ${d.owner_name ? esc(d.owner_name) : "no owner"}` : ""}</span>
       ${statusLamp(d)}
+      ${d.alerts_paused ? '<span class="badge badge-muted alerts-paused">alerts paused</span>' : ""}
       ${canEdit ? `<form method="post" action="/devices/${d.id}/rename" class="inline">
         ${csrfInput(ctx)}
         <input type="text" name="name" value="${esc(d.name)}" maxlength="${MAX_DEVICE_NAME}" required aria-label="Device name">
@@ -654,6 +656,11 @@ sudo -E bash deploy/install-player.sh</pre>
         </div>
       </details>` : ""}
       <div class="action-buttons">
+        <form method="post" action="/devices/${d.id}/alerts" class="inline">
+          ${csrfInput(ctx)}
+          <input type="hidden" name="paused" value="${d.alerts_paused ? 0 : 1}">
+          <button type="submit" class="small">${d.alerts_paused ? "Resume alerts" : "Pause alerts"}</button>
+        </form>
         <form method="post" action="/devices/${d.id}/delete" class="inline" data-confirm="Delete device ${esc(d.name)}? Its schedule rules, command history and alerts go with it; the Pi keeps playing what it has until it is re-flashed.">
           ${csrfInput(ctx)}
           <button type="submit" class="danger small">Delete device</button>
@@ -675,11 +682,12 @@ export const noProjectors = (canEdit) => emptyState("NO PROJECTORS", canEdit
 // username, the playlist / group names only when they are the projector's own account's
 // (another account's reads as none), and current_name, the Library name of the file the player
 // reports (media.filename is unique: one indexed read per projector; a file in Recently deleted
-// keeps its name there, looked up only when the Library has none), with its Library id.
+// keeps its name there, looked up only when the Library has none), with its Library id, and
+// alerts_paused, which isFault reads.
 export function visibleDevices(env, user, cols, own = ownedClause(user)) {
   const co = accounts.contentOwnerSql("d");
   return db.all(env,
-    `SELECT ${cols}, d.owner_id, ${co} AS content_owner,
+    `SELECT ${cols}, d.owner_id, ${co} AS content_owner, d.alerts_paused,
             p.id AS playlist_id, p.name AS playlist_name, g.id AS group_id, g.name AS group_name,
             u.username AS owner_name, cu.username AS content_owner_name, cm.id AS current_media_id,
             COALESCE(cm.original_name, (SELECT t.original_name FROM media_trash t
@@ -934,6 +942,22 @@ async function devicesCancelCommands(ctx) {
   return auth.flashRedirect(ctx, cardUrl(deviceId), `Cancelled ${changes} waiting command${changes === 1 ? "" : "s"} for ${row.name}.`);
 }
 
+// Pause alerts (a spare or seasonal projector, off on purpose; migration 0020): the alert check
+// skips it (alerts.conditions), the Dashboard counts no fault for it, and the alerts it had open
+// close now, with no recovered message. Resume puts it back under its account's alert settings.
+async function devicesPauseAlerts(ctx) {
+  auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const paused = str(await ctx.form(), "paused") === "1" ? 1 : 0;
+  const row = await requireDevice(ctx, deviceId, "d.name");
+  await db.batch(ctx.env, [
+    ["UPDATE devices SET alerts_paused = ? WHERE id = ?", paused, deviceId],
+    ["UPDATE alerts SET closed_at = datetime('now') WHERE device_id = ? AND closed_at IS NULL AND ? = 1", deviceId, paused],
+  ]);
+  await audit.log(ctx, paused ? "device_pause_alerts" : "device_resume_alerts", "device", deviceId, null, undefined, row.owner_id);
+  return auth.flashRedirect(ctx, cardUrl(deviceId), `${paused ? "Alerts paused" : "Alerts resumed"} for ${row.name}.`);
+}
+
 // Fleet action: queue one update command for every device the user may see that is not already
 // waiting for the same one (a second click while the first is still queued must not double-update).
 async function devicesUpdateAll(ctx) {
@@ -1135,6 +1159,7 @@ export function register(router) {
   router.post("/devices/:device_id/delete", devicesDelete);
   router.post("/devices/:device_id/command", devicesSendCommand);
   router.post("/devices/:device_id/command/cancel", devicesCancelCommands);
+  router.post("/devices/:device_id/alerts", devicesPauseAlerts);
   router.post("/devices/update-all", devicesUpdateAll);
   router.get("/devices/:device_id/screenshot", devicesScreenshot);
   router.get("/devices/:device_id/camera", devicesCamera);

@@ -40,10 +40,11 @@ const FETCH_TIMEOUT_MS = 10000;
 // while the player is not syncing its other columns are frozen, so nothing else is opened or
 // closed (evaluate keeps those alerts as they are). A device that never synced is not offline:
 // it has nothing to lose yet. The screenshot is stale when it lags the last sync by 3
-// intervals: measured against the sync, not the clock, so a sync gap cannot make it grow.
+// intervals: measured against the sync, not the clock, so a sync gap cannot make it grow. A
+// device whose alerts are paused (migration 0020: a spare, off on purpose) has none.
 export function conditions(d, settings, now) {
   const seen = ageSeconds(d.last_seen_at, now);
-  if (seen === null) return new Set();
+  if (seen === null || d.alerts_paused) return new Set();
   if (seen > Math.max(OFFLINE_AFTER_SECONDS, settings.alert_offline_minutes * 60)) return new Set(["offline"]);
   const out = new Set();
   if (d.player_status === "mpv-down") out.add("mpv-down");
@@ -64,7 +65,7 @@ export async function evaluate(env, now = new Date()) {
   const ts = nowUtc(now);
   const devices = await db.all(env,
     `SELECT d.id, d.device_id, d.name, d.owner_id, d.last_seen_at, d.player_status, d.last_screenshot_at, d.last_error,
-            d.last_update_ok, d.camera_error, d.projector_error, ${accounts.contentOwnerSql("d")} AS content_owner FROM devices d`);
+            d.last_update_ok, d.camera_error, d.projector_error, d.alerts_paused, ${accounts.contentOwnerSql("d")} AS content_owner FROM devices d`);
   const settingsBy = await db.loadSettingsFor(env, devices.map((d) => d.content_owner));
   const open = await db.all(env, "SELECT id, device_id, kind, opened_at, notified_at FROM alerts WHERE closed_at IS NULL");
   const openBy = new Map(open.map((a) => [`${a.device_id}:${a.kind}`, a]));
@@ -98,7 +99,8 @@ export async function evaluate(env, now = new Date()) {
         }
       } else if (cur && !(offline && kind !== "offline")) {
         await db.run(env, "UPDATE alerts SET closed_at = ? WHERE id = ?", ts, cur.id);
-        events.closed.push({ id: cur.id, device: d, kind, opened_at: cur.opened_at });
+        // a paused device's alert closes quietly: it did not recover (pausing closes them first)
+        if (!d.alerts_paused) events.closed.push({ id: cur.id, device: d, kind, opened_at: cur.opened_at });
         await audit.log(ctx, "alert_closed", "device", d.device_id, { kind }, undefined, d.owner_id);
       }
     }
