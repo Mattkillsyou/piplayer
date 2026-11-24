@@ -842,6 +842,8 @@ table.data td select { min-width: 140px; }
 table.data td input[type=password] { width: 9rem; display: inline-block; }
 table.data td input[type=email], table.data td input[type=text] { min-width: 8rem; } /* a squeezed column left the box one letter wide */
 table.data td .muted.small { display: inline; }
+/* a schedule rule's "matches, but a higher-priority rule is playing" pushed Edit and Delete off a tablet */
+table.data td .badge { white-space: normal; }
 tr.rule-active td { background: var(--p5k-fill-tint) !important; }
 tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
 /* Users: a long name or address breaks anywhere rather than widen its column (an ordinary name
@@ -860,8 +862,19 @@ table.data.stack td.name > a { overflow-wrap: anywhere; }
   table.data.stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   table.data.stack tr { padding: 6px 0; border-bottom: 1px solid var(--p5k-rule-3); }
   table.data.stack td { padding: 5px 12px; border: 0; }
-  table.data.stack td:empty { display: none; } /* a viewer's actions cell */
+  /* a viewer's actions cell: it holds only whitespace, which :empty does not match */
+  table.data.stack td:not([data-label]):not(.name):not(:has(*)) { display: none; }
   table.data.stack td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 3px; font-size: var(--p5k-text-label-sm); letter-spacing: var(--p5k-track-label); text-transform: uppercase; color: var(--p5k-muted); }
+}
+/* Users: eight columns need about 1100px, so below 1120px (a Windows scrollbar included) each
+   user is a card as on a phone. The child combinators leave a user's token table a table. */
+@media (max-width: 1120px) {
+  table.data.users, table.data.users > tbody, table.data.users > tbody > tr, table.data.users > tbody > tr > td { display: block; }
+  table.data.users > thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  table.data.users > tbody > tr { padding: 6px 0; border-bottom: 1px solid var(--p5k-rule-3); }
+  table.data.users > tbody > tr > td { padding: 5px 12px; border: 0; }
+  table.data.users > tbody > tr > td:not([data-label]):not(.name):not(:has(*)) { display: none; }
+  table.data.users > tbody > tr > td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 3px; font-size: var(--p5k-text-label-sm); letter-spacing: var(--p5k-track-label); text-transform: uppercase; color: var(--p5k-muted); }
   table.data.users tr:has(+ .user-tokens) { border-bottom: 0; } /* a user's tokens belong to its card */
   table.data.users .duration-form { display: flex; }
   table.data.users .duration-form input { flex: 1 1 8rem; }
@@ -1398,9 +1411,10 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
 .terminal .log-u { color: var(--p5k-phosphor); }
 .terminal .log-a code { color: var(--p5k-ink); }
 .terminal .log-d { color: var(--p5k-soft); overflow-wrap: anywhere; min-width: 14rem; }
-/* Phones: each entry wraps like a line of text (time, user, action, target, IP) with its details
-   under it, instead of a six-column table with Target and Details past the right edge. */
-@media (max-width: 720px) {
+/* Phones and tablets: each entry wraps like a line of text (time, user, action, target, IP) with its
+   details under it, instead of a six-column table with Target and Details past the right edge (at
+   768 an admin's ordinary log slid 132px; an IPv6 address needs about 1160px). */
+@media (max-width: 1120px) {
   .terminal table.data thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .terminal table.data tr { display: flex; flex-wrap: wrap; gap: 0 8px; padding: 5px 12px; }
   .terminal table.data td { padding: 0; }
