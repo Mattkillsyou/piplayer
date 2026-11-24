@@ -520,6 +520,13 @@ describe("projectors left off upload links (Settings page)", () => {
     expect(await one("SELECT owner_id, in_upload_links FROM devices WHERE id = ?", moving.id)).toEqual({ owner_id: r.ids.admin, in_upload_links: 1 });
     await query("DELETE FROM devices WHERE id = ?", moving.id);
   });
+
+  it("a projector handed to another account arrives with its alerts on, whatever the old account paused", async () => {
+    const paused = await device("paused", "Paused", { alerts_paused: 1 });
+    expect((await post(r.admin, `/devices/${paused.id}/owner`, { owner_id: String(r.ids.admin) })).status).toBe(303);
+    expect(await one("SELECT owner_id, alerts_paused FROM devices WHERE id = ?", paused.id)).toEqual({ owner_id: r.ids.admin, alerts_paused: 0 });
+    await query("DELETE FROM devices WHERE id = ?", paused.id);
+  });
 });
 
 describe("sentMessage", () => {

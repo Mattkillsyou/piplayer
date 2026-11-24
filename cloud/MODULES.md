@@ -202,7 +202,11 @@ non-empty by `audit.pyJson()` (Python `json.dumps` text: `{"a": 1, "b": [1, 2]}`
 `group_delete`, `user_create`, `user_signup` (`{username, email, role}`), `user_set_role`, `user_set_password`, `user_set_email`, `user_delete`,
 `password_reset_requested`, `password_reset_mail_failed`, `password_reset` (target the user; never the token)
 (`user_delete` carries `{media_deleted, projectors_signed_out}` when either is non-zero)
-(+ new: `settings_update`, `enrollment_key_rotated`, `device_enrolled`, `device_reenrolled`
+(+ new: `group_rename` (`POST /groups/:id/rename`, `{name}`), `playlist_remove_items` (the
+editor's Remove selected, `POST /playlists/:id/items/delete`, `{item_ids, removed}`),
+`device_pause_alerts` and `device_resume_alerts` (`POST /devices/:id/alerts`, migration 0020),
+`user_set_password` and `user_set_email` with the user as their own target from `/account` (every
+role: current password, then a new password or email), `settings_update`, `enrollment_key_rotated`, `device_enrolled`, `device_reenrolled`
 (`renamed_from` when the name changed), `device_enroll_capped` (a new device id refused by the
 20-per-hour cap), `device_rename` (the Devices-page Rename form, `{name}`), `device_update_all`
 (fleet button: `{command, queued}`), `device_update_reported` (user null: the player's post-update

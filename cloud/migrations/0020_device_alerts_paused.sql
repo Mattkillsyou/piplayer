@@ -12,4 +12,10 @@ ALTER TABLE devices ADD COLUMN alerts_paused INTEGER NOT NULL DEFAULT 0 CHECK (a
 -- 0019: a database that already ran 0019 gets it too.
 CREATE INDEX IF NOT EXISTS idx_media_trash_filename ON media_trash(filename);
 
+-- What plays a playlist: the Playlists list counts it for every row (pages/playlists.js
+-- device_count and schedule_count) and deleting a playlist looks it up. An indexed read each,
+-- instead of a pass over every account's projectors and schedule rules per playlist.
+CREATE INDEX IF NOT EXISTS idx_devices_playlist ON devices(playlist_id);
+CREATE INDEX IF NOT EXISTS idx_device_schedules_playlist ON device_schedules(playlist_id);
+
 INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '20');
