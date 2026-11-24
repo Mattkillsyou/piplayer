@@ -2,7 +2,7 @@
 // the notice a redirect carries (src/auth.js flashRedirect).
 import { beforeAll, describe, expect, it } from "vitest";
 import { query } from "./helpers.js";
-import { media, post, roles } from "./pages_common.js";
+import { media, playlist, post, roles } from "./pages_common.js";
 
 let r;
 
@@ -72,6 +72,55 @@ describe("a delete says where the files went", () => {
     expect(await flash(r.editor)).toEqual(["ok", "Moved 2 files to Recently deleted."]);
     expect(await query("SELECT original_name FROM media_trash WHERE media_id IN (?, ?, ?, ?) ORDER BY media_id", a, b, c, d))
       .toEqual(["del-a.png", "del-b.png", "del-c.png", "del-d.png"].map((original_name) => ({ original_name })));
+  });
+});
+
+describe("the Library opened from a playlist (?to=)", () => {
+  it("its grid form carries the page back, so an Add or a Delete comes back with the playlist still picked", async () => {
+    const pid = await playlist("Kept night");
+    const theirs = await playlist("Not the editor's", r.ids.admin);
+    const [a, b, c] = [await media("keep-a.png"), await media("keep-b.png"), await media("keep-c.png")];
+    const form = async (path) => { const html = await (await r.editor.get(path)).text(); return html.slice(html.indexOf('<form id="library-form"'), html.indexOf("</form>", html.indexOf('<form id="library-form"'))); };
+    expect(await form(`/library?to=${pid}`)).toContain(`<input type="hidden" name="back" value="/library?to=${pid}">`);
+    for (const path of ["/library", `/library?to=${theirs}`, "/library?to=abc"]) expect(await form(path), path).not.toContain('name="back"');
+
+    const back = ["back", `/library?to=${pid}`];
+    let res = await post(r.editor, "/library/add-to-playlist", [back, ["playlist_id", String(pid)], ["media_id", String(a)]]);
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/library?to=${pid}`]);
+    const page = await (await r.editor.get(`/library?to=${pid}`)).text();
+    expect(page).toContain('<div class="alert ok" role="alert">Added 1 file to Kept night.</div>');
+    expect(page).toContain(`<option value="${pid}" selected>Kept night</option>`);
+    for (const [fields, notice] of [
+      [[back, ["playlist_id", String(pid)], ["media_id", String(a)]], ["warn", "That file is already in Kept night."]],
+      [[back, ["media_id", String(a)]], ["warn", "Pick a playlist."]],
+      [[back, ["playlist_id", String(pid)]], ["warn", "Nothing was ticked."]],
+    ]) {
+      res = await post(r.editor, "/library/add-to-playlist", fields);
+      expect([res.status, res.headers.get("location")]).toEqual([303, `/library?to=${pid}`]);
+      expect(await flash(r.editor, `/library?to=${pid}`)).toEqual(notice);
+    }
+    for (const [fields, notice] of [
+      [[back, ["one", String(b)]], ["ok", "Moved keep-b.png to Recently deleted."]],
+      [[back, ["media_id", String(c)]], ["ok", "Moved keep-c.png to Recently deleted."]],
+      [[back, ["media_id", String(c)]], ["warn", "Nothing was deleted: those files are no longer in the library."]],
+      [[back], ["warn", "Nothing was ticked."]],
+    ]) {
+      res = await post(r.editor, "/library/delete", fields);
+      expect([res.status, res.headers.get("location")]).toEqual([303, `/library?to=${pid}`]);
+      expect(await flash(r.editor, `/library?to=${pid}`)).toEqual(notice);
+    }
+  });
+
+  it("a back that is not one of the Library's own pages goes to the Library", async () => {
+    const pid = await playlist("Anywhere");
+    const m = await media("anywhere.png");
+    for (const bad of ["https://example.com/", "//example.com", "/library?to=1&x=2", "/library/1/delete", "/libraryx", "/library?to=", "/library/", " /library/1", "/library/1\n"]) {
+      const res = await post(r.editor, "/library/add-to-playlist", [["back", bad], ["playlist_id", String(pid)], ["media_id", String(m)]]);
+      expect([res.status, res.headers.get("location")], JSON.stringify(bad)).toEqual([303, "/library"]);
+      await r.editor.get("/library"); // uses up the notice
+    }
+    const res = await post(r.editor, "/library/delete", [["back", "https://example.com/"]]);
+    expect([res.status, res.headers.get("location")]).toEqual([303, "/library"]);
   });
 });
 

@@ -184,6 +184,7 @@ async function libraryPage(ctx) {
     : editor ? `${head}
 <form id="library-form" method="post" action="/library/delete" autocomplete="off" data-max="${MAX_DELETE}">
   ${csrfInput(ctx)}
+  ${playlists.some((p) => p.id === to) ? `<input type="hidden" name="back" value="/library?to=${to}">` : ""}
   <button type="submit" name="noop" value="1" hidden></button>
   <div class="media-bar">
     <div class="action-buttons">
@@ -438,6 +439,11 @@ export async function housekeeping(env) {
   return old.length;
 }
 
+// Where a form of the Library comes back to: the page it was posted from (its hidden "back"), when
+// that is the Library opened from a playlist (?to=, which keeps that playlist picked) or a file's
+// own page; else the Library.
+const backTo = (form) => (/^\/library(\/\d+|\?to=\d+)?$/.test(str(form, "back")) ? str(form, "back") : "/library");
+
 async function libraryDelete(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const mediaId = idParam(ctx.params.media_id, "media_id");
@@ -455,11 +461,12 @@ async function libraryDeleteMany(ctx) {
   if (form.has("noop")) return new Response(null, { status: 204 });
   const one = str(form, "one").trim();
   const picked = one ? [one] : form.getAll("media_id").filter((v) => typeof v === "string");
-  if (!picked.length) return auth.flashRedirect(ctx, "/library", "Nothing was ticked.", "warn");
+  const back = backTo(form);
+  if (!picked.length) return auth.flashRedirect(ctx, back, "Nothing was ticked.", "warn");
   if (picked.length > MAX_DELETE) fail(400, `Delete at most ${MAX_DELETE} files at a time`);
   const rows = await deleteMedia(ctx, user, [...new Set(picked.map((v) => idParam(v, "media_id")))]);
-  if (!rows.length) return auth.flashRedirect(ctx, "/library", "Nothing was deleted: those files are no longer in the library.", "warn");
-  return auth.flashRedirect(ctx, "/library", rows.length === 1 ? `Moved ${rows[0].original_name} to Recently deleted.` : `Moved ${rows.length} files to Recently deleted.`);
+  if (!rows.length) return auth.flashRedirect(ctx, back, "Nothing was deleted: those files are no longer in the library.", "warn");
+  return auth.flashRedirect(ctx, back, rows.length === 1 ? `Moved ${rows[0].original_name} to Recently deleted.` : `Moved ${rows.length} files to Recently deleted.`);
 }
 
 // The caller's own media row (`cols`) behind :media_id, or the 404 a missing id gets.
@@ -536,20 +543,21 @@ const MAX_NAME = 1024;
 async function libraryAddToPlaylist(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const form = await ctx.form();
+  const back = backTo(form);
   const playlistId = intField(str(form, "playlist_id"), "Playlist");
-  if (playlistId === null) return auth.flashRedirect(ctx, "/library", "Pick a playlist.", "warn");
+  if (playlistId === null) return auth.flashRedirect(ctx, back, "Pick a playlist.", "warn");
   const playlist = await accounts.ownRow(ctx.env, "playlists", playlistId, user.id, "id, name");
   if (!playlist) fail(404, "Playlist not found");
   const picked = form.getAll("media_id").filter((v) => typeof v === "string");
-  if (!picked.length) return auth.flashRedirect(ctx, "/library", "Nothing was ticked.", "warn");
+  if (!picked.length) return auth.flashRedirect(ctx, back, "Nothing was ticked.", "warn");
   if (picked.length > MAX_DELETE) fail(400, `Add at most ${MAX_DELETE} files at a time`);
   const ids = [...new Set(picked.map((v) => idParam(v, "media_id")))];
   const { added, already } = await appendToPlaylist(ctx.env, playlist.id, ids, user.id);
   if (!added && !already) fail(404, "Media not found");
-  if (!added) return auth.flashRedirect(ctx, "/library", `${already === 1 ? "That file is" : "Those files are"} already in ${playlist.name}.`, "warn");
+  if (!added) return auth.flashRedirect(ctx, back, `${already === 1 ? "That file is" : "Those files are"} already in ${playlist.name}.`, "warn");
   await audit.log(ctx, "playlist_add_items", "playlist", playlist.id, { added, media_ids: ids });
   const skipped = already ? `; ${already} ${already === 1 ? "was" : "were"} already in it` : "";
-  return auth.flashRedirect(ctx, "/library", `Added ${added} file${added === 1 ? "" : "s"} to ${playlist.name}${skipped}.`);
+  return auth.flashRedirect(ctx, back, `Added ${added} file${added === 1 ? "" : "s"} to ${playlist.name}${skipped}.`);
 }
 
 // A file's own page (the Library card's name links here): its name (a rename form for an
