@@ -109,6 +109,7 @@ function table() {
     ["POST", `/devices/${NOPE}/schedule/${NOPE}/delete`, {}, "form", E(404)],
     ["POST", "/groups", { name: " " }, "form", E(400)],
     ["POST", `/groups/${NOPE}/assign`, { playlist_id: "" }, "form", E(404)],
+    ["POST", `/groups/${NOPE}/rename`, { name: "x" }, "form", E(404)],
     ["POST", `/groups/${NOPE}/delete`, {}, "form", E(404)],
     ["POST", "/users", { username: "u", password: "short", role: "viewer" }, "form", AD(400)],
     ["POST", `/users/${NOPE}/role`, { role: "viewer" }, "form", AD(404)],
