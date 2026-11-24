@@ -49,14 +49,20 @@ async function playlistsPage(ctx) {
   const { timezone: tz, default_playlist_id: defaultId, default_image_duration: dur } = await ctx.settings();
   // The account's own playlists; "used by" counts the projectors, groups and schedule rules that
   // play them, which are all the account's own (only its projectors may point at its playlists).
+  // The Default also counts the projectors it is the fallback of: no playlist of their own and none
+  // from their group, by the manifest's rules (manifest.pick_playlist; another account's reads as none).
   const co = accounts.contentOwnerSql("d");
   const rows = await db.all(ctx.env,
     `SELECT p.id, p.name, p.updated_at,
             (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) AS item_count,
             (SELECT COUNT(*) FROM devices d WHERE d.playlist_id = p.id AND ${co} = ?1) AS device_count,
             (SELECT COUNT(*) FROM device_groups g WHERE g.playlist_id = p.id AND g.owner_id = ?1) AS group_count,
-            (SELECT COUNT(*) FROM device_schedules s JOIN devices d ON d.id = s.device_id WHERE s.playlist_id = p.id AND ${co} = ?1) AS schedule_count
-       FROM playlists p WHERE p.owner_id = ?1 ORDER BY p.name`, user.id);
+            (SELECT COUNT(*) FROM device_schedules s JOIN devices d ON d.id = s.device_id WHERE s.playlist_id = p.id AND ${co} = ?1) AS schedule_count,
+            CASE WHEN p.id = ?2 THEN (SELECT COUNT(*) FROM devices d WHERE ${co} = ?1
+              AND NOT EXISTS (SELECT 1 FROM playlists x WHERE x.id = d.playlist_id AND x.owner_id = ?1)
+              AND NOT EXISTS (SELECT 1 FROM device_groups g JOIN playlists x ON x.id = g.playlist_id AND x.owner_id = ?1
+                               WHERE g.id = d.group_id AND g.owner_id = ?1)) ELSE 0 END AS fallback_count
+       FROM playlists p WHERE p.owner_id = ?1 ORDER BY p.name`, user.id, defaultId ?? null);
   // Every item of those playlists, for each one's running time.
   const itemsOf = new Map();
   for (const it of await db.all(ctx.env,
@@ -77,7 +83,8 @@ async function playlistsPage(ctx) {
       <td data-label="Items">${p.item_count}</td>
       <td data-label="Duration" class="nowrap">${totalTime(itemsOf.get(p.id) || [], dur) || "—"}</td>
       <td data-label="Used by" class="muted">
-        <span title="devices with this as their default playlist">${plural(p.device_count, "device")}</span>
+        ${p.device_count || !p.fallback_count ? `<span title="devices with this as their default playlist">${plural(p.device_count, "device")}</span>` : ""}
+        ${p.fallback_count ? `${p.device_count ? " · " : ""}<span title="devices with no playlist of their own or from their group">${plural(p.fallback_count, "device")} (fallback)</span>` : ""}
         ${p.group_count ? ` · ${plural(p.group_count, "group")}` : ""}
         ${p.schedule_count ? ` · ${plural(p.schedule_count, "schedule rule")}` : ""}
       </td>

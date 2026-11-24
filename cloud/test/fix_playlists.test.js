@@ -1,9 +1,10 @@
 // The playlist editor and list after the release review: Nothing to add's Library link keeps the
-// playlist it came from (?to=), Add takes at most MAX_DELETE files a request, and Remove selected
-// takes the ticked rows out in one go. The fixtures are the editor's (pages_common).
+// playlist it came from (?to=), Add takes at most MAX_DELETE files a request, Remove selected
+// takes the ticked rows out in one go, and the Default's Used by counts the projectors it is the
+// fallback of. The fixtures are the editor's (pages_common).
 import { beforeAll, describe, expect, it } from "vitest";
 import { query } from "./helpers.js";
-import { audits, detail, ins, media, NOPE, one, playlist, post, roles } from "./pages_common.js";
+import { audits, defaultPlaylistOf, detail, device, group, ins, media, NOPE, one, playlist, post, roles } from "./pages_common.js";
 
 let r;
 
@@ -113,5 +114,42 @@ describe("Remove selected", () => {
     expect(await detail(await post(r.editor, `/playlists/${pid}/items/delete`, ticked(Array.from({ length: 501 }, (_, i) => items[0] + i))), 400)).toBe("Remove at most 500 files at a time");
     expect(await detail(await post(r.editor, `/playlists/${pid}/items/delete`, ticked(["abc"])), 400)).toBe("item_id: value is not a valid integer");
     expect((await positions(pid)).map((x) => x.id)).toEqual(items);
+  });
+});
+
+describe("Used by", () => {
+  // The text of the Used by cell in playlist `pid`'s row of /playlists.
+  const usedBy = async (c, pid) => {
+    const row = (await (await c.get("/playlists")).text()).split("<tr>").find((tr) => tr.includes(`<a href="/playlists/${pid}">`));
+    return /<td data-label="Used by" class="muted">([^]*?)<\/td>/.exec(row)[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  };
+
+  it("counts on the Default the projectors it is the fallback of, by the manifest's rules", async () => {
+    const dflt = await defaultPlaylistOf(r.ids.editor);
+    const lobby = await playlist("Used lobby");
+    const bare = await group("Used bare group"); // no playlist
+    const lobbyGroup = await group("Used lobby group");
+    await query("UPDATE device_groups SET playlist_id = ? WHERE id = ?", lobby, lobbyGroup);
+    expect(await usedBy(r.editor, dflt)).toBe("0 devices");
+    const nothing = await device("used-nothing"); // falls back
+    await device("used-own", "own", { playlist_id: lobby });
+    await device("used-group", "group", { group_id: lobbyGroup });
+    await device("used-bare", "bare", { group_id: bare }); // a group without a playlist: falls back
+    const ruled = await device("used-rules"); // schedule rules only: falls back between them
+    await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'r', 1)", ruled.id, lobby);
+    await device("used-theirs", "theirs", { owner_id: r.ids.viewer });
+    await device("used-ownerless", "ownerless", { owner_id: null }); // the site admin's
+    expect(await usedBy(r.editor, dflt)).toBe("3 devices (fallback)");
+    expect(await usedBy(r.editor, lobby)).toBe("1 device · 1 group · 1 schedule rule");
+    await device("used-default", "default", { playlist_id: dflt });
+    expect(await usedBy(r.editor, dflt)).toBe("1 device · 3 devices (fallback)");
+    // another account's playlist (never written by the pages) reads as none, as on the projector
+    const adminPl = await playlist("Used admin's", r.ids.admin);
+    await query("UPDATE devices SET playlist_id = ? WHERE id = ?", adminPl, nothing.id);
+    await query("UPDATE device_groups SET playlist_id = ? WHERE id = ?", adminPl, lobbyGroup);
+    expect(await usedBy(r.editor, dflt)).toBe("1 device · 4 devices (fallback)");
+    // each account counts its own projectors only
+    expect(await usedBy(r.viewer, await defaultPlaylistOf(r.ids.viewer))).toBe("1 device (fallback)");
+    expect(await usedBy(r.admin, await defaultPlaylistOf(r.ids.admin))).toBe("1 device (fallback)");
   });
 });
