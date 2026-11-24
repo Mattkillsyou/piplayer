@@ -479,3 +479,26 @@ describe("media.js viewer", () => {
     expect(p.grid.children.length).toBe(3);
   });
 });
+
+describe("media.js Recently deleted", () => {
+  it("Select all ticks every row, then none; it reads Select none while every row is ticked, also in a section swapped in later", async () => {
+    await loadPage([["a.mp4", "video"]]);
+    const t = trashPart([3, 2, 1]);
+    doc.body.appendChild(t.details); // after the script ran, as freshen() puts a new one in
+    const ticked = () => t.boxes.map((b) => b.checked);
+    doc.fire("click", { target: t.all });
+    expect([ticked(), t.all.textContent]).toEqual([[true, true, true], "Select none"]);
+    doc.fire("click", { target: t.all });
+    expect([ticked(), t.all.textContent]).toEqual([[false, false, false], "Select all"]);
+    t.boxes[1].checked = true;
+    doc.fire("change", { target: t.boxes[1] });
+    doc.fire("click", { target: t.all }); // some ticked: all of them
+    expect([ticked(), t.all.textContent]).toEqual([[true, true, true], "Select none"]);
+    t.boxes[0].checked = false;
+    doc.fire("change", { target: t.boxes[0] });
+    expect(t.all.textContent).toBe("Select all");
+    t.boxes[0].checked = true;
+    doc.fire("change", { target: t.boxes[0] });
+    expect(t.all.textContent).toBe("Select none");
+  });
+});

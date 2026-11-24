@@ -565,4 +565,28 @@
     finder.hidden = false;
     apply(!!sortSel.value);
   }
+
+  // --------------------------------------------------------- recently deleted ---
+
+  // Recently deleted's Select all (library.js trashSection) ticks every row, or, once every row
+  // is ticked, none, and reads Select none while they all are. Listened for on the document:
+  // freshen() swaps in the whole section. The list holds at most what one Restore takes.
+  function trashTicks(form, flip) {
+    var btn = form && form.querySelector('[data-select-trash]');
+    if (!btn) return;
+    var boxes = Array.prototype.slice.call(form.querySelectorAll('input[name="trash_id"]'));
+    var every = boxes.every(function (b) { return b.checked; });
+    if (flip) {
+      every = !every;
+      boxes.forEach(function (b) { b.checked = every; });
+    }
+    btn.textContent = every ? 'Select none' : 'Select all';
+  }
+  document.addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('[data-select-trash]') : null;
+    if (btn) trashTicks(btn.form, true);
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.name === 'trash_id') trashTicks(e.target.form, false);
+  });
 })();
