@@ -19,7 +19,7 @@ function deviceCard(ctx, d, tz, canEdit) {
     <div class="device-card-body">
       <div class="device-card-head">
         <div>
-          <div class="device-card-title">${esc(d.name)}</div>
+          <div class="device-card-title"><a href="/devices#device-${d.id}">${esc(d.name)}</a></div>
           <div class="device-card-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}${d.pi_model ? ` · ${esc(d.pi_model)}` : ""}</div>
         </div>
         ${statusLamp(d)}
@@ -31,6 +31,7 @@ function deviceCard(ctx, d, tz, canEdit) {
     : '<span class="now-playlist">no playlist</span>'}
       </div>
       <span class="device-meta">last seen ${d.last_seen_at ? `${esc(d.seen_age)} · <span class="nowrap">${esc(localTime(d.last_seen_at, tz))}</span>` : "never"}</span>
+      ${d.alerts_paused ? '<span class="device-meta">alerts paused</span>' : ""}
       ${d.last_error ? `<div class="alert error small" title="Reported by the player on its last sync">Sync problem: ${esc(d.last_error)}</div>` : ""}
       ${updateStatus(d, tz)}
       ${d.projector_control && d.projector_control !== "none" ? `<div class="device-meta">${projectorState(d)}</div>` : ""}
@@ -88,21 +89,21 @@ async function dashboard(ctx) {
 </div>
 
 <div class="cards">
-  <div class="card">
+  <a class="card" href="/library">
     <span class="card-label">media files</span>
     <span class="card-value">${media.n}</span>
     <span class="card-sub">${fileSize(media.bytes)} total</span>
-  </div>
-  <div class="card">
+  </a>
+  <a class="card" href="/playlists">
     <span class="card-label">playlists</span>
     <span class="card-value">${playlistCount}</span>
     <span class="card-sub">${dflt === null ? "no default" : `default: ${esc(dflt)}`}</span>
-  </div>
-  <div class="card">
+  </a>
+  <a class="card" href="/devices">
     <span class="card-label">devices</span>
     <span class="card-value">${n}</span>
     <span class="card-sub">${playingCount} playing · ${faultCount} fault${faultCount === 1 ? "" : "s"}</span>
-  </div>
+  </a>
   <a class="card" href="/alerts" id="alerts-card">
     <span class="card-label">open alerts</span>
     <span class="card-value">${openAlerts}</span>

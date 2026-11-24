@@ -541,7 +541,13 @@ order), and `idx_playlist_items_media` on `playlist_items(media_id)`: a media de
 account) looked a file's items up by a full scan. Nothing else changes, so the worker from before
 it keeps serving between `migrations apply` and `wrangler deploy`.
 
-`db.js` exports `SCHEMA_VERSION` (19) and `assertMigrated` compares `meta.schema_version`
+`migrations/0020_device_alerts_paused.sql` (schema_version 20) adds `devices.alerts_paused`
+(INTEGER NOT NULL DEFAULT 0, 0 or 1; Alerts below) and `idx_media_trash_filename` on
+`media_trash(owner_id, filename)`, so Devices and the Dashboard name a now-playing file in Recently
+deleted (`pages/devices.visibleDevices`) with one indexed read. Nothing else changes, so the worker
+from before it keeps serving between `migrations apply` and `wrangler deploy`.
+
+`db.js` exports `SCHEMA_VERSION` (20) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.
 The test harness applies every file in `migrations/` in order
 (`vitest.config.js` readD1Migrations + `test/apply-migrations.js`), so a new migration needs no wiring.
@@ -599,7 +605,12 @@ never below `OFFLINE_AFTER_SECONDS`; a device that never synced has none; while 
 kind is evaluated, so those alerts neither open nor close), `mpv-down` (player_status),
 `screenshot-stale` (last_screenshot_at set and more than 3 x screenshot_interval older than the
 last sync: measured against the sync, not the clock), `sync-error`
-(last_error), `update-failed` (last_update_ok = 0), `camera-error`, `projector-error`.
+(last_error), `update-failed` (last_update_ok = 0), `camera-error`, `projector-error`. A device
+whose `alerts_paused` is 1 (migration 0020: the card's Pause alerts / Resume alerts,
+`POST /devices/:id/alerts` with `paused` 1 or 0, editor+, audit `device_pause_alerts` /
+`device_resume_alerts`) has none: pausing closes its open rows at once, a row `evaluate` closes for
+it stays out of the digest, `pages/devices.isFault` never counts it, and its rows on /alerts carry
+an `alerts paused` badge.
 `evaluate(env, now)` (the `*/5` cron; `now` is injectable for tests) opens a row (`INSERT OR
 IGNORE` against `idx_alerts_one_open`, so an overlapping run cannot open a second) + audits
 `alert_opened` (target device_id, `{kind}`), closes + audits `alert_closed` when the condition

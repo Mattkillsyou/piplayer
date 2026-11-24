@@ -16,11 +16,11 @@ beforeAll(async () => {
 describe("now playing", () => {
   it("names the file as the Library does, on Devices and on the wall; offline says last: and never playing", async () => {
     const stored = `1b814e5034bc2b4f_u${r.ids.editor}_b.mp4`; // what the player reports: the stored name
-    await media("Friday <b>.mp4", "video", { filename: stored });
+    const mid = await media("Friday <b>.mp4", "video", { filename: stored });
     const dev = await device("np-1", "Now playing", { last_seen_at: now(), current_position: 2, current_filename: stored, player_status: "playing" });
     let devices = await (await r.editor.get("/devices")).text();
     let wall = await (await r.editor.get("/dashboard")).text();
-    expect(devices).toContain('<span class="now-file">#3 Friday &lt;b&gt;.mp4 · playing</span>');
+    expect(devices).toContain(`<span class="now-file">#3 <a href="/library/${mid}">Friday &lt;b&gt;.mp4</a> · playing</span>`);
     expect(wall).toContain('<span class="screen-now">#3 Friday &lt;b&gt;.mp4</span>');
     for (const page of [devices, wall]) expect(page).not.toContain(stored);
     // two hours without a check-in: offline, so what it last reported, without its old status
@@ -28,7 +28,7 @@ describe("now playing", () => {
     devices = await (await r.editor.get("/devices")).text();
     wall = await (await r.editor.get("/dashboard")).text();
     expect(devices).toContain('<span class="status status-offline"><span class="lamp"></span>offline</span>');
-    expect(devices).toContain('<span class="now-file">last: #3 Friday &lt;b&gt;.mp4</span>');
+    expect(devices).toContain(`<span class="now-file">last: #3 <a href="/library/${mid}">Friday &lt;b&gt;.mp4</a></span>`);
     expect(devices).not.toContain(" · playing</span>");
     expect(wall).toContain('<span class="screen-now">last: #3 Friday &lt;b&gt;.mp4</span>');
     // a file with no Library row (a USB stick's): the name as reported
@@ -42,13 +42,13 @@ describe("now playing", () => {
   it("only the projector's own account's file names it: an admin sees that account's name, another account's file never", async () => {
     const mine = `2222222222222222_u${r.ids.editor}_clip.mp4`;
     const admins = `3333333333333333_u${r.ids.admin}_secret.mp4`;
-    await media("Editor's clip.mp4", "video", { filename: mine });
+    const mineId = await media("Editor's clip.mp4", "video", { filename: mine });
     await media("Admin's secret.mp4", "video", { filename: admins, owner: r.ids.admin });
     const a = await device("np-a", "Plays mine", { last_seen_at: now(), current_position: 0, current_filename: mine, player_status: "playing" });
     const b = await device("np-b", "Reports the admin's", { last_seen_at: now(), current_position: 0, current_filename: admins, player_status: "playing" });
-    for (const c of [r.admin, r.editor]) { // the admin sees every projector, the editor its own
+    for (const [c, name] of [[r.admin, "Editor&#39;s clip.mp4"], [r.editor, `<a href="/library/${mineId}">Editor&#39;s clip.mp4</a>`]]) { // the admin sees every projector, the editor its own (its file linked)
       const page = await (await c.get("/devices")).text();
-      expect(page).toContain('<span class="now-file">#1 Editor&#39;s clip.mp4 · playing</span>');
+      expect(page).toContain(`<span class="now-file">#1 ${name} · playing</span>`);
       expect(page).toContain(`<span class="now-file">#1 ${admins} · playing</span>`);
       expect(page).not.toContain("Admin&#39;s secret.mp4");
     }
@@ -57,7 +57,7 @@ describe("now playing", () => {
 });
 
 describe("a change made on a card lands back on that card", () => {
-  it("the card forms answer with /devices#device-<id>; a new or deleted projector, the fleet update and New token go to the top", async () => {
+  it("the card forms answer with /devices#device-<id> (New token with its Token / install open); a new or deleted projector and the fleet update go to the top", async () => {
     const dev = await device("card-1", "Card", { last_seen_at: now() });
     const pid = await playlist("Card PL");
     const gid = await group("Card group");
@@ -83,7 +83,7 @@ describe("a change made on a card lands back on that card", () => {
     let res = await post(r.admin, `/devices/${dev.id}/owner`, { owner_id: String(r.ids.editor) });
     expect([res.status, res.headers.get("location")]).toEqual([303, card]);
     res = await post(r.editor, `/devices/${dev.id}/regen-token`);
-    expect(res.headers.get("location")).toBe(`/devices?open=${dev.id}`);
+    expect(res.headers.get("location")).toBe(`/devices?open=${dev.id}#device-${dev.id}`);
     res = await post(r.editor, "/devices/update-all", { command: "update-os" });
     expect(res.headers.get("location")).toBe("/devices");
     res = await post(r.editor, "/devices", { device_id: "card-2", name: "Card 2" });

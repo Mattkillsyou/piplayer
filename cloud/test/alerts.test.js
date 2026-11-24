@@ -462,7 +462,7 @@ describe("/alerts page + dashboard badge", () => {
     expect(page).toContain("<strong>1 open</strong>");
     expect(page).toContain("Open · 1");
     expect(page).toContain("Recently recovered · 1");
-    expect(page).toContain('Lobby <code class="muted small">lobby</code>');
+    expect(page).toContain(`<a href="/devices#device-${lobby.id}">Lobby</a> <code class="muted small">lobby</code>`);
     expect(page).toContain('<span class="badge badge-stale">offline (no sync)</span>');
     expect(page).toContain('<span class="badge badge-stale">camera error</span>');
     expect(page).toContain("2026-09-15 10:30 UTC");

@@ -40,8 +40,9 @@ const lampText = (s) => (s === "mpv-down" ? "player down" : s);
 // falls behind and plays the file in slow motion.
 const decodeBadge = (d) => {
   if (!d.decode_mode) return "";
-  // Under 0.9 of real speed is the thing the owner sees: say it in those words, next to why.
-  const slow = d.play_rate && d.play_rate < 0.9 ? ` · playing at ${d.play_rate.toFixed(2)}x speed` : "";
+  // Under 0.9 of real speed is the thing the owner sees: say it in those words, next to why. The
+  // player reports it only while playing, so a paused or offline one shows its last measure.
+  const slow = d.play_rate && d.play_rate < 0.9 ? ` · ${d.lamp === "playing" ? "playing" : "last played"} at ${d.play_rate.toFixed(2)}x speed` : "";
   // Right speed, uneven picture: a film whose frame rate does not divide into the screen's refresh
   // shows some frames longer than others, which looks like slow motion without being it.
   const round1 = (n) => String(Math.round(n * 10) / 10);
@@ -56,7 +57,8 @@ const decodeBadge = (d) => {
     : `<span class="badge badge-muted decode-badge" title="Hardware decoding (${esc(d.decode_mode)})">hardware decoding${esc(slow)}${esc(pacing)}</span>`;
 };
 // A failed remote update (last_update_ok = 0, api.storeUpdateStatus) is a fault until the next report.
-export const isFault = (d) => d.lamp === "mpv-down" || d.lamp === "offline" || d.last_update_ok === 0;
+// A projector whose alerts are paused (a spare, off on purpose) is never one.
+export const isFault = (d) => !d.alerts_paused && (d.lamp === "mpv-down" || d.lamp === "offline" || d.last_update_ok === 0);
 
 // Fill in the served playlist (schedule/device/group/account Default), screenshot age + stale
 // flag and last-seen age for a list of device rows (web._decorate_device), with the fleet's
@@ -175,8 +177,12 @@ const screenshotHref = (d) => `/devices/${d.id}/screenshot?t=${esc(encodeURIComp
 
 // What the player last reported playing, by its Library name (it reports the stored
 // '<sha16>_u<id>_<name>'; a file with no Library row, from a USB stick or the dev seed, as
-// reported). An offline projector's report is its last one, not what is on the wall now.
-const nowText = (d) => `${d.offline ? "last: " : ""}#${(d.current_position || 0) + 1} ${d.current_name || d.current_filename}`;
+// reported). An offline projector's report is its last one, not what is on the wall now. HTML;
+// `href` links the name.
+const nowText = (d, href = "") => {
+  const name = esc(d.current_name || d.current_filename);
+  return `${d.offline ? "last: " : ""}#${(d.current_position || 0) + 1} ${href ? `<a href="${href}">${name}</a>` : name}`;
+};
 
 // The `.device-screen` block shared by the Devices rows and the dashboard wall: thumb (or
 // NO SIGNAL), age chip + live/stale chip; `link` wraps the thumb in a new-tab link, `now`
@@ -201,7 +207,7 @@ export function deviceScreen(d, { link = false, now = false, tz = null, staleTit
   }
   return `<div class="device-screen${d.screenshot_stale ? " is-stale" : ""}">
       ${inner}
-      ${now && d.current_filename ? `<span class="screen-now">${esc(nowText(d))}</span>` : ""}
+      ${now && d.current_filename ? `<span class="screen-now">${nowText(d)}</span>` : ""}
     </div>`;
 }
 
@@ -518,6 +524,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
       <span class="device-name">${esc(d.name)}</span>
       <span class="device-id"><code>${esc(d.device_id)}</code>${d.group_name ? ` · ${esc(d.group_name)}` : ""}${d.pi_model ? ` · ${esc(d.pi_model)}` : ""}${isAdmin ? ` · ${d.owner_name ? esc(d.owner_name) : "no owner"}` : ""}</span>
       ${statusLamp(d)}
+      ${d.alerts_paused ? '<span class="badge badge-muted alerts-paused">alerts paused</span>' : ""}
       ${canEdit ? `<form method="post" action="/devices/${d.id}/rename" class="inline">
         ${csrfInput(ctx)}
         <input type="text" name="name" value="${esc(d.name)}" maxlength="${MAX_DEVICE_NAME}" required aria-label="Device name">
@@ -542,12 +549,12 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
 
       <div class="now-block${d.active_playlist_name ? "" : " none"}">
         <span class="now-label">active now${d.active_playlist_name ? ` · via ${esc(d.active_source)}` : ""}</span>
-        <span class="now-playlist">${d.active_playlist_name ? esc(d.active_playlist_name) : "no playlist"}</span>
+        <span class="now-playlist">${!d.active_playlist_name ? "no playlist" : ownContent ? `<a href="/playlists/${d.active_playlist_id}">${esc(d.active_playlist_name)}</a>` : esc(d.active_playlist_name)}</span>
         ${d.active_playlist_name && d.active_playlist_empty
-    ? `<span class="now-file">nothing in it yet · ${d.active_source === "default playlist" ? '<a href="/library">upload files in the Library</a>' : `<a href="/playlists/${d.active_playlist_id}">add files to it</a>`}</span>`
+    ? `<span class="now-file">nothing in it yet${canEdit && ownContent ? ` · ${d.active_source === "default playlist" ? '<a href="/library">upload files in the Library</a>' : `<a href="/playlists/${d.active_playlist_id}">add files to it</a>`}` : ""}</span>`
     : ""}
         ${d.current_filename
-    ? `<span class="now-file">${esc(nowText(d))}${d.player_status && !d.offline ? ` · ${esc(lampText(d.player_status))}` : ""}</span>`
+    ? `<span class="now-file">${nowText(d, ownContent && d.current_media_id ? `/library/${d.current_media_id}` : "")}${d.player_status && !d.offline ? ` · ${esc(lampText(d.player_status))}` : ""}</span>`
     : ""}
       </div>
 
@@ -649,6 +656,11 @@ sudo -E bash deploy/install-player.sh</pre>
         </div>
       </details>` : ""}
       <div class="action-buttons">
+        <form method="post" action="/devices/${d.id}/alerts" class="inline">
+          ${csrfInput(ctx)}
+          <input type="hidden" name="paused" value="${d.alerts_paused ? 0 : 1}">
+          <button type="submit" class="small">${d.alerts_paused ? "Resume alerts" : "Pause alerts"}</button>
+        </form>
         <form method="post" action="/devices/${d.id}/delete" class="inline" data-confirm="Delete device ${esc(d.name)}? Its schedule rules, command history and alerts go with it; the Pi keeps playing what it has until it is re-flashed.">
           ${csrfInput(ctx)}
           <button type="submit" class="danger small">Delete device</button>
@@ -669,13 +681,17 @@ export const noProjectors = (canEdit) => emptyState("NO PROJECTORS", canEdit
 // an admin) with the columns the Devices page and the Dashboard need, content_owner and its
 // username, the playlist / group names only when they are the projector's own account's
 // (another account's reads as none), and current_name, the Library name of the file the player
-// reports (media.filename is unique: one indexed read per projector).
+// reports (media.filename is unique: one indexed read per projector; a file in Recently deleted
+// keeps its name there, looked up only when the Library has none), with its Library id, and
+// alerts_paused, which isFault reads.
 export function visibleDevices(env, user, cols, own = ownedClause(user)) {
   const co = accounts.contentOwnerSql("d");
   return db.all(env,
-    `SELECT ${cols}, d.owner_id, ${co} AS content_owner,
+    `SELECT ${cols}, d.owner_id, ${co} AS content_owner, d.alerts_paused,
             p.id AS playlist_id, p.name AS playlist_name, g.id AS group_id, g.name AS group_name,
-            u.username AS owner_name, cu.username AS content_owner_name, cm.original_name AS current_name
+            u.username AS owner_name, cu.username AS content_owner_name, cm.id AS current_media_id,
+            COALESCE(cm.original_name, (SELECT t.original_name FROM media_trash t
+              WHERE t.owner_id = ${co} AND t.filename = d.current_filename ORDER BY t.id DESC LIMIT 1)) AS current_name
        FROM devices d
        LEFT JOIN playlists p ON p.id = d.playlist_id AND p.owner_id = ${co}
        LEFT JOIN device_groups g ON g.id = d.group_id AND g.owner_id = ${co}
@@ -782,7 +798,8 @@ ${!devices.length
 
 // A change made on one projector's card lands back on that card (deviceRow's id): on a phone each
 // projector is a few screens tall, and every change used to start the scroll again from the top.
-// A new or deleted projector, the fleet update and a hand-over's notice still land at the top.
+// app.js moves the change's notice into the card. A new or deleted projector, the fleet update and
+// a hand-over's notice still land at the top.
 const cardUrl = (id) => `/devices#device-${id}`;
 
 // A manual addition belongs to whoever adds it (an admin's too: an ownerless projector would
@@ -862,12 +879,13 @@ async function devicesRegenToken(ctx) {
   await db.run(ctx.env, "UPDATE devices SET token = ? WHERE id = ?", randomToken(32), deviceId);
   await audit.log(ctx, "device_regen_token", "device", deviceId, null, undefined, row.owner_id);
   let message = `New token made for ${row.name}: open Token / install and run the install command on the Pi again.`;
+  const back = `/devices?open=${deviceId}#device-${deviceId}`; // its card, Token / install open
   if (row.tunnel_id && cloudflare.configured(ctx.env)) {
     const tunnel = await rotateTunnelBanner(ctx, row);
-    if (tunnel.error) return auth.flashRedirect(ctx, `/devices?open=${deviceId}`, `${message} ${tunnel.error}`, "error");
+    if (tunnel.error) return auth.flashRedirect(ctx, back, `${message} ${tunnel.error}`, "error");
     message += " Its camera tunnel was recreated too.";
   }
-  return auth.flashRedirect(ctx, `/devices?open=${deviceId}`, message);
+  return auth.flashRedirect(ctx, back, message);
 }
 
 async function devicesDelete(ctx) {
@@ -922,6 +940,22 @@ async function devicesCancelCommands(ctx) {
   if (!changes) return auth.flashRedirect(ctx, cardUrl(deviceId), `Nothing was waiting for ${row.name}.`, "warn");
   await audit.log(ctx, "device_cancel_commands", "device", deviceId, { cancelled: changes }, undefined, row.owner_id);
   return auth.flashRedirect(ctx, cardUrl(deviceId), `Cancelled ${changes} waiting command${changes === 1 ? "" : "s"} for ${row.name}.`);
+}
+
+// Pause alerts (a spare or seasonal projector, off on purpose; migration 0020): the alert check
+// skips it (alerts.conditions), the Dashboard counts no fault for it, and the alerts it had open
+// close now, with no recovered message. Resume puts it back under its account's alert settings.
+async function devicesPauseAlerts(ctx) {
+  auth.requireRole(ctx, "editor");
+  const deviceId = idParam(ctx.params.device_id, "device_id");
+  const paused = str(await ctx.form(), "paused") === "1" ? 1 : 0;
+  const row = await requireDevice(ctx, deviceId, "d.name");
+  await db.batch(ctx.env, [
+    ["UPDATE devices SET alerts_paused = ? WHERE id = ?", paused, deviceId],
+    ["UPDATE alerts SET closed_at = datetime('now') WHERE device_id = ? AND closed_at IS NULL AND ? = 1", deviceId, paused],
+  ]);
+  await audit.log(ctx, paused ? "device_pause_alerts" : "device_resume_alerts", "device", deviceId, null, undefined, row.owner_id);
+  return auth.flashRedirect(ctx, cardUrl(deviceId), `${paused ? "Alerts paused" : "Alerts resumed"} for ${row.name}.`);
 }
 
 // Fleet action: queue one update command for every device the user may see that is not already
@@ -1063,8 +1097,8 @@ async function devicesCreateTunnel(ctx) {
   if (!cloudflare.configured(ctx.env)) fail(400, `automatic tunnels are not configured (${cloudflare.missing(ctx.env).join(", ")} not set)`);
   const row = await requireDevice(ctx, deviceId, "d.id, d.device_id, d.tunnel_id");
   const done = row.tunnel_id ? await rotateTunnelBanner(ctx, row) : await cloudflare.tryProvisionDevice(ctx, row);
-  if (done.error) return auth.flashRedirect(ctx, "/devices", row.tunnel_id ? done.error : `Tunnel creation failed: ${done.error}`, "error");
-  return auth.flashRedirect(ctx, "/devices", `Tunnel ready: https://${done.hostname}/ (the Pi picks up the ${row.tunnel_id ? "new " : ""}tunnel key on its next check-in; open the live view logged in to Cloudflare Access).`);
+  if (done.error) return auth.flashRedirect(ctx, cardUrl(deviceId), row.tunnel_id ? done.error : `Tunnel creation failed: ${done.error}`, "error");
+  return auth.flashRedirect(ctx, cardUrl(deviceId), `Tunnel ready: https://${done.hostname}/ (the Pi picks up the ${row.tunnel_id ? "new " : ""}tunnel key on its next check-in; open the live view logged in to Cloudflare Access).`);
 }
 
 // Projector block form: control none | broadlink | cec, power mode manual | auto, optional RM4
@@ -1125,6 +1159,7 @@ export function register(router) {
   router.post("/devices/:device_id/delete", devicesDelete);
   router.post("/devices/:device_id/command", devicesSendCommand);
   router.post("/devices/:device_id/command/cancel", devicesCancelCommands);
+  router.post("/devices/:device_id/alerts", devicesPauseAlerts);
   router.post("/devices/update-all", devicesUpdateAll);
   router.get("/devices/:device_id/screenshot", devicesScreenshot);
   router.get("/devices/:device_id/camera", devicesCamera);

@@ -126,7 +126,7 @@ describe("page content", () => {
     expect(page).toContain('data-confirm="Reboot x&#39;);alert(1);//dev?"');
     expect(page).toContain('data-confirm="Update the player software on x&#39;);alert(1);//dev? Playback restarts."');
     expect(page).toContain('<span class="now-label">active now · via schedule: r</span>');   // the rule wins over the default
-    expect(page).toContain('<span class="now-playlist">Default PL</span>');
+    expect(page).toContain(`<span class="now-playlist"><a href="/playlists/${w.pid}">Default PL</a></span>`);
     expect(page).toContain(`<a href="/devices/${w.dev.id}/schedule" class="button">Schedule (1)</a>`);
     expect(page).toContain('<div class="alert error" title="Reported by the player on its last sync">Sync problem: download failed: &lt;b&gt;a.mp4&lt;/b&gt;</div>');
     expect(page).toContain('<span class="label">last seen</span><span class="value">1 min ago<br>');

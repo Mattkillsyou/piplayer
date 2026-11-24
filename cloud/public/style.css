@@ -1543,3 +1543,6 @@ a.card:hover { text-decoration: none; border-color: var(--p5k-rule-strong); }
 
 /* account: missing-change-own-password */
 @media (max-width: 1240px), (pointer: coarse) { .topbar .user a.username { display: flex; align-items: center; min-width: var(--p5k-touch); min-height: var(--p5k-touch); } }
+
+/* devices: missing-pause-alerts-per-projector */
+.device-row .alerts-paused { align-self: flex-start; justify-self: start; }

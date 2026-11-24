@@ -284,7 +284,7 @@ describe("provisioning", () => {
     // a new one made under the same name and hostname, so the old connector token stops working
     fake.calls.length = 0;
     const ok = await post(r.editor, `/devices/${lobby.id}/tunnel`);
-    expect([ok.status, ok.headers.get("location")]).toEqual([303, "/devices"]);
+    expect([ok.status, ok.headers.get("location")]).toEqual([303, `/devices#device-${lobby.id}`]);
     expect(shapes(fake.calls).slice(0, 2)).toEqual(["DELETE /accounts/acct1/cfd_tunnel/tun-1/connections", "DELETE /accounts/acct1/cfd_tunnel/tun-1"]);
     expect(fake.state.tunnels.map((t) => t.id)).toEqual(["tun-5"]);
     expect(await devRow(lobby.id)).toEqual({ tunnel_id: "tun-5", tunnel_hostname: "lobby-cam.photogen5000.com", camera_live_url: "https://lobby-cam.photogen5000.com/" });
@@ -301,7 +301,7 @@ describe("provisioning", () => {
     // refusal -> banner with the reason, audited, row untouched (the next Recreate finds the half-made tunnel by name)
     fake.refuse = { key: "PUT /accounts/acct1/cfd_tunnel/tun-7/configurations", message: "tunnel is locked" };
     const bad = await post(r.editor, `/devices/${lobby.id}/tunnel`);
-    expect([bad.status, bad.headers.get("location")]).toEqual([303, "/devices"]);
+    expect([bad.status, bad.headers.get("location")]).toEqual([303, `/devices#device-${lobby.id}`]);
     page = await (await r.editor.get("/devices")).text();
     expect(page).toContain('<div class="alert error" role="alert">The camera tunnel could not be recreated: Cloudflare API PUT /accounts/.../cfd_tunnel/tun-7/configurations: tunnel is locked. Click Recreate tunnel on the Devices page to try again.</div>');
     expect((await audits("device_tunnel_failed"))[0]).toMatchObject({ username: "ed", target_id: String(lobby.id) });
@@ -326,7 +326,7 @@ describe("provisioning", () => {
     const token = () => one("SELECT token FROM devices WHERE id = ?", hall.id).then((x) => x.token);
     // not configured: the token changes, nothing is called, plain banner
     let res = await post(r.editor, `/devices/${hall.id}/regen-token`);
-    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${hall.id}`]);
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${hall.id}#device-${hall.id}`]);
     expect(await token()).not.toBe(hall.token);
     let page = await (await r.editor.get(`/devices?open=${hall.id}`)).text();
     expect(page).toContain('<div class="alert ok" role="alert">New token made for Hall &lt;tok&gt;: open Token / install and run the install command on the Pi again.</div>');
@@ -344,7 +344,7 @@ describe("provisioning", () => {
     fake.calls.length = 0;
     const before = await token();
     res = await post(r.editor, `/devices/${hall.id}/regen-token`);
-    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${hall.id}`]);
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${hall.id}#device-${hall.id}`]);
     expect(await token()).not.toBe(before);
     expect(shapes(fake.calls).slice(0, 2)).toEqual(["DELETE /accounts/acct1/cfd_tunnel/tun-1/connections", "DELETE /accounts/acct1/cfd_tunnel/tun-1"]);
     expect((await devRow(hall.id)).tunnel_id).toBe("tun-5");
