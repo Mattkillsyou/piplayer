@@ -27,3 +27,20 @@ describe("a notice too long for its cookie", () => {
     }
   });
 });
+
+describe("the small picture of a picture no larger than a preview", () => {
+  it("keeps its redirect a week; a larger picture, or one of unknown size, is asked for again", async () => {
+    const thumb = async (name, width, height) => {
+      const m = await media(name);
+      await query("UPDATE media SET width = ?, height = ? WHERE id = ?", width, height, m);
+      const res = await r.editor.get(`/library/${m}/thumb`);
+      expect(res.status, name).toBe(302);
+      return res.headers.get("cache-control");
+    };
+    expect(await thumb("small.png", 600, 400)).toBe("private, max-age=604800");
+    expect(await thumb("square.gif", 640, 640)).toBe("private, max-age=604800");
+    expect(await thumb("wide.jpg", 641, 100)).toBe("no-store");
+    expect(await thumb("unknown.png", null, null)).toBe("no-store");
+    expect(await thumb("zero.png", 0, 0)).toBe("no-store");
+  });
+});

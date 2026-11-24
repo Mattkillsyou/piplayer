@@ -540,7 +540,7 @@ describe("library previews and Delete selected", () => {
   });
 
   it("a picture with no preview yet sends the picture, a video 404; a stored preview is served to its own account only", async () => {
-    let r = await uploadWhole(editor, editorCsrf, "thumb-pic.png", fakeFile(500, 41), { media_type: "image" });
+    let r = await uploadWhole(editor, editorCsrf, "thumb-pic.png", fakeFile(500, 41), { media_type: "image", width: 4032, height: 3024 });
     const pic = (await r.json()).media_id;
     r = await uploadWhole(editor, editorCsrf, "thumb-clip.mp4", fakeFile(700, 42));
     const clip = (await r.json()).media_id;

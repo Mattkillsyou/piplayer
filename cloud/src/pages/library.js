@@ -471,15 +471,18 @@ async function ownMedia(ctx, user, cols) {
 
 // The small picture of a file: the stored preview, else the file itself when a browser can
 // show it as a picture (a redirect, so the copy the viewer needs is fetched once), else 404.
+// A picture no larger than a preview (media.js MAX_SIDE, 640) never gets one: its redirect is
+// kept like a preview, or every view of the page would ask for it again.
 async function thumbGet(ctx) {
-  const row = await ownMedia(ctx, auth.requireUser(ctx), "filename");
+  const row = await ownMedia(ctx, auth.requireUser(ctx), "filename, width, height");
   try {
     return await media.serveObject(ctx.request, ctx.env.MEDIA, media.thumbKey(row.filename), { "cache-control": THUMB_CACHE });
   } catch (e) {
     if (!(e instanceof HttpError) || e.status !== 404) throw e;
   }
   if (!isPicture(row.filename)) fail(404, "No preview yet");
-  return new Response(null, { status: 302, headers: { location: `/api/media/${row.filename}`, "cache-control": "no-store" } });
+  const small = row.width > 0 && row.height > 0 && Math.max(row.width, row.height) <= 640;
+  return new Response(null, { status: 302, headers: { location: `/api/media/${row.filename}`, "cache-control": small ? THUMB_CACHE : "no-store" } });
 }
 
 // Store the preview media.js made in the browser: a JPEG, small, for one of the caller's own files.
