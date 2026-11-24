@@ -65,7 +65,7 @@ describe("delete", () => {
     await fill(q, [c, b]);
     const row = await one("SELECT * FROM media WHERE id = ?", b.id);
     expect((await post(r.editor, "/library/delete", [["one", String(b.id)]])).status).toBe(303);
-    expect(await flash(r.editor)).toEqual(["ok", "Deleted d-b.png."]);
+    expect(await flash(r.editor)).toEqual(["ok", "Moved d-b.png to Recently deleted."]);
     expect(await one("SELECT id FROM media WHERE id = ?", b.id)).toBeNull();
     const t = await trashed(b);
     expect(t).toMatchObject({

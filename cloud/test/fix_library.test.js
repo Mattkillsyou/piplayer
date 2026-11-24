@@ -46,6 +46,25 @@ describe("a file's own page", () => {
   });
 });
 
+describe("a delete says where the files went", () => {
+  it("each question and notice names Recently deleted, where a file is kept 30 days", async () => {
+    const [a, b, c, d] = [await media("del-a.png"), await media("del-b.png"), await media("del-c.png"), await media("del-d.png")];
+    const library = await (await r.editor.get("/library")).text();
+    expect(library).toContain(`value="${a}" class="danger small" data-confirm="Delete del-a.png? It is removed from every playlist that uses it and kept in Recently deleted for 30 days.">Delete</button>`);
+    expect(library).toContain('data-confirm="Delete the selected files? They are removed from every playlist that uses them and kept in Recently deleted for 30 days.">Delete selected</button>');
+    expect(await (await r.editor.get(`/library/${a}`)).text())
+      .toContain(`action="/library/${a}/delete" class="inline" data-confirm="Delete del-a.png? It is removed from every playlist that uses it and kept in Recently deleted for 30 days.">`);
+    await post(r.editor, `/library/${a}/delete`);
+    expect(await flash(r.editor)).toEqual(["ok", "Moved del-a.png to Recently deleted."]);
+    await post(r.editor, "/library/delete", [["one", String(b)]]);
+    expect(await flash(r.editor)).toEqual(["ok", "Moved del-b.png to Recently deleted."]);
+    await post(r.editor, "/library/delete", [["media_id", String(c)], ["media_id", String(d)]]);
+    expect(await flash(r.editor)).toEqual(["ok", "Moved 2 files to Recently deleted."]);
+    expect(await query("SELECT original_name FROM media_trash WHERE media_id IN (?, ?, ?, ?) ORDER BY media_id", a, b, c, d))
+      .toEqual(["del-a.png", "del-b.png", "del-c.png", "del-d.png"].map((original_name) => ({ original_name })));
+  });
+});
+
 describe("the small picture of a picture no larger than a preview", () => {
   it("keeps its redirect a week; a larger picture, or one of unknown size, is asked for again", async () => {
     const thumb = async (name, width, height) => {

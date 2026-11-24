@@ -262,7 +262,7 @@ describe("a page per file (GET /library/<id>)", () => {
     expect(page).toContain('data-meta="Video · 1:05 · 1920×1080 · 12 MB · uploaded ');
     expect(page).toContain(`<img src="/library/${m}/thumb?v=f1_u1_Lobby_loop"`);
     expect(page).toContain('<a class="button small" href="/api/media/f1_u1_Lobby_loop.mp4" download="Lobby loop.mp4">Download</a>');
-    expect(page).toMatch(new RegExp(`<form method="post" action="/library/${m}/delete" class="inline" data-confirm="Delete Lobby loop.mp4\\? It is removed from every playlist that uses it.">\\s*<input type="hidden" name="csrf_token" value="[^"]+">\\s*<button type="submit" class="danger small">Delete</button>`));
+    expect(page).toMatch(new RegExp(`<form method="post" action="/library/${m}/delete" class="inline" data-confirm="Delete Lobby loop.mp4\\? It is removed from every playlist that uses it and kept in Recently deleted for 30 days.">\\s*<input type="hidden" name="csrf_token" value="[^"]+">\\s*<button type="submit" class="danger small">Delete</button>`));
     expect(page).toContain(`<h2>Playlists (2)</h2>\n<ul>\n  <li><a href="/playlists/${first}">A first</a></li>\n  <li><a href="/playlists/${second}">b-second</a></li>\n</ul>`);
     expect(page).toContain('<script src="/static/media.js"></script>');
   });

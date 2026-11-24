@@ -124,7 +124,7 @@ function card(v, tz, editor, playlists, defaultId) {
   const actions = editor ? `
       <div class="media-actions">
         <label class="inline-check"><input type="checkbox" name="media_id" value="${v.id}" aria-label="Select ${esc(v.original_name)}">Select</label>
-        <button type="submit" name="one" value="${v.id}" class="danger small" data-confirm="Delete ${esc(v.original_name)}? It is removed from every playlist that uses it.">Delete</button>
+        <button type="submit" name="one" value="${v.id}" class="danger small" data-confirm="Delete ${esc(v.original_name)}? It is removed from every playlist that uses it and kept in Recently deleted for ${TRASH_DAYS} days.">Delete</button>
       </div>` : "";
   return `    <li class="media-card" data-name="${esc(v.original_name)}" data-kind="${esc(v.media_type)}" data-size="${Number(v.size_bytes) || 0}" data-length="${Number(v.duration_seconds) || 0}" data-use="${use}">
       ${thumbCell(v, meta)}
@@ -188,7 +188,7 @@ async function libraryPage(ctx) {
   <div class="media-bar">
     <div class="action-buttons">
       <button type="button" class="small" data-select-all>Select all</button>
-      <button type="submit" class="danger small" data-delete-selected data-confirm="Delete the selected files? They are removed from every playlist that uses them.">Delete selected</button>
+      <button type="submit" class="danger small" data-delete-selected data-confirm="Delete the selected files? They are removed from every playlist that uses them and kept in Recently deleted for ${TRASH_DAYS} days.">Delete selected</button>
     </div>
     <div class="action-buttons media-add">
       <select name="playlist_id" id="add-to" aria-label="Playlist"><option value="">Pick a playlist</option>${playlists.map((p) => `<option value="${p.id}"${p.id === to ? " selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
@@ -443,7 +443,7 @@ async function libraryDelete(ctx) {
   const mediaId = idParam(ctx.params.media_id, "media_id");
   const [row] = await deleteMedia(ctx, user, [mediaId]);
   if (!row) fail(404, "Not Found");
-  return auth.flashRedirect(ctx, "/library", `Deleted ${row.original_name}.`);
+  return auth.flashRedirect(ctx, "/library", `Moved ${row.original_name} to Recently deleted.`);
 }
 
 // The grid's form: `one` is the file whose own Delete was pressed, else every ticked `media_id`.
@@ -459,7 +459,7 @@ async function libraryDeleteMany(ctx) {
   if (picked.length > MAX_DELETE) fail(400, `Delete at most ${MAX_DELETE} files at a time`);
   const rows = await deleteMedia(ctx, user, [...new Set(picked.map((v) => idParam(v, "media_id")))]);
   if (!rows.length) return auth.flashRedirect(ctx, "/library", "Nothing was deleted: those files are no longer in the library.", "warn");
-  return auth.flashRedirect(ctx, "/library", rows.length === 1 ? `Deleted ${rows[0].original_name}.` : `Deleted ${rows.length} files.`);
+  return auth.flashRedirect(ctx, "/library", rows.length === 1 ? `Moved ${rows[0].original_name} to Recently deleted.` : `Moved ${rows.length} files to Recently deleted.`);
 }
 
 // The caller's own media row (`cols`) behind :media_id, or the 404 a missing id gets.
@@ -588,7 +588,7 @@ async function filePage(ctx) {
 ${thumbCell(m, meta)}
 <div class="action-buttons">
   <a class="button small" href="/api/media/${esc(m.filename)}" download="${esc(saveAs)}">Download</a>
-  ${editor ? `<form method="post" action="/library/${m.id}/delete" class="inline" data-confirm="Delete ${esc(m.original_name)}? It is removed from every playlist that uses it.">
+  ${editor ? `<form method="post" action="/library/${m.id}/delete" class="inline" data-confirm="Delete ${esc(m.original_name)}? It is removed from every playlist that uses it and kept in Recently deleted for ${TRASH_DAYS} days.">
     ${csrfInput(ctx)}
     <button type="submit" class="danger small">Delete</button>
   </form>` : ""}
