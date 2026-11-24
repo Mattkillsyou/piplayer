@@ -88,27 +88,27 @@ describe("media.js Find / Show / Sort", () => {
     expect([p.bulk.disabled, p.add.disabled, p.all.textContent]).toEqual([true, true, "Select all"]);
     p.tick("Zed.png", "lobby poster.png");
     expect([p.bulk.disabled, p.bulk.textContent, p.picked.textContent]).toEqual([false, "Delete selected (2)", "2 files selected"]);
-    expect(p.bulk.dataset.confirm).toBe("Delete Zed.png and lobby poster.png? They are removed from every playlist that uses them.");
+    expect(p.bulk.dataset.confirm).toBe("Delete Zed.png and lobby poster.png? They are removed from every playlist that uses them and kept in Recently deleted for 30 days.");
     expect([p.add.disabled, p.add.textContent]).toEqual([true, "Add to playlist (2)"]); // no playlist picked yet
     p.set("add-to", "7");
     expect(p.add.disabled).toBe(false);
 
     p.set("find-q", "lobby", "input");
     expect([p.count(), p.bulk.textContent, p.add.textContent]).toEqual(["Media (1 of 4)", "Delete selected (1)", "Add to playlist (1)"]);
-    expect(p.bulk.dataset.confirm).toBe("Delete lobby poster.png? It is removed from every playlist that uses it.");
+    expect(p.bulk.dataset.confirm).toBe("Delete lobby poster.png? It is removed from every playlist that uses it and kept in Recently deleted for 30 days.");
     p.set("find-q", "", "input");
     expect(p.bulk.textContent).toBe("Delete selected (1)"); // Zed.png came back unticked
 
     p.set("find-show", "video");
     p.all.fire("click");
     expect([p.bulk.textContent, p.all.textContent]).toEqual(["Delete selected (2)", "Select none"]);
-    expect(p.bulk.dataset.confirm).toBe("Delete Clip 10.mp4 and Clip 2.mp4? They are removed from every playlist that uses them.");
+    expect(p.bulk.dataset.confirm).toBe("Delete Clip 10.mp4 and Clip 2.mp4? They are removed from every playlist that uses them and kept in Recently deleted for 30 days.");
     p.set("find-show", "");
     p.all.fire("click"); // tops up to data-max (3) from the top of what is shown
-    expect(p.bulk.dataset.confirm).toBe("Delete Zed.png, Clip 10.mp4 and Clip 2.mp4? They are removed from every playlist that uses them.");
+    expect(p.bulk.dataset.confirm).toBe("Delete Zed.png, Clip 10.mp4 and Clip 2.mp4? They are removed from every playlist that uses them and kept in Recently deleted for 30 days.");
     p.tick(...FILES.map(([name]) => name));
     expect([p.bulk.disabled, p.bulk.textContent, p.add.disabled, p.add.textContent]).toEqual([true, "Delete at most 3", true, "Add at most 3"]);
-    expect(p.bulk.dataset.confirm).toBe("Delete these 4 files? They are removed from every playlist that uses them.");
+    expect(p.bulk.dataset.confirm).toBe("Delete these 4 files? They are removed from every playlist that uses them and kept in Recently deleted for 30 days.");
   });
 
   it("the view is kept for the tab and put back after a reload", async () => {

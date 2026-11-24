@@ -120,6 +120,14 @@ describe("media.js Find / Show", () => {
     p = await library({ store, shows: SHOWS.filter((s) => s !== "in:1") }); // that playlist was deleted
     expect([p.ids["find-show"].value, p.shown()]).toEqual(["", ["Clip 10.mp4", "Clip 2.mp4"]]);
   });
+
+  it("Delete selected's question says the files are kept in Recently deleted", async () => {
+    const p = await library();
+    p.tick("Zed.png");
+    expect(p.bulk.dataset.confirm).toBe("Delete Zed.png? It is removed from every playlist that uses it and kept in Recently deleted for 30 days.");
+    p.tick("Zed.png", "Clip 2.mp4");
+    expect(p.bulk.dataset.confirm).toBe("Delete Zed.png and Clip 2.mp4? They are removed from every playlist that uses them and kept in Recently deleted for 30 days.");
+  });
 });
 
 // --------------------------------------------------------------------------- a page of parts ---

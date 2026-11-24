@@ -461,8 +461,8 @@
       bulk.disabled = !n || n > max;
       bulk.textContent = n > max ? 'Delete at most ' + max : n ? 'Delete selected (' + n + ')' : 'Delete selected';
       bulk.dataset.confirm = n === 1
-        ? 'Delete ' + last + '? It is removed from every playlist that uses it.'
-        : 'Delete ' + (n > 3 || !n ? 'these ' + n + ' files' : names.join(', ') + ' and ' + last) + '? They are removed from every playlist that uses them.';
+        ? 'Delete ' + last + '? It is removed from every playlist that uses it and kept in Recently deleted for 30 days.'
+        : 'Delete ' + (n > 3 || !n ? 'these ' + n + ' files' : names.join(', ') + ' and ' + last) + '? They are removed from every playlist that uses them and kept in Recently deleted for 30 days.';
       if (add && addTo) {
         add.disabled = !n || n > max || !addTo.value;
         add.textContent = n > max ? 'Add at most ' + max : n ? 'Add to playlist (' + n + ')' : 'Add to playlist';
