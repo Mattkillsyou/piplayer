@@ -22,9 +22,6 @@ CREATE TABLE IF NOT EXISTS media_trash (
     deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_media_trash_owner ON media_trash(owner_id, deleted_at);
--- Every upload init asks whether its stored name is one waiting here (src/uploads.js): without
--- this, each init read every account's Recently deleted.
-CREATE INDEX IF NOT EXISTS idx_media_trash_filename ON media_trash(filename);
 
 -- Every media delete (Library, an account delete) looked up the file's playlist items by
 -- media_id, a full scan of playlist_items each time: a 500-file delete read millions of rows.

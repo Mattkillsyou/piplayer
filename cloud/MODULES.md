@@ -543,9 +543,10 @@ it keeps serving between `migrations apply` and `wrangler deploy`.
 
 `migrations/0020_device_alerts_paused.sql` (schema_version 20) adds `devices.alerts_paused`
 (INTEGER NOT NULL DEFAULT 0, 0 or 1; Alerts below) and `idx_media_trash_filename` on
-`media_trash(owner_id, filename)`, so Devices and the Dashboard name a now-playing file in Recently
-deleted (`pages/devices.visibleDevices`) with one indexed read. Nothing else changes, so the worker
-from before it keeps serving between `migrations apply` and `wrangler deploy`.
+`media_trash(filename)`, so an upload init (`uploads.js`, which checks its stored name is not one
+waiting in Recently deleted) and Devices and the Dashboard naming a now-playing file in Recently
+deleted (`pages/devices.visibleDevices`) each take one indexed read. Nothing else changes, so the
+worker from before it keeps serving between `migrations apply` and `wrangler deploy`.
 
 `db.js` exports `SCHEMA_VERSION` (20) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.
