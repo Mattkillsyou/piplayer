@@ -8,7 +8,7 @@ import * as db from "../db.js";
 import { playSeconds } from "../manifest.js";
 import { esc, fail, fileSize, floatField, idParam, intField, json, jsonObject, localTime, redirect, runTime, str } from "../util.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
-import { appendToPlaylist, RENUMBER_SQL, thumbCell } from "./library.js";
+import { appendToPlaylist, MAX_DELETE, RENUMBER_SQL, thumbCell } from "./library.js";
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -49,14 +49,20 @@ async function playlistsPage(ctx) {
   const { timezone: tz, default_playlist_id: defaultId, default_image_duration: dur } = await ctx.settings();
   // The account's own playlists; "used by" counts the projectors, groups and schedule rules that
   // play them, which are all the account's own (only its projectors may point at its playlists).
+  // The Default also counts the projectors it is the fallback of: no playlist of their own and none
+  // from their group, by the manifest's rules (manifest.pick_playlist; another account's reads as none).
   const co = accounts.contentOwnerSql("d");
   const rows = await db.all(ctx.env,
     `SELECT p.id, p.name, p.updated_at,
             (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) AS item_count,
             (SELECT COUNT(*) FROM devices d WHERE d.playlist_id = p.id AND ${co} = ?1) AS device_count,
             (SELECT COUNT(*) FROM device_groups g WHERE g.playlist_id = p.id AND g.owner_id = ?1) AS group_count,
-            (SELECT COUNT(*) FROM device_schedules s JOIN devices d ON d.id = s.device_id WHERE s.playlist_id = p.id AND ${co} = ?1) AS schedule_count
-       FROM playlists p WHERE p.owner_id = ?1 ORDER BY p.name`, user.id);
+            (SELECT COUNT(*) FROM device_schedules s JOIN devices d ON d.id = s.device_id WHERE s.playlist_id = p.id AND ${co} = ?1) AS schedule_count,
+            CASE WHEN p.id = ?2 THEN (SELECT COUNT(*) FROM devices d WHERE ${co} = ?1
+              AND NOT EXISTS (SELECT 1 FROM playlists x WHERE x.id = d.playlist_id AND x.owner_id = ?1)
+              AND NOT EXISTS (SELECT 1 FROM device_groups g JOIN playlists x ON x.id = g.playlist_id AND x.owner_id = ?1
+                               WHERE g.id = d.group_id AND g.owner_id = ?1)) ELSE 0 END AS fallback_count
+       FROM playlists p WHERE p.owner_id = ?1 ORDER BY p.name`, user.id, defaultId ?? null);
   // Every item of those playlists, for each one's running time.
   const itemsOf = new Map();
   for (const it of await db.all(ctx.env,
@@ -77,7 +83,8 @@ async function playlistsPage(ctx) {
       <td data-label="Items">${p.item_count}</td>
       <td data-label="Duration" class="nowrap">${totalTime(itemsOf.get(p.id) || [], dur) || "—"}</td>
       <td data-label="Used by" class="muted">
-        <span title="devices with this as their default playlist">${plural(p.device_count, "device")}</span>
+        ${p.device_count || !p.fallback_count ? `<span title="devices with this as their default playlist">${plural(p.device_count, "device")}</span>` : ""}
+        ${p.fallback_count ? `${p.device_count ? " · " : ""}<span title="devices with no playlist of their own or from their group">${plural(p.fallback_count, "device")} (fallback)</span>` : ""}
         ${p.group_count ? ` · ${plural(p.group_count, "group")}` : ""}
         ${p.schedule_count ? ` · ${plural(p.schedule_count, "schedule rule")}` : ""}
       </td>
@@ -179,10 +186,13 @@ async function playlistsEdit(ctx) {
         </form>` : esc(it.duration_override_seconds || "—")}
       </td>
       <td>
-        ${canEdit ? `<form method="post" action="/playlists/${playlist.id}/items/${it.id}/delete" class="inline" data-confirm="Remove ${esc(it.original_name)} from ${esc(playlist.name)}? Projectors playing it skip it from their next sync.">
-          ${csrfInput(ctx)}
-          <button type="submit" class="danger small">Remove</button>
-        </form>` : ""}
+        ${canEdit ? `<div class="action-buttons">
+          <label class="inline-check"><input type="checkbox" name="item_id" value="${it.id}" form="remove-items" aria-label="Select ${esc(it.original_name)}">Select</label>
+          <form method="post" action="/playlists/${playlist.id}/items/${it.id}/delete" class="inline" data-confirm="Remove ${esc(it.original_name)} from ${esc(playlist.name)}? Projectors playing it skip it from their next sync.">
+            ${csrfInput(ctx)}
+            <button type="submit" class="danger small">Remove</button>
+          </form>
+        </div>` : ""}
       </td>
     </tr>`;
   const option = (m) => {
@@ -193,6 +203,9 @@ async function playlistsEdit(ctx) {
   };
 
   // Duplicate shares the name form (formaction) so it sits beside Rename; Enter still renames.
+  // Remove selected is a form of its own under the table (a form cannot hold the rows' forms): the
+  // rows' tick boxes join it with form="remove-items". Its hidden noop button comes first because
+  // Enter on a tick box submits through the form's first submit button (as on the Library).
   const content = `<a href="/playlists" class="back">← All playlists</a>
 <div class="page-head playlist-head">
   ${canEdit ? `<form method="post" action="/playlists/${playlist.id}/rename" class="row">
@@ -227,11 +240,16 @@ ${!items.length ? emptyState("EMPTY REEL", `Nothing queued.${canEdit ? " Add med
     ${items.map(itemRow).join("\n    ")}
   </tbody>
 </table>
-</div>`}
+</div>${canEdit ? `
+<form method="post" action="/playlists/${playlist.id}/items/delete" id="remove-items" class="action-buttons" autocomplete="off">
+  ${csrfInput(ctx)}
+  <button type="submit" name="noop" value="1" hidden></button>
+  <button type="submit" class="danger small" data-confirm="Remove the selected files from ${esc(playlist.name)}? Projectors playing it skip them from their next sync.">Remove selected</button>
+</form>` : ""}`}
 
 ${canEdit ? `<h2>Add media</h2>
 ${!available.length
-    ? `<p class="help small">Nothing to add. <a href="/library">Library</a>.</p>`
+    ? `<p class="help small">Nothing to add. <a href="/library?to=${playlist.id}">Library</a>.</p>`
     : `<div class="table-foot">
   <form method="post" action="/playlists/${playlist.id}/items">
     ${csrfInput(ctx)}
@@ -247,13 +265,15 @@ ${items.length ? '<div class="drop-hint"><span>⣿</span><span class="sans">Drag
   return layout(ctx, { title: playlist.name, content, scripts: ["/static/sortable.min.js", "/static/media.js"] });
 }
 
-// The Add media select sends one file; a post with several media_id adds them all, in that order.
+// The Add media select sends one file; a post with several media_id adds them all, in that order,
+// at most MAX_DELETE a request (as the Library's Add to playlist).
 async function playlistAddItem(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
   const ids = (await ctx.form()).getAll("media_id")
     .map((v) => intField(typeof v === "string" ? v : "", "Media to add")).filter((v) => v !== null);
   if (!ids.length) fail(400, "Pick a file to add");
+  if (ids.length > MAX_DELETE) fail(400, `Add at most ${MAX_DELETE} files at a time`);
   await ownPlaylist(ctx, playlistId);
   // A playlist holds its own account's files only (the manifest serves nothing else either).
   const { added, already } = await appendToPlaylist(ctx.env, playlistId, ids, user.id);
@@ -367,6 +387,33 @@ async function playlistRemoveItem(ctx) {
   return redirect(`/playlists/${playlistId}`);
 }
 
+// Remove selected: every ticked item of the playlist in one batch, at most MAX_DELETE. `noop` is
+// Enter on a tick box (playlistsEdit): nothing is removed, and the 204 leaves the browser on the
+// page with its ticks. An id that is not an item of this playlist is skipped.
+async function playlistRemoveItems(ctx) {
+  auth.requireRole(ctx, "editor");
+  const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
+  const form = await ctx.form();
+  if (form.has("noop")) return new Response(null, { status: 204 });
+  const { name } = await ownPlaylist(ctx, playlistId, "name");
+  const back = `/playlists/${playlistId}`;
+  const picked = form.getAll("item_id").filter((v) => typeof v === "string");
+  if (!picked.length) return auth.flashRedirect(ctx, back, "Nothing was ticked.", "warn");
+  if (picked.length > MAX_DELETE) fail(400, `Remove at most ${MAX_DELETE} files at a time`);
+  const ids = [...new Set(picked.map((v) => idParam(v, "item_id")))];
+  const doomed = "FROM playlist_items WHERE playlist_id = ?1 AND id IN (SELECT value FROM json_each(?2))";
+  const [, gone] = await db.batch(ctx.env, [
+    // Before the delete, while the items are still there: updated_at moves only when one goes.
+    [`UPDATE playlists SET updated_at = datetime('now') WHERE id = ?1 AND EXISTS (SELECT 1 ${doomed})`, playlistId, JSON.stringify(ids)],
+    [`DELETE ${doomed}`, playlistId, JSON.stringify(ids)],
+    [RENUMBER_SQL, JSON.stringify([playlistId])],
+  ]);
+  const n = gone.meta.changes;
+  if (!n) return auth.flashRedirect(ctx, back, "Nothing was removed: those files are no longer in this playlist.", "warn");
+  await audit.log(ctx, "playlist_remove_items", "playlist", playlistId, { item_ids: ids, removed: n });
+  return auth.flashRedirect(ctx, back, `Removed ${plural(n, "file")} from ${name}.`);
+}
+
 async function playlistRename(ctx) {
   auth.requireRole(ctx, "editor");
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
@@ -410,6 +457,7 @@ export function register(router) {
   router.get("/playlists/:playlist_id", playlistsEdit);
   router.post("/playlists/:playlist_id/items", playlistAddItem);
   router.post("/playlists/:playlist_id/items/reorder", playlistReorder);
+  router.post("/playlists/:playlist_id/items/delete", playlistRemoveItems);
   router.post("/playlists/:playlist_id/items/:item_id/duration", playlistSetDuration);
   router.post("/playlists/:playlist_id/items/:item_id/delete", playlistRemoveItem);
   router.post("/playlists/:playlist_id/pictures", playlistSetPictures);
