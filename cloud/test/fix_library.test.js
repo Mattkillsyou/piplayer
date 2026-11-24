@@ -2,7 +2,7 @@
 // the notice a redirect carries (src/auth.js flashRedirect).
 import { beforeAll, describe, expect, it } from "vitest";
 import { query } from "./helpers.js";
-import { media, playlist, post, roles } from "./pages_common.js";
+import { defaultPlaylistOf, media, playlist, post, roles } from "./pages_common.js";
 
 let r;
 
@@ -43,6 +43,44 @@ describe("a file's own page", () => {
     const page = await (await r.editor.get(`/library/${m}`)).text();
     expect(page).toMatch(new RegExp(`<div class="page-head">\\s*<h1 class="sr-only">Named &lt;one&gt;\\.png</h1>\\s*<form method="post" action="/library/${m}/rename" class="row">`));
     expect(page.match(/<h1[ >]/g)).toHaveLength(1);
+  });
+
+  it("adds the file to one of the other playlists and comes back to the page; each one it is in links to its editor", async () => {
+    const m = await media("Poster.png");
+    const [a, b, c] = [await playlist("Alpha"), await playlist("Beta <b>"), await playlist("Gamma")];
+    const theirs = await playlist("Admin's", r.ids.admin);
+    await query("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0), (?, ?, 1)", a, m, a, m); // twice in one: listed once
+    const addForm = (html) => /<form method="post" action="\/library\/add-to-playlist" class="row">[\s\S]*?<\/form>/.exec(html)?.[0] ?? "";
+    let page = await (await r.editor.get(`/library/${m}`)).text();
+    expect(page).toContain(`<h2>Playlists (1)</h2>\n<ul>\n  <li><a href="/playlists/${a}">Alpha</a></li>\n</ul>`);
+    let form = addForm(page);
+    expect(form).toContain(`<input type="hidden" name="back" value="/library/${m}">`);
+    expect(form).toContain(`<input type="hidden" name="media_id" value="${m}">`);
+    expect(form).toMatch(/<select name="playlist_id" aria-label="Playlist" required><option value="">Pick a playlist<\/option>/);
+    expect(form).toContain('<button type="submit">Add</button>');
+    const offered = () => [...form.matchAll(/<option value="(\d+)">([^<]*)<\/option>/g)].map((o) => [Number(o[1]), o[2]]);
+    expect(offered()).toEqual([[b, "Beta &lt;b&gt;"], [await defaultPlaylistOf(r.ids.editor), "Default"], [c, "Gamma"]]); // by name, any case
+    expect(form).not.toContain(`value="${theirs}"`);
+
+    const res = await post(r.editor, "/library/add-to-playlist", [["back", `/library/${m}`], ["media_id", String(m)], ["playlist_id", String(b)]]);
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/library/${m}`]);
+    page = await (await r.editor.get(`/library/${m}`)).text();
+    expect(page).toContain('<div class="alert ok" role="alert">Added 1 file to Beta &lt;b&gt;.</div>');
+    expect(page).toContain(`<h2>Playlists (2)</h2>\n<ul>\n  <li><a href="/playlists/${a}">Alpha</a></li>\n  <li><a href="/playlists/${b}">Beta &lt;b&gt;</a></li>\n</ul>`);
+    form = addForm(page);
+    expect(offered().map(([id]) => id)).not.toContain(b);
+
+    // in every playlist of the account: nothing left to add it to
+    await query("INSERT INTO playlist_items (playlist_id, media_id, position) SELECT id, ?, 9 FROM playlists WHERE owner_id = ? AND id NOT IN (?, ?)", m, r.ids.editor, a, b);
+    expect(addForm(await (await r.editor.get(`/library/${m}`)).text())).toBe("");
+  });
+
+  it("a viewer gets no Add", async () => {
+    const m = await media("their poster.png", "image", { owner: r.ids.viewer });
+    await playlist("Viewer's own", r.ids.viewer);
+    const page = await (await r.viewer.get(`/library/${m}`)).text();
+    expect(page).toContain("<h2>Playlists (0)</h2>");
+    expect(page).not.toContain("/library/add-to-playlist");
   });
 });
 

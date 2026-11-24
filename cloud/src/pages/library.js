@@ -561,7 +561,8 @@ async function libraryAddToPlaylist(ctx) {
 }
 
 // A file's own page (the Library card's name links here): its name (a rename form for an
-// editor), the preview, the facts, Download under its own name, every playlist it is in, and
+// editor), the preview, the facts, Download under its own name, every playlist it is in (each
+// links to its editor), Add to one of the others (Add to playlist's route, back to this page) and
 // Delete. Any role, the caller's own file only (another account's id answers like a missing one).
 async function filePage(ctx) {
   const user = auth.requireUser(ctx);
@@ -569,9 +570,12 @@ async function filePage(ctx) {
   const editor = user.role !== "viewer";
   const m = await ownMedia(ctx, user, "id, original_name, filename, media_type, size_bytes, duration_seconds, width, height, uploaded_at");
   const tz = (await ctx.settings()).timezone;
-  const playlists = await db.all(ctx.env,
-    `SELECT DISTINCT p.id, p.name FROM playlist_items pi JOIN playlists p ON p.id = pi.playlist_id AND p.owner_id = ?
-      WHERE pi.media_id = ? ORDER BY p.name COLLATE NOCASE, p.id`, user.id, m.id);
+  // The account's playlists, `has` the ones the file is in.
+  const all = await db.all(ctx.env,
+    `SELECT id, name, id IN (SELECT playlist_id FROM playlist_items WHERE media_id = ?2) AS has
+       FROM playlists WHERE owner_id = ?1 ORDER BY name COLLATE NOCASE, id`, user.id, m.id);
+  const playlists = all.filter((p) => p.has);
+  const others = all.filter((p) => !p.has);
   const video = m.media_type === "video";
   const meta = [video ? "Video" : "Image", video ? runTime(m.duration_seconds) : "", m.width ? `${m.width}×${m.height}` : "",
     fileSize(m.size_bytes), `uploaded ${localTime(m.uploaded_at, tz)}`].filter(Boolean).join(" · ");
@@ -603,6 +607,13 @@ ${thumbCell(m, meta)}
 </div>
 <h2>Playlists (${playlists.length})</h2>
 ${list ? `<ul>\n  ${list}\n</ul>` : '<p class="muted">Not in any playlist</p>'}
+${editor && others.length ? `<form method="post" action="/library/add-to-playlist" class="row">
+  ${csrfInput(ctx)}
+  <input type="hidden" name="back" value="/library/${m.id}">
+  <input type="hidden" name="media_id" value="${m.id}">
+  <select name="playlist_id" aria-label="Playlist" required><option value="">Pick a playlist</option>${others.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select>
+  <button type="submit">Add</button>
+</form>` : ""}
 </div>`;
   return layout(ctx, { title: m.original_name, content, scripts: ["/static/media.js"] });
 }

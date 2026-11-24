@@ -1496,3 +1496,9 @@ html[data-theme="light"] .auth-card .wordmark { animation: none; }
 .enrollment-key input { flex: 1 1 20rem; font-family: var(--p5k-font-mono); }
 .enrollment-key + form { margin-top: var(--p5k-space-2); }
 a.card:hover { text-decoration: none; border-color: var(--p5k-rule-strong); }
+
+/* library: file-page-no-playlist-actions */
+.file-page > form.row { max-width: 640px; margin-top: 10px; }
+@media (max-width: 720px) {
+  .file-page > form.row select { min-height: var(--p5k-touch); }
+}
