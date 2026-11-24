@@ -40,8 +40,9 @@ const lampText = (s) => (s === "mpv-down" ? "player down" : s);
 // falls behind and plays the file in slow motion.
 const decodeBadge = (d) => {
   if (!d.decode_mode) return "";
-  // Under 0.9 of real speed is the thing the owner sees: say it in those words, next to why.
-  const slow = d.play_rate && d.play_rate < 0.9 ? ` · playing at ${d.play_rate.toFixed(2)}x speed` : "";
+  // Under 0.9 of real speed is the thing the owner sees: say it in those words, next to why. The
+  // player reports it only while playing, so a paused or offline one shows its last measure.
+  const slow = d.play_rate && d.play_rate < 0.9 ? ` · ${d.lamp === "playing" ? "playing" : "last played"} at ${d.play_rate.toFixed(2)}x speed` : "";
   // Right speed, uneven picture: a film whose frame rate does not divide into the screen's refresh
   // shows some frames longer than others, which looks like slow motion without being it.
   const round1 = (n) => String(Math.round(n * 10) / 10);
