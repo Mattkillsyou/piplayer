@@ -46,6 +46,16 @@ describe("a file's own page", () => {
   });
 });
 
+describe("the Library's count", () => {
+  it("is a polite live heading for every role, so a screen reader hears what Find and Show leave", async () => {
+    await media("counted.png");
+    await media("theirs-counted.png", "image", { owner: r.ids.viewer });
+    for (const c of [r.editor, r.viewer]) {
+      expect(await (await c.get("/library")).text()).toMatch(/<h2 id="media-count" aria-live="polite">Media \(\d+\)<\/h2>/);
+    }
+  });
+});
+
 describe("a delete says where the files went", () => {
   it("each question and notice names Recently deleted, where a file is kept 30 days", async () => {
     const [a, b, c, d] = [await media("del-a.png"), await media("del-b.png"), await media("del-c.png"), await media("del-d.png")];

@@ -96,7 +96,7 @@ describe("Find / Show / Sort", () => {
   it("a hidden bar outside the grid's form, for every role; the heading the script counts in", async () => {
     for (const c of [r.editor, r.viewer]) {
       const html = await page(c);
-      expect(html).toMatch(/<div class="media-head">\s*<h2 id="media-count">Media \(\d+\)<\/h2>\s*<div class="media-find" id="media-find" hidden>/);
+      expect(html).toMatch(/<div class="media-head">\s*<h2 id="media-count" aria-live="polite">Media \(\d+\)<\/h2>\s*<div class="media-find" id="media-find" hidden>/);
       expect(html).toContain('<label>Find <input type="search" id="find-q" autocomplete="off"></label>');
       expect(optionsOf(between(html, '<select id="find-show">', "</select>"))).toEqual([
         ["", "All", false], ["video", "Videos", false], ["image", "Images", false], ["default", "Only in Default", false], ["none", "In no playlist", false]]);

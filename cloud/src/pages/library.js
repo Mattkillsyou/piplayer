@@ -167,7 +167,7 @@ async function libraryPage(ctx) {
   // the script the bar stays hidden). Outside the grid's form, so Enter in it submits nothing.
   // ponytail: every card is on the page; past about 1,000 files add a server ?q= with paging.
   const head = `<div class="media-head">
-  <h2 id="media-count">Media (${items.length})</h2>
+  <h2 id="media-count" aria-live="polite">Media (${items.length})</h2>
   <div class="media-find" id="media-find" hidden>
     <label>Find <input type="search" id="find-q" autocomplete="off"></label>
     <label>Show <select id="find-show"><option value="">All</option><option value="video">Videos</option><option value="image">Images</option>${dflt ? `<option value="default">Only in ${esc(dflt.name)}</option>` : ""}<option value="none">In no playlist</option></select></label>
