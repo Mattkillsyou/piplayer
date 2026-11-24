@@ -59,7 +59,7 @@ describe("Remove selected", () => {
     const page = await (await r.editor.get(`/playlists/${pid}`)).text();
     expect(page).toContain(`<input type="checkbox" name="item_id" value="${items[0]}" form="remove-items" aria-label="Select Ticks-0.png">Select</label>`);
     // its own form (a form cannot hold the rows' forms), the noop first: Enter on a tick box presses that one
-    expect(page).toMatch(new RegExp(`</table>\\s*</div>\\s*<form method="post" action="/playlists/${pid}/items/delete" id="remove-items" class="action-buttons remove-items" autocomplete="off">\\s*<input type="hidden" name="csrf_token" value="[^"]+">\\s*<button type="submit" name="noop" value="1" hidden></button>\\s*<button type="submit" class="danger small" data-confirm="Remove the selected files from Ticks\\? Projectors playing it skip them from their next sync.">Remove selected</button>`));
+    expect(page).toMatch(new RegExp(`</table>\\s*</div>\\s*<form method="post" action="/playlists/${pid}/items/delete" id="remove-items" class="action-buttons" autocomplete="off">\\s*<input type="hidden" name="csrf_token" value="[^"]+">\\s*<button type="submit" name="noop" value="1" hidden></button>\\s*<button type="submit" class="danger small" data-confirm="Remove the selected files from Ticks\\? Projectors playing it skip them from their next sync.">Remove selected</button>`));
     // the row's own Remove stays as it was
     expect(page).toContain(`action="/playlists/${pid}/items/${items[0]}/delete" class="inline" data-confirm="Remove Ticks-0.png from Ticks? Projectors playing it skip it from their next sync."`);
     const vpid = await playlist("Viewer's", r.ids.viewer);

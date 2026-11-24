@@ -241,7 +241,7 @@ ${!items.length ? emptyState("EMPTY REEL", `Nothing queued.${canEdit ? " Add med
   </tbody>
 </table>
 </div>${canEdit ? `
-<form method="post" action="/playlists/${playlist.id}/items/delete" id="remove-items" class="action-buttons remove-items" autocomplete="off">
+<form method="post" action="/playlists/${playlist.id}/items/delete" id="remove-items" class="action-buttons" autocomplete="off">
   ${csrfInput(ctx)}
   <button type="submit" name="noop" value="1" hidden></button>
   <button type="submit" class="danger small" data-confirm="Remove the selected files from ${esc(playlist.name)}? Projectors playing it skip them from their next sync.">Remove selected</button>
