@@ -582,7 +582,7 @@ async function filePage(ctx) {
     </label>
     <button type="submit">Rename</button>
   </form>` : `<h1>${esc(m.original_name)}</h1>`}
-  <span class="page-meta">${esc(meta)}</span>
+  <span class="page-meta">${meta.split(" · ").map((f) => `<span class="nowrap">${esc(f)}</span>`).join(" · ")}</span>
 </div>
 ${thumbCell(m, meta)}
 <div class="action-buttons">

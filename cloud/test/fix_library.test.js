@@ -28,6 +28,17 @@ describe("a notice too long for its cookie", () => {
   });
 });
 
+describe("a file's own page", () => {
+  it("keeps each fact of its line whole (a phone broke the date at its hyphen); the viewer's copy stays plain", async () => {
+    const m = await media("Dated.mp4", "video", { duration: 65 });
+    await query("UPDATE media SET width = 1920, height = 1080, uploaded_at = '2026-11-17 09:51:00' WHERE id = ?", m);
+    const page = await (await r.editor.get(`/library/${m}`)).text();
+    const line = /<span class="page-meta">(.*?)<\/span>\n<\/div>/.exec(page)[1];
+    expect(line.split(" · ")).toEqual(["Video", "1:05", "1920×1080", "1.0 KB", "uploaded 2026-11-17 09:51 UTC"].map((f) => `<span class="nowrap">${f}</span>`));
+    expect(page).toContain('data-meta="Video · 1:05 · 1920×1080 · 1.0 KB · uploaded 2026-11-17 09:51 UTC"');
+  });
+});
+
 describe("the small picture of a picture no larger than a preview", () => {
   it("keeps its redirect a week; a larger picture, or one of unknown size, is asked for again", async () => {
     const thumb = async (name, width, height) => {
