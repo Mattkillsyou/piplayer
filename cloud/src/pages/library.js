@@ -575,7 +575,8 @@ async function filePage(ctx) {
   const content = `<a href="/library" class="back">← Library</a>
 <div class="file-page"${editor ? " data-thumb-put" : ""}>
 <div class="page-head">
-  ${editor ? `<form method="post" action="/library/${m.id}/rename" class="row">
+  ${editor ? `<h1 class="sr-only">${esc(m.original_name)}</h1>
+  <form method="post" action="/library/${m.id}/rename" class="row">
     ${csrfInput(ctx)}
     <label>file name
       <input type="text" name="name" value="${esc(m.original_name)}" maxlength="${MAX_NAME}" required>

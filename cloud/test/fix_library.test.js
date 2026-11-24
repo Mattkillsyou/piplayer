@@ -37,6 +37,13 @@ describe("a file's own page", () => {
     expect(line.split(" · ")).toEqual(["Video", "1:05", "1920×1080", "1.0 KB", "uploaded 2026-11-17 09:51 UTC"].map((f) => `<span class="nowrap">${f}</span>`));
     expect(page).toContain('data-meta="Video · 1:05 · 1920×1080 · 1.0 KB · uploaded 2026-11-17 09:51 UTC"');
   });
+
+  it("names the file in an h1 for an editor too, before the rename form", async () => {
+    const m = await media("Named <one>.png");
+    const page = await (await r.editor.get(`/library/${m}`)).text();
+    expect(page).toMatch(new RegExp(`<div class="page-head">\\s*<h1 class="sr-only">Named &lt;one&gt;\\.png</h1>\\s*<form method="post" action="/library/${m}/rename" class="row">`));
+    expect(page.match(/<h1[ >]/g)).toHaveLength(1);
+  });
 });
 
 describe("the small picture of a picture no larger than a preview", () => {
