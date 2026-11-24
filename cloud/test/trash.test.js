@@ -73,7 +73,7 @@ describe("delete", () => {
       size_bytes: row.size_bytes, duration_seconds: row.duration_seconds, width: row.width, height: row.height, codec: row.codec,
       sha256: row.sha256, uploaded_at: row.uploaded_at,
     });
-    expect(t.deleted_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(t.deleted_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/); // to the millisecond: deletes are told apart by it
     expect(await placesOf(b)).toEqual([{ playlist_id: p, position: 1, override: 7.5 }, { playlist_id: q, position: 1, override: null }]);
     expect(await inR2(b)).toEqual([true, true]);
     expect(await order(p)).toEqual([{ media_id: a.id, position: 0, o: null }, { media_id: c.id, position: 1, o: null }]);
@@ -217,7 +217,7 @@ describe("where a place goes back (mergePlaces)", () => {
   it("one delete: each place at its index, in playlist order; only the items after it move", () => {
     // [a, X, b, Y, c] lost X and Y in one delete: [a, b, c]
     expect(mergePlaces([item(1, 0), item(2, 1), item(3, 2)], [place(91, 3), place(90, 1, undefined, 7.5)]))
-      .toEqual({ moves: [[2, 2], [3, 4]], adds: [[90, 1, 7.5], [91, 3, null]] });
+      .toEqual({ moves: [[2, 2], [3, 4]], adds: [[90, 1, 7.5], [91, 3, null]], waits: [] });
   });
 
   it("several deletes: the newest goes back first, so the older indexes land where they were", () => {
@@ -228,8 +228,8 @@ describe("where a place goes back (mergePlaces)", () => {
   });
 
   it("an index past the end goes at the end; an empty playlist takes it at 0", () => {
-    expect(mergePlaces([item(1, 0)], [place(90, 9)])).toEqual({ moves: [], adds: [[90, 1, null]] });
-    expect(mergePlaces([], [place(90, 4), place(91, 2)])).toEqual({ moves: [], adds: [[91, 0, null], [90, 1, null]] });
+    expect(mergePlaces([item(1, 0)], [place(90, 9)])).toEqual({ moves: [], adds: [[90, 1, null]], waits: [] });
+    expect(mergePlaces([], [place(90, 4), place(91, 2)])).toEqual({ moves: [], adds: [[91, 0, null], [90, 1, null]], waits: [] });
   });
 });
 
@@ -395,7 +395,7 @@ describe("costs on the Workers Free plan", () => {
     const rest = metered();
     const trash = (await query("SELECT id FROM media_trash WHERE owner_id = ?", c.id)).map((t) => ["trash_id", String(t.id)]);
     expect((await direct(c, "/library/trash/restore", trash, { DB: rest.DB })).status).toBe(303);
-    expect(rest.log.length).toBe(1);
+    expect(rest.log.length).toBe(2); // the move, then the 300 audit rows
     expect(rest.log[0].read).toBeLessThan(20000);
     expect(rest.log[0].written).toBeLessThan(6000); // shifting each place by UPDATE ... + 1 wrote ~75,000
     expect(await both()).toEqual(before);

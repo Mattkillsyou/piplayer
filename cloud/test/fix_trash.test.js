@@ -205,3 +205,144 @@ describe("a Delete posted twice at once", () => {
     expect((await audits("delete_media")).filter((a) => a.target_id === String(x.id)).length).toBe(1);
   });
 });
+
+describe("restore: two copies of one file", () => {
+  it("ticked together (deleted, uploaded again, deleted again): the older comes back, the copy stays, the other ticked files come back too", async () => {
+    const f = await file("two-f.png"), g = await file("two-g.png");
+    const p = await playlist("two P");
+    await fill(p, [f, g]);
+    expect((await del(r.editor, [f])).status).toBe(303);
+    // uploaded again: the same bytes under a stored name of its own (uploads.js), then deleted again
+    const copy = { id: await ins("INSERT INTO media (filename, original_name, media_type, size_bytes, sha256, owner_id) VALUES (?, 'two-f.png', 'image', 3, ?, ?)",
+      `${f.filename}-again`, f.sha256, r.ids.editor), name: "two-f.png" };
+    expect((await post(r.editor, `/library/${copy.id}/delete`)).status).toBe(303);
+    expect((await del(r.editor, [g])).status).toBe(303);
+    const res = await restore(r.editor, [f, copy, g]);
+    expect([res.status, res.headers.get("location")]).toEqual([303, "/library"]);
+    expect(await flash(r.editor)).toEqual(["warn", "Restored 2 files; 1 is already back in the library."]);
+    expect((await query("SELECT id FROM media WHERE id IN (?, ?, ?) ORDER BY id", f.id, copy.id, g.id)).map((m) => m.id)).toEqual([f.id, g.id]);
+    expect(await trashIds([f, copy, g]).then((ids) => ids.length)).toBe(1);
+    expect(await one("SELECT media_id FROM media_trash WHERE media_id IN (?, ?, ?)", f.id, copy.id, g.id)).toEqual({ media_id: copy.id });
+    expect(await order(p)).toEqual(names([f, g]));
+  });
+});
+
+describe("restore: the playlist order", () => {
+  it("two deletes in one second are two deletes: restored together, the order is exact", async () => {
+    const f = {};
+    for (const n of ["a", "x", "b", "y", "c"]) f[n] = await file(`ss-${n}.png`);
+    const p = await playlist("same second");
+    await fill(p, [f.a, f.x, f.b, f.y, f.c]);
+    expect((await del(r.editor, [f.x])).status).toBe(303);
+    expect((await del(r.editor, [f.y])).status).toBe(303);
+    // both in one second, whatever second the test ran in; the milliseconds tell them apart
+    await query("UPDATE media_trash SET deleted_at = '2026-11-01 10:00:00' || substr(deleted_at, 20) WHERE media_id IN (?, ?)", f.x.id, f.y.id);
+    const [tx, ty] = [await one("SELECT deleted_at FROM media_trash WHERE media_id = ?", f.x.id), await one("SELECT deleted_at FROM media_trash WHERE media_id = ?", f.y.id)];
+    expect(tx.deleted_at < ty.deleted_at).toBe(true);
+    expect((await restore(r.editor, [f.x, f.y])).status).toBe(303);
+    expect(await order(p)).toEqual(names([f.a, f.x, f.b, f.y, f.c]));
+  });
+
+  it("one delete of two files, brought back one at a time in either order: both playlists end as they were", async () => {
+    const f = {};
+    for (const n of ["a", "x", "b", "y", "c", "d"]) f[n] = await file(`one-${n}.png`);
+    const p = await playlist("one P"), q = await playlist("one Q");
+    await fill(p, [f.a, f.x, f.b, f.y, f.c]);
+    await fill(q, [f.y, f.d, f.x]); // the other way round
+    expect((await del(r.editor, [f.x, f.y])).status).toBe(303);
+    expect((await restore(r.editor, [f.y])).status).toBe(303);
+    expect([await order(p), await order(q)]).toEqual([names([f.a, f.b, f.y, f.c]), names([f.y, f.d])]);
+    expect((await restore(r.editor, [f.x])).status).toBe(303);
+    expect([await order(p), await order(q)]).toEqual([names([f.a, f.x, f.b, f.y, f.c]), names([f.y, f.d, f.x])]);
+  });
+
+  it("separate deletes brought back oldest first: no swap", async () => {
+    const f = {};
+    for (const n of ["a", "x", "b", "y", "c"]) f[n] = await file(`sep-${n}.png`);
+    const p = await playlist("sep P");
+    await fill(p, [f.a, f.x, f.b, f.y, f.c]);
+    expect((await del(r.editor, [f.x])).status).toBe(303);
+    expect((await del(r.editor, [f.y])).status).toBe(303);
+    expect((await restore(r.editor, [f.x])).status).toBe(303);
+    expect(await order(p)).toEqual(names([f.a, f.x, f.b, f.c]));
+    expect((await restore(r.editor, [f.y])).status).toBe(303);
+    expect(await order(p)).toEqual(names([f.a, f.x, f.b, f.y, f.c]));
+  });
+
+  it("one Delete selected too many: the files ticked back return to the head of the playlist, the rest later to theirs", async () => {
+    const f = [];
+    for (let i = 1; i <= 8; i++) f.push(await file(`many-${i}.png`));
+    const p = await playlist("many P");
+    await fill(p, f);
+    expect((await del(r.editor, f.slice(0, 5))).status).toBe(303);
+    expect((await restore(r.editor, f.slice(3, 5))).status).toBe(303);
+    expect(await order(p)).toEqual(names(f.slice(3)));
+    expect((await restore(r.editor, f.slice(0, 3))).status).toBe(303);
+    expect(await order(p)).toEqual(names(f));
+  });
+
+  it("mergePlaces: deletes and partial restores at random, nothing else changing, always give the order as it was minus what waits", () => {
+    let seed = 7;
+    const rand = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+    for (let run = 0; run < 300; run++) {
+      const all = Array.from({ length: 2 + rand(9) }, (_, i) => i + 1);
+      let cur = all.slice();
+      const trash = new Map(); // media id -> its place: {position, override, deleted_at}
+      for (let step = 0, tick = 0; step < 8; step++) {
+        if (cur.length && (rand(2) || !trash.size)) {
+          const gone = cur.filter(() => rand(3) === 0);
+          const at = String(1000 + ++tick);
+          for (const m of gone) trash.set(m, { position: cur.indexOf(m), override: null, deleted_at: at });
+          cur = cur.filter((m) => !gone.includes(m));
+        } else {
+          const back = [...trash.keys()].filter(() => rand(2) === 0);
+          const places = [...trash].map(([m, p]) => (back.includes(m) ? { ...p, media_id: m } : { ...p, trash_id: m }));
+          const merged = mergePlaces(cur.map((m, i) => ({ id: m, position: i })), places);
+          const moved = new Map(merged.moves);
+          const out = [];
+          cur.forEach((m, i) => { out[moved.has(m) ? moved.get(m) : i] = m; });
+          for (const [m, i] of merged.adds) out[i] = m;
+          for (const [p, i] of merged.waits) trash.get(p.trash_id).position = i;
+          for (const m of back) trash.delete(m);
+          cur = out;
+        }
+        expect(cur, `run ${run} step ${step}`).toEqual(all.filter((m) => !trash.has(m)));
+      }
+    }
+  });
+});
+
+describe("Restore selected posted twice at once, or raced", () => {
+  it("Restore selected: the file comes back once, with one audit row; the second post says it is no longer there", async () => {
+    const a = await file("dbl-a.png"), f = await file("dbl-f.png"), b = await file("dbl-b.png");
+    const p = await playlist("dbl P");
+    await fill(p, [a, f, b]);
+    expect((await del(r.editor, [f])).status).toBe(303);
+    const [t] = await trashIds([f]);
+    const answers = await twice(r.editor, "/library/trash/restore", [["trash_id", String(t)]]);
+    expect(answers.map((x) => x.status)).toEqual([303, 303]);
+    expect(answers.map(flashOf).sort((m, n) => (m.k < n.k ? -1 : 1))).toEqual([
+      { m: "Restored dbl-f.png.", k: "ok" }, { m: "Those files are no longer in Recently deleted.", k: "warn" }]);
+    expect(await order(p)).toEqual(names([a, f, b]));
+    expect((await audits("restore_media")).filter((x) => x.target_id === String(f.id)).length).toBe(1);
+    expect(await trashIds([f])).toEqual([]);
+  });
+
+  it("an Empty or the purge between Restore's read and its batch: nothing comes back, no audit row, and the notice says so", async () => {
+    const f = await file("race-f.png"); // in no playlist
+    expect((await del(r.editor, [f])).status).toBe(303);
+    const [t] = await trashIds([f]);
+    let raced = false;
+    const DB = {
+      prepare: (sql) => env.DB.prepare(sql),
+      batch: async (s) => {
+        if (!raced) { raced = true; await env.DB.prepare("DELETE FROM media_trash WHERE id = ?").bind(t).run(); }
+        return env.DB.batch(s);
+      },
+    };
+    const res = await direct(r.editor, "/library/trash/restore", form(r.editor, [["trash_id", String(t)]]), DB);
+    expect([res.status, flashOf(res)]).toEqual([303, { m: "Those files are no longer in Recently deleted.", k: "warn" }]);
+    expect(await one("SELECT id FROM media WHERE id = ?", f.id)).toBeNull();
+    expect((await audits("restore_media")).filter((x) => x.target_id === String(f.id))).toEqual([]);
+  });
+});

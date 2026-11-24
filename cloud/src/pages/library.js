@@ -218,17 +218,20 @@ ${trash}`;
 
 // The first statement of a delete's batch: a media_trash row for each media row in ?1, with its
 // places in the playlists of ?2 (the ones that hold any of the files): its index in each one's
-// (position, id) order, which is what Restore puts back, and its time there.
+// (position, id) order, which is what Restore puts back, and its time there. deleted_at is to the
+// millisecond and one value for the whole statement: it is what tells one delete from the next
+// (two quick deletes in one second are two deletes), whatever default the table has.
 const TRASH_SQL = `WITH placed AS (
     SELECT media_id, playlist_id, duration_override_seconds AS override,
            ROW_NUMBER() OVER (PARTITION BY playlist_id ORDER BY position, id) - 1 AS position
       FROM playlist_items WHERE playlist_id IN (SELECT value FROM json_each(?2)))
   INSERT INTO media_trash (owner_id, media_id, filename, original_name, media_type, size_bytes, duration_seconds,
-      width, height, codec, sha256, uploaded_at, places)
+      width, height, codec, sha256, uploaded_at, places, deleted_at)
   SELECT m.owner_id, m.id, m.filename, m.original_name, m.media_type, m.size_bytes, m.duration_seconds,
          m.width, m.height, m.codec, m.sha256, m.uploaded_at,
          (SELECT json_group_array(json_object('playlist_id', playlist_id, 'position', position, 'override', override))
-            FROM placed WHERE media_id = m.id)
+            FROM placed WHERE media_id = m.id),
+         strftime('%Y-%m-%d %H:%M:%f', 'now')
     FROM media m WHERE m.id IN (SELECT value FROM json_each(?1)) ORDER BY m.id`;
 
 // Move the caller's own files `ids` to Recently deleted in one transaction whatever their number:
@@ -324,27 +327,40 @@ ${rows.map((t) => `      <li><label class="inline-check"><input type="checkbox" 
 }
 
 // Where restored files go back in one playlist. `items`: its items as they are now, in order
-// ({id, position}); `places`: what comes back ({media_id, position, override, deleted_at}, the
-// position being the file's index when it was deleted). Each place goes back to that index,
-// the newest delete first and one delete's places in playlist order: that undoes the deletes in
-// reverse, so the order comes back exact when nothing else changed since, and close otherwise.
+// ({id, position}); `places`: the places in it of the files in Recently deleted ({position,
+// override, deleted_at}, the position being the file's index when it was deleted), with media_id
+// for a file that comes back and trash_id (its row) for one that stays. Every place goes back to
+// its index, the newest delete first and one delete's places in playlist order: that undoes the
+// deletes in reverse, so the order is exact when nothing else changed since, and close otherwise.
+// Then the files that stay leave again, oldest delete first, each one's index just before its own
+// delete being its new stored position, so restoring them later is exact too.
 // Returns {moves: [[item id, position]] for the items that shift, adds: [[media_id, position,
-// override]]}.
+// override]], waits: [[place, position]] for the places that stay at a new index}.
+// ponytail: quadratic in the places that stay in one playlist; a sorted count past thousands.
 export function mergePlaces(items, places) {
   const list = items.slice();
   const order = places.slice().sort((a, b) => (a.deleted_at === b.deleted_at ? a.position - b.position : a.deleted_at < b.deleted_at ? 1 : -1));
   for (const p of order) list.splice(Math.min(p.position, list.length), 0, p);
-  const moves = [], adds = [];
-  list.forEach((x, i) => {
+  const moves = [], adds = [], waits = [], gone = [];
+  list.forEach((x, k) => {
+    if (x.trash_id !== undefined) {
+      // the ones that stay from older deletes have left again by the time of its own
+      const at = k - gone.filter((t) => t < x.deleted_at).length;
+      if (at !== x.position) waits.push([x, at]);
+      gone.push(x.deleted_at);
+      return;
+    }
+    const i = k - gone.length;
     if (x.media_id !== undefined) adds.push([x.media_id, i, x.override ?? null]);
     else if (x.position !== i) moves.push([x.id, i]);
   });
-  return { moves, adds };
+  return { moves, adds, waits };
 }
 
 // Restore the ticked trash rows of the caller's own account: each file comes back under its old
-// id with its times, into every playlist place it held that still exists (mergePlaces). One whose
-// bytes, name or id are in the library again (uploaded anew) cannot come back and stays here.
+// id with its times, into every playlist place it held that still exists (mergePlaces), and the
+// files that stay in Recently deleted keep their places in step. One whose bytes, name or id are
+// in the library again (uploaded anew), or that an older ticked row brings back, stays here.
 async function trashRestore(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const picked = (await ctx.form()).getAll("trash_id").filter((v) => typeof v === "string");
@@ -353,58 +369,98 @@ async function trashRestore(ctx) {
   const env = ctx.env;
   const ids = JSON.stringify([...new Set(picked.map((v) => idParam(v, "trash_id")))]);
   const rows = await db.all(env,
-    `SELECT t.id, t.media_id, t.original_name, t.places, t.deleted_at,
+    `SELECT t.id, t.media_id, t.original_name, t.places, t.deleted_at, t.filename, t.sha256,
             EXISTS (SELECT 1 FROM media WHERE id = t.media_id) OR EXISTS (SELECT 1 FROM media WHERE filename = t.filename)
               OR EXISTS (SELECT 1 FROM media WHERE owner_id = t.owner_id AND sha256 = t.sha256) AS back
        FROM media_trash t WHERE t.owner_id = ?1 AND t.id IN (SELECT value FROM json_each(?2)) ORDER BY t.id`, user.id, ids);
   if (!rows.length) return auth.flashRedirect(ctx, "/library", "Those files are no longer in Recently deleted.", "warn");
+  // Two ticked copies of one file (deleted, uploaded again, deleted again): the library holds a
+  // file once, so the older comes back and the other stays.
+  const seen = new Set();
+  for (const r of rows) if (!r.back) { if (seen.has(r.sha256) || seen.has(r.filename)) r.back = 1; else seen.add(r.sha256).add(r.filename); }
   const back = rows.filter((r) => r.back);
   const restore = rows.filter((r) => !r.back);
   if (!restore.length) {
     return auth.flashRedirect(ctx, "/library", back.length === 1 ? `${back[0].original_name} is already back in the library.` : "Those files are already back in the library.", "warn");
   }
-  const places = restore.flatMap((r) => JSON.parse(r.places).map((p) => ({ ...p, media_id: r.media_id, deleted_at: r.deleted_at })));
-  // The playlists to go back into: the caller's own that still exist, each read once.
-  const lists = new Map();
+  const restoreIds = JSON.stringify(restore.map((r) => r.id));
+  const placesOf = (r, mark) => JSON.parse(r.places).map((p) => ({ ...p, deleted_at: r.deleted_at, ...mark }));
+  const places = restore.flatMap((r) => placesOf(r, { media_id: r.media_id }));
+  // The playlists to go back into (the caller's own that still exist, each read once) and the
+  // rows that stay in Recently deleted with a place in one of them.
+  const lists = new Map(), stay = new Map();
   if (places.length) {
-    for (const it of await db.all(env,
-      `SELECT p.id AS playlist_id, pi.id, pi.position FROM playlists p LEFT JOIN playlist_items pi ON pi.playlist_id = p.id
-        WHERE p.owner_id = ?1 AND p.id IN (SELECT value FROM json_each(?2)) ORDER BY p.id, pi.position, pi.id`,
-      user.id, JSON.stringify([...new Set(places.map((p) => p.playlist_id))]))) {
+    const pids = JSON.stringify([...new Set(places.map((p) => p.playlist_id))]);
+    const [items, others] = await Promise.all([
+      db.all(env, `SELECT p.id AS playlist_id, pi.id, pi.position FROM playlists p LEFT JOIN playlist_items pi ON pi.playlist_id = p.id
+        WHERE p.owner_id = ?1 AND p.id IN (SELECT value FROM json_each(?2)) ORDER BY p.id, pi.position, pi.id`, user.id, pids),
+      db.all(env, `SELECT id, places, deleted_at FROM media_trash t WHERE owner_id = ?1 AND id NOT IN (SELECT value FROM json_each(?3))
+        AND EXISTS (SELECT 1 FROM json_each(t.places) WHERE json_extract(value, '$.playlist_id') IN (SELECT value FROM json_each(?2)))`, user.id, pids, restoreIds),
+    ]);
+    for (const it of items) {
       if (!lists.has(it.playlist_id)) lists.set(it.playlist_id, []);
       if (it.id !== null) lists.get(it.playlist_id).push({ id: it.id, position: it.position });
     }
+    for (const t of others) stay.set(t.id, placesOf(t, { trash_id: t.id }));
   }
-  const moves = [], adds = [];
+  const moves = [], adds = [], kept = new Set();
+  const waiting = [...stay.values()].flat();
   for (const [pid, items] of lists) {
-    const merged = mergePlaces(items, places.filter((p) => p.playlist_id === pid));
+    const here = (p) => p.playlist_id === pid;
+    const merged = mergePlaces(items, [...places.filter(here), ...waiting.filter(here)]);
     moves.push(...merged.moves);
     adds.push(...merged.adds.map((a) => [pid, ...a]));
+    for (const [p, at] of merged.waits) { p.position = at; kept.add(p.trash_id); }
   }
   const touched = JSON.stringify([...lists.keys()]);
-  const restoreIds = JSON.stringify(restore.map((r) => r.id));
-  // One transaction: the media rows first (the items point at them), the places a playlist
-  // deleted meanwhile cannot take are dropped, RENUMBER closes what an edit since the read moved.
-  await db.batch(env, [
-    [`INSERT INTO media (id, filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256, uploaded_at, owner_id)
-      SELECT media_id, filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256, uploaded_at, owner_id
-        FROM media_trash WHERE owner_id = ?1 AND id IN (SELECT value FROM json_each(?2))`, user.id, restoreIds],
-    ["DELETE FROM media_trash WHERE owner_id = ?1 AND id IN (SELECT value FROM json_each(?2))", user.id, restoreIds],
-    [`UPDATE playlist_items SET position = json_extract(x.value, '$[1]')
-        FROM json_each(?1) AS x WHERE playlist_items.id = json_extract(x.value, '$[0]')`, JSON.stringify(moves)],
-    [`INSERT INTO playlist_items (playlist_id, media_id, position, duration_override_seconds)
-      SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]')
-        FROM json_each(?1) WHERE json_extract(value, '$[0]') IN (SELECT id FROM playlists WHERE owner_id = ?2)`, JSON.stringify(adds), user.id],
-    [RENUMBER_SQL, touched],
-    ["UPDATE playlists SET updated_at = datetime('now') WHERE id IN (SELECT value FROM json_each(?))", touched],
-    ...restore.map((r) => audit.statement(ctx, "restore_media", "media", r.media_id, {
-      filename: r.original_name,
-      playlists: [...new Set(adds.filter((a) => a[1] === r.media_id).map((a) => a[0]))],
-    })),
-  ]);
-  const done = restore.length === 1 ? `Restored ${restore[0].original_name}` : `Restored ${restore.length} files`;
-  if (back.length) return auth.flashRedirect(ctx, "/library", `${done}; ${back.length} ${back.length === 1 ? "is" : "are"} already back in the library.`, "warn");
-  return auth.flashRedirect(ctx, "/library", `${done}.`);
+  const rewrites = JSON.stringify([...kept].map((id) => [id, JSON.stringify(stay.get(id).map(({ playlist_id, position, override }) => ({ playlist_id, position, override })))]));
+  // Every write but the media INSERT runs only while this request still holds its rows: the same
+  // form posted twice at once (a double click), or an Empty or the purge in between, took them,
+  // and then nothing moves. The rows go last, so the guards see them.
+  const held = "EXISTS (SELECT 1 FROM media_trash WHERE owner_id = ?2 AND id IN (SELECT value FROM json_each(?3)))";
+  const work = (async () => {
+    // One transaction: the media rows first (the items point at them), the places a playlist
+    // deleted meanwhile cannot take are dropped, RENUMBER closes what an edit since the read moved.
+    const [ins] = await db.batch(env, [
+      [`INSERT INTO media (id, filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256, uploaded_at, owner_id)
+        SELECT media_id, filename, original_name, media_type, size_bytes, duration_seconds, width, height, codec, sha256, uploaded_at, owner_id
+          FROM media_trash WHERE owner_id = ?1 AND id IN (SELECT value FROM json_each(?2)) RETURNING id`, user.id, restoreIds],
+      [`UPDATE playlist_items SET position = json_extract(x.value, '$[1]')
+          FROM json_each(?1) AS x WHERE playlist_items.id = json_extract(x.value, '$[0]') AND ${held}`, JSON.stringify(moves), user.id, restoreIds],
+      [`INSERT INTO playlist_items (playlist_id, media_id, position, duration_override_seconds)
+        SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]')
+          FROM json_each(?1) WHERE json_extract(value, '$[0]') IN (SELECT id FROM playlists WHERE owner_id = ?2)
+           AND json_extract(value, '$[1]') IN (SELECT media_id FROM media_trash WHERE owner_id = ?2 AND id IN (SELECT value FROM json_each(?3)))`,
+      JSON.stringify(adds), user.id, restoreIds],
+      [`UPDATE media_trash SET places = json_extract(x.value, '$[1]') FROM json_each(?1) AS x
+          WHERE media_trash.id = json_extract(x.value, '$[0]') AND media_trash.owner_id = ?2 AND ${held}`, rewrites, user.id, restoreIds],
+      [RENUMBER_SQL, touched],
+      [`UPDATE playlists SET updated_at = datetime('now') WHERE id IN (SELECT value FROM json_each(?1)) AND ${held}`, touched, user.id, restoreIds],
+      ["DELETE FROM media_trash WHERE owner_id = ?1 AND id IN (SELECT value FROM json_each(?2))", user.id, restoreIds],
+    ]);
+    const came = new Set(ins.results.map((m) => m.id));
+    const restored = restore.filter((r) => came.has(r.media_id));
+    // One audit row per file this request brought back, in one batch (audit.log's rule: a failed
+    // write never fails the request).
+    if (restored.length) {
+      try {
+        await db.batch(env, restored.map((r) => audit.statement(ctx, "restore_media", "media", r.media_id, {
+          filename: r.original_name,
+          playlists: [...new Set(adds.filter((a) => a[1] === r.media_id).map((a) => a[0]))],
+        })));
+      } catch (e) {
+        console.error(`audit log write failed for restore_media: ${e}`);
+      }
+    }
+    return restored;
+  })();
+  ctx.exec.waitUntil(work); // as deleteMedia: a browser that goes away cannot stop it between the batches
+  const restored = await work;
+  if (!restored.length) return auth.flashRedirect(ctx, "/library", "Those files are no longer in Recently deleted.", "warn");
+  const done = restored.length === 1 ? `Restored ${restored[0].original_name}` : `Restored ${restored.length} files`;
+  const left = [[back.length, "already back in the library"], [restore.length - restored.length, "no longer in Recently deleted"]]
+    .filter(([n]) => n).map(([n, what]) => `; ${n} ${n === 1 ? "is" : "are"} ${what}`).join("");
+  return auth.flashRedirect(ctx, "/library", `${done}${left}.`, left ? "warn" : "ok");
 }
 
 // Empty: the caller's whole Recently deleted (PURGE_MAX a press, oldest first) goes for good.
