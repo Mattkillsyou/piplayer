@@ -500,7 +500,7 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
 }
 
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
-.page-head h1 { margin: 0; }
+.page-head h1 { margin: 0; overflow-wrap: anywhere; } /* a viewer's playlist or file name with no spaces pushed a phone page sideways */
 .page-head .page-meta { font-size: var(--p5k-text-data-sm); color: var(--p5k-muted); text-align: right; }
 .page-head .page-meta strong { color: var(--p5k-phosphor); font-weight: 400; }
 .page-head .eyebrow { margin-bottom: 4px; }
@@ -800,7 +800,7 @@ input[type=checkbox]:checked::before { color: var(--p5k-on-solid); visibility: v
 .form-grid label { margin: 0; }
 .days-fieldset { margin: 0 0 var(--p5k-space-4); padding: 10px 12px 12px; border: 1px solid var(--p5k-rule-3); }
 .days-fieldset legend { padding: 0 6px; font-size: var(--p5k-text-label-sm); letter-spacing: var(--p5k-track-label); text-transform: uppercase; color: var(--p5k-muted); }
-.days-fieldset .inline-check { margin-top: 4px; }
+.days-fieldset .inline-check { margin-top: 4px; overflow-wrap: anywhere; } /* a fieldset is as wide as its longest projector name */
 /* the whole label is the tap target: the day boxes were 21px on a phone (as the Library's tick boxes) */
 @media (max-width: 720px) {
   .days-fieldset .inline-check { min-height: var(--p5k-touch); }
@@ -850,6 +850,9 @@ tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
 table.data.users td.name, table.data.users td div.small { overflow-wrap: anywhere; }
 table.data.users td.name { min-width: 9rem; }
 @media (max-width: 1240px) { table.data.users .duration-form { flex-wrap: wrap; } }
+/* the Playlists list, whose names are links: one with no spaces pushed a tablet's Edit and Delete
+   past the edge. Not every name cell: beside a long schedule state, "Evening" broke as "Eveni ng". */
+table.data.stack td.name > a { overflow-wrap: anywhere; }
 /* Phones: a table marked .stack reads as one card per row, each cell under its heading
    (data-label), so no action sits past the right edge. The real headings stay for screen readers. */
 @media (max-width: 720px) {
@@ -1194,8 +1197,9 @@ html:has(.media-bar) { scroll-padding-top: 96px; }
 /* Above the bar: the heading, and Find / Show / Sort once media.js shows them. */
 .media-head { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; margin: 0 0 var(--p5k-space-3); }
 .media-head h2 { margin: 0; }
-.media-find { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
-.media-find label { flex-direction: row; align-items: center; gap: 8px; margin: 0; }
+/* min-width: 0: Show's "Only in <Default>" sets the select's width, and a long name pushed the page sideways */
+.media-find { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; min-width: 0; }
+.media-find label { flex-direction: row; align-items: center; gap: 8px; margin: 0; min-width: 0; }
 .media-find input[type=search] { width: 14rem; }
 .media-find select { width: auto; }
 .media-grid { list-style: none; margin: 0 0 22px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
@@ -1401,6 +1405,7 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
   .terminal table.data tr { display: flex; flex-wrap: wrap; gap: 0 8px; padding: 5px 12px; }
   .terminal table.data td { padding: 0; }
   .terminal table.data td.log-d { order: 1; flex-basis: 100%; min-width: 0; }
+  .terminal table.data td.log-u { overflow-wrap: anywhere; } /* a username may be an email address, which has no break point */
 }
 .terminal-foot { padding: 6px 12px 10px; font-size: var(--p5k-text-data-sm); color: var(--p5k-dim); display: flex; align-items: center; gap: 6px; }
 .terminal-foot .cursor-blink { width: 8px; height: 13px; }
@@ -1488,7 +1493,7 @@ html[data-theme="light"] .auth-card .wordmark { animation: none; }
 
 /* cloud: upload queue */
 .upload-queue { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-.upload-queue li { display: flex; flex-direction: column; gap: 6px; font-size: var(--p5k-text-data-sm); }
+.upload-queue li { display: flex; flex-direction: column; gap: 6px; font-size: var(--p5k-text-data-sm); overflow-wrap: anywhere; } /* a file name with no spaces widened a phone's one column */
 
 /* cloud: enrollment key (settings page) */
 .enrollment-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--p5k-space-2); }
