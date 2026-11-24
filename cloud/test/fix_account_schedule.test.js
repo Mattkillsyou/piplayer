@@ -45,3 +45,12 @@ describe("Save rule", () => {
     expect(await (await r.editor.get(base(w.left))).text()).not.toContain('role="alert"');
   });
 });
+
+describe("the page", () => {
+  it("goes back to its projector's card on the Devices page, not to the top of the list", async () => {
+    for (const c of [r.editor, r.admin]) { // the admin reads another account's projector here
+      expect(await (await c.get(base(w.right))).text()).toContain(`<a href="/devices#device-${w.right.id}" class="back">← Devices</a>`);
+    }
+    expect(await (await r.editor.get("/devices")).text()).toContain(`id="device-${w.right.id}"`);
+  });
+});

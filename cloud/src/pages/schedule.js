@@ -81,7 +81,7 @@ async function schedulePage(ctx) {
       ? "this account can only view: an admin can make it an editor, which can change the timezone on the Settings page."
       : 'change the timezone on the <a href="/settings">Settings</a> page.';
 
-  const content = `<a href="/devices" class="back">← Devices</a>
+  const content = `<a href="/devices#device-${device.id}" class="back">← Devices</a>
 <div class="page-head">
   <div>
     <span class="eyebrow">Schedule · ${esc(device.device_id)}</span>
