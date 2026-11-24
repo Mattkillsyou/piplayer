@@ -113,8 +113,9 @@ function usedIn(names) {
 
 // One file. The data-* are what the Library's Find / Show / Sort read (public/media.js): the
 // name, the type, the size, the running time and where the file is used ("default" only in the
-// account's Default playlist, "playlist" in any other, upload links' included, "none" in none).
-// `playlists` are the playlists it is in ({id, name}), by name.
+// account's Default playlist, "playlist" in any other, upload links' included, "none" in none)
+// and the ids of the playlists it is in (data-in, for Show <playlist>). `playlists` are the
+// playlists it is in ({id, name}), by name.
 function card(v, tz, editor, playlists, defaultId) {
   const when = localTime(v.uploaded_at, tz);
   const facts = [fileSize(v.size_bytes), v.width ? `${v.width}×${v.height}` : "", v.codec || ""].filter(Boolean);
@@ -126,7 +127,7 @@ function card(v, tz, editor, playlists, defaultId) {
         <label class="inline-check"><input type="checkbox" name="media_id" value="${v.id}" aria-label="Select ${esc(v.original_name)}">Select</label>
         <button type="submit" name="one" value="${v.id}" class="danger small" data-confirm="Delete ${esc(v.original_name)}? It is removed from every playlist that uses it and kept in Recently deleted for ${TRASH_DAYS} days.">Delete</button>
       </div>` : "";
-  return `    <li class="media-card" data-name="${esc(v.original_name)}" data-kind="${esc(v.media_type)}" data-size="${Number(v.size_bytes) || 0}" data-length="${Number(v.duration_seconds) || 0}" data-use="${use}">
+  return `    <li class="media-card" data-name="${esc(v.original_name)}" data-kind="${esc(v.media_type)}" data-size="${Number(v.size_bytes) || 0}" data-length="${Number(v.duration_seconds) || 0}" data-use="${use}" data-in="${(playlists || []).map((p) => p.id).join(" ")}">
       ${thumbCell(v, meta)}
       <div class="media-info">
         <a class="media-name" href="/library/${v.id}">${esc(v.original_name)}</a>
@@ -170,7 +171,7 @@ async function libraryPage(ctx) {
   <h2 id="media-count" aria-live="polite">Media (${items.length})</h2>
   <div class="media-find" id="media-find" hidden>
     <label>Find <input type="search" id="find-q" autocomplete="off"></label>
-    <label>Show <select id="find-show"><option value="">All</option><option value="video">Videos</option><option value="image">Images</option>${dflt ? `<option value="default">Only in ${esc(dflt.name)}</option>` : ""}<option value="none">In no playlist</option></select></label>
+    <label>Show <select id="find-show"><option value="">All</option><option value="video">Videos</option><option value="image">Images</option>${dflt ? `<option value="default">Only in ${esc(dflt.name)}</option>` : ""}<option value="none">In no playlist</option>${playlists.length ? `<optgroup label="Playlists">${playlists.map((p) => `<option value="in:${p.id}">${esc(p.name)}</option>`).join("")}</optgroup>` : ""}</select></label>
     <label>Sort <select id="find-sort"><option value="">Newest</option><option value="oldest">Oldest</option><option value="name">Name</option><option value="size">Largest</option><option value="length">Longest</option></select></label>
   </div>
 </div>`;

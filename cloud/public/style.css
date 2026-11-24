@@ -1502,3 +1502,7 @@ a.card:hover { text-decoration: none; border-color: var(--p5k-rule-strong); }
 @media (max-width: 720px) {
   .file-page > form.row select { min-height: var(--p5k-touch); }
 }
+
+/* library: missing-library-filter-by-playlist */
+#find-show { max-width: 16rem; } /* a long playlist name in Show widened the bar past the page */
+@media (max-width: 720px) { #find-show { width: 100%; max-width: none; } }

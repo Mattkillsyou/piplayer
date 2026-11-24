@@ -94,6 +94,28 @@ describe("the Library's count", () => {
   });
 });
 
+describe("Show <playlist> (the server's half)", () => {
+  it("each card carries the ids of the playlists it is in; Show offers each playlist of the account after the rest", async () => {
+    const [p1, p2] = [await playlist("Zed night"), await playlist("A <b> list")];
+    await playlist("Someone else's", r.ids.admin);
+    const [x, y] = [await media("in-both.png"), await media("in-one.png")];
+    await media("in-none.png");
+    await query("INSERT INTO playlist_items (playlist_id, media_id, position) VALUES (?, ?, 0), (?, ?, 0), (?, ?, 1)", p1, x, p2, x, p1, y);
+    const html = await (await r.editor.get("/library")).text();
+    const card = (name) => new RegExp(`<li class="media-card" data-name="${name}"[^>]*>`).exec(html)[0];
+    expect(card("in-both\\.png")).toContain(`data-use="playlist" data-in="${p2} ${p1}">`); // by name
+    expect(card("in-one\\.png")).toContain(`data-in="${p1}">`);
+    expect(card("in-none\\.png")).toContain('data-use="none" data-in="">');
+    const at = html.indexOf('<select id="find-show">');
+    const show = html.slice(at, html.indexOf("</select>", at));
+    const own = await query("SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name COLLATE NOCASE, id", r.ids.editor);
+    expect(own[0]).toEqual({ id: p2, name: "A <b> list" });
+    expect(show).toContain('<option value="none">In no playlist</option><optgroup label="Playlists">' +
+      own.map((p) => `<option value="in:${p.id}">${p.name.replace("<", "&lt;").replace(">", "&gt;")}</option>`).join("") + "</optgroup>");
+    expect(show).not.toContain("Someone else");
+  });
+});
+
 describe("a delete says where the files went", () => {
   it("each question and notice names Recently deleted, where a file is kept 30 days", async () => {
     const [a, b, c, d] = [await media("del-a.png"), await media("del-b.png"), await media("del-c.png"), await media("del-d.png")];

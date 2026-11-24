@@ -10,7 +10,7 @@ import { MAX_DELETE } from "../src/pages/library.js";
 import { Client, query } from "./helpers.js";
 import { defaultPlaylistOf, ins, media, one, playlist, post, roles, XSS } from "./pages_common.js";
 
-let r, dflt, m;
+let r, dflt, m, friday, link;
 
 const page = async (c, path = "/library") => (await c.get(path)).text();
 const flashOf = async (c) => /<div class="alert [a-z]+" role="alert">([^<]*)<\/div>/.exec(await page(c))?.[1];
@@ -21,8 +21,8 @@ const optionsOf = (select) => [...select.matchAll(/<option value="([^"]*)"( sele
 beforeAll(async () => {
   r = await roles();
   dflt = await defaultPlaylistOf(r.ids.editor);
-  const friday = await playlist("Friday night");
-  const link = await playlist("Upload link · lobby-pi");
+  friday = await playlist("Friday night");
+  link = await playlist("Upload link · lobby-pi");
   m = {
     clip: await media("lobby clip.mp4", "video", { duration: 12.3, size: 5000 }),
     pic: await media("lobby poster.png", "image", { size: 900 }),
@@ -39,11 +39,11 @@ beforeAll(async () => {
 describe("library cards", () => {
   it("carry the name, type, size, running time and where the file is used; the name links to the file's page", async () => {
     const html = await page(r.editor);
-    expect(html).toContain(`<li class="media-card" data-name="lobby clip.mp4" data-kind="video" data-size="5000" data-length="12.3" data-use="default">`);
-    expect(html).toContain(`<li class="media-card" data-name="lobby poster.png" data-kind="image" data-size="900" data-length="0" data-use="playlist">`);
-    expect(html).toContain(`<li class="media-card" data-name="loose.mp4" data-kind="video" data-size="1000" data-length="0" data-use="none">`);
+    expect(html).toContain(`<li class="media-card" data-name="lobby clip.mp4" data-kind="video" data-size="5000" data-length="12.3" data-use="default" data-in="${dflt}">`);
+    expect(html).toContain(`<li class="media-card" data-name="lobby poster.png" data-kind="image" data-size="900" data-length="0" data-use="playlist" data-in="${dflt} ${friday}">`);
+    expect(html).toContain(`<li class="media-card" data-name="loose.mp4" data-kind="video" data-size="1000" data-length="0" data-use="none" data-in="">`);
     // only in an upload link's playlist: "in a playlist", not loose
-    expect(html).toContain(`<li class="media-card" data-name="sent.png" data-kind="image" data-size="1000" data-length="0" data-use="playlist">`);
+    expect(html).toContain(`<li class="media-card" data-name="sent.png" data-kind="image" data-size="1000" data-length="0" data-use="playlist" data-in="${link}">`);
     expect(html).toContain(`<li class="media-card" data-name="x&#39;);alert(1);//.png" data-kind="image"`);
     // the whole name, as a link, with no tooltip copy of it
     expect(html).toContain(`<a class="media-name" href="/library/${m.clip}">lobby clip.mp4</a>`);
@@ -98,8 +98,11 @@ describe("Find / Show / Sort", () => {
       const html = await page(c);
       expect(html).toMatch(/<div class="media-head">\s*<h2 id="media-count" aria-live="polite">Media \(\d+\)<\/h2>\s*<div class="media-find" id="media-find" hidden>/);
       expect(html).toContain('<label>Find <input type="search" id="find-q" autocomplete="off"></label>');
+      // then one per playlist of the account, by name (Show <playlist>)
+      const own = await query("SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name COLLATE NOCASE, id", c === r.editor ? r.ids.editor : r.ids.viewer);
       expect(optionsOf(between(html, '<select id="find-show">', "</select>"))).toEqual([
-        ["", "All", false], ["video", "Videos", false], ["image", "Images", false], ["default", "Only in Default", false], ["none", "In no playlist", false]]);
+        ["", "All", false], ["video", "Videos", false], ["image", "Images", false], ["default", "Only in Default", false], ["none", "In no playlist", false],
+        ...own.map((p) => [`in:${p.id}`, p.name, false])]);
       expect(optionsOf(between(html, '<select id="find-sort">', "</select>")).map(([v, t]) => [v, t])).toEqual([
         ["", "Newest"], ["oldest", "Oldest"], ["name", "Name"], ["size", "Largest"], ["length", "Longest"]]);
       expect(between(html, "<form id=\"library-form\"", "</form>")).not.toContain("media-find");
