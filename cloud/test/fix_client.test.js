@@ -185,6 +185,26 @@ describe("upload.js", () => {
   };
   const inits = ({ sent }) => sent.filter(([, url]) => url.endsWith("/init")).map(([, , body]) => body.playlist);
 
+  it("init names the Add to playlist too; a file already in the library says whether it joined it", async () => {
+    const r = await upload({
+      to: addTo("3"), files: [png("a.png"), png("b.png"), png("c.png")],
+      inits: [{ existing: true, added: true }, { existing: true, added: false }],
+    });
+    expect(inits(r)).toEqual(["3", "3", "3"]);
+    expect(r.sent.filter(([method]) => method === "PUT").length).toBe(1); // only c.png goes up
+    expect(r.said).toEqual(["Already in the library; added to Friday night.", "Already in the library and in Friday night.", "Done."]);
+    expect([r.status, r.reload.mock.calls.length]).toEqual(["Upload complete. Reloading...", 1]);
+    vi.resetModules();
+    const d = await upload({ to: addTo(""), inits: [{ existing: true, added: true }] });
+    expect([inits(d), d.said]).toEqual([[""], ["Already in the library; added to Default."]]);
+    vi.resetModules();
+    const none = await upload({ to: addTo("none"), inits: [{ existing: true, added: false }] });
+    expect([inits(none), none.said]).toEqual([["none"], ["Already in the library."]]);
+    vi.resetModules();
+    const bare = await upload(); // a page without Add to: init carries no playlist
+    expect([inits(bare), bare.said]).toEqual([[undefined], ["Done."]]);
+  });
+
   it("after a batch the Library opens on every file: the kept Find / Show would hide the new ones", async () => {
     const store = {};
     let p = await library({ store });
