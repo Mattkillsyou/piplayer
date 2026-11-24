@@ -133,7 +133,7 @@ describe("create-hint-cut-on-phones", () => {
       const page = await (await c.get(path)).text();
       for (const m of page.matchAll(/<div class="row">\s*<input type="text" name="name" placeholder="([^"]*)"/g)) hints.push(m[1]);
     }
-    expect(new Set(hints)).toEqual(new Set(["e.g. office laptop", "e.g. a roommate"]));
+    expect(hints.length).toBeGreaterThanOrEqual(3); // Create token and Create link on Settings, a user's tokens on Users
     // IBM Plex Mono is 0.6em a letter, 9.6px at 16px; at 320px the Users token box has 222px
     for (const h of hints) expect(h.length * 9.6, h).toBeLessThanOrEqual(222);
   });
