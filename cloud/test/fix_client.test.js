@@ -169,4 +169,13 @@ describe("media.js viewer", () => {
     v.d.fire("click", { target: v.close });
     expect(doc.activeElement).toBe(p.cards[2].link);
   });
+
+  it("Details is left out on the file's own page", async () => {
+    const p = await loadPage(FILES3, { path: "/library/2" });
+    open(p, 1);
+    const v = viewer();
+    expect(v.details.hidden).toBe(true);
+    v.d.fire("click", { target: v.next });
+    expect([v.details.hidden, v.details.href]).toEqual([false, "/library/3"]);
+  });
 });

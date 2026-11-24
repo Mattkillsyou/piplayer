@@ -389,7 +389,7 @@
       (other.disabled ? closeBtn : other).focus();
     }
     deleteBtn.hidden = !deleteOf(link);
-    detailsLink.hidden = !link.dataset.page;
+    detailsLink.hidden = !link.dataset.page || link.dataset.page === location.pathname; // not on the file's own page
     if (link.dataset.page) detailsLink.href = link.dataset.page;
     // Saved under the file's own name (same origin, so the browser takes it), with the stored
     // file's extension when the name has lost it.
