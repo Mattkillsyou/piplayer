@@ -505,7 +505,10 @@ async function thumbPut(ctx) {
 // already}: the files put in, and the account's own files that were in it before (an id that is
 // not one of its files, or no longer is, counts as neither).
 export async function appendToPlaylist(env, playlistId, mediaIds, ownerId) {
-  const own = `FROM json_each(?2) j JOIN media m ON m.id = j.value AND m.owner_id = ?3
+  // CROSS JOIN: SQLite keeps its left table outer, so every statement walks the ids given and
+  // looks each file up. With a plain JOIN the UPDATE's EXISTS walked every file of the account
+  // and scanned the ids for each: 1.26M rows read to re-add 500 files in a 3,000-file library.
+  const own = `FROM json_each(?2) j CROSS JOIN media m ON m.id = j.value AND m.owner_id = ?3
     JOIN playlists p ON p.id = ?1 AND p.owner_id = ?3`;
   // NOT IN, not a correlated NOT EXISTS: the playlist's items are read once, not once per file.
   const fresh = `${own} WHERE m.id NOT IN (SELECT media_id FROM playlist_items WHERE playlist_id = ?1)`;
