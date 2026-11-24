@@ -195,3 +195,13 @@ describe("the Library page's Recently deleted", () => {
     expect(m.read()).toBeLessThan(MAX_DELETE + n + 100);
   });
 });
+
+describe("a Delete posted twice at once", () => {
+  it("one file goes to Recently deleted, with one delete_media audit row", async () => {
+    const x = await file("dbl-del.png");
+    const answers = await twice(r.editor, "/library/delete", [["one", String(x.id)]]);
+    expect(answers.map((a) => a.status)).toEqual([303, 303]);
+    expect((await trashIds([x])).length).toBe(1);
+    expect((await audits("delete_media")).filter((a) => a.target_id === String(x.id)).length).toBe(1);
+  });
+});

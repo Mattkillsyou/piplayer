@@ -260,7 +260,7 @@ async function deleteMedia(ctx, user, ids) {
   const done = (async () => {
     const results = await db.batch(env, [
       [TRASH_SQL, own, affected],
-      ["DELETE FROM media WHERE id IN (SELECT value FROM json_each(?))", own],
+      ["DELETE FROM media WHERE id IN (SELECT value FROM json_each(?)) RETURNING id", own],
       [RENUMBER_SQL, affected],
       ["UPDATE playlists SET updated_at = datetime('now') WHERE id IN (SELECT value FROM json_each(?))", affected],
       // which projectors go back, and from which playlist (for each file's own audit row)...
@@ -268,10 +268,14 @@ async function deleteMedia(ctx, user, ids) {
       [`UPDATE devices SET playlist_id = NULL WHERE playlist_id IN (${emptied})`, affected, PLAYLIST_PREFIX + "*"],
     ]);
     const cleared = results[4].results || [];
+    // Only the files this batch moved: the same delete posted twice at once (a double click) finds
+    // them gone the second time and audits nothing.
+    const moved = new Set(results[1].results.map((m) => m.id));
+    if (!moved.size) return;
     // One audit row per file, all in one statement batch (audit.log's rule: a failed write never
     // fails the request). A file's row names only the projectors that left one of its own playlists.
     try {
-      await db.batch(env, rows.map((r) => {
+      await db.batch(env, rows.filter((r) => moved.has(r.id)).map((r) => {
         const playlists = playlistsOf.get(r.id);
         const devices = cleared.filter((d) => playlists.includes(d.playlist_id)).map((d) => d.id);
         return audit.statement(ctx, "delete_media", "media", r.id,
