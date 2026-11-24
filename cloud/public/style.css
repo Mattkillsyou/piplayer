@@ -1496,3 +1496,12 @@ html[data-theme="light"] .auth-card .wordmark { animation: none; }
 .enrollment-key input { flex: 1 1 20rem; font-family: var(--p5k-font-mono); }
 .enrollment-key + form { margin-top: var(--p5k-space-2); }
 a.card:hover { text-decoration: none; border-color: var(--p5k-rule-strong); }
+
+/* playlists: missing-bulk-remove-from-playlist */
+/* a row's Select (for Remove selected): on a phone the whole label is the tap target, as on the Library */
+@media (max-width: 720px) {
+  .sortable-table .inline-check { min-height: var(--p5k-touch); }
+  .sortable-table input[type=checkbox] { width: 22px; height: 22px; }
+  .sortable-table input[type=checkbox]::before { font-size: 17px; }
+  .sortable-table td .action-buttons { row-gap: 12px; }
+}

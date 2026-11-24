@@ -83,6 +83,7 @@ function table() {
     ["POST", "/playlists", { name: "  " }, "form", E(400)],
     ["POST", `/playlists/${NOPE}/items`, { media_id: "1" }, "form", E(404)],
     ["POST", `/playlists/${NOPE}/items/reorder`, { order: [] }, "json", E(404)],
+    ["POST", `/playlists/${NOPE}/items/delete`, {}, "form", E(404)],
     ["POST", `/playlists/${NOPE}/items/${NOPE}/duration`, { duration: "5" }, "form", E(404)],
     ["POST", `/playlists/${NOPE}/items/${NOPE}/delete`, {}, "form", E(404)],
     ["POST", `/playlists/${NOPE}/rename`, { name: "x" }, "form", E(404)],

@@ -179,10 +179,13 @@ async function playlistsEdit(ctx) {
         </form>` : esc(it.duration_override_seconds || "—")}
       </td>
       <td>
-        ${canEdit ? `<form method="post" action="/playlists/${playlist.id}/items/${it.id}/delete" class="inline" data-confirm="Remove ${esc(it.original_name)} from ${esc(playlist.name)}? Projectors playing it skip it from their next sync.">
-          ${csrfInput(ctx)}
-          <button type="submit" class="danger small">Remove</button>
-        </form>` : ""}
+        ${canEdit ? `<div class="action-buttons">
+          <label class="inline-check"><input type="checkbox" name="item_id" value="${it.id}" form="remove-items" aria-label="Select ${esc(it.original_name)}">Select</label>
+          <form method="post" action="/playlists/${playlist.id}/items/${it.id}/delete" class="inline" data-confirm="Remove ${esc(it.original_name)} from ${esc(playlist.name)}? Projectors playing it skip it from their next sync.">
+            ${csrfInput(ctx)}
+            <button type="submit" class="danger small">Remove</button>
+          </form>
+        </div>` : ""}
       </td>
     </tr>`;
   const option = (m) => {
@@ -193,6 +196,9 @@ async function playlistsEdit(ctx) {
   };
 
   // Duplicate shares the name form (formaction) so it sits beside Rename; Enter still renames.
+  // Remove selected is a form of its own under the table (a form cannot hold the rows' forms): the
+  // rows' tick boxes join it with form="remove-items". Its hidden noop button comes first because
+  // Enter on a tick box submits through the form's first submit button (as on the Library).
   const content = `<a href="/playlists" class="back">← All playlists</a>
 <div class="page-head playlist-head">
   ${canEdit ? `<form method="post" action="/playlists/${playlist.id}/rename" class="row">
@@ -227,7 +233,12 @@ ${!items.length ? emptyState("EMPTY REEL", `Nothing queued.${canEdit ? " Add med
     ${items.map(itemRow).join("\n    ")}
   </tbody>
 </table>
-</div>`}
+</div>${canEdit ? `
+<form method="post" action="/playlists/${playlist.id}/items/delete" id="remove-items" class="action-buttons remove-items" autocomplete="off">
+  ${csrfInput(ctx)}
+  <button type="submit" name="noop" value="1" hidden></button>
+  <button type="submit" class="danger small" data-confirm="Remove the selected files from ${esc(playlist.name)}? Projectors playing it skip them from their next sync.">Remove selected</button>
+</form>` : ""}`}
 
 ${canEdit ? `<h2>Add media</h2>
 ${!available.length
@@ -369,6 +380,33 @@ async function playlistRemoveItem(ctx) {
   return redirect(`/playlists/${playlistId}`);
 }
 
+// Remove selected: every ticked item of the playlist in one batch, at most MAX_DELETE. `noop` is
+// Enter on a tick box (playlistsEdit): nothing is removed, and the 204 leaves the browser on the
+// page with its ticks. An id that is not an item of this playlist is skipped.
+async function playlistRemoveItems(ctx) {
+  auth.requireRole(ctx, "editor");
+  const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
+  const form = await ctx.form();
+  if (form.has("noop")) return new Response(null, { status: 204 });
+  const { name } = await ownPlaylist(ctx, playlistId, "name");
+  const back = `/playlists/${playlistId}`;
+  const picked = form.getAll("item_id").filter((v) => typeof v === "string");
+  if (!picked.length) return auth.flashRedirect(ctx, back, "Nothing was ticked.", "warn");
+  if (picked.length > MAX_DELETE) fail(400, `Remove at most ${MAX_DELETE} files at a time`);
+  const ids = [...new Set(picked.map((v) => idParam(v, "item_id")))];
+  const doomed = "FROM playlist_items WHERE playlist_id = ?1 AND id IN (SELECT value FROM json_each(?2))";
+  const [, gone] = await db.batch(ctx.env, [
+    // Before the delete, while the items are still there: updated_at moves only when one goes.
+    [`UPDATE playlists SET updated_at = datetime('now') WHERE id = ?1 AND EXISTS (SELECT 1 ${doomed})`, playlistId, JSON.stringify(ids)],
+    [`DELETE ${doomed}`, playlistId, JSON.stringify(ids)],
+    [RENUMBER_SQL, JSON.stringify([playlistId])],
+  ]);
+  const n = gone.meta.changes;
+  if (!n) return auth.flashRedirect(ctx, back, "Nothing was removed: those files are no longer in this playlist.", "warn");
+  await audit.log(ctx, "playlist_remove_items", "playlist", playlistId, { item_ids: ids, removed: n });
+  return auth.flashRedirect(ctx, back, `Removed ${plural(n, "file")} from ${name}.`);
+}
+
 async function playlistRename(ctx) {
   auth.requireRole(ctx, "editor");
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
@@ -412,6 +450,7 @@ export function register(router) {
   router.get("/playlists/:playlist_id", playlistsEdit);
   router.post("/playlists/:playlist_id/items", playlistAddItem);
   router.post("/playlists/:playlist_id/items/reorder", playlistReorder);
+  router.post("/playlists/:playlist_id/items/delete", playlistRemoveItems);
   router.post("/playlists/:playlist_id/items/:item_id/duration", playlistSetDuration);
   router.post("/playlists/:playlist_id/items/:item_id/delete", playlistRemoveItem);
   router.post("/playlists/:playlist_id/pictures", playlistSetPictures);
