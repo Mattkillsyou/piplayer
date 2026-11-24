@@ -231,7 +231,7 @@ ${!items.length ? emptyState("EMPTY REEL", `Nothing queued.${canEdit ? " Add med
 
 ${canEdit ? `<h2>Add media</h2>
 ${!available.length
-    ? `<p class="help small">Nothing to add. <a href="/library">Library</a>.</p>`
+    ? `<p class="help small">Nothing to add. <a href="/library?to=${playlist.id}">Library</a>.</p>`
     : `<div class="table-foot">
   <form method="post" action="/playlists/${playlist.id}/items">
     ${csrfInput(ctx)}
