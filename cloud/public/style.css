@@ -720,6 +720,8 @@ label > .badge { align-self: flex-start; }
 }
 input::placeholder, textarea::placeholder { color: var(--p5k-dim); }
 input:focus, select:focus, textarea:focus { border-color: var(--p5k-rule-max); box-shadow: var(--p5k-glow-focus); outline: none; }
+/* the ring outside a tick box: a ticked one is a solid square of the field ring's colour */
+input[type=checkbox]:focus-visible { outline: 2px solid var(--p5k-rule-max); outline-offset: 3px; }
 input[disabled], select[disabled] { color: var(--p5k-soft); border-color: var(--p5k-rule-2); background: var(--p5k-raised); cursor: not-allowed; }
 select {
   padding-right: 28px;
@@ -944,6 +946,9 @@ table.data.stack td.name > a { overflow-wrap: anywhere; }
 .device-screen .device-thumb, .device-screen > a { position: absolute; inset: 0; height: 100%; }
 .device-screen > a { display: block; z-index: 1; }
 .device-screen > a:focus-visible { outline-offset: -3px; }
+/* the link's own ring is under its picture: this one is drawn over it, white edged in black, so it
+   shows on a black stage, a white slide and anything between, in both themes */
+.device-screen > a:focus-visible::after { content: ""; position: absolute; inset: 3px; border: 2px solid #FFFFFF; box-shadow: 0 0 0 1px #000000, inset 0 0 0 1px #000000; }
 .device-screen::after {
   content: "";
   position: absolute;
@@ -1181,7 +1186,7 @@ details > div, details > ul { padding: 8px 10px; }
 .dropzone form { display: flex; flex-direction: column; gap: 10px; width: 100%; }
 .dropzone input[type=file] { width: 100%; }
 .dropzone .button, .dropzone button { width: 100%; }
-.dropzone label { margin: 0; text-align: left; }
+.dropzone label { margin: 0; text-align: left; color: var(--p5k-soft); } /* muted on the tint was under 4.5:1 in light */
 .upload-panel { border: 1px solid var(--p5k-rule-3); display: flex; flex-direction: column; }
 .upload-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--p5k-rule-2); }
 .upload-panel-head h2 { margin: 0; font-size: var(--p5k-text-label-sm); }
