@@ -670,13 +670,16 @@ export const noProjectors = (canEdit) => emptyState("NO PROJECTORS", canEdit
 // an admin) with the columns the Devices page and the Dashboard need, content_owner and its
 // username, the playlist / group names only when they are the projector's own account's
 // (another account's reads as none), and current_name, the Library name of the file the player
-// reports (media.filename is unique: one indexed read per projector).
+// reports (media.filename is unique: one indexed read per projector; a file in Recently deleted
+// keeps its name there, looked up only when the Library has none).
 export function visibleDevices(env, user, cols, own = ownedClause(user)) {
   const co = accounts.contentOwnerSql("d");
   return db.all(env,
     `SELECT ${cols}, d.owner_id, ${co} AS content_owner,
             p.id AS playlist_id, p.name AS playlist_name, g.id AS group_id, g.name AS group_name,
-            u.username AS owner_name, cu.username AS content_owner_name, cm.original_name AS current_name
+            u.username AS owner_name, cu.username AS content_owner_name,
+            COALESCE(cm.original_name, (SELECT t.original_name FROM media_trash t
+              WHERE t.owner_id = ${co} AND t.filename = d.current_filename ORDER BY t.id DESC LIMIT 1)) AS current_name
        FROM devices d
        LEFT JOIN playlists p ON p.id = d.playlist_id AND p.owner_id = ${co}
        LEFT JOIN device_groups g ON g.id = d.group_id AND g.owner_id = ${co}
