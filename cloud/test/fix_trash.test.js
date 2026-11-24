@@ -165,3 +165,33 @@ describe("a file already in the library, dropped again with Add to", () => {
     expect(await query("SELECT id FROM playlist_items WHERE playlist_id = ?", p)).toEqual([]);
   });
 });
+
+describe("the Library page's Recently deleted", () => {
+  it("Select all sits before Restore selected, which stays the form's first submit button", async () => {
+    const c = await account("selector");
+    const f = await file("sel.png", c.id);
+    expect((await del(c, [f])).status).toBe(303);
+    const html = await (await c.get("/library")).text();
+    const at = html.indexOf('action="/library/trash/restore"');
+    expect(at).toBeGreaterThan(0);
+    expect(html.indexOf('<button type="button" class="small" data-select-trash>Select all</button>\n      <button type="submit" class="small">Restore selected</button>', at)).toBeGreaterThan(at);
+  });
+
+  it("past the list's cap: the count is right, each delete's time is formatted once, and the rows are read about once", async () => {
+    const c = await account("bigtrash");
+    const n = MAX_DELETE + 100;
+    await query(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+      INSERT INTO media_trash (owner_id, media_id, filename, original_name, media_type, size_bytes, sha256, uploaded_at, places, deleted_at)
+      SELECT ?1, 700000 + i, 'big-' || i || '.png', 'big-' || i || '.png', 'image', 1, printf('%064d', i), datetime('now'), '[]', '2026-11-20 10:00:00.000' FROM n`, c.id, n);
+    const m = metered();
+    const parts = vi.spyOn(Intl.DateTimeFormat.prototype, "formatToParts");
+    const res = await direct(c, "/library", { method: "GET", headers: {} }, m.DB);
+    const html = await res.text();
+    const formatted = parts.mock.calls.length;
+    parts.mockRestore();
+    expect(html).toContain(`<summary>Recently deleted (${n})</summary>`);
+    expect(html.match(/name="trash_id"/g).length).toBe(MAX_DELETE);
+    expect(formatted).toBeLessThan(10);
+    expect(m.read()).toBeLessThan(MAX_DELETE + n + 100);
+  });
+});

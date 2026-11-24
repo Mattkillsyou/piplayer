@@ -287,25 +287,31 @@ async function deleteMedia(ctx, user, ids) {
 }
 
 // Recently deleted, below the grid (C4): the account's newest MAX_DELETE rows with a tick box
-// each, Restore selected and Empty. "" for a viewer and when there is nothing.
+// each, Select all (public/media.js), Restore selected and Empty. "" for a viewer and when there
+// is nothing.
 async function trashSection(ctx, user) {
   if (user.role === "viewer") return "";
   const rows = await db.all(ctx.env,
-    `SELECT id, original_name, deleted_at, COUNT(*) OVER () AS total FROM media_trash WHERE owner_id = ?
-      ORDER BY deleted_at DESC, id DESC LIMIT ?`, user.id, MAX_DELETE);
+    "SELECT id, original_name, deleted_at FROM media_trash WHERE owner_id = ? ORDER BY deleted_at DESC, id DESC LIMIT ?", user.id, MAX_DELETE);
   if (!rows.length) return "";
   const tz = (await ctx.settings()).timezone;
-  const total = rows[0].total;
+  // Counted apart, and only when the list is full (a COUNT(*) OVER () read every row four times).
+  const total = rows.length < MAX_DELETE ? rows.length
+    : (await db.first(ctx.env, "SELECT COUNT(*) AS n FROM media_trash WHERE owner_id = ?", user.id)).n;
   const emptying = Math.min(total, PURGE_MAX);
-  // Restore selected first: Enter on a tick box presses the form's first button.
+  // One delete gives all its rows one time: each time is formatted once, not once per row.
+  const times = new Map();
+  const when = (at) => { if (!times.has(at)) times.set(at, esc(localTime(at, tz))); return times.get(at); };
+  // Restore selected is the first submit button (Select all is not one): Enter on a tick box presses it.
   return `<details class="trash">
   <summary>Recently deleted (${total})</summary>
   <form method="post" action="/library/trash/restore" autocomplete="off">
     ${csrfInput(ctx)}
     <ul class="trash-list">
-${rows.map((t) => `      <li><label class="inline-check"><input type="checkbox" name="trash_id" value="${t.id}">${esc(t.original_name)}</label><span class="media-meta">${esc(localTime(t.deleted_at, tz))}</span></li>`).join("\n")}
+${rows.map((t) => `      <li><label class="inline-check"><input type="checkbox" name="trash_id" value="${t.id}">${esc(t.original_name)}</label><span class="media-meta">${when(t.deleted_at)}</span></li>`).join("\n")}
     </ul>
     <div class="action-buttons">
+      <button type="button" class="small" data-select-trash>Select all</button>
       <button type="submit" class="small">Restore selected</button>
       <button type="submit" class="danger small" formaction="/library/trash/empty" data-confirm="Delete ${emptying} file${emptying === 1 ? "" : "s"} for good?">Empty</button>
     </div>
