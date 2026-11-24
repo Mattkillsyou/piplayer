@@ -3,6 +3,8 @@
 // POST init -> PUT parts (skipping the ones the server already has, PARALLEL at a time so
 // the round trip of one part does not idle the connection) -> POST complete, whose body names
 // the playlist the Library's "Add to" picked ({"playlist": ""} the Default, an id, or "none").
+// Init names it too: a file the library already holds is put in that playlist there (init
+// answers {existing: true, added: true | false}) and needs no upload.
 // Progress shows the hashing percentage first, then the upload percentage; a server error
 // is shown as its {"detail"} text (plain English from src/uploads.js). While files are in
 // flight the browser asks before the page is left or reloaded (the upload would stop; the
@@ -200,8 +202,8 @@
     };
   }
 
-  // `dest` is the body of the complete request.
-  function uploadOne(file, row, dest) {
+  // `dest` is the body of the complete request, `named` the name of its playlist ('' for none).
+  function uploadOne(file, row, dest, named) {
     var meta, hashed, init;
     return readMeta(file).then(function (m) {
       meta = m;
@@ -219,11 +221,12 @@
         body.animated = h.animated;
         if (h.animated) body.duration_seconds = h.seconds; // the browser reports no running time for a GIF
       }
+      if (to) body.playlist = dest.playlist;
       row.set(0, 'Starting upload...');
       return request('POST', form.dataset.init, body);
     }).then(function (r) {
       init = r;
-      if (init.existing) return null; // already in the library (an upload link): nothing to send
+      if (init.existing) return null; // already in the library: nothing to send
       if (!init.upload_id || !(init.part_size > 0)) throw new Error('The server gave an unexpected reply. Try again.');
       // Resume: skip the parts the server already holds (page reloaded mid-upload).
       return init.received > 0 ? request('GET', base + '/' + init.upload_id) : { parts: [] };
@@ -292,7 +295,8 @@
       row.set(100, 'Upload received, saving...');
       return request('POST', base + '/' + init.upload_id + '/complete', dest);
     }).then(function () {
-      row.set(100, 'Done.');
+      row.set(100, !(init.existing && to) ? 'Done.'
+        : 'Already in the library' + (!named ? '.' : init.added ? '; added to ' + named + '.' : ' and in ' + named + '.'));
       return hashed.sha256; // truthy: the file is in the library
     }).catch(function (err) {
       row.error(err.message);
@@ -328,12 +332,13 @@
     if (play) queue.textContent = ''; // the link page is not reloaded: start each send with an empty queue
     // Read once: changing "Add to" while files are in flight moves none of this batch.
     var dest = to ? { playlist: to.value } : {};
+    var named = to && to.value !== 'none' && to.options ? to.options[to.selectedIndex].text : '';
     var rows = files.map(addRow);
     var ok = 0;
     var sent = []; // sha256 of every file that is in the library now, in the order picked
     var chain = Promise.resolve();
     files.forEach(function (file, i) {
-      chain = chain.then(function () { return uploadOne(file, rows[i], dest); }).then(function (r) { if (r) { ok++; sent.push(r); } });
+      chain = chain.then(function () { return uploadOne(file, rows[i], dest, named); }).then(function (r) { if (r) { ok++; sent.push(r); } });
     });
     chain.then(function () {
       if (!play || !sent.length) return null;
@@ -355,6 +360,13 @@
           (ok ? ' Choose all ' + files.length + ' files again to send them together.' : '');
         status.textContent = [sentText, failed].filter(Boolean).join(' ');
         return;
+      }
+      // The Library opens on every file, so the new ones are on show: media.js keeps a Find / Show
+      // for the tab under this key (per signed-in user).
+      if (ok) {
+        try {
+          sessionStorage.removeItem('p5k-library-find:' + ((document.querySelector('.topbar .username') || {}).textContent || ''));
+        } catch (e) { /* storage off */ }
       }
       if (ok === files.length) {
         status.textContent = 'Upload complete. Reloading...';

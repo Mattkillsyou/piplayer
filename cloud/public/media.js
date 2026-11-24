@@ -280,21 +280,31 @@
       if (e.key === 'ArrowRight') move(1);
     });
     // Focus goes back to the file last shown, not the one the viewer opened on (where the browser
-    // has just put it).
+    // has just put it); to Find when Delete took the last file on show (the page has no other).
     dialog.addEventListener('close', function () {
       var shown = current;
       clearStage();
       current = null;
-      if (shown && shown.isConnected) shown.focus();
+      var back = shown && shown.isConnected ? shown : document.getElementById('find-q');
+      if (back) back.focus();
     });
   }
 
+  // The newest row of a page's Recently deleted (media_trash.id, AUTOINCREMENT, listed newest
+  // first), 0 when it has none.
+  function newest(page) {
+    var box = page.querySelector('details.trash input[name="trash_id"]');
+    return box ? +box.value : 0;
+  }
+
   // The Library page a delete came back to: its "N files" line and its Recently deleted (now with
-  // the file just deleted) replace this page's; Media (N) is recount()'s. A failure here only
-  // leaves the line stale until the next load, never undoes the delete.
+  // the file just deleted) replace this page's; Media (N) is recount()'s. Two deletes' answers can
+  // cross: a page older than the one shown is dropped. A failure here only leaves the line stale
+  // until the next load, never undoes the delete.
   function freshen(r) {
     Promise.resolve().then(function () { return r.text(); }).then(function (html) {
       var fresh = new DOMParser().parseFromString(html, 'text/html');
+      if (newest(fresh) < newest(document)) return;
       var line = document.querySelector('.page-head .page-meta');
       var freshLine = fresh.querySelector('.page-head .page-meta');
       if (line && freshLine) line.textContent = freshLine.textContent;
@@ -311,8 +321,10 @@
 
   // Delete asks the card's own question and posts the card's own route, from here: the page stays
   // where it was (a reload put a phone back at the top) and the viewer goes on to the next file.
-  // Anything but the Library coming back (signed out, a stale token) reloads the page, which says
-  // why. The fetch follows the redirect, so the "Deleted" notice is used up on the way.
+  // Anything but the Library coming back reloads the page. A refusal (a stale token, an error) is
+  // the POST's own answer, and the file is still there: said first. The sign-in page (signed out)
+  // and the Library failing to load after the delete went through speak for themselves. The fetch
+  // follows the redirect, so the "Deleted" notice is used up on the way.
   function remove(link) {
     var btn = deleteOf(link);
     var card = link.closest('.media-card');
@@ -320,7 +332,9 @@
     fetch(btn.form.action, {
       method: 'POST', body: new URLSearchParams({ one: btn.value }), headers: { 'X-CSRF-Token': csrf() }
     }).then(function (r) {
-      if (!r.ok || new URL(r.url).pathname !== '/library') throw new Error('not deleted (' + r.status + ')');
+      var path = new URL(r.url).pathname;
+      if (path !== '/library' && path !== '/login') alert('The file was not deleted (error ' + r.status + '). Reloading the page.');
+      if (!r.ok || path !== '/library') { location.reload(); return; }
       if (!card.parentNode) return; // pressed twice: the first one took it
       freshen(r);
       var all = links();
@@ -328,7 +342,7 @@
       var to = all[i + 1] || all[i - 1];
       card.parentNode.removeChild(card);
       recount();
-      if (current !== link) return; // the viewer has moved on, or closed
+      if (current !== link) { if (current) steps(current); return; } // the viewer has moved on, or closed
       if (to) show(to); else dialog.close();
     }).then(null, function () { location.reload(); });
   }
@@ -337,6 +351,21 @@
     var all = links();
     var to = all[all.indexOf(current) + by];
     if (to) show(to);
+  }
+
+  // Previous / Next for the file shown, among the previews on show now.
+  function steps(link) {
+    var all = links();
+    var i = all.indexOf(link);
+    var focused = document.activeElement;
+    prevBtn.disabled = i <= 0;
+    nextBtn.disabled = i < 0 || i >= all.length - 1;
+    // A step button switched off while it has the focus would drop the focus out of the dialog
+    // (and the arrow keys with it): hand it to the other one, or to Close.
+    if ((focused === prevBtn || focused === nextBtn) && focused.disabled) {
+      var other = focused === prevBtn ? nextBtn : prevBtn;
+      (other.disabled ? closeBtn : other).focus();
+    }
   }
 
   function show(link) {
@@ -376,19 +405,9 @@
       span.textContent = fact;
       metaEl.appendChild(span);
     });
-    var all = links();
-    var i = all.indexOf(link);
-    var focused = document.activeElement;
-    prevBtn.disabled = i <= 0;
-    nextBtn.disabled = i < 0 || i >= all.length - 1;
-    // A step button switched off while it has the focus would drop the focus out of the dialog
-    // (and the arrow keys with it): hand it to the other one, or to Close.
-    if ((focused === prevBtn || focused === nextBtn) && focused.disabled) {
-      var other = focused === prevBtn ? nextBtn : prevBtn;
-      (other.disabled ? closeBtn : other).focus();
-    }
+    steps(link);
     deleteBtn.hidden = !deleteOf(link);
-    detailsLink.hidden = !link.dataset.page;
+    detailsLink.hidden = !link.dataset.page || link.dataset.page === location.pathname; // not on the file's own page
     if (link.dataset.page) detailsLink.href = link.dataset.page;
     // Saved under the file's own name (same origin, so the browser takes it), with the stored
     // file's extension when the name has lost it.
@@ -442,8 +461,8 @@
       bulk.disabled = !n || n > max;
       bulk.textContent = n > max ? 'Delete at most ' + max : n ? 'Delete selected (' + n + ')' : 'Delete selected';
       bulk.dataset.confirm = n === 1
-        ? 'Delete ' + last + '? It is removed from every playlist that uses it.'
-        : 'Delete ' + (n > 3 || !n ? 'these ' + n + ' files' : names.join(', ') + ' and ' + last) + '? They are removed from every playlist that uses them.';
+        ? 'Delete ' + last + '? It is removed from every playlist that uses it and kept in Recently deleted for 30 days.'
+        : 'Delete ' + (n > 3 || !n ? 'these ' + n + ' files' : names.join(', ') + ' and ' + last) + '? They are removed from every playlist that uses them and kept in Recently deleted for 30 days.';
       if (add && addTo) {
         add.disabled = !n || n > max || !addTo.value;
         add.textContent = n > max ? 'Add at most ' + max : n ? 'Add to playlist (' + n + ')' : 'Add to playlist';
@@ -478,7 +497,10 @@
   // Find / Show / Sort over the Library's cards (library.js card()'s data-*), in the browser. A
   // card that does not match is hidden, and unticked so nothing out of sight is deleted or added;
   // the cards are put in the order picked, which is also the order Add to playlist appends them
-  // in. The view is kept for this tab, so the reload after a delete or an add shows the same files.
+  // in. Show "in:<playlist id>" keeps the cards whose data-in (their playlists' ids) holds it.
+  // The view is kept for this tab, so the reload after a delete or an add shows the same files,
+  // and per signed-in user (usernames are unique): the next account on the tab starts afresh.
+  // upload.js clears it after a batch, so the new files are on show.
   var finder = document.getElementById('media-find');
   var grid = finder && document.querySelector('.media-grid');
   if (grid) {
@@ -486,13 +508,14 @@
     var showSel = document.getElementById('find-show');
     var sortSel = document.getElementById('find-sort');
     var count = document.getElementById('media-count');
-    var KEY = 'p5k-library-find';
+    var KEY = 'p5k-library-find:' + ((document.querySelector('.topbar .username') || {}).textContent || '');
     // The server sends the newest first: i is that order.
     var cards = Array.prototype.map.call(grid.children, function (card, i) {
       var d = card.dataset;
       return {
         card: card, box: card.querySelector('input[name="media_id"]'), i: i,
-        name: (d.name || '').toLowerCase(), kind: d.kind, use: d.use, size: +d.size || 0, length: +d.length || 0
+        name: (d.name || '').toLowerCase(), kind: d.kind, use: d.use, lists: (d['in'] || '').split(/\s+/),
+        size: +d.size || 0, length: +d.length || 0
       };
     });
     var ORDER = {
@@ -508,13 +531,18 @@
       var show = showSel.value;
       var shown = 0;
       cards.forEach(function (c) {
-        var hide = (show === 'video' || show === 'image' ? c.kind !== show : show && c.use !== show) ||
+        var hide = (show === 'video' || show === 'image' ? c.kind !== show
+          : show.indexOf('in:') === 0 ? c.lists.indexOf(show.slice(3)) < 0
+          : show && c.use !== show) ||
           !words.every(function (w) { return c.name.indexOf(w) >= 0; });
         c.card.hidden = !!hide;
         if (!hide) shown++;
         else if (c.box) c.box.checked = false;
       });
-      count.textContent = 'Media (' + (shown === cards.length ? shown : shown + ' of ' + cards.length) + ')';
+      // Said to a screen reader (the heading is aria-live), once per change: a key that leaves the
+      // count as it was says nothing.
+      var text = 'Media (' + (shown === cards.length ? shown : shown + ' of ' + cards.length) + ')';
+      if (count.textContent !== text) count.textContent = text;
       try { sessionStorage.setItem(KEY, JSON.stringify({ q: q.value, show: show, sort: sortSel.value })); } catch (e) { /* storage off */ }
       sync();
     };
@@ -537,4 +565,28 @@
     finder.hidden = false;
     apply(!!sortSel.value);
   }
+
+  // --------------------------------------------------------- recently deleted ---
+
+  // Recently deleted's Select all (library.js trashSection) ticks every row, or, once every row
+  // is ticked, none, and reads Select none while they all are. Listened for on the document:
+  // freshen() swaps in the whole section. The list holds at most what one Restore takes.
+  function trashTicks(form, flip) {
+    var btn = form && form.querySelector('[data-select-trash]');
+    if (!btn) return;
+    var boxes = Array.prototype.slice.call(form.querySelectorAll('input[name="trash_id"]'));
+    var every = boxes.every(function (b) { return b.checked; });
+    if (flip) {
+      every = !every;
+      boxes.forEach(function (b) { b.checked = every; });
+    }
+    btn.textContent = every ? 'Select none' : 'Select all';
+  }
+  document.addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('[data-select-trash]') : null;
+    if (btn) trashTicks(btn.form, true);
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.name === 'trash_id') trashTicks(e.target.form, false);
+  });
 })();
