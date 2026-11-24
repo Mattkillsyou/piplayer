@@ -1496,3 +1496,6 @@ html[data-theme="light"] .auth-card .wordmark { animation: none; }
 .enrollment-key input { flex: 1 1 20rem; font-family: var(--p5k-font-mono); }
 .enrollment-key + form { margin-top: var(--p5k-space-2); }
 a.card:hover { text-decoration: none; border-color: var(--p5k-rule-strong); }
+
+/* account: missing-change-own-password */
+@media (max-width: 1240px), (pointer: coarse) { .topbar .user a.username { display: flex; align-items: center; min-width: var(--p5k-touch); min-height: var(--p5k-touch); } }

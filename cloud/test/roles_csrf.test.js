@@ -66,6 +66,8 @@ function table() {
     ["GET", "/alerts", null, null, ALL(200)],
     ["GET", "/users", null, null, AD(200)],
     ["GET", "/settings", null, null, E(200)], // each account's own (migration 0016)
+    ["GET", "/account", null, null, ALL(200)], // every role's own password and email
+    ["POST", "/account", { password: "pw123456", password2: "pw654321" }, "form", ALL(400)],
     ["GET", `/library/upload/${NOPE}`, null, null, E(404)],
     ["POST", "/library/upload/init", { name: "x.exe", size: 10, sha256: "0".repeat(64), media_type: "video", duration_seconds: 1, width: 1, height: 1 }, "json", E(400)],
     ["PUT", `/library/upload/${NOPE}/part/1`, "x", "raw", E(404)],
