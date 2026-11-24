@@ -85,7 +85,7 @@ export const newTokenBlock = (newToken, { notice = "New token", label = "Token",
 export const tokenCreateForm = (ctx, action, label = "Token name") => `<form method="post" action="${action}">
     ${csrfInput(ctx)}
     <div class="row">
-      <input type="text" name="name" placeholder="token name (e.g. office laptop)" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="${esc(label)}">
+      <input type="text" name="name" placeholder="e.g. office laptop" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="${esc(label)}">
       <button type="submit" class="primary small">Create token</button>
     </div>
   </form>`;
@@ -143,7 +143,7 @@ async function linksPanel(ctx, me, newLink, tz) {
   <form method="post" action="/settings/links">
     ${csrfInput(ctx)}
     <div class="row">
-      <input type="text" name="name" placeholder="who it is for (e.g. a roommate)" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="Link name">
+      <input type="text" name="name" placeholder="e.g. a roommate" maxlength="${MAX_TOKEN_NAME}" required autocomplete="off" aria-label="Link name">
       <button type="submit" class="primary small">Create link</button>
     </div>
   </form>

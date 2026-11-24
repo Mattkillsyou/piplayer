@@ -174,7 +174,7 @@ npm run migrate:remote
 npx wrangler secret put SESSION_SECRET            # random 48 bytes
 npx wrangler secret put SETUP_TOKEN               # random 24 bytes
 # remove the custom domain from hackthon5000 (dashboard or Workers Domains API), then
-npm run deploy                                    # = npm run migrate:remote && wrangler deploy
+npm run deploy                                    # migrate:remote, then wrangler deploy once nothing is left to apply
 # hand over: https://projectors.photogen5000.com/setup?token=<SETUP_TOKEN>
 ```
 

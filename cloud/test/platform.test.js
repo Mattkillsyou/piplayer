@@ -208,12 +208,14 @@ describe("style.css", () => {
     expect(stack).toContain("table.data.stack, table.data.stack tbody, table.data.stack tr, table.data.stack td { display: block; }");
     expect(stack).toContain("table.data.stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }");
     expect(stack).toContain("table.data.stack td[data-label]::before { content: attr(data-label); display: block;");
-    expect(stack).toContain("table.data.users tr:has(+ .user-tokens) { border-bottom: 0; }");
-    expect(stack).toContain("table.data.users .duration-form { display: flex; }");
+    // the Users cards start at 1120px (fix_platform.test.js), their own rules there
+    const users = block("@media (max-width: 1120px) {\n  table.data.users");
+    expect(users).toContain("table.data.users tr:has(+ .user-tokens) { border-bottom: 0; }");
+    expect(users).toContain("table.data.users .duration-form { display: flex; }");
   });
 
   it("flows each audit entry as a line on a phone, with its details under it", () => {
-    const phone = block("@media (max-width: 720px) {\n  .terminal table.data thead");
+    const phone = block("@media (max-width: 1120px) {\n  .terminal table.data thead");
     expect(phone).toContain(".terminal table.data tr { display: flex; flex-wrap: wrap; gap: 0 8px; padding: 5px 12px; }");
     expect(phone).toContain(".terminal table.data td.log-d { order: 1; flex-basis: 100%; min-width: 0; }");
   });

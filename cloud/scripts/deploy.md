@@ -45,10 +45,12 @@ Wrangler lists the pending files in `migrations/` and asks for confirmation. Re-
 safe: only unapplied migrations run. Until the database is at the version the code expects
 (`meta.schema_version`, `db.SCHEMA_VERSION`), the worker refuses every request, `/api/health`
 included, with a plain-English 500 naming `npm run migrate:remote`; `npm run deploy` runs it
-first for that reason. `0006_indexes.sql` heals duplicate media rows and duplicate open alerts
+first for that reason, and deploys only once `wrangler d1 migrations list` has nothing left to
+apply (answering n at the prompt stops the deploy instead of shipping code the database is not
+ready for). `0006_indexes.sql` heals duplicate media rows and duplicate open alerts
 itself before adding its unique indexes (its header comment has the SELECTs that show what it
 will touch); `0008` adds the login_failures username index. The code expects the version in
-`db.SCHEMA_VERSION` (18 with `0018_upload_link_projectors.sql`, which only adds a devices column with a default).
+`db.SCHEMA_VERSION`, the number of the newest file in `migrations/`.
 
 ## 3. Secrets (generated, never chosen by hand)
 
@@ -116,7 +118,7 @@ Then deploy; `wrangler.toml` carries
 attaches the hostname (DNS record + certificate) to `piplayer-cloud`:
 
 ```sh
-npm run deploy              # = npm run migrate:remote && npx wrangler deploy
+npm run deploy              # scripts/deploy.mjs: npm run migrate:remote, then npx wrangler deploy once nothing is left to apply
 ```
 
 Wrangler prints the version id and the bindings (DB, MEDIA, ASSETS, ALERT_MAIL, the
@@ -161,7 +163,7 @@ the printed command on the Pi
 ## Later deploys
 
 `npm run deploy` (it runs `npm run migrate:remote` first, which applies any files
-`migrations/` gained; until that has run the worker answers every request with the 500 from
-step 2). The cron handler (audit retention, abandoned uploads, expired sessions, closed alerts
+`migrations/` gained, and deploys only when none is left: until they are applied the new code
+would answer every request with the 500 from step 2). The cron handler (audit retention, abandoned uploads, expired sessions, closed alerts
 after 90 days, hour-old enrollment codes; full per-module list in MODULES.md) needs nothing
 else.
