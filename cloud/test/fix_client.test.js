@@ -99,6 +99,27 @@ describe("media.js Find / Show", () => {
     p.set("find-q", "", "input");
     expect([p.count.textContent, p.count.writes]).toEqual(["Media (4)", 2]);
   });
+
+  it("Show in a playlist keeps the cards whose data-in holds its id, with Find; kept, or back to All once it is gone", async () => {
+    const store = {};
+    let p = await library({ store });
+    for (const [show, expected] of [["in:1", ["Clip 10.mp4", "lobby poster.png"]], ["in:12", ["lobby poster.png"]], ["in:2", ["Clip 2.mp4"]]]) {
+      p.set("find-show", show);
+      expect(p.shown(), show).toEqual(expected);
+    }
+    p.set("find-show", "");
+    p.tick("Zed.png", "Clip 10.mp4");
+    p.set("find-show", "in:1");
+    expect(p.bulk.textContent).toBe("Delete selected (1)"); // Zed.png went out of sight, so it was unticked
+    p.set("find-q", "clip", "input");
+    expect([p.count.textContent, p.shown()]).toEqual(["Media (1 of 4)", ["Clip 10.mp4"]]);
+    vi.resetModules();
+    p = await library({ store });
+    expect([p.ids["find-show"].value, p.shown()]).toEqual(["in:1", ["Clip 10.mp4"]]);
+    vi.resetModules();
+    p = await library({ store, shows: SHOWS.filter((s) => s !== "in:1") }); // that playlist was deleted
+    expect([p.ids["find-show"].value, p.shown()]).toEqual(["", ["Clip 10.mp4", "Clip 2.mp4"]]);
+  });
 });
 
 // --------------------------------------------------------------------------- a page of parts ---

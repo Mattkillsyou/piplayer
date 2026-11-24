@@ -497,7 +497,8 @@
   // Find / Show / Sort over the Library's cards (library.js card()'s data-*), in the browser. A
   // card that does not match is hidden, and unticked so nothing out of sight is deleted or added;
   // the cards are put in the order picked, which is also the order Add to playlist appends them
-  // in. The view is kept for this tab, so the reload after a delete or an add shows the same files,
+  // in. Show "in:<playlist id>" keeps the cards whose data-in (their playlists' ids) holds it.
+  // The view is kept for this tab, so the reload after a delete or an add shows the same files,
   // and per signed-in user (usernames are unique): the next account on the tab starts afresh.
   var finder = document.getElementById('media-find');
   var grid = finder && document.querySelector('.media-grid');
@@ -512,7 +513,8 @@
       var d = card.dataset;
       return {
         card: card, box: card.querySelector('input[name="media_id"]'), i: i,
-        name: (d.name || '').toLowerCase(), kind: d.kind, use: d.use, size: +d.size || 0, length: +d.length || 0
+        name: (d.name || '').toLowerCase(), kind: d.kind, use: d.use, lists: (d['in'] || '').split(/\s+/),
+        size: +d.size || 0, length: +d.length || 0
       };
     });
     var ORDER = {
@@ -528,7 +530,9 @@
       var show = showSel.value;
       var shown = 0;
       cards.forEach(function (c) {
-        var hide = (show === 'video' || show === 'image' ? c.kind !== show : show && c.use !== show) ||
+        var hide = (show === 'video' || show === 'image' ? c.kind !== show
+          : show.indexOf('in:') === 0 ? c.lists.indexOf(show.slice(3)) < 0
+          : show && c.use !== show) ||
           !words.every(function (w) { return c.name.indexOf(w) >= 0; });
         c.card.hidden = !!hide;
         if (!hide) shown++;
