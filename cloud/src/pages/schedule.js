@@ -32,8 +32,12 @@ async function schedulePage(ctx) {
       WHERE s.device_id = ?
       ORDER BY s.priority DESC, s.id`, device.content_owner, deviceId);
   const playlists = canEdit ? await db.all(ctx.env, "SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name", user.id) : [];
-  // The account's other projectors, for Also add to.
-  const others = canEdit ? await db.all(ctx.env,
+  // ?edit=<rule id> (the rows' Edit links): the form is that rule's, filled in. Only this
+  // projector's rules; any other id gets the Add form.
+  const edit = canEdit ? rules.find((r) => String(r.id) === ctx.url.searchParams.get("edit")) : undefined;
+  // The account's other projectors, for Also add to: on the Add form only, as Save rule changes
+  // this projector's rule alone (a copy elsewhere is its own row, edited on its own page).
+  const others = canEdit && !edit ? await db.all(ctx.env,
     `SELECT d.id, d.name FROM devices d WHERE ${accounts.contentOwnerSql("d")} = ? AND d.id != ? ORDER BY d.name COLLATE NOCASE, d.id`,
     user.id, deviceId) : [];
   // The rules run in the projector's account's zone (the viewer's own for their own projector).
@@ -48,9 +52,6 @@ async function schedulePage(ctx) {
     r.matches_now = schedules.schedule_matches(r, now);
     r.is_active = !!active && r.id === active.id;
   }
-  // ?edit=<rule id> (the rows' Edit links): the form is that rule's, filled in. Only this
-  // projector's rules; any other id gets the Add form.
-  const edit = canEdit ? rules.find((r) => String(r.id) === ctx.url.searchParams.get("edit")) : undefined;
   const v = edit || { priority: 10 };
   const value = (x) => (x ? ` value="${esc(x)}"` : "");
   const base = `/devices/${device.id}/schedule`;
@@ -196,8 +197,9 @@ async function alsoAddTo(ctx, form, deviceId) {
   return rows;
 }
 
-// POST /devices/:id/schedule adds a rule, POST /devices/:id/schedule/:rule saves that rule; either
-// also adds a copy to every projector ticked under Also add to, all copies in one batch.
+// POST /devices/:id/schedule adds a rule, and a copy to every projector ticked under Also add to,
+// all in one batch. POST /devices/:id/schedule/:rule saves that rule only: a copy ticked again
+// from an Edit form would be a second rule beside the old one, which kept playing the old times.
 async function saveRule(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const deviceId = idParam(ctx.params.device_id, "device_id");
@@ -207,7 +209,7 @@ async function saveRule(ctx) {
   const device = await requireDevice(ctx, deviceId);
   requireContentOwner(ctx, device);
   await requireRow(ctx.env, "playlists", rule.pid, user.id, "Playlist");
-  const copies = await alsoAddTo(ctx, form, deviceId);
+  const copies = ruleId === null ? await alsoAddTo(ctx, form, deviceId) : [];
   const fields = [rule.pid, rule.name, rule.prio, rule.startTime, rule.endTime, rule.days, rule.startDate, rule.endDate];
   if (ruleId !== null) {
     const { changes } = await db.run(ctx.env,
@@ -233,11 +235,8 @@ async function saveRule(ctx) {
     console.error(`audit log write failed for a schedule rule: ${e}`);
   }
   const back = `/devices/${deviceId}/schedule`;
-  const n = copies.length;
-  if (!n) return redirect(back);
-  return auth.flashRedirect(ctx, back, ruleId === null
-    ? `Rule added to ${n + 1} projectors.`
-    : `Rule saved and added to ${n} more projector${n === 1 ? "" : "s"}.`);
+  if (!copies.length) return redirect(back);
+  return auth.flashRedirect(ctx, back, `Rule added to ${copies.length + 1} projectors.`);
 }
 
 async function scheduleDelete(ctx) {
