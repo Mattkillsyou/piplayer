@@ -94,7 +94,7 @@ describe("M18: New token and Delete acknowledge", () => {
   it("New token banners, lands with that device's Token / install open; delete banners the name", async () => {
     const dev = await device("ack-1", "Ack <dev>");
     const res = await post(r.editor, `/devices/${dev.id}/regen-token`);
-    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${dev.id}`]);
+    expect([res.status, res.headers.get("location")]).toEqual([303, `/devices?open=${dev.id}#device-${dev.id}`]);
     const page = await (await r.editor.get(`/devices?open=${dev.id}`)).text();
     expect(page).toContain('<div class="alert ok" role="alert">New token made for Ack &lt;dev&gt;: open Token / install and run the install command on the Pi again.</div>');
     const i = page.indexOf(`action="/devices/${dev.id}/regen-token"`);

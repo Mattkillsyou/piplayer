@@ -786,7 +786,8 @@ ${!devices.length
 
 // A change made on one projector's card lands back on that card (deviceRow's id): on a phone each
 // projector is a few screens tall, and every change used to start the scroll again from the top.
-// A new or deleted projector, the fleet update and a hand-over's notice still land at the top.
+// app.js moves the change's notice into the card. A new or deleted projector, the fleet update and
+// a hand-over's notice still land at the top.
 const cardUrl = (id) => `/devices#device-${id}`;
 
 // A manual addition belongs to whoever adds it (an admin's too: an ownerless projector would
@@ -866,12 +867,13 @@ async function devicesRegenToken(ctx) {
   await db.run(ctx.env, "UPDATE devices SET token = ? WHERE id = ?", randomToken(32), deviceId);
   await audit.log(ctx, "device_regen_token", "device", deviceId, null, undefined, row.owner_id);
   let message = `New token made for ${row.name}: open Token / install and run the install command on the Pi again.`;
+  const back = `/devices?open=${deviceId}#device-${deviceId}`; // its card, Token / install open
   if (row.tunnel_id && cloudflare.configured(ctx.env)) {
     const tunnel = await rotateTunnelBanner(ctx, row);
-    if (tunnel.error) return auth.flashRedirect(ctx, `/devices?open=${deviceId}`, `${message} ${tunnel.error}`, "error");
+    if (tunnel.error) return auth.flashRedirect(ctx, back, `${message} ${tunnel.error}`, "error");
     message += " Its camera tunnel was recreated too.";
   }
-  return auth.flashRedirect(ctx, `/devices?open=${deviceId}`, message);
+  return auth.flashRedirect(ctx, back, message);
 }
 
 async function devicesDelete(ctx) {
@@ -1067,8 +1069,8 @@ async function devicesCreateTunnel(ctx) {
   if (!cloudflare.configured(ctx.env)) fail(400, `automatic tunnels are not configured (${cloudflare.missing(ctx.env).join(", ")} not set)`);
   const row = await requireDevice(ctx, deviceId, "d.id, d.device_id, d.tunnel_id");
   const done = row.tunnel_id ? await rotateTunnelBanner(ctx, row) : await cloudflare.tryProvisionDevice(ctx, row);
-  if (done.error) return auth.flashRedirect(ctx, "/devices", row.tunnel_id ? done.error : `Tunnel creation failed: ${done.error}`, "error");
-  return auth.flashRedirect(ctx, "/devices", `Tunnel ready: https://${done.hostname}/ (the Pi picks up the ${row.tunnel_id ? "new " : ""}tunnel key on its next check-in; open the live view logged in to Cloudflare Access).`);
+  if (done.error) return auth.flashRedirect(ctx, cardUrl(deviceId), row.tunnel_id ? done.error : `Tunnel creation failed: ${done.error}`, "error");
+  return auth.flashRedirect(ctx, cardUrl(deviceId), `Tunnel ready: https://${done.hostname}/ (the Pi picks up the ${row.tunnel_id ? "new " : ""}tunnel key on its next check-in; open the live view logged in to Cloudflare Access).`);
 }
 
 // Projector block form: control none | broadlink | cec, power mode manual | auto, optional RM4

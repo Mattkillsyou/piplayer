@@ -57,7 +57,7 @@ describe("now playing", () => {
 });
 
 describe("a change made on a card lands back on that card", () => {
-  it("the card forms answer with /devices#device-<id>; a new or deleted projector, the fleet update and New token go to the top", async () => {
+  it("the card forms answer with /devices#device-<id> (New token with its Token / install open); a new or deleted projector and the fleet update go to the top", async () => {
     const dev = await device("card-1", "Card", { last_seen_at: now() });
     const pid = await playlist("Card PL");
     const gid = await group("Card group");
@@ -83,7 +83,7 @@ describe("a change made on a card lands back on that card", () => {
     let res = await post(r.admin, `/devices/${dev.id}/owner`, { owner_id: String(r.ids.editor) });
     expect([res.status, res.headers.get("location")]).toEqual([303, card]);
     res = await post(r.editor, `/devices/${dev.id}/regen-token`);
-    expect(res.headers.get("location")).toBe(`/devices?open=${dev.id}`);
+    expect(res.headers.get("location")).toBe(`/devices?open=${dev.id}#device-${dev.id}`);
     res = await post(r.editor, "/devices/update-all", { command: "update-os" });
     expect(res.headers.get("location")).toBe("/devices");
     res = await post(r.editor, "/devices", { device_id: "card-2", name: "Card 2" });
