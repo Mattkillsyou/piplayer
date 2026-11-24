@@ -13,6 +13,7 @@ import * as accounts from "./accounts.js";
 import * as audit from "./audit.js";
 import * as auth from "./auth.js";
 import * as db from "./db.js";
+import { appendToPlaylist } from "./pages/library.js";
 import { envInt, fail, hex, idParam, json, jsonObject, randomToken } from "./util.js";
 
 export const PART_SIZE = 8 * 1024 * 1024;
@@ -146,9 +147,19 @@ export async function uploadInit(ctx) {
   const body = await jsonObject(ctx.request);
   const v = validateInit(body, ctx.env);
   const existing = await duplicateOf(ctx.env, v.sha256, user.id);
-  // An upload link sends the file to a projector, and a file the library already holds can go
-  // there as it is: nothing to upload, where the Library page has nothing to add.
-  if (existing) return ctx.link ? json({ existing: true }) : alreadyHere(existing);
+  if (existing) {
+    // An upload link sends the file to a projector, and a file the library already holds can go
+    // there as it is: nothing to upload.
+    if (ctx.link) return json({ existing: true });
+    // The Library's upload box: nothing to upload either, but the file joins the playlist "Add to"
+    // picked (the init body carries the same "playlist" as the complete body). No playlist (an
+    // older upload.js sends none, or "No playlist") answers the 409 that names the file.
+    const playlist = body.playlist === undefined ? null : await playlistFor(ctx, body.playlist, user.id);
+    if (!playlist) alreadyHere(existing);
+    const { added } = await appendToPlaylist(ctx.env, playlist, [existing.id], user.id);
+    if (added) await audit.log(ctx, "playlist_add_items", "playlist", playlist, { added, media_ids: [existing.id] });
+    return json({ existing: true, added: added > 0 });
+  }
 
   // Same content already in flight (page reload mid-upload): hand back that upload so the
   // browser can skip the parts it already sent (GET status), instead of starting over.
@@ -159,15 +170,17 @@ export async function uploadInit(ctx) {
   let key = "media/" + finalMediaName(v.sha256, v.name, v.ext, user.id);
   // A file in Recently deleted (pages/library.js) keeps its bytes at its stored name for Restore:
   // the same file uploaded again under the same name gets a name of its own, so its complete (or
-  // a failed check deleting what arrived) never writes over or removes those bytes.
+  // a failed check deleting what arrived) never writes over or removes those bytes. The random
+  // part goes on the cleaned name: on the raw one a "/" (a crafted init) cut it off again.
   if (await db.first(ctx.env, "SELECT 1 FROM media_trash WHERE filename = ?", key.slice("media/".length))) {
-    key = "media/" + finalMediaName(v.sha256, `${randomToken(4)}_${v.name}`, v.ext, user.id);
+    key = "media/" + finalMediaName(v.sha256, `${randomToken(4)}_${sanitizeFilename(v.name)}`, v.ext, user.id);
   }
   // The key comes from the browser's sha256 prefix and name only: a different file whose
   // sha256 shares the first 16 hex chars must not open a second multipart at a key the
-  // library (or another in-flight upload) already holds, or complete would replace those bytes.
-  // The key carries this account's id, so only its own rows can ever match here.
-  if (await db.first(ctx.env, "SELECT 1 FROM media WHERE filename = ? UNION ALL SELECT 1 FROM uploads WHERE key = ?", key.slice("media/".length), key)) {
+  // library, Recently deleted or another in-flight upload already holds, or complete would
+  // replace those bytes. The key carries this account's id, so only its own rows can ever match.
+  if (await db.first(ctx.env, `SELECT 1 FROM media WHERE filename = ?1 UNION ALL SELECT 1 FROM uploads WHERE key = ?2
+      UNION ALL SELECT 1 FROM media_trash WHERE filename = ?1`, key.slice("media/".length), key)) {
     fail(409, "A file with this name is already in the library or being uploaded");
   }
   const mp = await ctx.env.MEDIA.createMultipartUpload(key, {
@@ -266,18 +279,21 @@ export async function uploadStatus(ctx) {
 }
 
 // The playlist a Library upload joins, from the complete body's "playlist" (public/upload.js
-// sends the Library's "Add to" select): "" or none = the uploader's own Default playlist (their
-// default_playlist_id, db.loadSettings), as it was before there was a choice and as an old cached
-// upload.js still asks; "none" = no playlist; digits = another playlist of the uploader's own,
-// else 404. Settled before anything is written, so a refused one leaves the upload to be
-// completed again.
+// sends the Library's "Add to" select). Settled before anything is written, so a refused one
+// leaves the upload to be completed again.
 async function destination(ctx, userId) {
   // A form post's body was read by the CSRF check, and a form carries no choice.
   const text = ctx.request.bodyUsed ? "" : await ctx.request.text();
   let body;
   try { body = text ? JSON.parse(text) : {}; } catch { body = null; }
   if (body === null || typeof body !== "object" || Array.isArray(body)) fail(400, "body must be a JSON object");
-  const choice = body.playlist;
+  return playlistFor(ctx, body.playlist, userId);
+}
+
+// An "Add to" choice: "" or none = the uploader's own Default playlist (their default_playlist_id,
+// db.loadSettings), as it was before there was a choice and as an old cached upload.js still
+// asks; "none" = no playlist; digits = another playlist of the uploader's own, else 404.
+async function playlistFor(ctx, choice, userId) {
   if (choice === undefined || choice === "") return (await ctx.settings()).default_playlist_id;
   if (choice === "none") return null;
   if (typeof choice !== "string" || !/^\d+$/.test(choice)) fail(400, "playlist must be a playlist id, \"\" or \"none\"");
