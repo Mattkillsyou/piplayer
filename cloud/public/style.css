@@ -1364,6 +1364,10 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
 @media (max-width: 900px) {
   .sortable-table td.thumb-cell, .sortable-table .media-thumb { width: 88px; }
 }
+/* the 88px tile's NO PREVIEW / MAKING PREVIEW sat under its badge and running time (the row shows the time) */
+@media (max-width: 900px) {
+  .sortable-table .media-thumb.no-preview > span, .sortable-table .media-thumb.is-making > span { display: none; }
+}
 /* Up to 800px an item takes two lines inside the screen: the handle, #, preview, and the name
    over its time; then the override box and Remove. The header stays for screen readers. */
 @media (max-width: 800px) {
@@ -1373,6 +1377,8 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, .86); }
   .sortable-table tbody td { border-bottom: 0; }
   .sortable-table tbody td.thumb-cell { width: auto; }
   .sortable-table tbody td:nth-child(-n+3) { grid-row: span 2; }
+  /* the handle fills both lines: centred it was 40px tall, under a finger's 44 */
+  .sortable-table tbody td.drag-handle { align-self: stretch; display: flex; align-items: center; justify-content: center; }
   .sortable-table tbody td.name { grid-column: 4 / -1; align-self: end; padding-bottom: 2px; }
   .sortable-table tbody td:nth-child(5) { grid-column: 4 / -1; align-self: start; padding-top: 2px; }
   .sortable-table tbody td:nth-child(6) { grid-column: 1 / 5; }
