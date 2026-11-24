@@ -162,7 +162,7 @@
     --p5k-ink: #1A1A1A;
     --p5k-body: #3A3A3A;
     --p5k-soft: #5A5A5A;
-    --p5k-muted: #6E6E6E;
+    --p5k-muted: #666666;
     --p5k-dim: #666666;
     --p5k-darkest-ink: #C4C2BC;
     --p5k-rule: rgba(0, 0, 0, 0.08);
@@ -220,7 +220,7 @@ html[data-theme="light"] {
   --p5k-ink: #1A1A1A;
   --p5k-body: #3A3A3A;
   --p5k-soft: #5A5A5A;
-  --p5k-muted: #6E6E6E;
+  --p5k-muted: #666666;
   --p5k-dim: #666666;
   --p5k-darkest-ink: #C4C2BC;
   --p5k-rule: rgba(0, 0, 0, 0.08);
@@ -368,6 +368,7 @@ code, kbd, pre {
   color: var(--p5k-ink);
 }
 code { padding: 0 3px; background: var(--p5k-fill-tint); }
+p code { overflow-wrap: anywhere; } /* Settings' operator addresses: a long one pushed a phone page sideways */
 pre {
   margin: 0;
   padding: var(--p5k-space-3);
@@ -506,7 +507,7 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
 
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
 .page-head h1 { margin: 0; overflow-wrap: anywhere; } /* a viewer's playlist or file name with no spaces pushed a phone page sideways */
-.page-head .page-meta { font-size: var(--p5k-text-data-sm); color: var(--p5k-muted); text-align: right; }
+.page-head .page-meta { font-size: var(--p5k-text-data-sm); color: var(--p5k-muted); text-align: right; overflow-wrap: anywhere; min-width: 0; }
 .page-head .page-meta strong { color: var(--p5k-phosphor); font-weight: 400; }
 .page-head .eyebrow { margin-bottom: 4px; }
 .page-head .head-actions { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
@@ -574,7 +575,7 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
 .card::after { bottom: 5px; right: 5px; border-right: 1px solid; border-bottom: 1px solid; }
 .card-label { font-size: var(--p5k-text-label-sm); letter-spacing: 0.24em; text-transform: uppercase; color: var(--p5k-muted); }
 .card-value { font-family: var(--p5k-font-display); font-size: var(--p5k-text-display); line-height: 1; color: var(--p5k-phosphor); text-shadow: var(--p5k-bloom); }
-.card-sub { font-size: var(--p5k-text-data-sm); color: var(--p5k-soft); }
+.card-sub { font-size: var(--p5k-text-data-sm); color: var(--p5k-soft); overflow-wrap: anywhere; }
 @media (max-width: 720px) {
   .cards { grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .card { padding: 10px; gap: 2px; }
@@ -851,6 +852,7 @@ table.data td input[type=email], table.data td input[type=text] { min-width: 8re
 table.data td .muted.small { display: inline; }
 /* a schedule rule's "matches, but a higher-priority rule is playing" pushed Edit and Delete off a tablet */
 table.data td .badge { white-space: normal; }
+.command-list .badge { white-space: normal; } /* "never picked up: ..." pushed a phone page sideways */
 tr.rule-active td { background: var(--p5k-fill-tint) !important; }
 tr.rule-active td:first-child { box-shadow: inset 2px 0 0 var(--p5k-rule-max); }
 /* Users: a long name or address breaks anywhere rather than widen its column (an ordinary name
@@ -862,6 +864,7 @@ table.data.users td.name { min-width: 9rem; }
 /* the Playlists list, whose names are links: one with no spaces pushed a tablet's Edit and Delete
    past the edge. Not every name cell: beside a long schedule state, "Evening" broke as "Eveni ng". */
 table.data.stack td.name > a { overflow-wrap: anywhere; }
+table.data.alerts td.name > a { overflow-wrap: break-word; } /* Alerts: whole words, as before the link */
 /* Phones: a table marked .stack reads as one card per row, each cell under its heading
    (data-label), so no action sits past the right edge. The real headings stay for screen readers. */
 @media (max-width: 720px) {
@@ -1016,6 +1019,8 @@ table.data.stack td.name > a { overflow-wrap: anywhere; }
 .now-block .now-file { font-size: var(--p5k-text-data-sm); color: var(--p5k-body); overflow-wrap: anywhere; }
 .now-block .now-via { font-size: var(--p5k-text-label-sm); letter-spacing: var(--p5k-track-nav); text-transform: uppercase; color: var(--p5k-soft); }
 .now-block.none .now-playlist { color: var(--p5k-muted); }
+/* a group or playlist name with no spaces pushed the page sideways */
+.device-row .device-id, .device-card-id, .now-block .now-label, .now-block .now-playlist, .now-block .now-via { overflow-wrap: anywhere; }
 .device-meta { font-size: var(--p5k-text-label); color: var(--p5k-muted); }
 .device-card .alert { margin: 0; }
 @media (max-width: 720px) {
@@ -1036,7 +1041,8 @@ table.data.stack td.name > a { overflow-wrap: anywhere; }
   .device-card .device-thumb-empty .empty-sub { display: none; }
   .device-card-body { flex: 1 1 0; min-width: 0; padding: 0; gap: 5px; }
   .device-card-head { align-items: center; gap: 6px; }
-  .device-card-title { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .device-card-title { font-size: 11px; white-space: nowrap; }
+  .device-card-title a { display: block; overflow: hidden; text-overflow: ellipsis; } /* on the link: an element's own overflow does not clip its outline */
   .device-card-id { font-size: var(--p5k-text-label-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .device-card-head > div { min-width: 0; }
   .device-card .status { font-size: 10px; padding: 2px 5px; gap: 4px; }
@@ -1298,11 +1304,11 @@ html:has(.media-bar) { scroll-padding-top: 96px; }
 .trash-list { list-style: none; margin: 0 0 10px; padding: 0; }
 .trash-list li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 2px 12px; padding: 6px 0; border-bottom: 1px solid var(--p5k-rule); }
 .trash-list .inline-check { min-width: 0; margin: 0; color: var(--p5k-body); overflow-wrap: anywhere; }
-.trash-list .media-meta { white-space: nowrap; }
+.trash-list .media-meta { white-space: nowrap; margin-left: auto; } /* wrapped under a long name: still at the right */
 /* a phone: the time under the name in every row (beside it, a long name pushed some times onto a line of their own) */
 @media (max-width: 720px) {
   .trash-list li { flex-direction: column; align-items: flex-start; gap: 0; padding: 0 0 6px; }
-  .trash-list .media-meta { padding-left: 28px; } /* under the name: the box (22px) and its gap */
+  .trash-list .media-meta { padding-left: 28px; margin-left: 0; } /* under the name: the box (22px) and its gap */
   .trash-list .inline-check { min-height: var(--p5k-touch); }
   .trash-list input[type=checkbox] { width: 22px; height: 22px; }
   .trash-list input[type=checkbox]::before { font-size: 17px; }
@@ -1542,7 +1548,8 @@ a.card:hover { text-decoration: none; border-color: var(--p5k-rule-strong); }
 }
 
 /* account: missing-change-own-password */
-@media (max-width: 1240px), (pointer: coarse) { .topbar .user a.username { display: flex; align-items: center; min-width: var(--p5k-touch); min-height: var(--p5k-touch); } }
+/* block, not flex: text-overflow's ellipsis applies only to a block's own text */
+@media (max-width: 1240px), (pointer: coarse) { .topbar .user a.username { display: block; min-width: var(--p5k-touch); line-height: var(--p5k-touch); } }
 
 /* devices: missing-pause-alerts-per-projector */
 .device-row .alerts-paused { align-self: flex-start; justify-self: start; }

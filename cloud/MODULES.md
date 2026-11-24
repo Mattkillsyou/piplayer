@@ -549,8 +549,12 @@ it keeps serving between `migrations apply` and `wrangler deploy`.
 (INTEGER NOT NULL DEFAULT 0, 0 or 1; Alerts below) and `idx_media_trash_filename` on
 `media_trash(filename)`, so an upload init (`uploads.js`, which checks its stored name is not one
 waiting in Recently deleted) and Devices and the Dashboard naming a now-playing file in Recently
-deleted (`pages/devices.visibleDevices`) each take one indexed read. Nothing else changes, so the
-worker from before it keeps serving between `migrations apply` and `wrangler deploy`.
+deleted (`pages/devices.visibleDevices`) each take one indexed read. It also adds
+`idx_devices_playlist` on `devices(playlist_id)` and `idx_device_schedules_playlist` on
+`device_schedules(playlist_id)`: the Playlists list counts what plays each playlist
+(`device_count`, `schedule_count`) and a playlist delete looks the same rows up, an indexed read
+each. Nothing else changes, so the worker from before it keeps serving between `migrations apply`
+and `wrangler deploy`.
 
 `db.js` exports `SCHEMA_VERSION` (20) and `assertMigrated` compares `meta.schema_version`
 to it: every migration ends with the `schema_version` write and bumps the constant to match.

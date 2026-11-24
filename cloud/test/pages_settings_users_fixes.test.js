@@ -136,7 +136,7 @@ describe("H4 + M21: an account's alert addresses are the camera operator list of
     // an editor cannot reach Cloudflare: the line says who has to act
     expect(page).toContain("Email alerts reach only addresses the site owner has verified in Cloudflare Email Routing.");
     expect(page).toContain('<input type="email" multiple name="alert_email"');
-    expect(page).toContain('name="alert_webhook_url" value="" placeholder="https://hooks.slack.com/services/..." pattern="https://.*"');
+    expect(page).toContain('name="alert_webhook_url" value="" placeholder="https://hooks.slack.com/..." pattern="https://.*"');
   });
 });
 

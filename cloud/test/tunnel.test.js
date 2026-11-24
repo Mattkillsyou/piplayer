@@ -431,6 +431,10 @@ describe("operator list changes and token rotation", () => {
     const [a] = await audits("camera_access_updated");
     expect(a).toMatchObject({ target_type: "settings", target_id: "operators", details: '{"devices": 2, "emails": 1}' });
     expect(await one("SELECT owner_id FROM audit_log WHERE action = 'camera_access_updated'")).toEqual({ owner_id: r.ids.editor });
+    // tunnelled projectors and no address Access takes: the old list stays, and that is the reason
+    await operators(r.ids.editor, null);
+    expect(await cloudflare.syncAccess(ctx())).toMatch(/^no address the camera sign-in accepts/);
+    await operators(r.ids.editor, "new@example.net");
     // a refusal comes back as the reason, nothing audited for it
     fake.refuse = { key: "PUT /accounts/acct1/access/apps/app-3/policies/pol-4", message: "policy is locked" };
     expect(await cloudflare.syncAccess(ctx())).toBe("Cloudflare API PUT /accounts/.../access/apps/app-3/policies/pol-4: policy is locked");

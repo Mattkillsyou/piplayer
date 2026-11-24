@@ -87,7 +87,9 @@ export async function evaluate(env, now = new Date()) {
         if (!cur) {
           // OR IGNORE: an overlapping run may have opened the same (device, kind) since the
           // SELECT above (idx_alerts_one_open); that run's digest carries it, so nothing to do here.
-          const ins = await db.run(env, "INSERT OR IGNORE INTO alerts (device_id, kind, opened_at) VALUES (?, ?, ?)", d.id, kind, ts);
+          // NOT EXISTS: a pause that landed since that SELECT opens nothing.
+          const ins = await db.run(env, `INSERT OR IGNORE INTO alerts (device_id, kind, opened_at)
+            SELECT ?1, ?2, ?3 WHERE NOT EXISTS (SELECT 1 FROM devices WHERE id = ?1 AND alerts_paused = 1)`, d.id, kind, ts);
           if (!ins.changes) continue;
           events.opened.push({ id: ins.last_row_id, device: d, kind, opened_at: ts });
           await audit.log(ctx, "alert_opened", "device", d.device_id, { kind }, undefined, d.owner_id);
@@ -103,6 +105,16 @@ export async function evaluate(env, now = new Date()) {
         if (!d.alerts_paused) events.closed.push({ id: cur.id, device: d, kind, opened_at: cur.opened_at });
         await audit.log(ctx, "alert_closed", "device", d.device_id, { kind }, undefined, d.owner_id);
       }
+    }
+  }
+  // A pause during this run closed some of these alerts (pausing closes them): not news.
+  const pending = [...byAccount.values()].flatMap((e) => [...e.opened, ...e.repeated].map((x) => x.id));
+  if (pending.length) {
+    const gone = new Set((await db.all(env, "SELECT id FROM alerts WHERE closed_at IS NOT NULL AND id IN (SELECT value FROM json_each(?))",
+      JSON.stringify(pending))).map((a) => a.id));
+    for (const e of byAccount.values()) {
+      e.opened = e.opened.filter((x) => !gone.has(x.id));
+      e.repeated = e.repeated.filter((x) => !gone.has(x.id));
     }
   }
   const result = { opened: 0, closed: 0, repeated: 0, sent: [], errors: [] };

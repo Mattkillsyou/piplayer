@@ -174,7 +174,7 @@ describe("the Library page's Recently deleted", () => {
     const html = await (await c.get("/library")).text();
     const at = html.indexOf('action="/library/trash/restore"');
     expect(at).toBeGreaterThan(0);
-    expect(html.indexOf('<button type="button" class="small" data-select-trash>Select all</button>\n      <button type="submit" class="small">Restore selected</button>', at)).toBeGreaterThan(at);
+    expect(html.indexOf('<button type="button" class="small" data-select-trash hidden>Select all</button>\n      <button type="submit" class="small">Restore selected</button>', at)).toBeGreaterThan(at);
   });
 
   it("past the list's cap: the count is right, each delete's time is formatted once, and the rows are read about once", async () => {

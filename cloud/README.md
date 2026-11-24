@@ -71,9 +71,9 @@ real request origin.
 `0004_device_codes`, `0005_pi_model`, `0006_indexes`, `0007_command_undeliverable`,
 `0008_login_failures_index`, `0009_device_owner`, `0010_default_playlist`, `0011_password_reset`,
 `0012_device_decode_mode`, `0013_device_frame_pacing`, `0014_device_decoder`,
-`0015_device_render_profile`, `0016_accounts`, `0017_upload_links`, `0018_upload_link_projectors`
-and `0019_media_trash` add to it (see the Schema section of MODULES.md for what each one adds; the
-database is at `schema_version` 19).
+`0015_device_render_profile`, `0016_accounts`, `0017_upload_links`, `0018_upload_link_projectors`,
+`0019_media_trash` and `0020_device_alerts_paused` add to it (see the Schema section of MODULES.md
+for what each one adds; the database is at `schema_version` 20).
 `0006` heals duplicate media rows and duplicate open alerts itself before its unique indexes go
 on, so no manual step precedes it. `0010` creates the "Default" playlist (unless one of that name
 exists), points `settings.default_playlist_id` at it and appends every media file that is in no

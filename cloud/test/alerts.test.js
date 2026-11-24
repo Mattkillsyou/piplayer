@@ -449,7 +449,7 @@ describe("/alerts page + dashboard badge", () => {
     let page = await (await r.editor.get("/alerts")).text();
     expect(page).toContain('href="/alerts" class="active"');
     expect(page).toContain("ALL CLEAR");
-    expect(page).toContain("Nothing recovered yet.");
+    expect(page).toContain("Nothing closed yet.");
     expect(page).toContain(' · channels on the <a href="/settings">Settings</a> page'); // the editor's own channels
     expect(await (await r.viewer.get("/alerts")).text()).not.toContain('href="/settings"'); // a viewer has no Settings
     await query("INSERT INTO alerts (device_id, kind, opened_at, closed_at, notified_at) VALUES (?, 'offline', '2026-09-16 09:00:00', NULL, '2026-09-16 09:00:00')", lobby.id);
@@ -461,11 +461,11 @@ describe("/alerts page + dashboard badge", () => {
     page = await (await r.editor.get("/alerts")).text();
     expect(page).toContain("<strong>1 open</strong>");
     expect(page).toContain("Open · 1");
-    expect(page).toContain("Recently recovered · 1");
+    expect(page).toContain("Recently closed · 1");
     expect(page).toContain(`<a href="/devices#device-${lobby.id}">Lobby</a> <code class="muted small">lobby</code>`);
     expect(page).toContain('<span class="badge badge-stale">offline (no sync)</span>');
     expect(page).toContain('<span class="badge badge-stale">camera error</span>');
-    expect(page).toContain("2026-09-15 10:30 UTC");
+    expect(page).toContain("<span class=\"nowrap\">2026-09-15</span> <span class=\"nowrap\">10:30 UTC</span>");
     expect(page).toContain('href="/settings">Settings</a>');
     const dash = await (await r.editor.get("/dashboard")).text();
     expect(dash).toContain('<a class="card" href="/alerts" id="alerts-card">');

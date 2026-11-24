@@ -54,7 +54,7 @@ describe("the page", () => {
     expect(await (await r.editor.get("/dashboard")).text()).toContain('<a class="username" href="/account" title="ed">ed</a>');
     // a finger-sized link in the phone menu
     expect(await (await r.viewer.get("/static/style.css")).text()).toContain(
-      "@media (max-width: 1240px), (pointer: coarse) { .topbar .user a.username { display: flex; align-items: center; min-width: var(--p5k-touch); min-height: var(--p5k-touch); } }");
+      "@media (max-width: 1240px), (pointer: coarse) { .topbar .user a.username { display: block; min-width: var(--p5k-touch); line-height: var(--p5k-touch); } }");
     const anon = await new Client().get("/account");
     expect([anon.status, anon.headers.get("location")]).toEqual([303, "/login"]);
   });

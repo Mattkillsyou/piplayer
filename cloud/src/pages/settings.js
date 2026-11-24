@@ -222,10 +222,10 @@ async function alertsPanel(ctx, s) {
         <input type="number" name="alert_repeat_minutes" value="${esc(s.alert_repeat_minutes)}" min="0" max="10080" step="1" required>
       </label>
       <label>Email ${badge(c.email)}${c.email && !c.email_binding ? ' <span class="badge badge-stale">mail binding missing</span>' : ""}
-        <input type="email" multiple name="alert_email" value="${esc(s.alert_email)}" placeholder="you@example.net, team@example.net" maxlength="1000" autocomplete="off">
+        <input type="email" multiple name="alert_email" value="${esc(s.alert_email)}" placeholder="you@example.net" maxlength="1000" autocomplete="off">
       </label>
       <label>Webhook URL ${badge(c.webhook)}
-        <input type="url" name="alert_webhook_url" value="${esc(s.alert_webhook_url)}" placeholder="https://hooks.slack.com/services/..." pattern="https://.*" maxlength="2048" autocomplete="off" spellcheck="false">
+        <input type="url" name="alert_webhook_url" value="${esc(s.alert_webhook_url)}" placeholder="https://hooks.slack.com/..." pattern="https://.*" maxlength="2048" autocomplete="off" spellcheck="false">
       </label>
       ${TWILIO_FIELDS.map(([n, label]) => `<label>${label} ${setBadge(n)}
         <input type="password" name="${n}" value="" placeholder="${have.has(n) ? "leave empty to keep" : "not set"}" autocomplete="off" spellcheck="false" maxlength="200">

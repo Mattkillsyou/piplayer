@@ -152,7 +152,8 @@ export async function provisionDevice(ctx, device) {
 // to one projector; with neither it is every tunnelled projector, and at 3-4 API calls each a
 // fleet past about 15 runs out of the Free plan's 50 external subrequests, so the pages always
 // name the account or the projector. null on success or when there is nothing to do (not
-// configured, no email known, no tunnels), else the reason for the caller's banner; audits
+// configured, no tunnels), else the reason for the caller's banner (an account whose tunnelled
+// projectors have no address Access takes keeps its old list: said, not skipped quietly); audits
 // camera_access_updated per account. Settings are re-read: the caller has just saved them and
 // ctx.settings() is memoised.
 export async function syncAccess(ctx, ownerId = undefined, deviceId = undefined) {
@@ -169,10 +170,14 @@ export async function syncAccess(ctx, ownerId = undefined, deviceId = undefined)
     byOwner.get(d.content_owner).push(d);
   }
   const settings = await db.loadSettingsFor(ctx.env, [...byOwner.keys()]);
+  let problem = null;
   for (const [owner, list] of byOwner) {
     if (owner === null) continue;
     const emails = await operatorEmails(ctx.env, settings.get(owner), owner);
-    if (!emails) continue;
+    if (!emails) {
+      problem = "no address the camera sign-in accepts, so the old list stays (set the alert email addresses in Settings)";
+      continue;
+    }
     try {
       for (const d of list) await ensureAccess(ctx.env, d.device_id, hostnameFor(ctx.env, d.device_id), emails);
     } catch (e) {
@@ -180,7 +185,7 @@ export async function syncAccess(ctx, ownerId = undefined, deviceId = undefined)
     }
     await audit.log(ctx, "camera_access_updated", "settings", "operators", { devices: list.length, emails: emails.length }, undefined, owner);
   }
-  return null;
+  return problem;
 }
 
 // A new tunnel for a device whose connector token may have leaked: delete the old tunnel (its

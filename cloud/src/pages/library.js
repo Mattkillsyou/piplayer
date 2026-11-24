@@ -190,7 +190,7 @@ async function libraryPage(ctx) {
   <button type="submit" name="noop" value="1" hidden></button>
   <div class="media-bar">
     <div class="action-buttons">
-      <button type="button" class="small" data-select-all>Select all</button>
+      <button type="button" class="small" data-select-all hidden>Select all</button>
       <button type="submit" class="danger small" data-delete-selected data-confirm="Delete the selected files? They are removed from every playlist that uses them and kept in Recently deleted for ${TRASH_DAYS} days.">Delete selected</button>
     </div>
     <div class="action-buttons media-add">
@@ -321,7 +321,7 @@ async function trashSection(ctx, user) {
 ${rows.map((t) => `      <li><label class="inline-check"><input type="checkbox" name="trash_id" value="${t.id}">${esc(t.original_name)}</label><span class="media-meta">${when(t.deleted_at)}</span></li>`).join("\n")}
     </ul>
     <div class="action-buttons">
-      <button type="button" class="small" data-select-trash>Select all</button>
+      <button type="button" class="small" data-select-trash hidden>Select all</button>
       <button type="submit" class="small">Restore selected</button>
       <button type="submit" class="danger small" formaction="/library/trash/empty" data-confirm="Delete ${emptying} file${emptying === 1 ? "" : "s"} for good?">Empty</button>
     </div>

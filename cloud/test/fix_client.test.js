@@ -193,7 +193,8 @@ describe("upload.js", () => {
     expect(inits(r)).toEqual(["3", "3", "3"]);
     expect(r.sent.filter(([method]) => method === "PUT").length).toBe(1); // only c.png goes up
     expect(r.said).toEqual(["Already in the library; added to Friday night.", "Already in the library and in Friday night.", "Done."]);
-    expect([r.status, r.reload.mock.calls.length]).toEqual(["Upload complete. Reloading...", 1]);
+    // no reload: it would wipe what the rows say about the files already in the library
+    expect([r.status, r.reload.mock.calls.length]).toEqual(["Upload complete; 2 files were already in the library (see above). Reload the page to see the changes.", 0]);
     vi.resetModules();
     const d = await upload({ to: addTo(""), inits: [{ existing: true, added: true }] });
     expect([inits(d), d.said]).toEqual([[""], ["Already in the library; added to Default."]]);

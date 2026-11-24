@@ -434,8 +434,12 @@ describe("a link stops with its account", () => {
     expect(await detail(await anon.postJson(`/api/link/${made.token}/play`, { media: ["a".repeat(64)], devices: [hall.id] }), 404)).toBe(links.LINK_GONE);
     expect((await post(r.admin, `/users/${tmpId}/role`, { role: "editor" })).status).toBe(303);
     expect((await anon.get(`/u/${made.token}`)).status).toBe(200); // the link itself was never removed
+    // its paused spare goes to the site admin with its alerts on, as a handover would
+    const spare = await device("tmp-spare", "Tmp spare", { owner_id: tmpId, alerts_paused: 1 });
     expect((await post(r.admin, `/users/${tmpId}/delete`)).status).toBe(303);
     expect(await query("SELECT id FROM upload_links WHERE user_id = ?", tmpId)).toEqual([]);
+    expect(await one("SELECT owner_id, alerts_paused FROM devices WHERE id = ?", spare.id)).toEqual({ owner_id: null, alerts_paused: 0 });
+    await query("DELETE FROM devices WHERE id = ?", spare.id);
     expect((await anon.get(`/u/${made.token}`)).status).toBe(404);
   });
 });

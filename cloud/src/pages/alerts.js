@@ -6,24 +6,25 @@
 import * as alerts from "../alerts.js";
 import * as auth from "../auth.js";
 import * as db from "../db.js";
-import { ageSeconds, ageText, esc, localTime } from "../util.js";
+import { ageSeconds, ageText, esc } from "../util.js";
 import { contentClause } from "./devices.js";
 import { emptyState, layout } from "./layout.js";
+import { stamp } from "./users.js";
 
 const RECENT_LIMIT = 100;
 
 function table(rows, tz, closed) {
   return `<div class="table-wrap">
-  <table class="data stack">
-    <caption class="sr-only">${closed ? "Recently recovered alerts" : "Open alerts"}</caption>
+  <table class="data stack alerts">
+    <caption class="sr-only">${closed ? "Recently closed alerts" : "Open alerts"}</caption>
     <thead><tr><th scope="col">Device</th><th scope="col">Alert</th><th scope="col">Opened</th><th scope="col">${closed ? "Closed" : "Open for"}</th><th scope="col">Last notified</th></tr></thead>
     <tbody>
     ${rows.map((a) => `<tr>
       <td class="name"><a href="/devices#device-${a.card_id}">${esc(a.name)}</a> <code class="muted small">${esc(a.device_id)}</code>${a.alerts_paused ? ' <span class="badge badge-muted">alerts paused</span>' : ""}</td>
       <td data-label="Alert">${alerts.kindBadge(a.kind)}</td>
-      <td data-label="Opened" class="muted nowrap">${esc(localTime(a.opened_at, tz))}</td>
-      <td data-label="${closed ? "Closed" : "Open for"}" class="muted nowrap">${closed ? esc(localTime(a.closed_at, tz)) : esc(ageText(ageSeconds(a.opened_at)).replace(/ ago$/, ""))}</td>
-      <td data-label="Last notified" class="muted nowrap">${a.notified_at ? esc(localTime(a.notified_at, tz)) : "never"}</td>
+      <td data-label="Opened" class="muted">${stamp(a.opened_at, tz)}</td>
+      <td data-label="${closed ? "Closed" : "Open for"}" class="muted">${closed ? stamp(a.closed_at, tz) : `<span class="nowrap">${esc(ageText(ageSeconds(a.opened_at)).replace(/ ago$/, ""))}</span>`}</td>
+      <td data-label="Last notified" class="muted">${a.notified_at ? stamp(a.notified_at, tz) : "never"}</td>
     </tr>`).join("\n    ")}
     </tbody>
   </table>
@@ -45,12 +46,12 @@ async function alertsPage(ctx) {
 
 <div class="panel">
   <h2>Open · ${open.length}</h2>
-  ${open.length ? table(open, tz, false) : emptyState("ALL CLEAR", "No open alerts. A device that goes offline, loses its player, stops sending screenshots or reports an error shows up here within 5 minutes.")}
+  ${open.length ? table(open, tz, false) : emptyState("ALL CLEAR", "No open alerts. A device that goes offline, loses its player, stops sending screenshots or reports an error shows up here within 5 minutes, unless its alerts are paused.")}
 </div>
 
 <div class="panel">
-  <h2>Recently recovered · ${recent.length}</h2>
-  ${recent.length ? table(recent, tz, true) : '<p class="muted small">Nothing recovered yet.</p>'}
+  <h2>Recently closed · ${recent.length}</h2>
+  ${recent.length ? table(recent, tz, true) : '<p class="muted small">Nothing closed yet.</p>'}
 </div>`;
   return layout(ctx, { title: "Alerts", content });
 }

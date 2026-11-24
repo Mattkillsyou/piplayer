@@ -25,13 +25,15 @@ const ROLE_OK = (role) => auth.ROLES.includes(role);
 // recomputed), so those push nothing.
 async function done(ctx, message, accessOwner, back = "/users") {
   const accessError = accessOwner === undefined ? null : await cloudflare.syncAccess(ctx, accessOwner);
-  if (accessError) return auth.flashRedirect(ctx, back, `${message}, but the camera access list could not be updated on every device: ${accessError}. Click Recreate tunnel on each device on the Devices page.`, "error");
+  // /account is open to viewers, who have no Recreate tunnel button
+  const who = auth.roleRank(ctx.user.role) >= auth.roleRank("editor") ? "Click" : "Ask an editor or admin of the account to click";
+  if (accessError) return auth.flashRedirect(ctx, back, `${message}, but the camera access list could not be updated on every device: ${accessError}. ${who} Recreate tunnel on each device on the Devices page.`, "error");
   return auth.flashRedirect(ctx, back, `${message}.`);
 }
 
 // '2026-11-17 10:00 UTC' in two unbreakable halves: a squeezed column puts the time under the
 // date instead of breaking the date at a hyphen.
-const stamp = (value, tz) => esc(localTime(value, tz)).replace(/^(\S+) (.+)$/, '<span class="nowrap">$1</span> <span class="nowrap">$2</span>');
+export const stamp = (value, tz) => esc(localTime(value, tz)).replace(/^(\S+) (.+)$/, '<span class="nowrap">$1</span> <span class="nowrap">$2</span>');
 
 // Second row under a user: their tokens and (admin/editor only) the create form; `newToken`
 // is the plaintext of a token created by this very request, shown once under its user.
@@ -249,7 +251,8 @@ async function usersDelete(ctx) {
   // nothing out; `changes` of the delete counts the cascaded session rows too.
   const guard = "EXISTS (SELECT 1 FROM users u WHERE u.id = ?1 AND (u.role != 'admin' OR (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1))";
   const [signedOut, r] = await db.batch(ctx.env, [
-    [`UPDATE devices SET token = lower(hex(randomblob(32))) WHERE owner_id = ?1 AND ${guard}`, userId],
+    // alerts on again: the site admin inherits these, as with a handover (accounts.reassignDevice)
+    [`UPDATE devices SET token = lower(hex(randomblob(32))), alerts_paused = 0 WHERE owner_id = ?1 AND ${guard}`, userId],
     [`DELETE FROM users WHERE id = ?1 AND ${guard}`, userId],
   ]);
   if (!r.meta.changes) {

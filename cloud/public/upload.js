@@ -297,6 +297,7 @@
     }).then(function () {
       row.set(100, !(init.existing && to) ? 'Done.'
         : 'Already in the library' + (!named ? '.' : init.added ? '; added to ' + named + '.' : ' and in ' + named + '.'));
+      row.existing = !!init.existing; // its row says so: a reload would wipe that
       return hashed.sha256; // truthy: the file is in the library
     }).catch(function (err) {
       row.error(err.message);
@@ -368,9 +369,13 @@
           sessionStorage.removeItem('p5k-library-find:' + ((document.querySelector('.topbar .username') || {}).textContent || ''));
         } catch (e) { /* storage off */ }
       }
-      if (ok === files.length) {
+      var existing = rows.filter(function (r) { return r.existing; }).length;
+      if (ok === files.length && !existing) {
         status.textContent = 'Upload complete. Reloading...';
         window.location.reload();
+      } else if (ok === files.length) {
+        status.textContent = 'Upload complete; ' + (existing === 1 ? '1 file was' : existing + ' files were') +
+          ' already in the library (see above). Reload the page to see the changes.';
       } else {
         status.textContent = ok + ' of ' + files.length + ' file(s) uploaded; see the errors above.' +
           (ok ? ' Reload the page to see them in the list.' : '');

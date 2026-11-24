@@ -313,6 +313,7 @@
       var form = document.getElementById('library-form');
       if (!freshTrash || !form) return;
       freshTrash = document.importNode(freshTrash, true);
+      showTrashSelect(freshTrash);
       freshTrash.open = !!(trash && trash.open);
       form.parentNode.insertBefore(freshTrash, trash || form.nextSibling);
       if (trash) trash.parentNode.removeChild(trash);
@@ -340,6 +341,8 @@
       var all = links();
       var i = all.indexOf(link);
       var to = all[i + 1] || all[i - 1];
+      // The viewer closed while this waited put the focus back on this card: keep it on the page.
+      if (card.contains(document.activeElement)) (to || document.getElementById('find-q') || document.body).focus();
       card.parentNode.removeChild(card);
       recount();
       if (current !== link) { if (current) steps(current); return; } // the viewer has moved on, or closed
@@ -445,6 +448,7 @@
   // forgets the card).
   var recount = function () { sync(); };
   if (bulk && all) {
+    all.hidden = false; // rendered hidden: without this script it does nothing
     var max = parseInt(form.dataset.max, 10) || Infinity;
     // The tick boxes of the cards on show: Find unticks the ones it hides.
     var boxes = function () {
@@ -582,6 +586,12 @@
     }
     btn.textContent = every ? 'Select none' : 'Select all';
   }
+  // Rendered hidden: without this script it does nothing.
+  function showTrashSelect(root) {
+    var btn = root.querySelector('[data-select-trash]');
+    if (btn) btn.hidden = false;
+  }
+  showTrashSelect(document);
   document.addEventListener('click', function (e) {
     var btn = e.target && e.target.closest ? e.target.closest('[data-select-trash]') : null;
     if (btn) trashTicks(btn.form, true);
