@@ -175,12 +175,25 @@ export function zoneOffsetMinutes(timeZone, date = new Date()) {
 
 const pad2 = (n) => String(n).padStart(2, "0");
 
+// localTime's answers per zone and UTC minute, for the isolate's life: the Library formats a
+// time per card, and formatToParts was about a third of its render. A minute has one answer:
+// every offset change from 1990 to 2040, in every zone, falls on a whole minute (not always on
+// a quarter hour: Antarctica/Casey changed at 16:01 UTC in 2020-2022).
+const MINUTES = new Map();
+
 // Render a UTC DB timestamp in the site zone, e.g. '2026-09-14 15:03 PDT' (Jinja `local` filter).
 export function localTime(value, timeZone) {
   const d = parseDbUtc(value);
   if (!d) return value ? String(value) : "";
-  const w = wallClock(timeZone, d);
-  return `${w.year}-${pad2(w.month)}-${pad2(w.day)} ${pad2(w.hour)}:${pad2(w.minute)} ${w.zone}`;
+  const key = `${timeZone} ${Math.floor(d.getTime() / 60000)}`;
+  let s = MINUTES.get(key);
+  if (s === undefined) {
+    const w = wallClock(timeZone, d);
+    s = `${w.year}-${pad2(w.month)}-${pad2(w.day)} ${pad2(w.hour)}:${pad2(w.minute)} ${w.zone}`;
+    if (MINUTES.size >= 10000) MINUTES.clear(); // ponytail: dropped whole at 10,000 (about 1 MB), an LRU if pages outgrow it
+    MINUTES.set(key, s);
+  }
+  return s;
 }
 
 // Current time in the site zone as ISO 8601 with numeric offset, seconds precision

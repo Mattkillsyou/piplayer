@@ -166,7 +166,8 @@ async function libraryPage(ctx) {
   const cards = items.map((v) => card(v, tz, editor, usedBy.get(v.id), defaultId)).join("\n");
   // Find / Show / Sort: public/media.js shows the bar and does the work in the browser (without
   // the script the bar stays hidden). Outside the grid's form, so Enter in it submits nothing.
-  // ponytail: every card is on the page; past about 1,000 files add a server ?q= with paging.
+  // ponytail: every card is on the page; past about 400 files (measured: 10 ms of Worker CPU,
+  // the Free plan's limit, at 400-500 files on a first render) add a server ?q= with paging.
   const head = `<div class="media-head">
   <h2 id="media-count" aria-live="polite">Media (${items.length})</h2>
   <div class="media-find" id="media-find" hidden>
