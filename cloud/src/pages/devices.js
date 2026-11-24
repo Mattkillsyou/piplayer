@@ -545,7 +545,7 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
         <span class="now-label">active now${d.active_playlist_name ? ` · via ${esc(d.active_source)}` : ""}</span>
         <span class="now-playlist">${d.active_playlist_name ? esc(d.active_playlist_name) : "no playlist"}</span>
         ${d.active_playlist_name && d.active_playlist_empty
-    ? `<span class="now-file">nothing in it yet · ${d.active_source === "default playlist" ? '<a href="/library">upload files in the Library</a>' : `<a href="/playlists/${d.active_playlist_id}">add files to it</a>`}</span>`
+    ? `<span class="now-file">nothing in it yet${canEdit && ownContent ? ` · ${d.active_source === "default playlist" ? '<a href="/library">upload files in the Library</a>' : `<a href="/playlists/${d.active_playlist_id}">add files to it</a>`}` : ""}</span>`
     : ""}
         ${d.current_filename
     ? `<span class="now-file">${esc(nowText(d))}${d.player_status && !d.offline ? ` · ${esc(lampText(d.player_status))}` : ""}</span>`

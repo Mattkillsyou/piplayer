@@ -4,7 +4,7 @@
 // projector's card and its playlist and file, and pausing a projector's alerts.
 import { beforeAll, describe, expect, it } from "vitest";
 import { query } from "./helpers.js";
-import { device, media, one, post, roles } from "./pages_common.js";
+import { device, media, one, playlist, post, roles } from "./pages_common.js";
 
 let r;
 const now = () => new Date().toISOString().slice(0, 19).replace("T", " ");
@@ -43,5 +43,26 @@ describe("now playing a file in Recently deleted", () => {
     expect(await (await r.admin.get("/devices")).text()).toContain(`<span class="now-file">last: #1 ${stored}</span>`);
     await query("DELETE FROM devices WHERE id IN (?, ?)", dev.id, other.id);
     await query("DELETE FROM media_trash");
+  });
+});
+
+describe("an empty playlist on a projector's card", () => {
+  it("tells only its own account's editors to add files: not a viewer, not an admin reading another account's", async () => {
+    const dev = await device("empty-vw", "Empty viewer", { owner_id: r.ids.viewer }); // plays the viewer's empty Default
+    let page = await (await r.viewer.get("/devices")).text();
+    expect(page).toContain('<span class="now-file">nothing in it yet</span>');
+    expect(page).not.toContain("upload files in the Library");
+    const pid = await playlist("Viewer empty", r.ids.viewer);
+    await query("UPDATE devices SET playlist_id = ? WHERE id = ?", pid, dev.id);
+    page = await (await r.viewer.get("/devices")).text();
+    expect(page).toContain('<span class="now-file">nothing in it yet</span>');
+    expect(page).not.toContain("add files to it");
+    page = await (await r.admin.get("/devices")).text();
+    expect(page).toContain('<span class="now-file">nothing in it yet</span>');
+    expect(page).not.toContain(`/playlists/${pid}"`);
+    // the editor's own: still the link
+    await query("UPDATE devices SET owner_id = ?, playlist_id = NULL WHERE id = ?", r.ids.editor, dev.id);
+    expect(await (await r.editor.get("/devices")).text()).toContain('<span class="now-file">nothing in it yet · <a href="/library">upload files in the Library</a></span>');
+    await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 });
