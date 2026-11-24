@@ -441,11 +441,6 @@ export async function housekeeping(env) {
   return old.length;
 }
 
-// Where a form of the Library comes back to: the page it was posted from (its hidden "back"), when
-// that is the Library opened from a playlist (?to=, which keeps that playlist picked) or a file's
-// own page; else the Library.
-const backTo = (form) => (/^\/library(\/\d+|\?to=\d+)?$/.test(str(form, "back")) ? str(form, "back") : "/library");
-
 async function libraryDelete(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const mediaId = idParam(ctx.params.media_id, "media_id");
@@ -453,6 +448,11 @@ async function libraryDelete(ctx) {
   if (!row) fail(404, "Not Found");
   return auth.flashRedirect(ctx, "/library", `Moved ${row.original_name} to Recently deleted.`);
 }
+
+// Where a form of the Library comes back to: the page it was posted from (its hidden "back"), when
+// that is the Library opened from a playlist (?to=, which keeps that playlist picked) or a file's
+// own page; else the Library.
+const backTo = (form) => (/^\/library(\/\d+|\?to=\d+)?$/.test(str(form, "back")) ? str(form, "back") : "/library");
 
 // The grid's form: `one` is the file whose own Delete was pressed, else every ticked `media_id`.
 // `noop` is Enter on a tick box with scripts off (libraryPage): the ticks come along, nothing is
