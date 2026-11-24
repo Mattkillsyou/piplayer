@@ -329,7 +329,7 @@
       var to = all[i + 1] || all[i - 1];
       card.parentNode.removeChild(card);
       recount();
-      if (current !== link) return; // the viewer has moved on, or closed
+      if (current !== link) { if (current) steps(current); return; } // the viewer has moved on, or closed
       if (to) show(to); else dialog.close();
     }).then(null, function () { location.reload(); });
   }
@@ -338,6 +338,21 @@
     var all = links();
     var to = all[all.indexOf(current) + by];
     if (to) show(to);
+  }
+
+  // Previous / Next for the file shown, among the previews on show now.
+  function steps(link) {
+    var all = links();
+    var i = all.indexOf(link);
+    var focused = document.activeElement;
+    prevBtn.disabled = i <= 0;
+    nextBtn.disabled = i < 0 || i >= all.length - 1;
+    // A step button switched off while it has the focus would drop the focus out of the dialog
+    // (and the arrow keys with it): hand it to the other one, or to Close.
+    if ((focused === prevBtn || focused === nextBtn) && focused.disabled) {
+      var other = focused === prevBtn ? nextBtn : prevBtn;
+      (other.disabled ? closeBtn : other).focus();
+    }
   }
 
   function show(link) {
@@ -377,17 +392,7 @@
       span.textContent = fact;
       metaEl.appendChild(span);
     });
-    var all = links();
-    var i = all.indexOf(link);
-    var focused = document.activeElement;
-    prevBtn.disabled = i <= 0;
-    nextBtn.disabled = i < 0 || i >= all.length - 1;
-    // A step button switched off while it has the focus would drop the focus out of the dialog
-    // (and the arrow keys with it): hand it to the other one, or to Close.
-    if ((focused === prevBtn || focused === nextBtn) && focused.disabled) {
-      var other = focused === prevBtn ? nextBtn : prevBtn;
-      (other.disabled ? closeBtn : other).focus();
-    }
+    steps(link);
     deleteBtn.hidden = !deleteOf(link);
     detailsLink.hidden = !link.dataset.page || link.dataset.page === location.pathname; // not on the file's own page
     if (link.dataset.page) detailsLink.href = link.dataset.page;

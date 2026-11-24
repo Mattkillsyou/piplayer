@@ -178,4 +178,26 @@ describe("media.js viewer", () => {
     v.d.fire("click", { target: v.next });
     expect([v.details.hidden, v.details.href]).toEqual([false, "/library/3"]);
   });
+
+  it("the viewer moved on before Delete's answer: Previous / Next are put right once the file is gone", async () => {
+    const h = held();
+    const p = await loadPage(FILES3, { fetch: h.fetch });
+    open(p, 0);
+    const v = viewer();
+    expect(v.prev.disabled).toBe(true);
+    v.d.fire("click", { target: v.del });
+    v.d.fire("click", { target: v.next });
+    expect([v.name.textContent, v.prev.disabled]).toEqual(["b.png", false]);
+    h.answer(0, { ok: true, status: 200, url: LIBRARY });
+    await vi.waitFor(() => expect(p.grid.children.length).toBe(2));
+    expect([v.name.textContent, v.prev.disabled, v.next.disabled]).toEqual(["b.png", true, false]);
+    // the same at the other end, with the focus on Next: both steps go off, the focus to Close
+    open(p, 2); // c.png, the last
+    v.d.fire("click", { target: v.del });
+    v.d.fire("click", { target: v.prev });
+    v.next.focus();
+    h.answer(1, { ok: true, status: 200, url: LIBRARY });
+    await vi.waitFor(() => expect(p.grid.children.length).toBe(1));
+    expect([v.name.textContent, v.prev.disabled, v.next.disabled, doc.activeElement]).toEqual(["b.png", true, true, v.close]);
+  });
 });
