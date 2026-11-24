@@ -195,11 +195,23 @@
     });
   }
 
+  // Devices: a change made on a projector's card lands back on it (/devices#device-<id>), but its
+  // notice is drawn at the top of the page, off screen: it moves to the top of the card's first
+  // column (not into the card itself, whose grid would take it for a column), card in view.
+  function initCardNotice() {
+    var note = document.querySelector('main > .alert[role="alert"]');
+    var card = note && location.hash.length > 1 && document.getElementById(location.hash.slice(1));
+    if (!card || !card.classList.contains('device-row') || !card.firstElementChild) return;
+    card.firstElementChild.insertBefore(note, card.firstElementChild.firstChild);
+    card.scrollIntoView();
+  }
+
   function init() {
     initNav();
     initSortable();
     initWallFilter();
     initDropzone();
+    initCardNotice();
   }
 
   window.piplayer = { csrf: csrf, postJson: postJson };
