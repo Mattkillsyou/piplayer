@@ -125,7 +125,7 @@ describe("Users page", () => {
     expect(page).not.toContain('class="muted nowrap"');
     expect(page).toMatch(new RegExp(`<form method="post" action="/users/${r.ids.editor}/tokens">\\s*<input type="hidden" name="csrf_token" value="[^"]+">\\s*<div class="row">\\s*<input type="text" name="name"`));
     // the full name rides on the top bar's shortened one
-    expect(page).toContain('<span class="username" title="admin">admin</span>');
+    expect(page).toContain('<a class="username" href="/account" title="admin">admin</a>');
   });
 });
 

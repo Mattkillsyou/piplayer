@@ -1540,3 +1540,6 @@ a.card:hover { text-decoration: none; border-color: var(--p5k-rule-strong); }
   .sortable-table input[type=checkbox]::before { font-size: 17px; }
   .sortable-table td .action-buttons { row-gap: 12px; }
 }
+
+/* account: missing-change-own-password */
+@media (max-width: 1240px), (pointer: coarse) { .topbar .user a.username { display: flex; align-items: center; min-width: var(--p5k-touch); min-height: var(--p5k-touch); } }

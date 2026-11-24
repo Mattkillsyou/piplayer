@@ -1,6 +1,6 @@
 // The schedule page's Edit rule and Also add to (devices track): a rule is changed in place
-// (POST /devices/:id/schedule/:rule) instead of deleted and typed again, and either form puts a
-// copy of the rule on more of the account's own projectors at once, each copy its own row.
+// (POST /devices/:id/schedule/:rule) instead of deleted and typed again, and Add rule puts a copy
+// of the rule on more of the account's own projectors at once, each copy its own row.
 import { beforeAll, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import * as manifest from "../src/manifest.js";
@@ -66,7 +66,7 @@ describe("the page", () => {
     expect(page).toContain('value="6" checked>Sun</label>');
     expect(page).toContain('<button type="submit" class="primary">Save rule</button>');
     expect(page).toContain(`<a href="${base()}" class="button">Cancel</a>`);
-    expect(page).toContain("<legend>Also add to</legend>");
+    expect(page).not.toContain("Also add to");
     // each row's Edit opens its own rule at the form
     expect(page).toContain(`<a href="${base()}?edit=${id}#rule-form" class="button small">Edit</a>`);
     const other = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'theirs', 1)", w.stage.id, w.evening);
@@ -186,28 +186,6 @@ describe("Also add to", () => {
     await query("DELETE FROM audit_log");
   });
 
-  it("Save rule with one ticked saves the rule and adds one copy; two say so in the plural", async () => {
-    const id = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'Weekend', 1)", w.dev.id, w.morning);
-    let res = await post(r.editor, `${base()}/${id}`, form({ name: "Weekend", playlist_id: String(w.morning), priority: "2" },
-      ["days_of_week_chk", "5"], ["days_of_week_chk", "6"], ["also", String(w.bar.id)]));
-    expect(res.headers.get("location")).toBe(base());
-    expect(await rulesOf(w.dev)).toMatchObject([{ id, name: "Weekend", priority: 2, days_of_week: "56" }]);
-    const [copy] = await rulesOf(w.bar);
-    expect(copy).toMatchObject({ name: "Weekend", playlist_id: w.morning, priority: 2, days_of_week: "56" });
-    expect(copy.id).not.toBe(id);
-    expect(await rulesOf(w.stage)).toEqual([]);
-    expect(await banner(r.editor, base())).toEqual(["ok", "Rule saved and added to 1 more projector."]);
-    expect((await audits("device_schedule_update")).map((a) => a.target_id)).toEqual([String(id)]);
-    expect((await audits("device_schedule_create")).map((a) => a.target_id)).toEqual([String(copy.id)]);
-    res = await post(r.editor, `${base()}/${id}`, form({ name: "Weekend", playlist_id: String(w.morning) }, ["also", String(w.bar.id)], ["also", String(w.stage.id)]));
-    expect(res.status).toBe(303);
-    expect(await banner(r.editor, base())).toEqual(["ok", "Rule saved and added to 2 more projectors."]);
-    expect((await rulesOf(w.bar)).length).toBe(2);
-    expect((await rulesOf(w.stage)).length).toBe(1);
-    await query("DELETE FROM device_schedules");
-    await query("DELETE FROM audit_log");
-  });
-
   it("a ticked projector that is not another of the account's own fails the whole request before anything is written", async () => {
     const id = await ins("INSERT INTO device_schedules (device_id, playlist_id, name, priority) VALUES (?, ?, 'keep', 1)", w.dev.id, w.morning);
     const before = await count();
@@ -215,7 +193,6 @@ describe("Also add to", () => {
     for (const bad of [w.admins.id, NOPE, w.dev.id]) {
       const fields = form({ name: "x", playlist_id: String(w.morning) }, ["also", String(w.stage.id)], ["also", String(bad)]);
       expect(await detail(await post(r.editor, base(), fields), 404), `add ${bad}`).toBe("Device not found");
-      expect(await detail(await post(r.editor, `${base()}/${id}`, fields), 404), `save ${bad}`).toBe("Device not found");
     }
     expect(await detail(await post(r.editor, base(), form({ name: "x", playlist_id: String(w.morning) }, ["also", "abc"])), 400)).toBe("also: value is not a valid integer");
     expect(await count()).toBe(before);

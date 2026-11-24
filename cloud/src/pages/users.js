@@ -23,10 +23,10 @@ const ROLE_OK = (role) => auth.ROLES.includes(role);
 // re-pushed: the whole fleet ran past the Free plan's subrequest limit. Creating a user or changing
 // a role moves no list (operatorEmails never reads the role, and the site admin is recorded, not
 // recomputed), so those push nothing.
-async function done(ctx, message, accessOwner) {
+async function done(ctx, message, accessOwner, back = "/users") {
   const accessError = accessOwner === undefined ? null : await cloudflare.syncAccess(ctx, accessOwner);
-  if (accessError) return auth.flashRedirect(ctx, "/users", `${message}, but the camera access list could not be updated on every device: ${accessError}. Click Recreate tunnel on each device on the Devices page.`, "error");
-  return auth.flashRedirect(ctx, "/users", `${message}.`);
+  if (accessError) return auth.flashRedirect(ctx, back, `${message}, but the camera access list could not be updated on every device: ${accessError}. Click Recreate tunnel on each device on the Devices page.`, "error");
+  return auth.flashRedirect(ctx, back, `${message}.`);
 }
 
 // '2026-11-17 10:00 UTC' in two unbreakable halves: a squeezed column puts the time under the
@@ -271,6 +271,86 @@ async function usersDelete(ctx) {
   return done(ctx, "User deleted", site);
 }
 
+// /account (every role, linked from the name in the top bar): the user's own password and email.
+// Nothing changes without the current password, checked under the login throttle (the same
+// ip + username failures, so the two share one budget). A new password ends the user's other
+// sessions like an admin's Set password above; either change retires the reset links already
+// mailed. The form comes back with the message on a mistake, keeping the typed address.
+async function accountPage(ctx, message = "", status = 200, email = null) {
+  const me = auth.requireUser(ctx);
+  if (email === null) email = (await db.first(ctx.env, "SELECT email FROM users WHERE id = ?", me.id))?.email || "";
+  const content = `<div class="page-head">
+  <h1>Your account</h1>
+  <span class="page-meta">${esc(me.username)}</span>
+</div>
+<div class="panel">
+  <h2>Password and email</h2>
+  <form method="post" action="/account">
+    ${csrfInput(ctx)}
+    <div class="form-grid">
+      <label>Email
+        <input type="email" name="email" value="${esc(email)}" placeholder="not set" maxlength="${auth.MAX_EMAIL_CHARS}" autocomplete="email">
+      </label>
+      <label>New password (at least ${auth.MIN_PASSWORD_CHARS} characters)
+        <input type="password" name="password" minlength="${auth.MIN_PASSWORD_CHARS}" autocomplete="new-password">
+      </label>
+      <label>New password (again)
+        <input type="password" name="password2" minlength="${auth.MIN_PASSWORD_CHARS}" autocomplete="new-password">
+      </label>
+      <label>Current password
+        <input type="password" name="current_password" required autocomplete="current-password">
+      </label>
+    </div>
+    <div class="row">
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</div>`;
+  return layout(ctx, { title: "Your account", content, status, message });
+}
+
+async function accountSave(ctx) {
+  const me = auth.requireUser(ctx);
+  const form = await ctx.form();
+  const email = str(form, "email").trim();
+  const password = str(form, "password");
+  const again = (message, status = 400) => accountPage(ctx, message, status, email);
+  const row = await db.first(ctx.env, "SELECT email, password_hash FROM users WHERE id = ?", me.id);
+  const newEmail = email && email !== row.email ? email : ""; // an empty box keeps the address
+  const problem = (newEmail && auth.emailProblem(newEmail)) || (password && auth.passwordProblem(password));
+  if (problem) return again(problem);
+  if (password !== str(form, "password2")) return again("The two new passwords do not match");
+  if (!newEmail && !password) return again("Enter a new password or a new email address");
+  const wait = await auth.loginLockedFor(ctx.env, ctx.ip, me.username);
+  if (wait) return again(`Too many failed attempts; try again in ${wait} s`, 429);
+  if (!(await auth.verifyPassword(str(form, "current_password"), row.password_hash))) {
+    await auth.recordLoginFailure(ctx.env, ctx.ip, me.username);
+    return again("The current password is wrong");
+  }
+  await auth.clearLoginFailures(ctx.env, ctx.ip, me.username);
+  // One batch: an address another account uses changes nothing, the new password included.
+  const writes = [["UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL", me.id]];
+  if (newEmail) writes.push(["UPDATE users SET email = ? WHERE id = ?", newEmail, me.id]);
+  // ponytail: the check and the new hash are two PBKDF2 derivations (about 13-15 ms CPU each), past
+  // the Free plan's 10 ms where /login's one sits at the edge (README, Limits); an 1102 there fails
+  // before this batch, so nothing is half-changed. Workers Paid lifts it.
+  if (password) {
+    writes.push(["UPDATE users SET password_hash = ? WHERE id = ?", await auth.hashPassword(password), me.id],
+      ["DELETE FROM sessions WHERE user_id = ? AND id != ?", me.id, ctx.session.id]);
+  }
+  try {
+    await db.batch(ctx.env, writes);
+  } catch (e) {
+    if (db.isConstraintError(e)) return again("Another account already uses that email address", 409);
+    throw e;
+  }
+  if (password) await audit.log(ctx, "user_set_password", "user", me.id);
+  if (newEmail) await audit.log(ctx, "user_set_email", "user", me.id, { email: newEmail });
+  const message = password && newEmail ? "Password changed and email address saved" : password ? "Password changed" : "Email address saved";
+  // The address may be the account's camera operator (cloudflare.operatorEmails).
+  return done(ctx, message, newEmail ? me.id : undefined, "/account");
+}
+
 // Issue a token for another admin or editor; the page re-renders once with the plaintext
 // under that user (no redirect: the secret must not travel in a URL). Only the hash is stored.
 async function userTokenCreate(ctx) {
@@ -297,6 +377,8 @@ async function userTokenRevoke(ctx) {
 }
 
 export function register(router) {
+  router.get("/account", accountPage);
+  router.post("/account", accountSave);
   router.post("/users/:user_id/tokens", userTokenCreate);
   router.post("/users/:user_id/tokens/:token_id/revoke", userTokenRevoke);
   router.get("/users", usersPage);

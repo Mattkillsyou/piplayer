@@ -23,7 +23,11 @@ async function groupsPage(ctx) {
       ORDER BY g.name`, user.id);
   const playlists = await db.all(ctx.env, "SELECT id, name FROM playlists WHERE owner_id = ? ORDER BY name", user.id);
   const row = (g) => `<tr>
-      <td class="name">${esc(g.name)}</td>
+      <td class="name">${canEdit ? `<form method="post" action="/groups/${g.id}/rename" class="inline duration-form">
+          ${csrfInput(ctx)}
+          <input type="text" name="name" value="${esc(g.name)}" required aria-label="Name of ${esc(g.name)}">
+          <button type="submit" class="small">Rename</button>
+        </form>` : esc(g.name)}</td>
       <td data-label="Devices">${g.device_count}</td>
       <td data-label="Default playlist">
         <form method="post" action="/groups/${g.id}/assign" class="inline">
@@ -94,6 +98,24 @@ async function groupsAssign(ctx) {
   return redirect("/groups");
 }
 
+// Names stay unique within the account: the 409 is about one's own group, as on create.
+async function groupsRename(ctx) {
+  const user = auth.requireRole(ctx, "editor");
+  const groupId = idParam(ctx.params.group_id, "group_id");
+  const name = str(await ctx.form(), "name").trim();
+  if (!name) fail(400, "Enter a name");
+  let r;
+  try {
+    r = await db.run(ctx.env, "UPDATE device_groups SET name = ? WHERE id = ? AND owner_id = ?", name, groupId, user.id);
+  } catch (e) {
+    if (db.isConstraintError(e)) fail(409, "A group with that name already exists");
+    throw e;
+  }
+  if (!r.changes) fail(404, "Group not found");
+  await audit.log(ctx, "group_rename", "group", groupId, { name });
+  return redirect("/groups");
+}
+
 async function groupsDelete(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const groupId = idParam(ctx.params.group_id, "group_id");
@@ -107,5 +129,6 @@ export function register(router) {
   router.get("/groups", groupsPage);
   router.post("/groups", groupsCreate);
   router.post("/groups/:group_id/assign", groupsAssign);
+  router.post("/groups/:group_id/rename", groupsRename);
   router.post("/groups/:group_id/delete", groupsDelete);
 }
