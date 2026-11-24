@@ -176,8 +176,12 @@ const screenshotHref = (d) => `/devices/${d.id}/screenshot?t=${esc(encodeURIComp
 
 // What the player last reported playing, by its Library name (it reports the stored
 // '<sha16>_u<id>_<name>'; a file with no Library row, from a USB stick or the dev seed, as
-// reported). An offline projector's report is its last one, not what is on the wall now.
-const nowText = (d) => `${d.offline ? "last: " : ""}#${(d.current_position || 0) + 1} ${d.current_name || d.current_filename}`;
+// reported). An offline projector's report is its last one, not what is on the wall now. HTML;
+// `href` links the name.
+const nowText = (d, href = "") => {
+  const name = esc(d.current_name || d.current_filename);
+  return `${d.offline ? "last: " : ""}#${(d.current_position || 0) + 1} ${href ? `<a href="${href}">${name}</a>` : name}`;
+};
 
 // The `.device-screen` block shared by the Devices rows and the dashboard wall: thumb (or
 // NO SIGNAL), age chip + live/stale chip; `link` wraps the thumb in a new-tab link, `now`
@@ -202,7 +206,7 @@ export function deviceScreen(d, { link = false, now = false, tz = null, staleTit
   }
   return `<div class="device-screen${d.screenshot_stale ? " is-stale" : ""}">
       ${inner}
-      ${now && d.current_filename ? `<span class="screen-now">${esc(nowText(d))}</span>` : ""}
+      ${now && d.current_filename ? `<span class="screen-now">${nowText(d)}</span>` : ""}
     </div>`;
 }
 
@@ -543,12 +547,12 @@ function deviceRow(ctx, d, playlists, groups, users, canEdit, isAdmin, openToken
 
       <div class="now-block${d.active_playlist_name ? "" : " none"}">
         <span class="now-label">active now${d.active_playlist_name ? ` · via ${esc(d.active_source)}` : ""}</span>
-        <span class="now-playlist">${d.active_playlist_name ? esc(d.active_playlist_name) : "no playlist"}</span>
+        <span class="now-playlist">${!d.active_playlist_name ? "no playlist" : ownContent ? `<a href="/playlists/${d.active_playlist_id}">${esc(d.active_playlist_name)}</a>` : esc(d.active_playlist_name)}</span>
         ${d.active_playlist_name && d.active_playlist_empty
     ? `<span class="now-file">nothing in it yet${canEdit && ownContent ? ` · ${d.active_source === "default playlist" ? '<a href="/library">upload files in the Library</a>' : `<a href="/playlists/${d.active_playlist_id}">add files to it</a>`}` : ""}</span>`
     : ""}
         ${d.current_filename
-    ? `<span class="now-file">${esc(nowText(d))}${d.player_status && !d.offline ? ` · ${esc(lampText(d.player_status))}` : ""}</span>`
+    ? `<span class="now-file">${nowText(d, ownContent && d.current_media_id ? `/library/${d.current_media_id}` : "")}${d.player_status && !d.offline ? ` · ${esc(lampText(d.player_status))}` : ""}</span>`
     : ""}
       </div>
 
@@ -671,13 +675,13 @@ export const noProjectors = (canEdit) => emptyState("NO PROJECTORS", canEdit
 // username, the playlist / group names only when they are the projector's own account's
 // (another account's reads as none), and current_name, the Library name of the file the player
 // reports (media.filename is unique: one indexed read per projector; a file in Recently deleted
-// keeps its name there, looked up only when the Library has none).
+// keeps its name there, looked up only when the Library has none), with its Library id.
 export function visibleDevices(env, user, cols, own = ownedClause(user)) {
   const co = accounts.contentOwnerSql("d");
   return db.all(env,
     `SELECT ${cols}, d.owner_id, ${co} AS content_owner,
             p.id AS playlist_id, p.name AS playlist_name, g.id AS group_id, g.name AS group_name,
-            u.username AS owner_name, cu.username AS content_owner_name,
+            u.username AS owner_name, cu.username AS content_owner_name, cm.id AS current_media_id,
             COALESCE(cm.original_name, (SELECT t.original_name FROM media_trash t
               WHERE t.owner_id = ${co} AND t.filename = d.current_filename ORDER BY t.id DESC LIMIT 1)) AS current_name
        FROM devices d

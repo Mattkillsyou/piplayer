@@ -19,7 +19,7 @@ function table(rows, tz, closed) {
     <thead><tr><th scope="col">Device</th><th scope="col">Alert</th><th scope="col">Opened</th><th scope="col">${closed ? "Closed" : "Open for"}</th><th scope="col">Last notified</th></tr></thead>
     <tbody>
     ${rows.map((a) => `<tr>
-      <td class="name">${esc(a.name)} <code class="muted small">${esc(a.device_id)}</code></td>
+      <td class="name"><a href="/devices#device-${a.card_id}">${esc(a.name)}</a> <code class="muted small">${esc(a.device_id)}</code></td>
       <td data-label="Alert">${alerts.kindBadge(a.kind)}</td>
       <td data-label="Opened" class="muted nowrap">${esc(localTime(a.opened_at, tz))}</td>
       <td data-label="${closed ? "Closed" : "Open for"}" class="muted nowrap">${closed ? esc(localTime(a.closed_at, tz)) : esc(ageText(ageSeconds(a.opened_at)).replace(/ ago$/, ""))}</td>
@@ -34,7 +34,7 @@ async function alertsPage(ctx) {
   const user = auth.requireUser(ctx);
   const tz = (await ctx.settings()).timezone;
   const own = contentClause(user);
-  const select = `SELECT a.id, a.kind, a.opened_at, a.closed_at, a.notified_at, d.name, d.device_id
+  const select = `SELECT a.id, a.kind, a.opened_at, a.closed_at, a.notified_at, d.id AS card_id, d.name, d.device_id
        FROM alerts a JOIN devices d ON d.id = a.device_id WHERE ${own.sql}`;
   const open = await db.all(ctx.env, `${select} AND a.closed_at IS NULL ORDER BY a.opened_at DESC, a.id DESC`, ...own.params);
   const recent = await db.all(ctx.env, `${select} AND a.closed_at IS NOT NULL ORDER BY a.closed_at DESC, a.id DESC LIMIT ?`, ...own.params, RECENT_LIMIT);

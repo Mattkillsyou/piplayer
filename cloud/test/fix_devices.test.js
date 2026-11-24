@@ -66,3 +66,27 @@ describe("an empty playlist on a projector's card", () => {
     await query("DELETE FROM devices WHERE id = ?", dev.id);
   });
 });
+
+describe("links to a projector's card, its playlist and its file", () => {
+  it("the Dashboard's tiles and wall titles and the Alerts rows link through; a card links its own account's playlist and file", async () => {
+    const stored = `4444444444444444_u${r.ids.editor}_loop.mp4`;
+    const mid = await media("Loop.mp4", "video", { filename: stored });
+    const pid = await playlist("Linked PL");
+    const dev = await device("link-1", "Linked <one>", { playlist_id: pid, last_seen_at: now(), current_position: 0, current_filename: stored, player_status: "playing" });
+    await query("INSERT INTO alerts (device_id, kind, opened_at) VALUES (?, 'sync-error', ?)", dev.id, now());
+    const dash = await (await r.editor.get("/dashboard")).text();
+    for (const href of ["/library", "/playlists", "/devices", "/alerts"]) expect(dash).toContain(`<a class="card" href="${href}"`);
+    expect(dash).toContain(`<div class="device-card-title"><a href="/devices#device-${dev.id}">Linked &lt;one&gt;</a></div>`);
+    expect(await (await r.editor.get("/alerts")).text())
+      .toContain(`<td class="name"><a href="/devices#device-${dev.id}">Linked &lt;one&gt;</a> <code class="muted small">link-1</code></td>`);
+    const card = await (await r.editor.get("/devices")).text();
+    expect(card).toContain(`<span class="now-playlist"><a href="/playlists/${pid}">Linked PL</a></span>`);
+    expect(card).toContain(`<span class="now-file">#1 <a href="/library/${mid}">Loop.mp4</a> · playing</span>`);
+    // an admin reading the editor's projector: those pages are the editor's, so the names stay plain
+    const admin = await (await r.admin.get("/devices")).text();
+    expect(admin).toContain('<span class="now-playlist">Linked PL</span>');
+    expect(admin).toContain('<span class="now-file">#1 Loop.mp4 · playing</span>');
+    await query("DELETE FROM alerts");
+    await query("DELETE FROM devices WHERE id = ?", dev.id);
+  });
+});

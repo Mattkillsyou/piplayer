@@ -113,7 +113,7 @@ describe("Save rule", () => {
     expect(await manifest.resolve_active_playlist_id(env, device, wallClock("UTC"))).toEqual([w.evening, "schedule:Always"]);
     const page = await (await r.editor.get("/devices")).text();
     expect(page).toContain('<span class="now-label">active now · via schedule: Always</span>');
-    expect(page).toContain('<span class="now-playlist">Evening</span>');
+    expect(page).toContain(`<span class="now-playlist"><a href="/playlists/${w.evening}">Evening</a></span>`);
     expect(await count()).toBe(1);
     await query("DELETE FROM device_schedules");
     await query("DELETE FROM audit_log");
