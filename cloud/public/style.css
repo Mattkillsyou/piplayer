@@ -714,7 +714,7 @@ input[type=search], input[type=email], input[type=url], input[type=file], select
    the column it read as a second, greyed-out box above the real one. */
 label > .badge { align-self: flex-start; }
 /* iPhone Safari zooms the whole page into any box whose text is under 16px, and stays zoomed. */
-@media (max-width: 720px) {
+@media (max-width: 720px), (pointer: coarse) { /* a phone held sideways is wider than 720px */
   input[type=text], input[type=password], input[type=number], input[type=time], input[type=date],
   input[type=search], input[type=email], input[type=url], select, textarea { font-size: 16px; }
 }
@@ -1269,7 +1269,7 @@ html:has(.media-bar) { scroll-padding-top: 96px; }
   .media-bar > .action-buttons:first-child { position: sticky; top: 0; z-index: 2; padding: 8px 0; background: var(--p5k-ground); }
   .media-add { margin: 2px 0 20px; }
   html:has(.media-bar) { scroll-padding-top: 130px; }
-  .media-bar select { flex: 1 1 auto; max-width: none; font-size: 16px; } /* its own row when "Pick a playlist" would not fit */
+  .media-bar select { flex: 1 1 auto; max-width: none; } /* its own row when "Pick a playlist" would not fit */
   .media-find, .media-find label { flex: 1 1 100%; }
   .media-find input[type=search], .media-find select { flex: 1 1 0; width: auto; }
   .media-bar select, .media-find input, .media-find select, .dropzone select { min-height: var(--p5k-touch); }
@@ -1477,8 +1477,8 @@ body.login-body { overflow-x: hidden; }
 .auth-card label { margin: 0; letter-spacing: 0.2em; }
 .auth-card input { padding: 10px; font-size: var(--p5k-text-data-lg); }
 /* the 16px iPhone rule under forms, again for the boxes whose own size rule comes later or is stronger */
-@media (max-width: 720px) {
-  .auth-card input, .duration-form input[type=number] { font-size: 16px; }
+@media (max-width: 720px), (pointer: coarse) {
+  .auth-card input, .duration-form input[type=number], .media-bar select { font-size: 16px; }
 }
 .auth-card .alert { margin: 0; }
 .auth-card button.primary { padding: 12px; font-size: var(--p5k-text-data-sm); letter-spacing: 0.24em; }
