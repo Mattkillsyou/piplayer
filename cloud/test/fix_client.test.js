@@ -87,6 +87,18 @@ describe("media.js Find / Show", () => {
     p = await library({ user: "admin", store }); // admin's own view is still the one kept for admin
     expect([p.ids["find-q"].value, p.ids["find-show"].value, p.count.textContent]).toEqual(["clip 2", "video", "Media (1 of 4)"]);
   });
+
+  it("the count is written only when it changes (the heading is read out on each write)", async () => {
+    const p = await library();
+    expect(p.count.writes).toBe(0); // the server's Media (4) stands
+    p.set("find-q", "cl", "input");
+    expect([p.count.textContent, p.count.writes]).toEqual(["Media (2 of 4)", 1]);
+    p.set("find-q", "clip", "input"); // the same two
+    p.set("find-sort", "name");
+    expect(p.count.writes).toBe(1);
+    p.set("find-q", "", "input");
+    expect([p.count.textContent, p.count.writes]).toEqual(["Media (4)", 2]);
+  });
 });
 
 // --------------------------------------------------------------------------- a page of parts ---

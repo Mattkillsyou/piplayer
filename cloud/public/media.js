@@ -534,7 +534,10 @@
         if (!hide) shown++;
         else if (c.box) c.box.checked = false;
       });
-      count.textContent = 'Media (' + (shown === cards.length ? shown : shown + ' of ' + cards.length) + ')';
+      // Said to a screen reader (the heading is aria-live), once per change: a key that leaves the
+      // count as it was says nothing.
+      var text = 'Media (' + (shown === cards.length ? shown : shown + ' of ' + cards.length) + ')';
+      if (count.textContent !== text) count.textContent = text;
       try { sessionStorage.setItem(KEY, JSON.stringify({ q: q.value, show: show, sort: sortSel.value })); } catch (e) { /* storage off */ }
       sync();
     };
