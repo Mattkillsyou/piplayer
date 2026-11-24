@@ -321,8 +321,10 @@
 
   // Delete asks the card's own question and posts the card's own route, from here: the page stays
   // where it was (a reload put a phone back at the top) and the viewer goes on to the next file.
-  // Anything but the Library coming back (signed out, a stale token) reloads the page, which says
-  // why. The fetch follows the redirect, so the "Deleted" notice is used up on the way.
+  // Anything but the Library coming back reloads the page. A refusal (a stale token, an error) is
+  // the POST's own answer, and the file is still there: said first. The sign-in page (signed out)
+  // and the Library failing to load after the delete went through speak for themselves. The fetch
+  // follows the redirect, so the "Deleted" notice is used up on the way.
   function remove(link) {
     var btn = deleteOf(link);
     var card = link.closest('.media-card');
@@ -330,7 +332,9 @@
     fetch(btn.form.action, {
       method: 'POST', body: new URLSearchParams({ one: btn.value }), headers: { 'X-CSRF-Token': csrf() }
     }).then(function (r) {
-      if (!r.ok || new URL(r.url).pathname !== '/library') throw new Error('not deleted (' + r.status + ')');
+      var path = new URL(r.url).pathname;
+      if (path !== '/library' && path !== '/login') alert('The file was not deleted (error ' + r.status + '). Reloading the page.');
+      if (!r.ok || path !== '/library') { location.reload(); return; }
       if (!card.parentNode) return; // pressed twice: the first one took it
       freshen(r);
       var all = links();

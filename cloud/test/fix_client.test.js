@@ -248,4 +248,24 @@ describe("media.js viewer", () => {
     await vi.waitFor(() => expect(p.line.textContent).toBe("1 file"));
     expect(doc.body.querySelector("details.trash")).toBe(pages["after-both"].trash);
   });
+
+  it("a refused Delete says the file was not deleted before the reload; signed out or a failed page load only reload", async () => {
+    const h = held();
+    const p = await loadPage(FILES3, { fetch: h.fetch });
+    open(p, 0);
+    const v = viewer();
+    const answers = [
+      { ok: false, status: 403, url: "http://piplayer.test/library/delete" }, // a stale token: said
+      { ok: true, status: 200, url: "http://piplayer.test/login?expired=1" }, // signed out
+      { ok: false, status: 500, url: LIBRARY }, // the delete went through; the page after it did not load
+      new TypeError("Failed to fetch"), // no answer
+    ];
+    for (const [i, reply] of answers.entries()) {
+      v.d.fire("click", { target: v.del });
+      h.answer(i, reply);
+      await vi.waitFor(() => expect(p.reload).toHaveBeenCalledTimes(i + 1));
+      expect(p.alert.mock.calls).toEqual([["The file was not deleted (error 403). Reloading the page."]]);
+    }
+    expect(p.grid.children.length).toBe(3);
+  });
 });
