@@ -8,7 +8,7 @@ import * as db from "../db.js";
 import { playSeconds } from "../manifest.js";
 import { esc, fail, fileSize, floatField, idParam, intField, json, jsonObject, localTime, redirect, runTime, str } from "../util.js";
 import { csrfInput, emptyState, layout } from "./layout.js";
-import { appendToPlaylist, RENUMBER_SQL, thumbCell } from "./library.js";
+import { appendToPlaylist, MAX_DELETE, RENUMBER_SQL, thumbCell } from "./library.js";
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -247,13 +247,15 @@ ${items.length ? '<div class="drop-hint"><span>⣿</span><span class="sans">Drag
   return layout(ctx, { title: playlist.name, content, scripts: ["/static/sortable.min.js", "/static/media.js"] });
 }
 
-// The Add media select sends one file; a post with several media_id adds them all, in that order.
+// The Add media select sends one file; a post with several media_id adds them all, in that order,
+// at most MAX_DELETE a request (as the Library's Add to playlist).
 async function playlistAddItem(ctx) {
   const user = auth.requireRole(ctx, "editor");
   const playlistId = idParam(ctx.params.playlist_id, "playlist_id");
   const ids = (await ctx.form()).getAll("media_id")
     .map((v) => intField(typeof v === "string" ? v : "", "Media to add")).filter((v) => v !== null);
   if (!ids.length) fail(400, "Pick a file to add");
+  if (ids.length > MAX_DELETE) fail(400, `Add at most ${MAX_DELETE} files at a time`);
   await ownPlaylist(ctx, playlistId);
   // A playlist holds its own account's files only (the manifest serves nothing else either).
   const { added, already } = await appendToPlaylist(ctx.env, playlistId, ids, user.id);
