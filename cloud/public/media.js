@@ -497,7 +497,8 @@
   // Find / Show / Sort over the Library's cards (library.js card()'s data-*), in the browser. A
   // card that does not match is hidden, and unticked so nothing out of sight is deleted or added;
   // the cards are put in the order picked, which is also the order Add to playlist appends them
-  // in. The view is kept for this tab, so the reload after a delete or an add shows the same files.
+  // in. The view is kept for this tab, so the reload after a delete or an add shows the same files,
+  // and per signed-in user (usernames are unique): the next account on the tab starts afresh.
   var finder = document.getElementById('media-find');
   var grid = finder && document.querySelector('.media-grid');
   if (grid) {
@@ -505,7 +506,7 @@
     var showSel = document.getElementById('find-show');
     var sortSel = document.getElementById('find-sort');
     var count = document.getElementById('media-count');
-    var KEY = 'p5k-library-find';
+    var KEY = 'p5k-library-find:' + ((document.querySelector('.topbar .username') || {}).textContent || '');
     // The server sends the newest first: i is that order.
     var cards = Array.prototype.map.call(grid.children, function (card, i) {
       var d = card.dataset;

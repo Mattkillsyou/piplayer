@@ -8,6 +8,87 @@ afterEach(() => {
   vi.resetModules();
 });
 
+// An element: its data and state, its listeners (fire() calls them), and whatever `props` adds.
+function el(props = {}) {
+  const on = {};
+  return Object.assign({
+    dataset: {}, hidden: false, disabled: false, checked: false, textContent: "", value: "", selectedIndex: 0,
+    addEventListener(type, fn) { (on[type] ||= []).push(fn); },
+    fire(type) { for (const fn of on[type] || []) fn({ target: this, preventDefault() {} }); },
+  }, props);
+}
+
+// A <select> offering `values`: a value it does not offer selects nothing, as in a browser.
+function select(values, texts = values) {
+  const s = el({ options: texts.map((text) => ({ text })) });
+  let i = 0;
+  Object.defineProperties(s, {
+    value: { get: () => (i < 0 ? "" : values[i]), set: (v) => { i = values.indexOf(v); } },
+    selectedIndex: { get: () => i, set: (n) => { i = n; } },
+  });
+  return s;
+}
+
+// The tab's sessionStorage over `store`.
+const storage = (store) => ({ getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; }, removeItem: (k) => { delete store[k]; } });
+
+// [name, kind, use, the ids of its playlists], newest first.
+const FILES = [
+  ["Zed.png", "image", "none", ""],
+  ["Clip 10.mp4", "video", "default", "1"],
+  ["lobby poster.png", "image", "playlist", "1 12"],
+  ["Clip 2.mp4", "video", "playlist", "2"],
+];
+const SHOWS = ["", "video", "image", "default", "none", "in:1", "in:2", "in:12"];
+
+// An editor's Library signed in as `user`, Show offering `shows`, `store` the tab's sessionStorage.
+async function library({ user = "admin", files = FILES, shows = SHOWS, store = {} } = {}) {
+  const cards = files.map(([name, kind, use, lists]) => {
+    const card = el({ dataset: { name, kind, use, in: lists, size: "1", length: "0" } });
+    card.box = el({ type: "checkbox", closest: (sel) => (sel === ".media-card" || (sel === "[hidden]" && card.hidden) ? card : null) });
+    card.querySelector = () => card.box;
+    return card;
+  });
+  const grid = { children: [...cards], appendChild(c) { this.children.splice(this.children.indexOf(c), 1); this.children.push(c); } };
+  const bar = { bulk: el(), all: el(), add: el(), picked: el() };
+  const form = el({
+    dataset: { max: "500" }, querySelectorAll: () => grid.children.map((c) => c.box),
+    querySelector: (sel) => ({ "[data-delete-selected]": bar.bulk, "[data-select-all]": bar.all, "[data-add-selected]": bar.add, "[data-picked]": bar.picked })[sel] || null,
+  });
+  // The heading as the server wrote it, counting what the script writes into it.
+  let heading = `Media (${files.length})`;
+  const count = el({ writes: 0 });
+  Object.defineProperty(count, "textContent", { get: () => heading, set: (v) => { heading = v; count.writes++; } });
+  const ids = { "library-form": form, "add-to": el(), "media-find": el({ hidden: true }), "find-q": el(), "find-show": select(shows), "find-sort": select(["", "oldest", "name", "size", "length"]), "media-count": count };
+  vi.stubGlobal("window", { addEventListener() {} });
+  vi.stubGlobal("sessionStorage", store && storage(store));
+  vi.stubGlobal("document", {
+    addEventListener() {}, getElementById: (id) => ids[id] || null, querySelectorAll: () => [],
+    querySelector: (sel) => ({ ".media-grid": grid, ".topbar .username": { textContent: user } })[sel] || null,
+  });
+  await import("../public/media.js");
+  const set = (id, value, type = "change") => { ids[id].value = value; ids[id].fire(type); };
+  const tick = (...names) => { for (const c of cards) c.box.checked = names.includes(c.dataset.name); form.fire("change"); };
+  return { ...bar, ids, set, tick, count, shown: () => grid.children.filter((c) => !c.hidden).map((c) => c.dataset.name) };
+}
+
+describe("media.js Find / Show", () => {
+  it("the view is kept per signed-in user: the next account on the tab starts on every file", async () => {
+    const store = {};
+    let p = await library({ user: "admin", store });
+    p.set("find-show", "video");
+    p.set("find-q", "clip 2", "input");
+    expect(p.count.textContent).toBe("Media (1 of 4)");
+    vi.resetModules();
+    p = await library({ user: "sam-editor", store });
+    expect([p.ids["find-q"].value, p.ids["find-show"].value, p.count.textContent, p.shown().length]).toEqual(["", "", "Media (4)", 4]);
+    p.set("find-q", "zed", "input");
+    vi.resetModules();
+    p = await library({ user: "admin", store }); // admin's own view is still the one kept for admin
+    expect([p.ids["find-q"].value, p.ids["find-show"].value, p.count.textContent]).toEqual(["clip 2", "video", "Media (1 of 4)"]);
+  });
+});
+
 // --------------------------------------------------------------------------- a page of parts ---
 
 // The viewer and Recently deleted need more of a page: parts in a tree, each matching the
