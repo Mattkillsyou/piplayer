@@ -200,4 +200,52 @@ describe("media.js viewer", () => {
     await vi.waitFor(() => expect(p.grid.children.length).toBe(1));
     expect([v.name.textContent, v.prev.disabled, v.next.disabled, doc.activeElement]).toEqual(["b.png", true, true, v.close]);
   });
+
+  it("two deletes whose answers cross: the older Library page is dropped, in either order", async () => {
+    // A page the delete came back to: its files line and its Recently deleted, newest row `top`.
+    const pages = {};
+    const page = (key, text, top) => {
+      const meta = part("span");
+      meta.textContent = text;
+      const trash = trashPart([top, top - 1]);
+      pages[key] = { meta, trash: trash.details, top: trash.boxes[0] };
+    };
+    page("after-a", "2 files", 10);
+    page("after-both", "1 file", 11);
+    vi.stubGlobal("DOMParser", function () {
+      this.parseFromString = (html) => ({
+        querySelector: (sel) => ({ ".page-head .page-meta": pages[html].meta, "details.trash": pages[html].trash, 'details.trash input[name="trash_id"]': pages[html].top })[sel] || null,
+      });
+    });
+    const reply = (key) => ({ ok: true, status: 200, url: LIBRARY, text: async () => key });
+    let h = held();
+    let p = await loadPage(FILES3, { fetch: h.fetch });
+    open(p, 0);
+    let v = viewer();
+    v.d.fire("click", { target: v.del }); // a.mp4
+    v.d.fire("click", { target: v.next });
+    v.d.fire("click", { target: v.del }); // b.png
+    h.answer(1, reply("after-both")); // the second answer first
+    await vi.waitFor(() => expect(p.line.textContent).toBe("1 file"));
+    h.answer(0, reply("after-a"));
+    await vi.waitFor(() => expect(p.grid.children.length).toBe(1));
+    for (let i = 0; i < 5; i++) await tick();
+    expect([p.line.textContent, doc.body.querySelector("details.trash")]).toEqual(["1 file", pages["after-both"].trash]);
+
+    vi.resetModules(); // and in the order sent, the newer page last: it is applied
+    page("after-a", "2 files", 10);
+    page("after-both", "1 file", 11);
+    h = held();
+    p = await loadPage(FILES3, { fetch: h.fetch });
+    open(p, 0);
+    v = viewer();
+    v.d.fire("click", { target: v.del });
+    v.d.fire("click", { target: v.next });
+    v.d.fire("click", { target: v.del });
+    h.answer(0, reply("after-a"));
+    await vi.waitFor(() => expect(p.line.textContent).toBe("2 files"));
+    h.answer(1, reply("after-both"));
+    await vi.waitFor(() => expect(p.line.textContent).toBe("1 file"));
+    expect(doc.body.querySelector("details.trash")).toBe(pages["after-both"].trash);
+  });
 });

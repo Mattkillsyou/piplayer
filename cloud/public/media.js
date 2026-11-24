@@ -290,12 +290,21 @@
     });
   }
 
+  // The newest row of a page's Recently deleted (media_trash.id, AUTOINCREMENT, listed newest
+  // first), 0 when it has none.
+  function newest(page) {
+    var box = page.querySelector('details.trash input[name="trash_id"]');
+    return box ? +box.value : 0;
+  }
+
   // The Library page a delete came back to: its "N files" line and its Recently deleted (now with
-  // the file just deleted) replace this page's; Media (N) is recount()'s. A failure here only
-  // leaves the line stale until the next load, never undoes the delete.
+  // the file just deleted) replace this page's; Media (N) is recount()'s. Two deletes' answers can
+  // cross: a page older than the one shown is dropped. A failure here only leaves the line stale
+  // until the next load, never undoes the delete.
   function freshen(r) {
     Promise.resolve().then(function () { return r.text(); }).then(function (html) {
       var fresh = new DOMParser().parseFromString(html, 'text/html');
+      if (newest(fresh) < newest(document)) return;
       var line = document.querySelector('.page-head .page-meta');
       var freshLine = fresh.querySelector('.page-head .page-meta');
       if (line && freshLine) line.textContent = freshLine.textContent;
