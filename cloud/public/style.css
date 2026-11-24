@@ -491,6 +491,11 @@ html[data-theme="light"] .wordmark { text-shadow: none; }
   }
   .topbar.nav-open .nav-toggle { background: var(--p5k-fill-tint-2); border-color: var(--p5k-rule-max); }
 }
+/* No scripts, no menu button (app.js opens it): the links and Log out stay listed. */
+@media (max-width: 1240px) and (scripting: none) {
+  .topbar nav, .topbar .user { display: flex; }
+  .nav-toggle { display: none; }
+}
 
 /* -------------------------------------------------------------- layout --- */
 .container { max-width: 1440px; margin: 0 auto; padding: var(--p5k-pad-view); }
